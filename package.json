@@ -2,14 +2,22 @@
   "name": "wows-omp-plugins",
   "type": "module",
   "private": true,
+  "description": "omp marketplace: TheOrdinaryWow's plugin collection",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TheOrdinaryWow/wows-omp-plugins.git"
+  },
   "scripts": {
     "check": "biome check .",
     "check:fix": "biome check --write .",
     "format": "biome format --write .",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "check-catalog": "bun run src/check-catalog.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
+    "@oh-my-pi/pi-coding-agent": "^18.2.8",
     "@types/bun": "latest"
   },
   "peerDependencies": {

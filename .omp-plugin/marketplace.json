@@ -1,0 +1,27 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "wows-omp-plugins",
+  "owner": {
+    "name": "TheOrdinaryWow",
+    "email": "25114850+TheOrdinaryWow@users.noreply.github.com"
+  },
+  "metadata": {
+    "description": "Personal omp plugin collection",
+    "version": "0.1.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "demo",
+      "source": "./demo",
+      "description": "Placeholder plugin that exercises every plugin surface this marketplace uses",
+      "version": "0.1.0",
+      "author": {
+        "name": "TheOrdinaryWow"
+      },
+      "category": "development",
+      "keywords": ["demo", "template"],
+      "license": "MIT"
+    }
+  ]
+}
