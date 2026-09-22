@@ -72,9 +72,13 @@ name segment — `#src/*`, not `#/*`.
 3. Add content in the conventional directories: `skills/<name>/SKILL.md`,
    `commands/*.md`, `agents/*.md`, `hooks/pre|post/`, `tools/`, `.mcp.json`.
 4. Declare a TypeScript extension entry in `package.json` under `omp.extensions`.
-5. Add the entry to [.omp-plugin/marketplace.json](file:///./.omp-plugin/marketplace.json)
+5. Write `plugins/<name>/README.md`. It owns that plugin's install steps,
+   settings, and behavior; the root README only indexes plugins and links to it.
+   The file ships with the plugin, so write it for the installing user.
+6. Add the entry to [.omp-plugin/marketplace.json](file:///./.omp-plugin/marketplace.json)
    with `"source": "./<name>"` — `metadata.pluginRoot` already prepends `./plugins`.
-6. Run `bun run check-catalog && bun run check-types && bun run check`.
+7. Add a row to the root README plugin table pointing at the new plugin README.
+8. Run `bun run check-catalog && bun run check-types && bun run check`.
 
 [plugins/jev-dispatch/](file:///./plugins/jev-dispatch/) is the current example
 of a dependency-free extension package with manifest-backed settings.
