@@ -26,8 +26,7 @@ omp plugin upgrade <name>@wows-omp-plugins
 
 ## Plugins
 
-Every plugin documents its own setup, settings, and behavior. This table is the
-index; follow the link for the details.
+Each plugin has its own README covering installation, settings, and behavior.
 
 | Plugin | Description | Documentation |
 | ------ | ----------- | ------------- |
@@ -41,9 +40,9 @@ plugins/<name>/                one directory per plugin, with its own README
 src/                           repo tooling and tests
 ```
 
-Each plugin is self-contained and dependency-free: marketplace installation
-copies the directory to the user's machine without installing anything, so a
-plugin ships exactly what it needs, documentation included.
+Marketplace installation copies a plugin directory to the user's machine and
+installs nothing else, so each plugin is self-contained, dependency-free, and
+carries its own documentation.
 
 ## Development
 
