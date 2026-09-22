@@ -4,6 +4,20 @@ export interface JevDispatchSettings {
   integrationMode: IntegrationMode;
   minimumConfidence: number;
   includeSharedContext: boolean;
+  apiKey?: string;
+}
+
+export interface JevApiKeySelection {
+  key: string;
+  source: "environment" | "setting";
+}
+
+export function selectJevApiKey(environmentValue: unknown, settingValue: unknown): JevApiKeySelection | undefined {
+  const environmentKey = typeof environmentValue === "string" ? environmentValue.trim() : "";
+  if (environmentKey) return { key: environmentKey, source: "environment" };
+  const settingKey = typeof settingValue === "string" ? settingValue.trim() : "";
+  if (settingKey) return { key: settingKey, source: "setting" };
+  return undefined;
 }
 
 export interface RoutingSurfaceSelection {
@@ -70,7 +84,7 @@ const MINIMUM_USEFUL_DEADLINE_MS = 250;
 
 /** Select exactly one routing event surface for a session-bound extension instance. */
 export function selectRoutingSurface(mode: IntegrationMode, apiVersion: unknown): RoutingSurfaceSelection {
-  if (mode === "enhanced" && apiVersion === 1) {
+  if (mode === "enhanced" && apiVersion === 2) {
     return { surface: "enhanced", warnAboutEnhancedFallback: false };
   }
   return { surface: "standard", warnAboutEnhancedFallback: mode === "enhanced" };
@@ -81,6 +95,27 @@ export function standardRoutingDeadlineMs(toolCallTimeoutMs: unknown): number | 
   if (typeof toolCallTimeoutMs !== "number" || !Number.isFinite(toolCallTimeoutMs)) return undefined;
   const deadline = Math.min(STANDARD_MAX_DEADLINE_MS, Math.floor(toolCallTimeoutMs) - TOOL_CALL_SAFETY_MARGIN_MS);
   return deadline >= MINIMUM_USEFUL_DEADLINE_MS ? deadline : undefined;
+}
+
+const AVAILABLE_AGENTS_HEADING = "# Available Agents";
+const AGENT_HEADING_PATTERN = /^###\s+([A-Za-z0-9_-]+)/;
+
+/**
+ * Read the spawnable agent names out of the live `task` tool description. The
+ * host renders that list after applying the session's spawn policy and
+ * disabled-agent settings, so it is the only authoritative legal set a plugin
+ * can observe in standard mode. Returns `undefined` when the section is absent,
+ * which callers MUST treat as "policy unknown" rather than "everything".
+ */
+export function parseLegalAgentNames(taskDescription: string): string[] | undefined {
+  const headingIndex = taskDescription.indexOf(AVAILABLE_AGENTS_HEADING);
+  if (headingIndex < 0) return undefined;
+  const names: string[] = [];
+  for (const line of taskDescription.slice(headingIndex + AVAILABLE_AGENTS_HEADING.length).split("\n")) {
+    const match = AGENT_HEADING_PATTERN.exec(line);
+    if (match?.[1]) names.push(match[1]);
+  }
+  return names;
 }
 
 function compactDescription(value: string): string {
@@ -191,17 +226,12 @@ export function isNativeJevCandidate(kind: string, label: string): boolean {
   return kind === "native" && JEV_MODEL_ID_PATTERN.test(modelId);
 }
 
-/** Ordinary control-flow error: ChainJudge catches it and advances without invoking this candidate. */
-export class NonJevJudgeCandidateError extends Error {
-  override readonly name = "NonJevJudgeCandidateError";
+export class MissingJevApiKeyError extends Error {
+  override readonly name = "MissingJevApiKeyError";
 
-  constructor(label: string) {
-    super(`jev-dispatch skipped non-Jev judge candidate ${label}`);
+  constructor() {
+    super("jev-dispatch requires TYPESAFE_API_KEY or the plugin apiKey setting");
   }
-}
-
-export function assertNativeJevCandidate(kind: string, label: string): void {
-  if (!isNativeJevCandidate(kind, label)) throw new NonJevJudgeCandidateError(label);
 }
 
 /** Accept only a legal, sufficiently confident answer from a native Jev transport. */

@@ -30,6 +30,11 @@
         "step": 0.05,
         "description": "Minimum native TypeSafe/Jev confidence required to change an agent type"
       },
+      "apiKey": {
+        "type": "string",
+        "secret": true,
+        "description": "Optional manual TypeSafe API key. TYPESAFE_API_KEY takes precedence; prefer the environment variable for secrets."
+      },
       "includeSharedContext": {
         "type": "boolean",
         "default": true,

@@ -2,15 +2,26 @@ import { describe, expect, test } from "bun:test";
 
 import {
   acceptRoutingDecision,
-  assertNativeJevCandidate,
   isNativeJevCandidate,
-  NonJevJudgeCandidateError,
+  parseLegalAgentNames,
   parseTaskInput,
   rewriteTaskAgents,
+  selectJevApiKey,
   selectRoutingSurface,
   serializeCandidate,
   standardRoutingDeadlineMs,
 } from "../plugins/jev-dispatch/src/routing.ts";
+
+describe("Jev API key selection", () => {
+  test("prefers a non-empty environment key over the plugin setting", () => {
+    expect(selectJevApiKey(" env-key ", "setting-key")).toEqual({ key: "env-key", source: "environment" });
+  });
+
+  test("uses the manual setting only when the environment is absent", () => {
+    expect(selectJevApiKey("  ", " setting-key ")).toEqual({ key: "setting-key", source: "setting" });
+    expect(selectJevApiKey(undefined, "")).toBeUndefined();
+  });
+});
 
 describe("task input routing", () => {
   test("rewrites only the flat agent field", () => {
@@ -103,21 +114,20 @@ test("recognizes only native Jev candidate labels", () => {
   expect(isNativeJevCandidate("online", "typesafe/jev-latest")).toBe(false);
 });
 
-test("throws an ordinary control-flow error before a non-Jev candidate can run", () => {
-  expect(() => assertNativeJevCandidate("native", "typesafe/jev-latest")).not.toThrow();
-  expect(() => assertNativeJevCandidate("online", "openai/gpt-4.1")).toThrow(NonJevJudgeCandidateError);
-});
-
 test("selects exactly one routing surface from session-scoped mode and capability", () => {
-  expect(selectRoutingSurface("standard", 1)).toEqual({
+  expect(selectRoutingSurface("standard", 2)).toEqual({
     surface: "standard",
     warnAboutEnhancedFallback: false,
   });
-  expect(selectRoutingSurface("enhanced", 1)).toEqual({
+  expect(selectRoutingSurface("enhanced", 2)).toEqual({
     surface: "enhanced",
     warnAboutEnhancedFallback: false,
   });
   expect(selectRoutingSurface("enhanced", undefined)).toEqual({
+    surface: "standard",
+    warnAboutEnhancedFallback: true,
+  });
+  expect(selectRoutingSurface("enhanced", 1)).toEqual({
     surface: "standard",
     warnAboutEnhancedFallback: true,
   });
@@ -128,6 +138,31 @@ test("keeps standard routing below the scoped tool-call timeout", () => {
   expect(standardRoutingDeadlineMs(5_000)).toBe(4_000);
   expect(standardRoutingDeadlineMs(1_200)).toBeUndefined();
   expect(standardRoutingDeadlineMs(Number.NaN)).toBeUndefined();
+});
+
+describe("legal agent extraction", () => {
+  const description = [
+    "Delegate work to background subagents.",
+    "",
+    "# Available Agents",
+    "Pick the most specific agent.",
+    "### scout (READ-ONLY)",
+    "Fast read-only research.",
+    "### security-reviewer",
+    "Evidence-backed security analysis.",
+  ].join("\n");
+
+  test("reads the host's rendered spawnable agent list", () => {
+    expect(parseLegalAgentNames(description)).toEqual(["scout", "security-reviewer"]);
+  });
+
+  test("reports spawning-disabled sessions as an empty legal set", () => {
+    expect(parseLegalAgentNames("# Available Agents\nAgent spawning is currently disabled.\n")).toEqual([]);
+  });
+
+  test("returns undefined when the section is absent so callers can fail open", () => {
+    expect(parseLegalAgentNames("Delegate work to ONE background subagent per call.")).toBeUndefined();
+  });
 });
 
 describe("routing decision acceptance", () => {
