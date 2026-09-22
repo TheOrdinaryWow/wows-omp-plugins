@@ -1,9 +1,0 @@
-{
-  "name": "demo",
-  "version": "0.1.0",
-  "description": "Placeholder plugin that exercises every plugin surface this marketplace uses",
-  "author": {
-    "name": "TheOrdinaryWow"
-  },
-  "license": "MIT"
-}

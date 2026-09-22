@@ -12,15 +12,15 @@
   },
   "plugins": [
     {
-      "name": "demo",
-      "source": "./demo",
-      "description": "Placeholder plugin that exercises every plugin surface this marketplace uses",
+      "name": "jev-dispatch",
+      "source": "./jev-dispatch",
+      "description": "Route OMP subagent types with native TypeSafe/Jev judgments",
       "version": "0.1.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
-      "category": "development",
-      "keywords": ["demo", "template"],
+      "category": "productivity",
+      "keywords": ["routing", "subagents", "typesafe", "jev"],
       "license": "MIT"
     }
   ]

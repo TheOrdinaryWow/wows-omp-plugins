@@ -1,0 +1,40 @@
+{
+  "name": "wows-omp-plugin-jev-dispatch",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Route OMP subagent types with native TypeSafe/Jev judgments",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "settings": {
+      "integrationMode": {
+        "type": "enum",
+        "values": [
+          "standard",
+          "enhanced"
+        ],
+        "default": "standard",
+        "description": "Use task tool interception (standard) or the host subagent lifecycle API when available (enhanced)"
+      },
+      "minimumConfidence": {
+        "type": "number",
+        "default": 0.7,
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "description": "Minimum native TypeSafe/Jev confidence required to change an agent type"
+      },
+      "includeSharedContext": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include task batch or subagent shared context in the routing judgment"
+      }
+    }
+  }
+}

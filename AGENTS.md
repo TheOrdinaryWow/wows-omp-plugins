@@ -21,7 +21,7 @@ and the directory layout are the only coupling between them.
 ```
 .omp-plugin/marketplace.json   the catalog — source of truth for what ships
 plugins/<name>/                one plugin, copied verbatim to the user's machine
-src/                           repo tooling only; never shipped to users
+src/                           repo tooling and tests; never shipped to users
 ```
 
 ## Commands
@@ -76,8 +76,8 @@ name segment — `#src/*`, not `#/*`.
    with `"source": "./<name>"` — `metadata.pluginRoot` already prepends `./plugins`.
 6. Run `bun run check-catalog && bun run check-types && bun run check`.
 
-[plugins/demo/](file:///./plugins/demo/) is a working reference for every one of
-these surfaces.
+[plugins/jev-dispatch/](file:///./plugins/jev-dispatch/) is the current example
+of a dependency-free extension package with manifest-backed settings.
 
 ## Extension authoring gotcha
 
@@ -95,6 +95,11 @@ pi.registerTool({
 ```
 
 `pi.typebox.Type.Object(...)` infers without the annotation if you prefer it.
+
+`jev-dispatch` intentionally compiles against the marketplace's current omp
+version while feature-detecting a newer lifecycle event. Keep that event's
+typing structural inside the plugin; do not raise the repository's minimum omp
+version merely to acquire the event overload.
 
 ## Testing a plugin locally
 
@@ -123,7 +128,7 @@ Import organization is on, grouped bun/node → packages → alias → relative.
   `.claude-plugin/marketplace.json`. This repo publishes only the former —
   it does not target Claude Code.
 - `metadata.pluginRoot` is `./plugins`, so catalog `source` values are relative
-  to that (`"./demo"`, not `"./plugins/demo"`).
+  to that (`"./jev-dispatch"`, not `"./plugins/jev-dispatch"`).
 - `bun run check-catalog` catches the common drift cases (unlisted directory,
   version mismatch between catalog and manifests, bad `source`) before a user
   hits them.
