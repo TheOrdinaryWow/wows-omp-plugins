@@ -1,0 +1,16 @@
+Prometheus plugin licensing and attribution
+
+This plugin is a modified OMP port of planning and execution prompt material from oh-my-openagent, Copyright the oh-my-openagent contributors. It is an independent adaptation for OMP's native `local://` plan artifacts, `xd://propose` approval, agent/task tools, and guarded main-session execution; it does not bundle the upstream runtime or runtime dependencies.
+
+Current upstream source used for this port:
+- Project: https://github.com/code-yeongyu/oh-my-openagent
+- Pinned revision: 7dd8ad4fc1b75bff13fe3dac3310d7d17f71b249
+- Planning sources: `packages/shared-skills/skills/ulw-plan/SKILL.md` and its `references/full-workflow.md`, `references/intent-clear.md`, and `references/intent-unclear.md`
+- Specialist sources: `packages/omo-opencode/src/agents/metis.ts`, `packages/omo-opencode/src/agents/momus.ts`, and `packages/omo-opencode/src/agents/oracle.ts`
+- Execution source: `packages/prompts-core/prompts/atlas/default.md`
+
+The modified/derived prompt assets in `agents/*.md` and `skills/prometheus/**` are licensed under the Sustainable Use License 1.0; the complete terms are included in `LICENSE-SUL-1.0`. Those terms permit internal business use as well as personal or noncommercial use, and permit free-of-charge distribution for noncommercial purposes. They do not categorically prohibit all business use.
+
+Original plugin code and other original material authored for this OMP port are licensed under the MIT License in `LICENSE-MIT`.
+
+The upstream notices and the prominent modified-port notices in each derived prompt must not be removed or obscured.

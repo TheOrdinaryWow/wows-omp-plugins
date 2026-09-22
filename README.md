@@ -31,6 +31,7 @@ Each plugin has its own README covering installation, settings, and behavior.
 | Plugin | Description | Documentation |
 | ------ | ----------- | ------------- |
 | `jev-dispatch` | Routes subagent types through TypeSafe/Jev judgments | [Documentation](plugins/jev-dispatch/README.md) |
+| `prometheus` | Ports oh-my-openagent Prometheus planning and Atlas orchestration to OMP | [Documentation](plugins/prometheus/README.md) |
 
 ## Repository layout
 
@@ -60,4 +61,4 @@ publishing.
 
 ## License
 
-MIT
+Repository-original code and content are MIT unless a plugin says otherwise. The `prometheus` plugin carries modified OmO prompt assets under Sustainable Use License 1.0; see [its license notes](plugins/prometheus/README.md#native-state-and-compatibility).

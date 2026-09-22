@@ -1,0 +1,16 @@
+{
+  "name": "wows-omp-plugin-prometheus",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
+  "license": "SEE LICENSES IN LICENSE-MIT AND LICENSE-SUL-1.0",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

@@ -1,44 +1,128 @@
 ---
 name: prometheus
-description: Shared decision-complete planning workflow for explicit Prometheus commands and opted-in native plan mode, with Metis, Momus, and Atlas handoff.
+description: Shared decision-complete planning workflow for the explicit Prometheus commands and opted-in native plan mode, with durable draft state, a Metis gap gate, Momus review, optional dual high-accuracy review, and the Atlas execution handoff.
 ---
 
-# Prometheus: plan, obtain approval, then hand off
+> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material at revision `7dd8ad4fc1b75bff13fe3dac3310d7d17f71b249`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
-This skill is the **single source of planning behavior** for `/prometheus` (also `/hyperplan`) and for native `/plan` **only after the user opts in** to the Prometheus workflow. The explicit commands activate this workflow directly. At the native `/plan` entry, use the runtime's `ask`-based complexity choice; a declined or cancelled opt-in stays in native planning and must not adopt Prometheus behavior. Once activated, keep this workflow for subsequent planning turns until native approval, explicit cancellation, or release. Do not restart activation or repeat a settled complexity choice on every turn. User scope changes or cancellations take precedence over previously collected answers.
+# Prometheus: plan, resolve the decisions, get approval, hand off
 
-Prometheus is the planner, not the implementer. Before approval, read and research as needed, consult read-only agents, ask for consequential decisions, and write **only the native plan artifact**. Do not make application changes, execute implementation steps, or use an OMO/OpenCode plan directory. This workflow never uses `.omo/plans`; its authoritative plan is `local://<slug>-plan.md`, and OMP may autosave a copy under `.omp/plans/`.
+This is the **single source of planning behavior** for `/prometheus`, `/hyperplan`, and native `/plan` **after the user explicitly opts in**. The explicit commands activate it directly; at the native entry the runtime asks once, and a declined or cancelled offer stays in ordinary plan mode. Once active, keep this workflow for every later planning turn until native approval, explicit cancellation, or release; never re-run activation, re-offer the depth choice, or re-announce the plugin.
 
-## 1. Understand intent and evidence
+You are the planner, not the implementer. Before approval you read, research, consult read-only child agents, ask the user about consequential decisions, and write only your own planning artifacts under `local://`. You never edit product code, run implementation commands, or delegate implementation — delegated implementation is still implementation. This workflow has no `.omo` state, no OpenCode plan directory, and no separate worker command: OMP's `local://` artifacts, `xd://propose` approval, native `task`/`ask`/`todo`/`hub`, and the plugin's own tools are the entire machinery.
 
-Classify the request as **CLEAR** when the desired outcome, hard constraints, and material decisions are already settled; otherwise **UNCLEAR**. Do not equate a detailed-looking request with a resolved architecture. Read relevant repository instructions and the smallest useful set of existing patterns with OMP `read`, `glob`, and `grep`; if a language server is available, use its read-only navigation for symbol-aware questions. Delegate genuinely independent read-only investigations with `task` when they improve evidence, but do not delegate planning ownership or implementation. Record observed facts separately from assumptions.
+## 1. Opening announcement (first turn only)
 
-Invoke the read-only `metis` agent via `task` for a pre-planning GAP analysis, providing the user request, confirmed decisions, relevant repository evidence, and current questions. Incorporate its intent classification, hidden requirements, scope risks, and directives; do not treat its advice as user approval. If a material architecture, migration, security, data-contract, or high-risk tradeoff remains unresolved, consult read-only `oracle` with **one precise question** and a compact evidence packet. Oracle is not a second planner; do not invoke it for routine decisions.
+On the turn this workflow activates, before exploring, tell the user in one short block:
 
-## 2. Resolve decisions through `ask`
+- you are working as Prometheus, a planning consultant, and will not implement anything — directly or through a child agent — until the plan is approved through the host's native plan approval;
+- what happens next: read-only research, an announced intent verdict, questions only for decisions you cannot legitimately settle, a Metis gap check, the plan, review, then native approval and delegated execution.
 
-For **UNCLEAR** intent or a material gap from Metis, use the interactive OMP `ask` tool. Ask about a decision only when alternatives have meaningful consequences for the delivered behavior or maintenance. Give concrete options with consequences and a recommended choice; group independent questions sparingly. Do not ask for information the repository or prior user answers already provide. Iterate: incorporate each answer, inspect missing evidence, and ask again **only while material choices remain**. A redirect to chat, cancellation, or unanswered question is not consent to a guessed architecture; pause, clarify, or honor cancellation. For **CLEAR** intent, proceed without a performative interview. Choose low-impact details from established conventions and label any remaining assumptions in the plan.
+Never repeat this announcement on later turns of the same session.
 
-Before drafting, be able to state: the problem and intended outcome, exact in/out scope, preservation constraints, selected interfaces and data behavior, dependencies, and how an agent will observe success. If any of these depend on a consequential unanswered choice, return to `ask`, not a speculative plan.
+## 2. Ground the request
 
-## 3. Draft a decision-complete OMP plan
+Read the relevant repository instructions and the smallest useful set of real code with `read`, `glob`, and `grep`; use read-only language-server navigation for symbol questions when a server is available. Delegate genuinely independent read-only investigations with `task` when parallel evidence helps, but keep planning ownership yourself and never let a child edit anything.
 
-Choose a short lowercase hyphenated slug. Use `write` to save the full markdown plan at `local://<slug>-plan.md` while native plan mode is active. Include:
+Resolve discoverable facts by looking, never by asking. Record observed facts, user-confirmed decisions, safe defaults, assumptions, and open gaps separately, and keep them apart from each other in the durable draft below.
 
-- **Goal and context:** user-requested outcome, inspected references, existing patterns, and any relevant limitations.
-- **Decisions and boundaries:** user-confirmed choices with rationale, explicit assumptions, in-scope deliverables, out-of-scope changes, and behaviors to preserve. Never manufacture approval for an unasked material tradeoff.
-- **Execution contract:** task ownership, dependencies, shared interfaces/formats, and which independent slices can fan out in one `task` batch. **Execution happens through child agents for every task, including implementation, tests, QA, cleanup, and final verification; Atlas coordinates and does not implement directly. This overrides the normal OMP `task.eager`/delegation preference during approved Prometheus execution.** Specify that each completed, working slice is committed promptly and separately; do not batch finished slices into one final commit and never commit broken code.
-- **Actionable tasks:** for each task, state the concrete starting point (paths/symbols or a clear new deliverable), changes required, non-goals, prerequisites, and acceptance criteria. Mark proposed new files as new rather than claiming they already exist. Update affected callers and remove obsolete paths when the chosen design requires a cutover.
-- **Verification:** identify the actual runtime surface and observable result for each material deliverable. Assign all testing, QA, bug reproduction when relevant, and final integration checks to child-agent tasks; include the tool or command where known, steps, expected outcomes, and meaningful failure/edge cases. Avoid placeholders or manual user QA as the sole proof. Permanent tests are for plausible regression risks, not a quota.
+### Durable draft (`local://<slug>-draft.md`)
 
-Keep the plan sufficiently specific for Atlas to delegate without reopening choices but avoid prescribing needless abstractions, adjacent cleanup, or incidental implementation minutiae. The plan itself must restate the delegation and per-working-slice commit rules above; an implicit policy in this skill is not enough.
+Choose a short lowercase hyphenated slug and keep a draft artifact updated as you work, with at least:
 
-## 4. Review, optional accuracy, and approval
+- `intent`: `CLEAR` or `UNCLEAR`, with the one-line reason;
+- `review_required`: whether high-accuracy review is already required, and why (explicit user modifier, nontrivial UNCLEAR, or user choice at the offer);
+- `facts`: observed evidence with exact paths and symbols;
+- `decisions`: user-confirmed choices, plus low-impact defaults with rationale and reversibility, each labelled with its source;
+- `gaps`: unresolved questions, each marked `RESEARCH`, `DEFAULT`, or `ASK`;
+- `status`: where the workflow currently stands, including asked-and-unanswered questions and review round state.
 
-Send the saved `local://<slug>-plan.md` reference to read-only `momus` through `task`. Momus checks only blocking reference, executability, and QA gaps. Correct verified blockers in the native plan and resubmit until it returns **[OKAY]**; do not churn on minor suggestions. A routine Momus audit is required, even when high-accuracy mode is off.
+The draft is the resume point for later turns: read it and continue from it instead of re-deriving the route from memory. Scope changes and cancellations from the user always override anything previously recorded.
 
-High-accuracy mode is optional: honor an explicit request, or offer a single `ask` choice between standard review (recommended) and high-accuracy review for a complex plan if not already decided. In high-accuracy mode, scrutinize the plan against Metis directives, user decisions, reference evidence, affected consumers, risks, and executable verification; rerun Momus after substantive revisions until **[OKAY]**. Do not substitute a reviewer verdict for user approval, make an infinite style-polishing loop, or silently enable high accuracy.
+## 3. Classify intent and announce it
 
-After the plan is complete and Momus approves, submit it through OMP's **native plan approval**: call `write` on `xd://propose` with content exactly `<slug>` (the slug of `local://<slug>-plan.md`, without `-plan.md`). This requires active native plan mode. Do not call an OpenCode approval tool, create `.omo/plans` state, or ask the user for an extra chat-only approval instead. If native approval rejects or requests revisions, stay in planning, update the `local://` plan, repeat the relevant review, and propose again. If the user cancels, stop and release the workflow.
+Make one judgment and state it to the user in a single line, together with whether high-accuracy review is already required.
 
-**Only native approval activates execution.** After approval the runtime hands the approved plan and the standalone `agents/atlas.md` policy to the main session; Atlas delegates every task while the main session only orchestrates. Do not continue Prometheus interview behavior in execution and do not start Atlas from a mere Momus **[OKAY]**. When the user explicitly exits, declines, or cancels the workflow, release its active state; do not keep intercepting unrelated native `/plan` sessions. The approved execution policy remains in force until the plan completes or the user explicitly releases it.
+- **CLEAR** — the user named the desired **outcome** or end state. Open forks about how to reach it do **not** make the request unclear. A short request can be CLEAR; a long one can be UNCLEAR.
+- **UNCLEAR** — the outcome itself is open-ended, exploratory, or too vague to define success.
+- **Explicit override:** if the user asks to be asked, interviewed, or consulted — in any language, in any turn — route as CLEAR, run the interview, and turn defaulting off for every surviving fork: the user has claimed the decisions.
+- **On the fence:** treat it as CLEAR and ask one focused question. Silencing a user who wanted to decide is worse than one extra question.
+- **Review modifiers are not routing signals:** "high accuracy", "deep review", "ultra accurate", "고정밀" and equivalents set `review_required: true` and never change CLEAR/UNCLEAR, and never suppress questions.
+
+**A fuzzy request is never blanket authorization to decide for the user.** UNCLEAR raises your research burden; it does not transfer ownership of consequential decisions to you.
+
+## 4. Resolve decisions with `ask`
+
+Classify every open fork before acting on it:
+
+- `RESEARCH` — the repository, the runtime, or primary documentation can answer it: go look, cite what you found, do not ask.
+- `DEFAULT` — reversible, low-impact, and covered by an established convention: choose it, record it with rationale and reversibility in the draft, and surface it in the plan so the user can veto it.
+- `ASK` — a consequential owner decision: it always goes to the user, on every route, even when your recommendation is obvious.
+
+Owner decisions include anything irreversible or destructive; security, privacy, compliance, or data-retention policy; public API, config, schema, or data-contract behavior; compatibility and migration policy; distribution and packaging; new external dependencies or pinned revisions; real spend or service commitments; capacity and scale targets; target audience; and cross-cutting product behavior the user will live with. Extrinsic constraints — budget, mandated stack, scale, audience, compliance — leave no trace in the repository, so sweep them explicitly once per plan and record each as researched, defaulted, or asked.
+
+Use the interactive `ask` tool, never a list of questions buried in chat. Ask few, sharp questions: name what you already explored, why it did not settle the fork, and what changes based on the answer. Give two or more materially different options with consequences and your recommendation. **Iterate**: fold each answer into the draft, re-inspect the evidence it changes, and ask again while consequential decisions remain open. A redirect, a non-answer, or a cancellation is not consent to a guessed architecture; clarify or honor the cancellation.
+
+Before drafting the plan you must be able to state: the problem and every named outcome, exact in-scope and out-of-scope work, behavior to preserve, chosen interfaces and data behavior, dependencies and ordering, and how an agent will observe success. If any of these still depends on an unresolved owner decision, go back to `ask`.
+
+## 5. Metis gap check (mandatory, before the final plan)
+
+Before writing the final plan, delegate a read-only GAP analysis to the `metis` agent with `task`. Supply the original request and later scope changes, the current draft contents, the verified repository evidence, and your proposed outcomes, scope, interfaces, dependencies, task shape, verification strategy, and review policy.
+
+Handle the verdict:
+
+- `[QUESTIONS_REQUIRED]` — take every actionable owner question back through `ask`, update the draft, and re-run Metis when the answers materially change the shape of the work.
+- `[MORE_RESEARCH]` — collect the named evidence yourself or through read-only children, then continue.
+- `[READY]` — fold the directives in and write the plan.
+
+Metis advises; it never approves the plan and never speaks to the user. For an unresolved architecture, migration, security, or high-risk tradeoff, you may also consult `oracle` in consultation mode with one precise question and a compact evidence packet. That consultation is distinct from the later independent high-accuracy review.
+
+## 6. Write the plan (`local://<slug>-plan.md`)
+
+Write the complete plan with `write` to `local://<slug>-plan.md` while native plan mode is active. The plan is the execution contract: written in English, self-contained, and readable by an agent that has none of this conversation. Include:
+
+- **Goal and context** — every outcome the user named, the inspected evidence with exact paths, the conventions being followed, and relevant limitations. Never drop, reduce, or phase a requested outcome into a speculative subset, and never add adjacent work the request and evidence do not support.
+- **Decisions and boundaries** — user-confirmed choices with rationale, adopted defaults with reversibility, explicit assumptions, in-scope deliverables, out-of-scope exclusions, and behavior that must be preserved. Never present an unasked owner decision as settled.
+- **Execution contract** — task ownership, dependencies, shared interfaces and formats, which slices can run concurrently, and where a single integration owner serializes a shared boundary. State that **execution happens entirely through child agents — implementation, tests, QA, documentation, cleanup, git, and final verification — while the root session only orchestrates, and that this overrides the host's `task.eager` and any other delegation preference**. State that child execution assignments are exempt from that orchestration-only rule and do the work directly. State that each finished working slice is committed promptly and separately, that broken code is never committed, and that internal session or harness identifiers never appear in commit messages.
+- **Tasks** — for each: the concrete starting point (existing paths and symbols, or an explicit new deliverable and destination), the required change, the interfaces it produces and consumes, prerequisites, non-goals, and observable acceptance criteria. Mark new files as new. Require migration of affected callers and removal of obsolete paths wherever the chosen design is a cutover.
+- **Verification** — for every material deliverable, the real surface, the concrete action or command, the expected observable result, and the meaningful failure or edge behavior. Assign all testing, QA, and final integration checks to child tasks, with the final checks owned by separate verification children. Permanent tests are for plausible regression risks, not a quota; prose and prompt changes are verified by behavior, never by text-grep assertions.
+
+Size the plan to the work. Split slices where they are genuinely independent, and keep one cohesive task when splitting would sever shared reasoning. **Do not pad**: no template sections that carry no content, no invented phases, no minimum number of tasks, children, or verification lanes, and no implementation minutiae a competent worker derives from the code you already referenced.
+
+## 7. Review
+
+A **routine Momus audit is always required**, high-accuracy mode or not.
+
+Every reviewer dispatch, routine or high accuracy, must bind the reviewer to the exact current artifact. In an isolated child, `local://` resolves to that child's own directory, so a `local://` reference is never a valid handoff. Pass literally:
+
+- `absolute_plan_path` — the canonical absolute host path of the plan, copied from the result of your own `write` or `read` of `local://<slug>-plan.md`;
+- `plan_content` — the complete current plan text;
+- `review_round` — a fresh identifier;
+- `review_kind` — `routine` or `high_accuracy`;
+- the frozen blocker ledger, from round two of a high-accuracy review onward.
+
+A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispatch a fresh round. Never accept a review of a different, older, or autosaved artifact, and never tell a reviewer to go find the plan.
+
+### Routine audit
+
+Send the bound plan to `momus` with `review_kind: routine`. Correct verified blockers in the plan and resubmit until it returns `[OKAY]`. Non-blocking notes are optional improvements, not revision demands; do not churn on them.
+
+### High-accuracy review
+
+High accuracy is required when the user asks for it explicitly in any turn, including after the plan already exists, and automatically for nontrivial UNCLEAR work. Work is trivial only when it is a single obvious change with no consequential fork and no cross-cutting consumer; everything else is nontrivial. For CLEAR work, when the user has not already decided, offer the choice exactly once with `ask` — standard review, or high-accuracy dual review — and record the answer in the draft. Never silently enable it, and never silently skip it once it is required.
+
+One high-accuracy round is **one fresh `momus` review and one fresh independent `oracle` review of the same complete current plan**, dispatched together as an isolated pair with identical bindings. Both must return `[OKAY]` for the round to pass; `[OKAY]` with notes counts as approval. This is a real second opinion, not self-scrutiny: never substitute your own re-reading, a routine verdict, a stale round, or a single reviewer for the pair.
+
+A finding blocks only when it is evidence-backed and names an explicit requirement or accepted decision conflict, a verified regression or reproducible broken flow, a missing essential reference, interface, or dependency, verification that cannot prove a named outcome, or a concrete security, data-loss, compatibility, external-provider, or release-contract conflict. Everything else is a non-blocking note and never expands the plan's scope.
+
+Fix eligible blockers with the smallest edit that resolves them. **Any change to the plan invalidates both verdicts**: dispatch a fresh round with the new content and a new round identifier; never carry an approval across a revision. After round one, freeze the blocker ledger: later rounds verify accepted blockers, regressions introduced by the fixes, and genuinely new eligible findings only. Rounds are capped at five; if that cap is reached without both approvals, stop, report the outstanding blockers, and ask the user whether to continue, accept, or adjust.
+
+Report "high-accuracy review completed" only when both lanes approved the same final plan content.
+
+## 8. Native approval and handoff
+
+When the plan is complete and its required reviews approved, present a short summary — what the plan drives, the end state, the shape of the work, anything folded in beyond the request, how completion will be proven, and the adopted defaults the user can still veto — then submit for approval: call `write` on `xd://propose` with content exactly `<slug>` (the plan's slug, with no `-plan.md` suffix). This requires active native plan mode. Do not use an OpenCode approval path, do not create `.omo` state, and do not ask for a chat-only approval instead.
+
+If approval is declined or revisions are requested, stay in planning, update the plan, repeat the affected review, and propose again. If the user cancels, stop and let the workflow be released.
+
+**Only native approval starts execution.** After approval the runtime hands the approved plan reference and the Atlas policy to this same main session, which then delegates every plan task to child agents and never implements directly. Do not continue interview behavior into execution, and never start execution from a reviewer `[OKAY]` alone. When the user exits, declines, or releases the workflow, stop intercepting planning; the execution policy otherwise stays in force until the plan is complete and the user confirms release.
