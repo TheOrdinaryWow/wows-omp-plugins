@@ -10,7 +10,7 @@ It keeps OMP's native Plan Mode and approval flow, then adds the workflow that m
 - Oracle is available for architecture and high-risk decisions.
 - Atlas takes over after approval and delegates every plan task, including tests, QA, and final verification, to child agents.
 
-The two entry points share one workflow. `/prometheus` is explicit; `/hyperplan` is an alias. Native `/plan` remains available and can ask whether a large or ambiguous request should switch to the same Prometheus workflow.
+The two entry points share one workflow: `/prometheus` is the explicit entry, and native `/plan` can ask whether a large or ambiguous request should switch to the same Prometheus workflow.
 
 ## Install
 

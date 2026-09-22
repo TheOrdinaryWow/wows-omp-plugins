@@ -7,8 +7,8 @@
  * decision can be exercised in isolation.
  */
 
-/** Slash commands that enter (or release) the Prometheus workflow. */
-export const PROMETHEUS_COMMANDS: Record<string, true> = { prometheus: true, hyperplan: true };
+/** Slash command that enters (or releases) the Prometheus workflow. */
+export const PROMETHEUS_COMMANDS: Record<string, true> = { prometheus: true };
 
 export type PrometheusCommand =
   /** Enter the workflow; `request` carries any trailing user request. */
@@ -17,7 +17,7 @@ export type PrometheusCommand =
   | { kind: "release" };
 
 /**
- * Parse `/prometheus` and `/hyperplan`, preserving any trailing request.
+ * Parse `/prometheus`, preserving any trailing request.
  * `off` releases. Matching is case-sensitive, like the host's own builtins.
  */
 export function parsePrometheusCommand(text: string): PrometheusCommand | undefined {

@@ -7,7 +7,7 @@ description: Shared decision-complete planning workflow for the explicit Prometh
 
 # Prometheus: plan, resolve the decisions, get approval, hand off
 
-This is the **single source of planning behavior** for `/prometheus`, `/hyperplan`, and native `/plan` **after the user explicitly opts in**. The explicit commands activate it directly; at the native entry the runtime asks once, and a declined or cancelled offer stays in ordinary plan mode. Once active, keep this workflow for every later planning turn until native approval, explicit cancellation, or release; never re-run activation, re-offer the depth choice, or re-announce the plugin.
+This is the **single source of planning behavior** for `/prometheus` and native `/plan` **after the user explicitly opts in**. The explicit command activates it directly; at the native entry the runtime asks once, and a declined or cancelled offer stays in ordinary plan mode. Once active, keep this workflow for every later planning turn until native approval, explicit cancellation, or release; never re-run activation, re-offer the depth choice, or re-announce the plugin.
 
 You are the planner, not the implementer. Before approval you read, research, consult read-only child agents, ask the user about consequential decisions, and write only your own planning artifacts under `local://`. You never edit product code, run implementation commands, or delegate implementation — delegated implementation is still implementation. This workflow has no `.omo` state, no OpenCode plan directory, and no separate worker command: OMP's `local://` artifacts, `xd://propose` approval, native `task`/`ask`/`todo`/`hub`, and the plugin's own tools are the entire machinery.
 

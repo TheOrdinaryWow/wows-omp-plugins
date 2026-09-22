@@ -27,9 +27,8 @@ const approvedPrompt = (path: string) =>
   `Plan approved.\nFull plan inlined below; durable copy at \`${path}\`\n<plan path="${path}">\n# Plan\n</plan>`;
 
 describe("Prometheus command parsing", () => {
-  test("keeps both entry points on the same activation contract", () => {
+  test("uses one explicit command for the shared workflow", () => {
     expect(parsePrometheusCommand("/prometheus ship it")).toEqual({ kind: "activate", request: "ship it" });
-    expect(parsePrometheusCommand("/hyperplan ship it")).toEqual({ kind: "activate", request: "ship it" });
     expect(parsePrometheusCommand("/prometheus off")).toEqual({ kind: "release" });
   });
 });

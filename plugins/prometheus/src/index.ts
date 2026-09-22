@@ -1,14 +1,14 @@
 /**
  * Prometheus: one planning workflow with two entry points.
  *
- * `/prometheus` (alias `/hyperplan`) rewrites to the host's native `/plan`, and
- * a native plan-mode session can opt into the same workflow through an
- * `ask`-based depth check plus the `prometheus_activate` tool. Both paths land
- * in one per-session state machine and inject the same plugin-owned skill.
+ * `/prometheus` rewrites to the host's native `/plan`, and a native plan-mode
+ * session can opt into the same workflow through an `ask`-based depth check
+ * plus the `prometheus_activate` tool. Both paths land in one per-session state
+ * machine and inject the same plugin-owned skill.
  *
  * After the host's own plan approval the session becomes Atlas: the Atlas
- * policy is appended to every execution turn and a runtime guard keeps the
- * parent session from implementing anything directly.
+ * prompt and runtime guard force all implementation and verification work into
+ * child agents while keeping the host's native plan artifact and handoff.
  *
  * State is tracked per session id and mirrored into session entries, never in
  * process globals, the environment, or host settings, so child sessions and
@@ -464,12 +464,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     notify(ctx, "Prometheus planning request submitted in the active native plan-mode session.");
   };
 
-  for (const name of ["prometheus", "hyperplan"]) {
-    pi.registerCommand(name, {
-      description: "Plan with Prometheus (Metis, Momus, Atlas); pass `off` to release it.",
-      handler: commandHandler,
-    });
-  }
+  pi.registerCommand("prometheus", {
+    description: "Plan with Prometheus (Metis, Momus, Atlas); pass `off` to release it.",
+    handler: commandHandler,
+  });
 
   const z = pi.zod;
   const activateParameters = z.object({
