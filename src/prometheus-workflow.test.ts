@@ -27,9 +27,10 @@ const approvedPrompt = (path: string) =>
   `Plan approved.\nFull plan inlined below; durable copy at \`${path}\`\n<plan path="${path}">\n# Plan\n</plan>`;
 
 describe("Prometheus command parsing", () => {
-  test("uses one explicit command for the shared workflow", () => {
-    expect(parsePrometheusCommand("/prometheus ship it")).toEqual({ kind: "activate", request: "ship it" });
-    expect(parsePrometheusCommand("/prometheus off")).toEqual({ kind: "release" });
+  test("parses the toggle command with an optional first prompt", () => {
+    expect(parsePrometheusCommand("/prometheus")).toEqual({ prompt: "" });
+    expect(parsePrometheusCommand("/prometheus ship it")).toEqual({ prompt: "ship it" });
+    expect(parsePrometheusCommand("/prometheusx")).toBeUndefined();
   });
 });
 

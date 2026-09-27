@@ -7,26 +7,20 @@
  * decision can be exercised in isolation.
  */
 
-/** Slash command that enters (or releases) the Prometheus workflow. */
+/** Slash command that toggles the Prometheus workflow, like the host's `/plan`. */
 export const PROMETHEUS_COMMANDS: Record<string, true> = { prometheus: true };
 
-export type PrometheusCommand =
-  /** Enter the workflow; `request` carries any trailing user request. */
-  | { kind: "activate"; request: string }
-  /** Emergency release of planning/execution state for the current session. */
-  | { kind: "release" };
+/** A `/prometheus` invocation; `prompt` is the optional first planning turn when toggling on. */
+export interface PrometheusCommand {
+  prompt: string;
+}
 
-/**
- * Parse `/prometheus`, preserving any trailing request.
- * `off` releases. Matching is case-sensitive, like the host's own builtins.
- */
+/** Parse `/prometheus [prompt]`. Matching is case-sensitive, like the host's own builtins. */
 export function parsePrometheusCommand(text: string): PrometheusCommand | undefined {
   const match = /^\/([a-z]+)(?:[ \t]+([\s\S]*))?$/.exec(text.trim());
   const name = match?.[1];
   if (!name || PROMETHEUS_COMMANDS[name] !== true) return undefined;
-  const request = (match[2] ?? "").trim();
-  if (request === "off") return { kind: "release" };
-  return { kind: "activate", request };
+  return { prompt: (match[2] ?? "").trim() };
 }
 
 export const PROMETHEUS_OPT_IN_QUESTION_ID = "prometheus-workflow-opt-in";
@@ -284,15 +278,15 @@ export function blockedToolMessage(toolName: string, detail: string): string {
     `Prometheus execution guard: this main session is Atlas, so \`${toolName}\` is blocked here — ${detail}.`,
     "Delegate implementation, tests, QA, documentation, cleanup, and final verification to child agents with `task`; the parent only orchestrates, tracks `todo`, collects results, and observes.",
     "This overrides implementation preferences such as `task.eager`. A disabled `task` tool or denied spawn is a capability blocker: report it and do not implement in the parent.",
-    "This is an extension interception policy, not an operating-system sandbox. The user can release it with `/prometheus off`.",
+    "This is an extension interception policy, not an operating-system sandbox. The user can release it with `/prometheus`.",
   ].join("\n");
 }
 
 export const BLOCKED_TOOL_NOTICE =
-  "Prometheus: Atlas cannot implement directly. Delegate every plan task to children; if spawning is disabled, report the capability block. Release only with /prometheus off or a confirmed release request.";
+  "Prometheus: Atlas cannot implement directly. Delegate every plan task to children; if spawning is disabled, report the capability block. Release only with /prometheus or a confirmed release request.";
 
 export const EXECUTION_START_NOTICE =
-  "Prometheus: native plan approval verified — Atlas execution is active. All implementation and verification is delegated; release only with /prometheus off or a confirmed release request.";
+  "Prometheus: native plan approval verified — Atlas execution is active. All implementation and verification is delegated; release only with /prometheus or a confirmed release request.";
 
 export const PLANNING_PREAMBLE = [
   "# Prometheus planning workflow (active)",
@@ -307,7 +301,7 @@ export const EXECUTION_PREAMBLE = [
   "A Prometheus plan was approved through the host's native approval flow. This main session is Atlas, the orchestrator of that exact approved plan.",
   "Every plan task — implementation, tests, QA, documentation, cleanup, and final verification — MUST be executed by child agents spawned with `task`. Atlas delegates, tracks `todo`, collects and inspects child evidence, and uses observation/coordination tools only.",
   "This overrides `task.eager` and every preference that would permit parent implementation. It does not override capability policy: if `task` is disabled or spawning is denied, report the blocker and never downgrade to parent implementation.",
-  "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly releases it. Once every plan item has child-produced proof, call `prometheus_release` exactly once with a concise evidence summary; only human confirmation releases the guard. `/prometheus off` is the user's direct escape hatch.",
+  "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly releases it. Once every plan item has child-produced proof, call `prometheus_release` exactly once with a concise evidence summary; only human confirmation releases the guard. `/prometheus` is the user's direct escape hatch.",
 ].join("\n");
 
 export const OPT_IN_ADDENDUM = [

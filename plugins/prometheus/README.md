@@ -23,13 +23,13 @@ Restart OMP after installation so the extension and agents are loaded.
 
 ## Usage
 
-Explicitly start the enhanced workflow:
+Toggle the enhanced workflow on or off, like native `/plan`:
 
 ```text
-/prometheus Add the requested feature
+/prometheus
 ```
 
-The command enters OMP's native Plan Mode. The plan is written to the session's `local://` artifact and submitted through `xd://propose`; if OMP plan autosave is enabled, the approved copy is saved under `.omp/plans/`.
+Turning it on enters OMP's native Plan Mode (or upgrades an already active Plan Mode session); describe the request in your next message, or pass it inline as `/prometheus <request>`. Running `/prometheus` again while planning leaves both Prometheus and Plan Mode. The plan is written to the session's `local://` artifact and submitted through `xd://propose`; if OMP plan autosave is enabled, the approved copy is saved under `.omp/plans/`.
 
 For ordinary native Plan Mode:
 
@@ -39,7 +39,7 @@ For ordinary native Plan Mode:
 
 The plugin leaves small, well-defined requests on the normal OMP path. For large, cross-cutting, or ambiguous goals, the planner uses `ask` to offer the Prometheus workflow. If accepted, it activates the same shared workflow instead of switching to a second planner implementation.
 
-After approval, the main session becomes Atlas. The execution prompt explicitly overrides OMP's delegation preference for this approved Prometheus plan, and the extension also blocks direct implementation tools in the parent session. Use `task` to assign work to child agents. `/prometheus off` is the emergency escape hatch for the current session.
+After approval, the main session becomes Atlas. The execution prompt explicitly overrides OMP's delegation preference for this approved Prometheus plan, and the extension also blocks direct implementation tools in the parent session. Use `task` to assign work to child agents. Running `/prometheus` during execution toggles Atlas off and is the emergency escape hatch for the current session.
 
 ## Models
 

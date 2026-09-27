@@ -1,7 +1,7 @@
 /**
  * Prometheus: one planning workflow with two entry points.
  *
- * `/prometheus` rewrites to the host's native `/plan`, and a native plan-mode
+ * `/prometheus` toggles the workflow like the host's native `/plan`, and a native plan-mode
  * session can opt into the same workflow through an `ask`-based depth check
  * plus the `prometheus_activate` tool. Both paths land in one per-session state
  * machine and inject the same plugin-owned skill.
@@ -62,7 +62,6 @@ interface SessionRecord {
   planningModeEntryId?: string;
   offeredForModeEntryId?: string;
   suppressedForModeEntryId?: string;
-  request?: string;
   pendingConsent?: { askToolCallId: string; modeEntryId: string };
   proposalAwaitingApproval?: boolean;
   approvalCompactionPending?: boolean;
@@ -205,33 +204,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const latestUserRequest = (ctx: ExtensionContext, afterEntryId?: string): string | undefined => {
-    const branch = ctx.sessionManager.getBranch();
-    for (let index = branch.length - 1; index >= 0; index--) {
-      const entry = branch[index];
-      if (!entry) continue;
-      if (afterEntryId && entry.id === afterEntryId) return undefined;
-      if (entry.type !== "message" || entry.message.role !== "user") continue;
-      const content = entry.message.content;
-      const text = Array.isArray(content)
-        ? content
-            .filter((part): part is { type: "text"; text: string } => part.type === "text")
-            .map((part) => part.text)
-            .join("\n")
-            .trim()
-        : "";
-      if (text && !text.startsWith("/")) return text;
-    }
-    return undefined;
-  };
-
-  const commandRequest = (ctx: ExtensionContext, explicit: string, record?: SessionRecord): string | undefined => {
-    if (explicit) return explicit;
-    if (record?.request) return record.request;
-    const episode = planModeEpisodeId(ctx);
-    return latestUserRequest(ctx, episode) ?? latestUserRequest(ctx);
-  };
-
   const release = async (ctx: ExtensionContext, reason: string): Promise<void> => {
     if (!mainSession(ctx)) {
       notify(ctx, "Prometheus runs in the main session only.", "warning");
@@ -274,7 +246,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.approvalCompactionPending = false;
     record.planningModeEntryId = undefined;
     record.offerPendingForModeEntryId = undefined;
-    record.request = undefined;
     persist(record);
     await syncTools(false, false);
     notify(
@@ -285,7 +256,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     );
   };
 
-  const activate = async (ctx: ExtensionContext, request?: string): Promise<boolean> => {
+  const activate = async (ctx: ExtensionContext): Promise<boolean> => {
     if (!mainSession(ctx)) {
       notify(ctx, "Prometheus runs in the main session only.", "warning");
       return false;
@@ -311,7 +282,6 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.offerPendingForModeEntryId = undefined;
       record.planningModeEntryId = planModeEpisodeId(ctx);
     }
-    if (request) record.request = request;
     persist(record);
     return true;
   };
@@ -368,7 +338,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.approvalCompactionPending = false;
     record.offeredForModeEntryId = undefined;
     record.offerPendingForModeEntryId = undefined;
-    record.request = undefined;
     record.planningModeEntryId = undefined;
     persist(record);
     notify(ctx, EXECUTION_START_NOTICE);
@@ -393,79 +362,60 @@ export default function prometheus(pi: ExtensionAPI): void {
           record.proposalAwaitingApproval = false;
           record.approvalCompactionPending = false;
           record.offerPendingForModeEntryId = undefined;
-          record.request = undefined;
           persist(record);
           await syncTools(false, false);
         }
       }
       return undefined;
     }
-    if (command.kind === "release") {
-      await release(ctx, "/prometheus off");
-      return { handled: true };
-    }
     const live = mainSession(ctx);
     if (!live) {
       notify(ctx, "Prometheus requires the registered main session; this host/session cannot enter it.", "error");
       return { handled: true };
     }
-    const sessionId = ctx.sessionManager.getSessionId();
-    const record = records.get(sessionId) ?? rehydrate(ctx);
-    if (record?.phase === "executing") {
-      notify(ctx, "Prometheus is already executing an approved plan. Use /prometheus off to release it first.", "warning");
-      return { handled: true };
-    }
-    const request = commandRequest(ctx, command.request, record);
-    if (!request) {
-      notify(ctx, "Add the planning request after /prometheus (or invoke it from an existing plan request).", "warning");
-      return { handled: true };
-    }
+    const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     const planModeActive = live.getPlanModeState()?.enabled === true;
-    if (!(await activate(ctx, request))) return { handled: true };
+    if (record && record.phase !== "idle") {
+      const wasPlanning = record.phase === "planning";
+      await release(ctx, "/prometheus");
+      return wasPlanning && planModeActive ? { text: "/plan" } : { handled: true };
+    }
+    if (!(await activate(ctx))) return { handled: true };
     if (planModeActive) {
       notify(ctx, "Prometheus planning is active in this native plan-mode session.");
-      return { text: request };
+      return command.prompt ? { text: command.prompt } : { handled: true };
     }
     notify(ctx, "Prometheus planning is active — entering native plan mode.");
-    return { text: `/plan ${request}` };
+    return { text: command.prompt ? `/plan ${command.prompt}` : "/plan" };
   });
 
   const commandHandler = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
-    const command = parsePrometheusCommand(`/prometheus ${args}`.trim());
-    if (command?.kind === "release") {
-      await release(ctx, "/prometheus off");
-      return;
-    }
+    const prompt = args.trim();
     const live = mainSession(ctx);
     if (!live) {
       commandNotice(ctx, "Prometheus requires the registered main session and is unavailable in this host/session.", "error");
       return;
     }
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
-    if (record?.phase === "executing") {
-      commandNotice(ctx, "Prometheus is already executing an approved plan. Use /prometheus off to release it first.", "warning");
+    if (record && record.phase !== "idle") {
+      await release(ctx, "/prometheus");
       return;
     }
     if (live.getPlanModeState()?.enabled !== true) {
       commandNotice(
         ctx,
-        `Prometheus cannot enter native plan mode through a ${ctx.mode} extension command. Enter native /plan first, then run /prometheus with the request.`,
+        `Prometheus cannot enter native plan mode through a ${ctx.mode} extension command. Enter native /plan first, then run /prometheus.`,
         "error",
       );
       return;
     }
-    const request = commandRequest(ctx, command?.kind === "activate" ? command.request : "", record);
-    if (!request) {
-      commandNotice(ctx, "Prometheus needs a planning request. Pass it after /prometheus.", "warning");
-      return;
-    }
-    if (!(await activate(ctx, request))) return;
-    pi.sendUserMessage(request);
-    notify(ctx, "Prometheus planning request submitted in the active native plan-mode session.");
+    if (!(await activate(ctx))) return;
+    if (prompt) pi.sendUserMessage(prompt);
+    notify(ctx, "Prometheus planning is active in this native plan-mode session.");
   };
 
   pi.registerCommand("prometheus", {
-    description: "Plan with Prometheus (Metis, Momus, Atlas); pass `off` to release it.",
+    description: "Toggle Prometheus planning mode (Metis, Momus, Atlas)",
     handler: commandHandler,
   });
 
@@ -563,7 +513,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       if (!ctx.hasUI) {
         return {
-          content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /prometheus off." }],
+          content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /prometheus." }],
           isError: true,
           details: {},
         };
@@ -600,7 +550,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         (!record || record.phase === "idle") &&
         isApprovedPlanHandoff(event.prompt, fresh.record.planFilePath, live.getPlanReferencePath())
       ) {
-        record = { ...fresh.record, phase: "planning", pendingConsent: undefined, request: undefined, lastBlockedAt: 0 };
+        record = { ...fresh.record, phase: "planning", pendingConsent: undefined, lastBlockedAt: 0 };
         records.set(sessionId, record);
       }
       pendingFreshHandoff = undefined;
@@ -618,7 +568,6 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.proposalAwaitingApproval = false;
         record.approvalCompactionPending = false;
         record.offerPendingForModeEntryId = undefined;
-        record.request = undefined;
         persist(record);
       } else if (!record.planningModeEntryId && episodeId) {
         record.planningModeEntryId = episodeId;
@@ -656,7 +605,6 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.proposalAwaitingApproval = false;
         record.approvalCompactionPending = false;
         record.offerPendingForModeEntryId = undefined;
-        record.request = undefined;
         persist(record);
       }
     } else if (planModeActive) {
@@ -854,7 +802,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       pendingFreshHandoff = {
         sourceSessionId: sessionId,
         sourceSession: live,
-        record: { ...record, pendingConsent: undefined, request: undefined, lastBlockedAt: 0 },
+        record: { ...record, pendingConsent: undefined, lastBlockedAt: 0 },
       };
     }
     return undefined;
