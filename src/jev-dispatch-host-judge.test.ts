@@ -1,0 +1,351 @@
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+
+const PACKAGE_NAME = "wows-omp-plugin-jev-dispatch";
+const CHILD_SCENARIO_ENV = "JEV_DISPATCH_HOST_JUDGE_SCENARIO";
+const CHILD_OUTPUT_MARKER = "JEV_DISPATCH_HOST_JUDGE_RESULT:";
+const THIS_FILE = fileURLToPath(import.meta.url);
+const PLUGIN_URL = pathToFileURL(join(dirname(THIS_FILE), "../plugins/jev-dispatch/src/index.ts")).href;
+const HOST_KEY = ["host", "typesafe", "key"].join("-");
+
+interface SessionSpec {
+  project: string;
+  surface: "enhanced" | "standard";
+  calls: number;
+}
+
+interface ChildScenario {
+  sessions: SessionSpec[];
+  response: "success" | "unauthorized" | "network-error";
+  hostKey?: string;
+}
+
+interface RecordedRequest {
+  authorization: string | null;
+  body: string;
+}
+
+/** Results cross a JSON boundary, so a fail-open `undefined` arrives as `null`. */
+interface SessionReport {
+  results: unknown[];
+  warnings: unknown[];
+  notifications: unknown[];
+  usage: unknown[];
+}
+
+interface ChildReport {
+  requests: RecordedRequest[];
+  sessions: SessionReport[];
+}
+
+type TestHandler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown | Promise<unknown>;
+
+const ENHANCED_CANDIDATES = [
+  {
+    name: "scout",
+    description: "Read-only repository investigator",
+    source: "test fixture",
+    readOnly: true,
+    model: { patterns: ["fixture/scout"], fallbackChain: [] },
+  },
+  {
+    name: "writer",
+    description: "Write-capable implementation agent",
+    source: "test fixture",
+    readOnly: false,
+    model: { patterns: ["fixture/writer"], fallbackChain: [] },
+  },
+];
+
+/** Bundled OMP agents, so standard-mode discovery finds real definitions for both names. */
+const STANDARD_TASK_DESCRIPTION = "# Available Agents\n### scout\nRead-only investigator\n### task\nGeneral-purpose agent";
+
+function startTypeSafeServer(scenario: ChildScenario, requests: RecordedRequest[]): { origin: string; stop(): void } {
+  if (scenario.response === "network-error") return { origin: "http://127.0.0.1:1", stop() {} };
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      if (request.method !== "POST" || new URL(request.url).pathname !== "/v1/systemone") return new Response(null, { status: 404 });
+      const body = await request.text();
+      requests.push({ authorization: request.headers.get("authorization"), body });
+      if (scenario.response === "unauthorized") return new Response("invalid api key", { status: 401 });
+
+      const payload = JSON.parse(body) as { questions?: { agent?: { criteria?: Record<string, unknown> } } };
+      const choices = Object.keys(payload.questions?.agent?.criteria ?? {});
+      const choice = choices.find((name) => name !== "scout") ?? "";
+      return Response.json({
+        model: "jev-latest",
+        answers: {
+          agent: {
+            type: "choice",
+            choice,
+            probabilities: Object.fromEntries(choices.map((name) => [name, name === choice ? 1 : 0])),
+            confidence: 0.99,
+          },
+        },
+        usage: { input_tokens: 17, output_tokens: 3 },
+      });
+    },
+  });
+  return { origin: server.url.origin, stop: () => server.stop(true) };
+}
+
+async function executeChildScenario(scenario: ChildScenario): Promise<ChildReport> {
+  const requests: RecordedRequest[] = [];
+  const server = startTypeSafeServer(scenario, requests);
+  try {
+    if (scenario.hostKey === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = scenario.hostKey;
+
+    const agentDir = process.env.PI_CODING_AGENT_DIR as string;
+    await mkdir(agentDir, { recursive: true });
+    await Bun.write(join(agentDir, "models.yml"), `providers:\n  typesafe:\n    baseUrl: ${server.origin}\n`);
+
+    // The child runs outside the test runner with its own HOME, so host modules load only after isolation is in place.
+    const { ModelRegistry } = await import("@oh-my-pi/pi-coding-agent/config/model-registry");
+    const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+    const { discoverAuthStorage } = await import("@oh-my-pi/pi-coding-agent/sdk");
+    // This runtime-selected absolute URL keeps the child fixture on the same plugin source as the parent checkout.
+    const { default: registerJevDispatch } = await import(PLUGIN_URL);
+
+    const sessionReports: SessionReport[] = [];
+    for (const [sessionIndex, session] of scenario.sessions.entries()) {
+      const settings = await Settings.loadIsolated({ cwd: session.project, agentDir });
+      const registry = new ModelRegistry(
+        await discoverAuthStorage(agentDir, { settings, cwd: session.project }),
+        join(agentDir, "models.yml"),
+        { settings },
+      );
+      const handlers = new Map<string, TestHandler[]>();
+      const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [] };
+
+      const api = {
+        pi: { SUBAGENT_ROUTING_EXTENSION_API_VERSION: 2 },
+        logger: {
+          warn(message: unknown, details?: unknown) {
+            report.warnings.push(details === undefined ? message : [message, details]);
+          },
+        },
+        on(event: string, handler: TestHandler) {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        },
+        getAllTools: () => [{ name: "task", description: STANDARD_TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
+      } as unknown as ExtensionAPI;
+
+      const context = {
+        cwd: session.project,
+        ui: {
+          notify(message: unknown, level?: unknown) {
+            report.notifications.push({ message, level });
+          },
+        },
+        sessionManager: {
+          getSessionId: () => `host-judge-session-${sessionIndex}`,
+          getLeafId: () => `host-judge-leaf-${sessionIndex}`,
+          appendModelUsage(entry: unknown) {
+            report.usage.push(entry);
+          },
+        },
+        modelRegistry: registry,
+      } as unknown as ExtensionContext;
+
+      const onlyHandler = (event: string): TestHandler => {
+        const registered = handlers.get(event) ?? [];
+        if (registered.length !== 1) throw new Error(`expected one ${event} handler, received ${registered.length}`);
+        return registered[0] as TestHandler;
+      };
+
+      registerJevDispatch(api);
+      await onlyHandler("session_start")({ type: "session_start" }, context);
+
+      for (let call = 0; call < session.calls; call += 1) {
+        if (session.surface === "enhanced") {
+          report.results.push(
+            await onlyHandler("before_subagent_spawn")(
+              {
+                type: "before_subagent_spawn",
+                invocationKind: "task",
+                assignment: "Implement the requested repository change",
+                context: "Preserve existing conventions",
+                requestedAgent: "scout",
+                candidates: ENHANCED_CANDIDATES,
+              },
+              context,
+            ),
+          );
+        } else {
+          report.results.push(
+            await onlyHandler("tool_call")(
+              {
+                type: "tool_call",
+                toolCallId: `host-judge-tool-${sessionIndex}-${call}`,
+                toolName: "task",
+                input: { task: "Implement the requested repository change", agent: "scout" },
+              },
+              context,
+            ),
+          );
+        }
+      }
+      sessionReports.push(report);
+    }
+
+    return { requests, sessions: sessionReports };
+  } finally {
+    server.stop();
+  }
+}
+
+async function createProject(settings: Record<string, unknown>): Promise<string> {
+  const project = await mkdtemp(join(tmpdir(), "jev-dispatch-host-judge-"));
+  const configDirectory = join(project, ".omp");
+  await mkdir(configDirectory, { recursive: true });
+  await Bun.write(join(configDirectory, "plugin-overrides.json"), JSON.stringify({ settings: { [PACKAGE_NAME]: settings } }));
+  return project;
+}
+
+async function withProjects<T>(settings: Record<string, unknown>[], run: (projects: string[]) => Promise<T>): Promise<T> {
+  const projects: string[] = [];
+  try {
+    for (const projectSettings of settings) projects.push(await createProject(projectSettings));
+    return await run(projects);
+  } finally {
+    await Promise.all(projects.map((project) => rm(project, { recursive: true, force: true })));
+  }
+}
+
+async function runIsolatedScenario(scenario: ChildScenario): Promise<ChildReport> {
+  const isolationRoot = scenario.sessions[0]?.project;
+  if (!isolationRoot) throw new Error("host judge scenario requires at least one session");
+
+  const child = Bun.spawn({
+    cmd: [process.execPath, THIS_FILE],
+    cwd: isolationRoot,
+    env: {
+      HOME: isolationRoot,
+      XDG_CACHE_HOME: join(isolationRoot, ".xdg-cache"),
+      XDG_CONFIG_HOME: join(isolationRoot, ".xdg-config"),
+      XDG_DATA_HOME: join(isolationRoot, ".xdg-data"),
+      XDG_STATE_HOME: join(isolationRoot, ".xdg-state"),
+      PI_CODING_AGENT_DIR: join(isolationRoot, ".agent"),
+      NO_COLOR: "1",
+      [CHILD_SCENARIO_ENV]: JSON.stringify(scenario),
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) throw new Error(`isolated host judge fixture exited ${exitCode}\n${stderr}\n${stdout}`);
+
+  const resultLine = stdout.split("\n").find((line) => line.startsWith(CHILD_OUTPUT_MARKER));
+  if (!resultLine) throw new Error(`isolated host judge fixture returned no result\n${stderr}\n${stdout}`);
+  return JSON.parse(resultLine.slice(CHILD_OUTPUT_MARKER.length)) as ChildReport;
+}
+
+function diagnostics(report: ChildReport): string {
+  return JSON.stringify({ sessions: report.sessions, bodies: report.requests.map(({ body }) => body) });
+}
+
+async function registerTests(): Promise<void> {
+  // The child fixture executes this file outside Bun's test runner, so only the parent branch may load bun:test.
+  const { describe, expect, test } = await import("bun:test");
+
+  describe.serial("jev-dispatch through the host judge role", () => {
+    test("a host TypeSafe credential routes both surfaces through Jev and journals usage", async () => {
+      await withProjects([{ integrationMode: "enhanced" }, { integrationMode: "standard" }], async ([enhanced, standard]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: enhanced as string, surface: "enhanced", calls: 1 },
+            { project: standard as string, surface: "standard", calls: 1 },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+        });
+
+        expect(report.requests.map((request) => request.authorization)).toEqual([`Bearer ${HOST_KEY}`, `Bearer ${HOST_KEY}`]);
+        expect(report.sessions[0]?.results).toEqual([{ agent: "writer" }]);
+        expect(report.sessions[1]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "task" } }]);
+        for (const session of report.sessions) {
+          expect(session.usage).toHaveLength(1);
+          expect(session.notifications).toEqual([]);
+        }
+        expect(diagnostics(report)).not.toContain(HOST_KEY);
+      });
+    });
+
+    test("without a host credential both surfaces keep the requested agent and warn once per session", async () => {
+      await withProjects([{ integrationMode: "enhanced" }, { integrationMode: "standard" }], async ([enhanced, standard]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: enhanced as string, surface: "enhanced", calls: 2 },
+            { project: standard as string, surface: "standard", calls: 2 },
+          ],
+          response: "success",
+        });
+
+        expect(report.requests).toHaveLength(0);
+        for (const session of report.sessions) {
+          expect(session.results).toEqual([null, null]);
+          expect(session.usage).toHaveLength(0);
+          expect(session.notifications).toHaveLength(1);
+          expect(session.notifications[0]).toMatchObject({ level: "warning" });
+        }
+      });
+    });
+
+    test("a rejected host credential fails open without the availability warning or leaking the key", async () => {
+      await withProjects([{ integrationMode: "enhanced" }], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [{ project: project as string, surface: "enhanced", calls: 1 }],
+          response: "unauthorized",
+          hostKey: HOST_KEY,
+        });
+
+        expect(report.requests).toHaveLength(1);
+        expect(report.sessions[0]?.results).toEqual([null]);
+        expect(report.sessions[0]?.notifications).toEqual([]);
+        expect(report.sessions[0]?.warnings.length).toBeGreaterThan(0);
+        expect(report.requests[0]?.body).not.toContain(HOST_KEY);
+        expect(diagnostics(report)).not.toContain(HOST_KEY);
+      });
+    });
+
+    test("a transport failure fails open without the availability warning", async () => {
+      await withProjects([{ integrationMode: "enhanced" }], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [{ project: project as string, surface: "enhanced", calls: 1 }],
+          response: "network-error",
+          hostKey: HOST_KEY,
+        });
+
+        expect(report.sessions[0]?.results).toEqual([null]);
+        expect(report.sessions[0]?.notifications).toEqual([]);
+        expect(report.sessions[0]?.warnings.length).toBeGreaterThan(0);
+        expect(diagnostics(report)).not.toContain(HOST_KEY);
+      });
+    });
+  });
+}
+
+const childScenario = process.env[CHILD_SCENARIO_ENV];
+if (childScenario !== undefined) {
+  try {
+    const report = await executeChildScenario(JSON.parse(childScenario) as ChildScenario);
+    console.log(`${CHILD_OUTPUT_MARKER}${JSON.stringify(report)}`);
+    process.exit(0);
+  } catch (error) {
+    console.error(error);
+    process.exit(1);
+  }
+} else {
+  await registerTests();
+}

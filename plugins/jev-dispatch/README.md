@@ -16,10 +16,8 @@ Restart the session afterwards so the extension can register.
 
 Requires OMP 18.2.7 or newer.
 
-The plugin needs a TypeSafe API key before it can route anything; see
-[TypeSafe API key](#typesafe-api-key). It authenticates directly with TypeSafe
-through OMP's native client, separately from the host's `judge` role and login
-store.
+The plugin has no credentials of its own. It judges through OMP's built-in
+TypeSafe support; see [Enabling Jev](#enabling-jev).
 
 ## Modes and coverage
 
@@ -58,7 +56,6 @@ The installed package name used by `omp plugin config` is
 omp plugin config list wows-omp-plugin-jev-dispatch
 omp plugin config set wows-omp-plugin-jev-dispatch integrationMode enhanced
 omp plugin config set wows-omp-plugin-jev-dispatch minimumConfidence 0.8
-omp plugin config set wows-omp-plugin-jev-dispatch apiKey "your-typesafe-api-key"
 omp plugin config set wows-omp-plugin-jev-dispatch includeSharedContext false
 ```
 
@@ -67,59 +64,40 @@ omp plugin config set wows-omp-plugin-jev-dispatch includeSharedContext false
 | `integrationMode` | `standard` \| `enhanced` | `standard` | Selects task interception or API v2 lifecycle routing. Restart after changing it. |
 | `minimumConfidence` | number from 0 to 1 | `0.70` | Minimum native judgment confidence required to replace the requested type. |
 | `includeSharedContext` | boolean | `true` | Includes shared task/subagent context in the routing request. |
-| `apiKey` | secret string | unset | Manual TypeSafe API key, used only when `TYPESAFE_API_KEY` is absent or blank. |
 
 OMP merges user settings with project overrides before the plugin reads them.
 
-## TypeSafe API key
+## Enabling Jev
 
-Get a key from the [TypeSafe console](https://console.typesafe.ai/). On every
-invocation the plugin resolves credentials in this order:
-
-1. A non-empty `TYPESAFE_API_KEY` environment variable.
-2. The effective plugin `apiKey` setting (project settings override user settings).
-3. Neither one: the plugin returns a configuration error and blocks that
-   subagent creation. Installation and session startup do not require a key.
-
-A whitespace-only value counts as absent. If the environment key is set but
-rejected, the plugin does not fall back to the manual key. OMP login
-credentials, OpenRouter keys, and the `judge` model chain are not credential
-sources.
-
-Prefer the environment variable, set before OMP starts:
+Routing uses OMP's `judge` model role, so configure TypeSafe in OMP itself:
 
 ```bash
+omp            # then run: /login typesafe
+# or, before OMP starts:
 export TYPESAFE_API_KEY="your-typesafe-api-key"
 ```
 
-You can also set `apiKey` in the plugin's settings panel or on the command line:
+With a TypeSafe credential, OMP's `judge` role resolves to Jev by default
+(`providers.judgmentProvider: auto`). Credentials, base URL, model choice,
+request headers, and usage accounting all come from OMP.
 
-```bash
-omp plugin config set wows-omp-plugin-jev-dispatch apiKey "your-typesafe-api-key"
-```
-
-The settings UI and CLI mask the value, but the underlying plugin configuration
-is not encrypted. Do not commit keys or project overrides, and remember that
-command-line values can stay in shell history. A manual key change applies on
-the next invocation. The native client keeps its `TYPESAFE_BASE_URL` and
-`TYPESAFE_DEFAULT_MODEL` overrides, with `jev-latest` as the default model;
-only a Jev model is allowed.
+The plugin routes only when the first usable candidate in that role is a native
+Jev model. When the role resolves to a prompted chat model instead, or no
+credential exists, the plugin never calls that model: it keeps the requested
+agent and shows one warning per session.
 
 ## Privacy and fail-open behavior
 
 A judgment carries the assignment, the optional shared context, the originally
 requested agent, and short candidate descriptions with model and fallback
-summaries. The conversation and system prompt are never sent. The plugin uses
-OMP's native TypeSafe client and usage journal, and it does not modify the
-process environment or the host's shared credentials. Neither request bodies
-nor plugin logs contain the API key.
+summaries. The conversation and system prompt are never sent. Requests,
+credentials, and usage journaling go through OMP's `judge` role; the plugin
+stores no key and does not modify the process environment.
 
 A route changes only when Jev returns a legal choice at or above the configured
-confidence. Discovery failures, low confidence, illegal choices, rejected
-credentials, and network errors all leave the original route in place. Missing
-credentials are the one exception: they block the spawn in either mode.
-Enhanced mode requires API v2 so that an explicit denial is not swallowed by
-the older lifecycle's fail-open handling. Standard routing takes at most eight
+confidence. A missing Jev judge, discovery failures, low confidence, illegal
+choices, rejected credentials, and network errors all leave the original route
+in place; nothing is blocked. Standard routing takes at most eight
 seconds and keeps a one-second safety margin below the session's configured
 tool-call handler timeout; with no useful budget left it does no routing. A
 rewrite keeps every unrelated field, including `effort`.

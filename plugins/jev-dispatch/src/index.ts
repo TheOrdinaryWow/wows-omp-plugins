@@ -1,6 +1,4 @@
 import type { JudgmentState } from "@oh-my-pi/pi-ai";
-import { TypeSafeJudge, typesafeBaseUrl, typesafeModel } from "@oh-my-pi/pi-ai/judgment";
-import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
   formatModelStringWithRouting,
@@ -10,7 +8,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { findScopedSettings, type Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
-import { type JudgmentUsageLedger, journalJudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
+import { type ChainJudge, type JudgmentUsageLedger, journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
 
@@ -18,16 +16,13 @@ import { readHostSetting } from "#src/host-settings.ts";
 import {
   acceptRoutingDecision,
   type IntegrationMode,
-  isNativeJevCandidate,
   type JevDispatchSettings,
-  MissingJevApiKeyError,
   type ParsedTaskRoute,
   parseLegalAgentNames,
   parseTaskInput,
   type RoutingCandidate,
   rewriteTaskAgents,
   type SerializedCandidate,
-  selectJevApiKey,
   selectRoutingSurface,
   serializeCandidate,
   standardRoutingDeadlineMs,
@@ -52,8 +47,6 @@ interface BeforeSubagentSpawnEvent {
 
 interface BeforeSubagentSpawnResult {
   agent?: string;
-  block?: boolean;
-  reason?: string;
 }
 
 type BeforeSubagentSpawnHandler = (
@@ -100,27 +93,15 @@ function parseSettings(raw: Record<string, unknown>): JevDispatchSettings {
     throw new Error(`invalid includeSharedContext ${JSON.stringify(includeSharedContext)}`);
   }
 
-  const apiKey = raw.apiKey;
-  if (apiKey !== undefined && typeof apiKey !== "string") {
-    throw new Error("invalid apiKey setting: expected a string");
-  }
-
   return {
     integrationMode: parseIntegrationMode(raw.integrationMode),
     minimumConfidence,
     includeSharedContext,
-    ...(typeof apiKey === "string" && apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
   };
 }
 
 async function effectivePluginSettings(cwd: string): Promise<JevDispatchSettings> {
   return parseSettings(await getPluginSettings(PACKAGE_NAME, cwd));
-}
-
-function requireJevApiKey(config: JevDispatchSettings): string {
-  const selection = selectJevApiKey(process.env.TYPESAFE_API_KEY, config.apiKey);
-  if (!selection) throw new MissingJevApiKeyError();
-  return selection.key;
 }
 
 function scopedSettings(ctx: ExtensionContext): Settings {
@@ -217,14 +198,25 @@ function candidateCriterion(candidate: SerializedCandidate): string {
   return `${candidate.description} [${candidate.source}; ${candidate.access}${selectors ? `; ${selectors}` : ""}]`;
 }
 
+/** The `judge` role chain did not reach a native Jev candidate: missing credentials or a non-Jev judge role. */
+const JEV_UNAVAILABLE = Symbol("jev-unavailable");
+
+function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
+  return resolveJudge({
+    settings,
+    registry: ctx.modelRegistry,
+    sessionId: ctx.sessionManager.getSessionId(),
+    onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>, "jev-dispatch"),
+  });
+}
+
 async function routeAgent(
   route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
   candidates: readonly RoutingCandidate[],
   config: JevDispatchSettings,
-  apiKey: string,
-  ctx: ExtensionContext,
+  judge: ChainJudge,
   signal: AbortSignal,
-): Promise<string | undefined> {
+): Promise<string | undefined | typeof JEV_UNAVAILABLE> {
   signal.throwIfAborted();
   if (candidates.length < 2) return undefined;
   const serialized = candidates.map(serializeCandidate);
@@ -243,59 +235,75 @@ async function routeAgent(
       criteria,
     },
   };
-  const judge = new TypeSafeJudge({
-    apiKey,
-    baseUrl: typesafeBaseUrl(),
-    model: typesafeModel(),
-  });
-  if (!isNativeJevCandidate("native", judge.label)) throw new Error("jev-dispatch requires a Jev model");
-  const judged = await judge.judge({ state, questions }, { signal });
-  const model = ctx.modelRegistry.find("typesafe", judged.model) ?? ctx.modelRegistry.find("typesafe", judge.model);
-  if (model && judged.usage.cost.total === 0) calculateCost(model, judged.usage);
-  journalJudgmentUsage(
-    ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>,
-    "jev-dispatch",
-  )?.({
-    role: "typesafe",
-    api: judged.api,
-    provider: judged.provider,
-    model: judged.model,
-    usage: judged.usage,
-    stopReason: "stop",
-  });
-  const answer = judged.answers.agent;
-  return acceptRoutingDecision(
-    {
-      kind: "native",
-      api: judged.api,
-      model: judged.model,
-      choice: answer.choice,
-      confidence: answer.confidence,
-    },
-    candidates.map((candidate) => candidate.name),
-    config.minimumConfidence,
-  );
+
+  // A prompted chat model cannot reproduce Jev's calibrated confidence, so the
+  // chain's first usable candidate must be native; anything else is never called.
+  let reachedNative = false;
+  try {
+    return await judge.withCandidate(
+      async (candidate, kind) => {
+        if (kind !== "native") return JEV_UNAVAILABLE;
+        reachedNative = true;
+        const judged = await candidate.judge({ state, questions }, { signal });
+        const answer = judged.answers.agent;
+        return acceptRoutingDecision(
+          { kind, api: judged.api, model: judged.model, choice: answer.choice, confidence: answer.confidence },
+          candidates.map((candidate) => candidate.name),
+          config.minimumConfidence,
+        );
+      },
+      { signal },
+    );
+  } catch (error) {
+    if (!reachedNative && !signal.aborted) return JEV_UNAVAILABLE;
+    throw error;
+  }
+}
+
+interface RoutingSession {
+  pi: ExtensionAPI;
+  ctx: ExtensionContext;
+  config: JevDispatchSettings;
+  judge: ChainJudge;
+  notifyUnavailable(ctx: ExtensionContext): void;
 }
 
 async function routeAgentFailOpen(
-  pi: ExtensionAPI,
+  session: RoutingSession,
   route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
   candidates: readonly RoutingCandidate[],
-  config: JevDispatchSettings,
-  apiKey: string,
-  ctx: ExtensionContext,
   signal: AbortSignal,
 ): Promise<string | undefined> {
   try {
-    return await routeAgent(route, candidates, config, apiKey, ctx, signal);
+    const choice = await routeAgent(route, candidates, session.config, session.judge, signal);
+    if (choice !== JEV_UNAVAILABLE) return choice;
+    session.notifyUnavailable(session.ctx);
   } catch {
-    pi.logger.warn("jev-dispatch judgment failed; preserving the original agent");
-    return undefined;
+    session.pi.logger.warn("jev-dispatch judgment failed; preserving the original agent");
   }
+  return undefined;
+}
+
+/** Warn once per session that routing is idle until the host can reach Jev. */
+function unavailableNotifier(pi: ExtensionAPI): (ctx: ExtensionContext) => void {
+  let shown = false;
+  return (ctx) => {
+    if (shown) return;
+    shown = true;
+    try {
+      ctx.ui.notify(
+        "jev-dispatch needs OMP's judge role to resolve to TypeSafe Jev; keeping requested agents. Run /login typesafe or set TYPESAFE_API_KEY.",
+        "warning",
+      );
+    } catch (error) {
+      pi.logger.warn("jev-dispatch could not display its Jev availability warning", { error: errorMessage(error) });
+    }
+  };
 }
 
 function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean): void {
   let fallbackWarningShown = false;
+  const notifyUnavailable = unavailableNotifier(pi);
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "task") return undefined;
     if (warnAboutEnhancedFallback && !fallbackWarningShown) {
@@ -314,7 +322,6 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
 
     try {
       const config = await effectivePluginSettings(ctx.cwd);
-      const apiKey = requireJevApiKey(config);
       const settings = scopedSettings(ctx);
       const deadlineMs = standardRoutingDeadlineMs(await readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
       if (deadlineMs === undefined) return undefined;
@@ -326,14 +333,12 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
         const routes = parseTaskInput(input);
         if (!routes) return undefined;
         const candidates = await discoverStandardCandidates(ctx, settings, legalNames);
-        const choices = await Promise.all(routes.map((route) => routeAgentFailOpen(pi, route, candidates, config, apiKey, ctx, signal)));
+        const session = { pi, ctx, config, judge: sessionJudge(ctx, settings), notifyUnavailable };
+        const choices = await Promise.all(routes.map((route) => routeAgentFailOpen(session, route, candidates, signal)));
         const rewritten = rewriteTaskAgents(input, routes, choices);
         return rewritten === input ? undefined : { input: rewritten };
       });
     } catch (error) {
-      if (error instanceof MissingJevApiKeyError) {
-        return { block: true, reason: error.message };
-      }
       pi.logger.warn("jev-dispatch task interception failed open", { error: errorMessage(error) });
       return undefined;
     }
@@ -342,30 +347,25 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
 
 function registerEnhanced(pi: ExtensionAPI): void {
   const enhancedPi = pi as unknown as { on: EnhancedOn };
+  const notifyUnavailable = unavailableNotifier(pi);
   enhancedPi.on("before_subagent_spawn", async (event, ctx) => {
     try {
       return await withRoutingDeadline(MAX_ROUTING_DEADLINE_MS, async (signal) => {
         const config = await effectivePluginSettings(ctx.cwd);
-        const apiKey = requireJevApiKey(config);
+        const session = { pi, ctx, config, judge: sessionJudge(ctx, scopedSettings(ctx)), notifyUnavailable };
         const agent = await routeAgentFailOpen(
-          pi,
+          session,
           {
             assignment: event.assignment,
             context: event.context,
             requestedAgent: event.requestedAgent,
           },
           event.candidates,
-          config,
-          apiKey,
-          ctx,
           signal,
         );
         return agent ? { agent } : undefined;
       });
     } catch (error) {
-      if (error instanceof MissingJevApiKeyError) {
-        return { block: true, reason: error.message };
-      }
       pi.logger.warn("jev-dispatch enhanced routing failed open", { error: errorMessage(error) });
       return undefined;
     }

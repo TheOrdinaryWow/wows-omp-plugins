@@ -115,11 +115,11 @@ as `src/host-settings.ts` does for `Settings.get` versus the setting registry.
 Before relying on a new host API, type-check a throwaway copy against 18.2.7
 (`bun add -d @oh-my-pi/pi-coding-agent@18.2.7`) and keep a fallback.
 
-Jev credentials are plugin-scoped: `TYPESAFE_API_KEY` wins over the secret
-`apiKey` setting. Neither the OMP login store nor its `judge` chain is a fallback.
-Missing keys block spawning; network failures still preserve the original
-route. Enhanced mode requires routing API v2 for explicit block results. Never
-inject plugin keys into shared process environment or auth storage.
+Jev access goes through OMP's `judge` role (`resolveJudge`); the plugin keeps no
+credentials or TypeSafe settings of its own. It judges only when the chain's
+first usable candidate is native, never calls a prompted fallback, and fails
+open everywhere: a missing Jev judge keeps the requested agent and warns once
+per session.
 
 ## Testing a plugin locally
 

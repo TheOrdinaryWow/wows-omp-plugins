@@ -4,20 +4,6 @@ export interface JevDispatchSettings {
   integrationMode: IntegrationMode;
   minimumConfidence: number;
   includeSharedContext: boolean;
-  apiKey?: string;
-}
-
-export interface JevApiKeySelection {
-  key: string;
-  source: "environment" | "setting";
-}
-
-export function selectJevApiKey(environmentValue: unknown, settingValue: unknown): JevApiKeySelection | undefined {
-  const environmentKey = typeof environmentValue === "string" ? environmentValue.trim() : "";
-  if (environmentKey) return { key: environmentKey, source: "environment" };
-  const settingKey = typeof settingValue === "string" ? settingValue.trim() : "";
-  if (settingKey) return { key: settingKey, source: "setting" };
-  return undefined;
 }
 
 export interface RoutingSurfaceSelection {
@@ -224,14 +210,6 @@ export function serializeCandidate(candidate: RoutingCandidate): SerializedCandi
 export function isNativeJevCandidate(kind: string, label: string): boolean {
   const modelId = label.slice(label.lastIndexOf("/") + 1);
   return kind === "native" && JEV_MODEL_ID_PATTERN.test(modelId);
-}
-
-export class MissingJevApiKeyError extends Error {
-  override readonly name = "MissingJevApiKeyError";
-
-  constructor() {
-    super("jev-dispatch requires TYPESAFE_API_KEY or the plugin apiKey setting");
-  }
 }
 
 /** Accept only a legal, sufficiently confident answer from a native Jev transport. */

@@ -6,22 +6,10 @@ import {
   parseLegalAgentNames,
   parseTaskInput,
   rewriteTaskAgents,
-  selectJevApiKey,
   selectRoutingSurface,
   serializeCandidate,
   standardRoutingDeadlineMs,
 } from "../plugins/jev-dispatch/src/routing.ts";
-
-describe("Jev API key selection", () => {
-  test("prefers a non-empty environment key over the plugin setting", () => {
-    expect(selectJevApiKey(" env-key ", "setting-key")).toEqual({ key: "env-key", source: "environment" });
-  });
-
-  test("uses the manual setting only when the environment is absent", () => {
-    expect(selectJevApiKey("  ", " setting-key ")).toEqual({ key: "setting-key", source: "setting" });
-    expect(selectJevApiKey(undefined, "")).toBeUndefined();
-  });
-});
 
 describe("task input routing", () => {
   test("rewrites only the flat agent field", () => {
