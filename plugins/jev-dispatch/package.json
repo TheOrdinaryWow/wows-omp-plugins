@@ -1,6 +1,6 @@
 {
   "name": "wows-omp-plugin-jev-dispatch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "private": true,
   "description": "Route OMP subagent types with native TypeSafe/Jev judgments",
