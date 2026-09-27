@@ -39,7 +39,7 @@ src/                           repo tooling and tests; never shipped to users
 
 - `.github/workflows/ci.yml` runs lint, the catalog check, type check, and tests
   on every push and PR. Types and tests run twice: against the omp version in
-  `bun.lock` and against 18.2.7, the oldest host `jev-dispatch` supports. Raise
+  `bun.lock` and against 18.2.7, the oldest host `judge-dispatch` supports. Raise
   that matrix entry only together with the documented floor.
 - `.github/workflows/release.yml` runs release-please on `main`. Versions come
   from Conventional Commits scoped by path: a `feat`/`fix` touching
@@ -105,7 +105,7 @@ name segment — `#src/*`, not `#/*`.
    `.release-please-manifest.json`.
 9. Run `bun run check-catalog && bun run check-types && bun run check`.
 
-[plugins/jev-dispatch/](file:///./plugins/jev-dispatch/) is the current example
+[plugins/judge-dispatch/](file:///./plugins/judge-dispatch/) is the current example
 of a dependency-free extension package with manifest-backed settings.
 
 ## Extension authoring gotcha
@@ -125,7 +125,7 @@ pi.registerTool({
 
 `pi.typebox.Type.Object(...)` infers without the annotation if you prefer it.
 
-`jev-dispatch` intentionally compiles against the marketplace's current omp
+`judge-dispatch` intentionally compiles against the marketplace's current omp
 version while feature-detecting a newer lifecycle event. Keep that event's
 typing structural inside the plugin; do not raise the repository's minimum omp
 version merely to acquire the event overload.
@@ -140,11 +140,11 @@ as `src/host-settings.ts` does for `Settings.get` versus the setting registry.
 Before relying on a new host API, type-check a throwaway copy against 18.2.7
 (`bun add -d @oh-my-pi/pi-coding-agent@18.2.7`) and keep a fallback.
 
-Jev access goes through OMP's `judge` role (`resolveJudge`); the plugin keeps no
-credentials or TypeSafe settings of its own. It judges only when the chain's
-first usable candidate is native, never calls a prompted fallback, and fails
-open everywhere: a missing Jev judge keeps the requested agent and warns once
-per session.
+Judging goes through OMP's `judge` role (`resolveJudge`); the plugin keeps no
+credentials or provider settings of its own. It judges only when the chain's
+first usable candidate is native (a judgment API, calibrated confidence), never
+calls a chat-model fallback, and fails open everywhere: a missing native judge
+keeps the requested agent and warns once per session.
 
 ## Testing a plugin locally
 
@@ -191,7 +191,7 @@ Import organization is on, grouped bun/node → packages → alias → relative.
   `.claude-plugin/marketplace.json`. This repo publishes only the former —
   it does not target Claude Code.
 - `metadata.pluginRoot` is `./plugins`, so catalog `source` values are relative
-  to that (`"./jev-dispatch"`, not `"./plugins/jev-dispatch"`).
+  to that (`"./judge-dispatch"`, not `"./plugins/judge-dispatch"`).
 - `bun run check-catalog` catches the common drift cases (unlisted directory,
   version mismatch between catalog and manifests, bad `source`) before a user
   hits them.

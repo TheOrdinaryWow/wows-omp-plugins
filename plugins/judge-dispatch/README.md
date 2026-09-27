@@ -1,6 +1,6 @@
-# jev-dispatch
+# judge-dispatch
 
-Asks TypeSafe's Jev model which subagent type OMP should spawn, instead of
+Asks OMP's `judge` model role which subagent type OMP should spawn, instead of
 leaving that choice to the parent agent.
 
 The plugin picks the type and nothing else. OMP still decides `effort` and
@@ -9,7 +9,7 @@ still validates every spawn.
 ## Install
 
 ```bash
-omp plugin install jev-dispatch@wows-omp-plugins
+omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
 Restart the session afterwards so the extension can register.
@@ -17,7 +17,7 @@ Restart the session afterwards so the extension can register.
 Requires OMP 18.2.7 or newer.
 
 The plugin has no credentials of its own. It judges through OMP's built-in
-TypeSafe support; see [Enabling Jev](#enabling-jev).
+judgment support; see [Enabling the judge role](#enabling-the-judge-role).
 
 ## Modes and coverage
 
@@ -50,13 +50,13 @@ never patches the host.
 ## Settings
 
 The installed package name used by `omp plugin config` is
-`wows-omp-plugin-jev-dispatch`:
+`wows-omp-plugin-judge-dispatch`:
 
 ```bash
-omp plugin config list wows-omp-plugin-jev-dispatch
-omp plugin config set wows-omp-plugin-jev-dispatch integrationMode enhanced
-omp plugin config set wows-omp-plugin-jev-dispatch minimumConfidence 0.8
-omp plugin config set wows-omp-plugin-jev-dispatch includeSharedContext false
+omp plugin config list wows-omp-plugin-judge-dispatch
+omp plugin config set wows-omp-plugin-judge-dispatch integrationMode enhanced
+omp plugin config set wows-omp-plugin-judge-dispatch minimumConfidence 0.8
+omp plugin config set wows-omp-plugin-judge-dispatch includeSharedContext false
 ```
 
 | Setting | Type | Default | Effect |
@@ -67,9 +67,9 @@ omp plugin config set wows-omp-plugin-jev-dispatch includeSharedContext false
 
 OMP merges user settings with project overrides before the plugin reads them.
 
-## Enabling Jev
+## Enabling the judge role
 
-Routing uses OMP's `judge` model role, so configure TypeSafe in OMP itself:
+Routing uses OMP's `judge` model role. The simplest setup is a TypeSafe credential:
 
 ```bash
 omp            # then run: /login typesafe
@@ -82,9 +82,11 @@ With a TypeSafe credential, OMP's `judge` role resolves to Jev by default
 request headers, and usage accounting all come from OMP.
 
 The plugin routes only when the first usable candidate in that role is a native
-Jev model. When the role resolves to a prompted chat model instead, or no
-credential exists, the plugin never calls that model: it keeps the requested
-agent and shows one warning per session.
+judgment model, meaning one served through a judgment API such as TypeSafe or
+OpenRouter decisions. Native judges return calibrated confidence, which
+`minimumConfidence` depends on. When the role resolves to a chat model or an
+on-device model instead, or no credential exists, the plugin never calls that
+model: it keeps the requested agent and shows one warning per session.
 
 ## Privacy and fail-open behavior
 
@@ -94,8 +96,8 @@ summaries. The conversation and system prompt are never sent. Requests,
 credentials, and usage journaling go through OMP's `judge` role; the plugin
 stores no key and does not modify the process environment.
 
-A route changes only when Jev returns a legal choice at or above the configured
-confidence. A missing Jev judge, discovery failures, low confidence, illegal
+A route changes only when the judge returns a legal choice at or above the configured
+confidence. A missing native judge, discovery failures, low confidence, illegal
 choices, rejected credentials, and network errors all leave the original route
 in place; nothing is blocked. Standard routing takes at most eight
 seconds and keeps a one-second safety margin below the session's configured

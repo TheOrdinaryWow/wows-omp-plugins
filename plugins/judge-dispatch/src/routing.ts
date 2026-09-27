@@ -1,6 +1,6 @@
 export type IntegrationMode = "standard" | "enhanced";
 
-export interface JevDispatchSettings {
+export interface JudgeDispatchSettings {
   integrationMode: IntegrationMode;
   minimumConfidence: number;
   includeSharedContext: boolean;
@@ -52,17 +52,10 @@ export interface SerializedCandidate {
 
 export interface RoutingDecision {
   kind: string;
-  api: string;
-  model: string;
   choice: string;
   confidence: number;
 }
 
-const NATIVE_JEV_APIS: Record<string, true> = {
-  typesafe: true,
-  "openrouter-decisions": true,
-};
-const JEV_MODEL_ID_PATTERN = /^jev(?:$|[-_.:]|\d)/i;
 const DESCRIPTION_LIMIT = 320;
 const STANDARD_MAX_DEADLINE_MS = 8_000;
 const TOOL_CALL_SAFETY_MARGIN_MS = 1_000;
@@ -206,19 +199,13 @@ export function serializeCandidate(candidate: RoutingCandidate): SerializedCandi
   };
 }
 
-/** Identify native judge candidates whose model id is explicitly Jev. */
-export function isNativeJevCandidate(kind: string, label: string): boolean {
-  const modelId = label.slice(label.lastIndexOf("/") + 1);
-  return kind === "native" && JEV_MODEL_ID_PATTERN.test(modelId);
-}
-
-/** Accept only a legal, sufficiently confident answer from a native Jev transport. */
+/** Accept only a legal, sufficiently confident answer from a native judgment transport. */
 export function acceptRoutingDecision(
   decision: RoutingDecision,
   candidateNames: readonly string[],
   minimumConfidence: number,
 ): string | undefined {
-  if (!isNativeJevCandidate(decision.kind, decision.model) || NATIVE_JEV_APIS[decision.api] !== true) return undefined;
+  if (decision.kind !== "native") return undefined;
   if (!Number.isFinite(decision.confidence) || decision.confidence < minimumConfidence) return undefined;
   return candidateNames.includes(decision.choice) ? decision.choice : undefined;
 }

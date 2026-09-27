@@ -2,14 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import {
   acceptRoutingDecision,
-  isNativeJevCandidate,
   parseLegalAgentNames,
   parseTaskInput,
   rewriteTaskAgents,
   selectRoutingSurface,
   serializeCandidate,
   standardRoutingDeadlineMs,
-} from "../plugins/jev-dispatch/src/routing.ts";
+} from "../plugins/judge-dispatch/src/routing.ts";
 
 describe("task input routing", () => {
   test("rewrites only the flat agent field", () => {
@@ -95,13 +94,6 @@ test("candidate serialization exposes only compact routing metadata", () => {
   });
 });
 
-test("recognizes only native Jev candidate labels", () => {
-  expect(isNativeJevCandidate("native", "typesafe/jev-latest")).toBe(true);
-  expect(isNativeJevCandidate("native", "openrouter/~typesafe/jev-2")).toBe(true);
-  expect(isNativeJevCandidate("native", "typesafe/system-one")).toBe(false);
-  expect(isNativeJevCandidate("online", "typesafe/jev-latest")).toBe(false);
-});
-
 test("selects exactly one routing surface from session-scoped mode and capability", () => {
   expect(selectRoutingSurface("standard", 2)).toEqual({
     surface: "standard",
@@ -156,32 +148,15 @@ describe("legal agent extraction", () => {
 describe("routing decision acceptance", () => {
   const candidates = ["task", "scout"];
 
-  test("accepts a legal native Jev choice at the threshold", () => {
-    expect(
-      acceptRoutingDecision({ kind: "native", api: "typesafe", model: "jev-latest", choice: "scout", confidence: 0.7 }, candidates, 0.7),
-    ).toBe("scout");
+  test("accepts a legal native choice at the threshold", () => {
+    expect(acceptRoutingDecision({ kind: "native", choice: "scout", confidence: 0.7 }, candidates, 0.7)).toBe("scout");
   });
 
-  test("rejects low-confidence, non-native, non-Jev, and illegal choices", () => {
-    expect(
-      acceptRoutingDecision({ kind: "native", api: "typesafe", model: "jev-latest", choice: "scout", confidence: 0.69 }, candidates, 0.7),
-    ).toBeUndefined();
-    expect(
-      acceptRoutingDecision(
-        { kind: "online", api: "openai-responses", model: "jev-latest", choice: "scout", confidence: 1 },
-        candidates,
-        0.7,
-      ),
-    ).toBeUndefined();
-    expect(
-      acceptRoutingDecision(
-        { kind: "native", api: "openrouter-decisions", model: "jev-latest", choice: "missing", confidence: 1 },
-        candidates,
-        0.7,
-      ),
-    ).toBeUndefined();
-    expect(
-      acceptRoutingDecision({ kind: "native", api: "typesafe", model: "system-one", choice: "scout", confidence: 1 }, candidates, 0.7),
-    ).toBeUndefined();
+  test("rejects low-confidence, non-native, and illegal choices", () => {
+    expect(acceptRoutingDecision({ kind: "native", choice: "scout", confidence: 0.69 }, candidates, 0.7)).toBeUndefined();
+    expect(acceptRoutingDecision({ kind: "native", choice: "scout", confidence: Number.NaN }, candidates, 0.7)).toBeUndefined();
+    expect(acceptRoutingDecision({ kind: "online", choice: "scout", confidence: 1 }, candidates, 0.7)).toBeUndefined();
+    expect(acceptRoutingDecision({ kind: "local", choice: "scout", confidence: 1 }, candidates, 0.7)).toBeUndefined();
+    expect(acceptRoutingDecision({ kind: "native", choice: "missing", confidence: 1 }, candidates, 0.7)).toBeUndefined();
   });
 });

@@ -30,7 +30,7 @@ Each plugin has its own README covering installation, settings, and behavior.
 
 | Plugin | Description | Documentation |
 | ------ | ----------- | ------------- |
-| `jev-dispatch` | Routes subagent types through TypeSafe/Jev judgments | [Documentation](plugins/jev-dispatch/README.md) |
+| `judge-dispatch` | Routes subagent types through OMP judge-role judgments | [Documentation](plugins/judge-dispatch/README.md) |
 | `prometheus` | Ports oh-my-openagent Prometheus planning and Atlas orchestration to OMP | [Documentation](plugins/prometheus/README.md) |
 
 ## Repository layout

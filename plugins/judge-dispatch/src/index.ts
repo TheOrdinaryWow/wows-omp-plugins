@@ -16,7 +16,7 @@ import { readHostSetting } from "#src/host-settings.ts";
 import {
   acceptRoutingDecision,
   type IntegrationMode,
-  type JevDispatchSettings,
+  type JudgeDispatchSettings,
   type ParsedTaskRoute,
   parseLegalAgentNames,
   parseTaskInput,
@@ -28,9 +28,9 @@ import {
   standardRoutingDeadlineMs,
 } from "#src/routing.ts";
 
-const PACKAGE_NAME = "wows-omp-plugin-jev-dispatch";
+const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
 const MAX_ROUTING_DEADLINE_MS = 8_000;
-const DEFAULT_SETTINGS: JevDispatchSettings = {
+const DEFAULT_SETTINGS: JudgeDispatchSettings = {
   integrationMode: "standard",
   minimumConfidence: 0.7,
   includeSharedContext: true,
@@ -64,7 +64,7 @@ async function withRoutingDeadline<T>(timeoutMs: number, operation: (signal: Abo
   const controller = new AbortController();
   const timeout = Promise.withResolvers<never>();
   const timer = setTimeout(() => {
-    const error = new DOMException(`jev-dispatch routing exceeded ${timeoutMs}ms`, "TimeoutError");
+    const error = new DOMException(`judge-dispatch routing exceeded ${timeoutMs}ms`, "TimeoutError");
     controller.abort(error);
     timeout.reject(error);
   }, timeoutMs);
@@ -82,7 +82,7 @@ function parseIntegrationMode(value: unknown): IntegrationMode {
   throw new Error(`invalid integrationMode ${JSON.stringify(value)}`);
 }
 
-function parseSettings(raw: Record<string, unknown>): JevDispatchSettings {
+function parseSettings(raw: Record<string, unknown>): JudgeDispatchSettings {
   const minimumConfidence = raw.minimumConfidence ?? DEFAULT_SETTINGS.minimumConfidence;
   if (typeof minimumConfidence !== "number" || !Number.isFinite(minimumConfidence) || minimumConfidence < 0 || minimumConfidence > 1) {
     throw new Error(`invalid minimumConfidence ${JSON.stringify(minimumConfidence)}`);
@@ -100,7 +100,7 @@ function parseSettings(raw: Record<string, unknown>): JevDispatchSettings {
   };
 }
 
-async function effectivePluginSettings(cwd: string): Promise<JevDispatchSettings> {
+async function effectivePluginSettings(cwd: string): Promise<JudgeDispatchSettings> {
   return parseSettings(await getPluginSettings(PACKAGE_NAME, cwd));
 }
 
@@ -198,25 +198,25 @@ function candidateCriterion(candidate: SerializedCandidate): string {
   return `${candidate.description} [${candidate.source}; ${candidate.access}${selectors ? `; ${selectors}` : ""}]`;
 }
 
-/** The `judge` role chain did not reach a native Jev candidate: missing credentials or a non-Jev judge role. */
-const JEV_UNAVAILABLE = Symbol("jev-unavailable");
+/** The `judge` role chain did not reach a native judgment candidate: missing credentials or a chat-model judge role. */
+const JUDGE_UNAVAILABLE = Symbol("judge-unavailable");
 
 function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
   return resolveJudge({
     settings,
     registry: ctx.modelRegistry,
     sessionId: ctx.sessionManager.getSessionId(),
-    onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>, "jev-dispatch"),
+    onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>, "judge-dispatch"),
   });
 }
 
 async function routeAgent(
   route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
   candidates: readonly RoutingCandidate[],
-  config: JevDispatchSettings,
+  config: JudgeDispatchSettings,
   judge: ChainJudge,
   signal: AbortSignal,
-): Promise<string | undefined | typeof JEV_UNAVAILABLE> {
+): Promise<string | undefined | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
   if (candidates.length < 2) return undefined;
   const serialized = candidates.map(serializeCandidate);
@@ -236,18 +236,18 @@ async function routeAgent(
     },
   };
 
-  // A prompted chat model cannot reproduce Jev's calibrated confidence, so the
-  // chain's first usable candidate must be native; anything else is never called.
+  // A chat-model judge cannot reproduce a native judge's calibrated confidence, so
+  // the chain's first usable candidate must be native; anything else is never called.
   let reachedNative = false;
   try {
     return await judge.withCandidate(
       async (candidate, kind) => {
-        if (kind !== "native") return JEV_UNAVAILABLE;
+        if (kind !== "native") return JUDGE_UNAVAILABLE;
         reachedNative = true;
         const judged = await candidate.judge({ state, questions }, { signal });
         const answer = judged.answers.agent;
         return acceptRoutingDecision(
-          { kind, api: judged.api, model: judged.model, choice: answer.choice, confidence: answer.confidence },
+          { kind, choice: answer.choice, confidence: answer.confidence },
           candidates.map((candidate) => candidate.name),
           config.minimumConfidence,
         );
@@ -255,7 +255,7 @@ async function routeAgent(
       { signal },
     );
   } catch (error) {
-    if (!reachedNative && !signal.aborted) return JEV_UNAVAILABLE;
+    if (!reachedNative && !signal.aborted) return JUDGE_UNAVAILABLE;
     throw error;
   }
 }
@@ -263,7 +263,7 @@ async function routeAgent(
 interface RoutingSession {
   pi: ExtensionAPI;
   ctx: ExtensionContext;
-  config: JevDispatchSettings;
+  config: JudgeDispatchSettings;
   judge: ChainJudge;
   notifyUnavailable(ctx: ExtensionContext): void;
 }
@@ -276,15 +276,15 @@ async function routeAgentFailOpen(
 ): Promise<string | undefined> {
   try {
     const choice = await routeAgent(route, candidates, session.config, session.judge, signal);
-    if (choice !== JEV_UNAVAILABLE) return choice;
+    if (choice !== JUDGE_UNAVAILABLE) return choice;
     session.notifyUnavailable(session.ctx);
   } catch {
-    session.pi.logger.warn("jev-dispatch judgment failed; preserving the original agent");
+    session.pi.logger.warn("judge-dispatch judgment failed; preserving the original agent");
   }
   return undefined;
 }
 
-/** Warn once per session that routing is idle until the host can reach Jev. */
+/** Warn once per session that routing is idle until the host's judge role reaches a native judgment model. */
 function unavailableNotifier(pi: ExtensionAPI): (ctx: ExtensionContext) => void {
   let shown = false;
   return (ctx) => {
@@ -292,11 +292,11 @@ function unavailableNotifier(pi: ExtensionAPI): (ctx: ExtensionContext) => void 
     shown = true;
     try {
       ctx.ui.notify(
-        "jev-dispatch needs OMP's judge role to resolve to TypeSafe Jev; keeping requested agents. Run /login typesafe or set TYPESAFE_API_KEY.",
+        "judge-dispatch needs OMP's judge role to resolve to a native judgment model such as TypeSafe Jev; keeping requested agents. Run /login typesafe or set TYPESAFE_API_KEY.",
         "warning",
       );
     } catch (error) {
-      pi.logger.warn("jev-dispatch could not display its Jev availability warning", { error: errorMessage(error) });
+      pi.logger.warn("judge-dispatch could not display its judge availability warning", { error: errorMessage(error) });
     }
   };
 }
@@ -310,11 +310,11 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
       fallbackWarningShown = true;
       try {
         ctx.ui.notify(
-          "jev-dispatch enhanced mode requires OMP subagent routing API v2; using standard task interception instead.",
+          "judge-dispatch enhanced mode requires OMP subagent routing API v2; using standard task interception instead.",
           "warning",
         );
       } catch (error) {
-        pi.logger.warn("jev-dispatch could not display its enhanced-mode fallback warning", {
+        pi.logger.warn("judge-dispatch could not display its enhanced-mode fallback warning", {
           error: errorMessage(error),
         });
       }
@@ -339,7 +339,7 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
         return rewritten === input ? undefined : { input: rewritten };
       });
     } catch (error) {
-      pi.logger.warn("jev-dispatch task interception failed open", { error: errorMessage(error) });
+      pi.logger.warn("judge-dispatch task interception failed open", { error: errorMessage(error) });
       return undefined;
     }
   });
@@ -366,13 +366,13 @@ function registerEnhanced(pi: ExtensionAPI): void {
         return agent ? { agent } : undefined;
       });
     } catch (error) {
-      pi.logger.warn("jev-dispatch enhanced routing failed open", { error: errorMessage(error) });
+      pi.logger.warn("judge-dispatch enhanced routing failed open", { error: errorMessage(error) });
       return undefined;
     }
   });
 }
 
-export default function jevDispatch(pi: ExtensionAPI): void {
+export default function judgeDispatch(pi: ExtensionAPI): void {
   let bootstrapped = false;
   pi.on("session_start", async (_event, ctx) => {
     if (bootstrapped) return;
@@ -382,7 +382,7 @@ export default function jevDispatch(pi: ExtensionAPI): void {
     try {
       mode = (await withRoutingDeadline(MAX_ROUTING_DEADLINE_MS, () => effectivePluginSettings(ctx.cwd))).integrationMode;
     } catch (error) {
-      pi.logger.warn("jev-dispatch configuration is invalid; loading standard fail-open interception", {
+      pi.logger.warn("judge-dispatch configuration is invalid; loading standard fail-open interception", {
         error: errorMessage(error),
       });
     }

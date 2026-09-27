@@ -5,11 +5,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-const PACKAGE_NAME = "wows-omp-plugin-jev-dispatch";
-const CHILD_SCENARIO_ENV = "JEV_DISPATCH_HOST_JUDGE_SCENARIO";
-const CHILD_OUTPUT_MARKER = "JEV_DISPATCH_HOST_JUDGE_RESULT:";
+const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
+const CHILD_SCENARIO_ENV = "JUDGE_DISPATCH_HOST_JUDGE_SCENARIO";
+const CHILD_OUTPUT_MARKER = "JUDGE_DISPATCH_HOST_JUDGE_RESULT:";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const PLUGIN_URL = pathToFileURL(join(dirname(THIS_FILE), "../plugins/jev-dispatch/src/index.ts")).href;
+const PLUGIN_URL = pathToFileURL(join(dirname(THIS_FILE), "../plugins/judge-dispatch/src/index.ts")).href;
 const HOST_KEY = ["host", "typesafe", "key"].join("-");
 
 interface SessionSpec {
@@ -79,7 +79,7 @@ function startTypeSafeServer(scenario: ChildScenario, requests: RecordedRequest[
       const choices = Object.keys(payload.questions?.agent?.criteria ?? {});
       const choice = choices.find((name) => name !== "scout") ?? "";
       return Response.json({
-        model: "jev-latest",
+        model: "system-one",
         answers: {
           agent: {
             type: "choice",
@@ -111,7 +111,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
     const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
     const { discoverAuthStorage } = await import("@oh-my-pi/pi-coding-agent/sdk");
     // This runtime-selected absolute URL keeps the child fixture on the same plugin source as the parent checkout.
-    const { default: registerJevDispatch } = await import(PLUGIN_URL);
+    const { default: registerJudgeDispatch } = await import(PLUGIN_URL);
 
     const sessionReports: SessionReport[] = [];
     for (const [sessionIndex, session] of scenario.sessions.entries()) {
@@ -156,7 +156,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         return registered[0] as TestHandler;
       };
 
-      registerJevDispatch(api);
+      registerJudgeDispatch(api);
       await onlyHandler("session_start")({ type: "session_start" }, context);
 
       for (let call = 0; call < session.calls; call += 1) {
@@ -198,7 +198,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
 }
 
 async function createProject(settings: Record<string, unknown>): Promise<string> {
-  const project = await mkdtemp(join(tmpdir(), "jev-dispatch-host-judge-"));
+  const project = await mkdtemp(join(tmpdir(), "judge-dispatch-host-judge-"));
   const configDirectory = join(project, ".omp");
   await mkdir(configDirectory, { recursive: true });
   await Bun.write(join(configDirectory, "plugin-overrides.json"), JSON.stringify({ settings: { [PACKAGE_NAME]: settings } }));
@@ -255,8 +255,8 @@ async function registerTests(): Promise<void> {
   // The child fixture executes this file outside Bun's test runner, so only the parent branch may load bun:test.
   const { describe, expect, test } = await import("bun:test");
 
-  describe.serial("jev-dispatch through the host judge role", () => {
-    test("a host TypeSafe credential routes both surfaces through Jev and journals usage", async () => {
+  describe.serial("judge-dispatch through the host judge role", () => {
+    test("a native judge that is not Jev routes both surfaces and journals usage", async () => {
       await withProjects([{ integrationMode: "enhanced" }, { integrationMode: "standard" }], async ([enhanced, standard]) => {
         const report = await runIsolatedScenario({
           sessions: [

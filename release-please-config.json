@@ -6,11 +6,11 @@
   "tag-separator": "@",
   "separate-pull-requests": false,
   "packages": {
-    "plugins/jev-dispatch": {
-      "component": "jev-dispatch",
+    "plugins/judge-dispatch": {
+      "component": "judge-dispatch",
       "extra-files": [
         { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
-        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='jev-dispatch')].version" }
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='judge-dispatch')].version" }
       ]
     },
     "plugins/prometheus": {

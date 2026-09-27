@@ -12,10 +12,10 @@
   },
   "plugins": [
     {
-      "name": "jev-dispatch",
-      "source": "./jev-dispatch",
-      "description": "Route OMP subagent types with native TypeSafe/Jev judgments",
-      "version": "0.1.1",
+      "name": "judge-dispatch",
+      "source": "./judge-dispatch",
+      "description": "Route OMP subagent types with native judge-role judgments",
+      "version": "0.1.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -23,8 +23,7 @@
       "keywords": [
         "routing",
         "subagents",
-        "typesafe",
-        "jev"
+        "judge"
       ],
       "license": "MIT"
     },
