@@ -1,0 +1,4 @@
+{
+  "plugins/jev-dispatch": "0.1.0",
+  "plugins/prometheus": "0.1.0"
+}

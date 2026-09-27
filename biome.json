@@ -37,6 +37,12 @@
       "trailingCommas": "none"
     }
   },
+  "overrides": [
+    {
+      "includes": ["**/.omp-plugin/*.json", "plugins/*/package.json", ".release-please-manifest.json"],
+      "json": { "formatter": { "expand": "always" } }
+    }
+  ],
   "assist": {
     "enabled": true,
     "actions": {

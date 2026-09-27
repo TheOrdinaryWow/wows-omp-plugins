@@ -33,6 +33,26 @@ src/                           repo tooling and tests; never shipped to users
 | Lint + format, writing fixes  | `bun run check:fix`    |
 | Type check                    | `bun run check-types`  |
 | Verify catalog matches `plugins/` | `bun run check-catalog` |
+| Run tests                     | `bun run test`         |
+
+## CI and releases
+
+- `.github/workflows/ci.yml` runs lint, the catalog check, type check, and tests
+  on every push and PR. Types and tests run twice: against the omp version in
+  `bun.lock` and against 18.2.7, the oldest host `jev-dispatch` supports. Raise
+  that matrix entry only together with the documented floor.
+- `.github/workflows/release.yml` runs release-please on `main`. Versions come
+  from Conventional Commits scoped by path: a `feat`/`fix` touching
+  `plugins/<name>/` bumps that plugin only. The release PR updates the plugin's
+  `package.json`, `.omp-plugin/plugin.json`, its catalog entry, and its
+  `CHANGELOG.md` together, so never bump versions by hand. Merging the PR tags
+  `<name>@<version>` and publishes a GitHub Release.
+- The release PR is pushed with `GITHUB_TOKEN`, which triggers no workflows, so
+  `release.yml` calls `ci.yml` on the PR branch itself. Check that run in
+  Actions before merging; the PR shows no status checks.
+- Plugin JSON manifests and `.release-please-manifest.json` are formatted with
+  expanded arrays (`biome.json` override) because release-please rewrites them
+  that way.
 
 ## The constraint that governs everything
 
@@ -68,7 +88,8 @@ name segment — `#src/*`, not `#/*`.
 1. Create `plugins/<name>/` (lowercase, digits, hyphens, dots; must start and
    end alphanumeric; max 64 chars).
 2. Add `.omp-plugin/plugin.json` and `package.json`. Keep the versions in both
-   equal to the catalog entry — `bun run check-catalog` fails on drift.
+   equal to the catalog entry — `bun run check-catalog` fails on drift. Start at
+   `0.1.0`.
 3. Add content in the conventional directories: `skills/<name>/SKILL.md`,
    `commands/*.md`, `agents/*.md`, `hooks/pre|post/`, `tools/`, `.mcp.json`.
 4. Declare a TypeScript extension entry in `package.json` under `omp.extensions`.
@@ -78,7 +99,11 @@ name segment — `#src/*`, not `#/*`.
 6. Add the entry to [.omp-plugin/marketplace.json](file:///./.omp-plugin/marketplace.json)
    with `"source": "./<name>"` — `metadata.pluginRoot` already prepends `./plugins`.
 7. Add a row to the root README plugin table pointing at the new plugin README.
-8. Run `bun run check-catalog && bun run check-types && bun run check`.
+8. Register the plugin with release-please: a `packages` entry in
+   `release-please-config.json` (copy an existing one; its extra-files keep
+   `plugin.json` and the catalog entry in step) and its version in
+   `.release-please-manifest.json`.
+9. Run `bun run check-catalog && bun run check-types && bun run check`.
 
 [plugins/jev-dispatch/](file:///./plugins/jev-dispatch/) is the current example
 of a dependency-free extension package with manifest-backed settings.

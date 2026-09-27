@@ -20,7 +20,12 @@
         "name": "TheOrdinaryWow"
       },
       "category": "productivity",
-      "keywords": ["routing", "subagents", "typesafe", "jev"],
+      "keywords": [
+        "routing",
+        "subagents",
+        "typesafe",
+        "jev"
+      ],
       "license": "MIT"
     },
     {
@@ -33,7 +38,14 @@
       },
       "homepage": "https://github.com/code-yeongyu/oh-my-openagent",
       "category": "productivity",
-      "keywords": ["planning", "prometheus", "atlas", "momus", "oracle", "delegation"],
+      "keywords": [
+        "planning",
+        "prometheus",
+        "atlas",
+        "momus",
+        "oracle",
+        "delegation"
+      ],
       "license": "MIT (code) / SUL-1.0 (derived prompt assets)"
     }
   ]
