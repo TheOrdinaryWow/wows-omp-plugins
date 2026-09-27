@@ -148,18 +148,36 @@ per session.
 
 ## Testing a plugin locally
 
-`omp://marketplace.md` has the current install/uninstall commands. What it will
-not tell you, and what makes local testing actually catch bugs:
+Two marketplaces, one per purpose:
 
-- Install with `--scope project`. State goes to `<repo>/.omp/`, which is
-  gitignored and disposable; user scope leaves residue on the machine.
-- Installation caches a **copy** under `~/.omp/plugins/cache/plugins/`.
-  Reinstall with `--force` after every edit and verify against the cached path,
-  never the source tree. Failures that only appear once the plugin has left this
-  repo — an invalid `imports` key, a stray runtime dependency — are invisible
-  from here. That is how the `#/*` breakage above was found.
-- Clean up when done: uninstall, remove the marketplace registration, delete
-  `<repo>/.omp/`.
+|Name|Source|Scope|Use|
+|---|---|---|---|
+|`wows-omp-plugins`|`TheOrdinaryWow/wows-omp-plugins` (GitHub)|user|released versions, same as any installing user|
+|`wows-omp-plugins-dev`|`.omp/dev-marketplace/` (local copy)|project|this working tree|
+
+Never register the release marketplace from a local path: `omp plugin upgrade`
+then reads the local catalog, which lags GitHub until you pull, and ships
+unreleased edits as if they were released.
+
+`bun run dev:plugins [name…]` copies `plugins/` and the catalog into
+`.omp/dev-marketplace/`, registers or refreshes `wows-omp-plugins-dev`, and
+force-reinstalls the plugins at project scope. Rerun it after every edit and
+restart the session. `bun run dev:plugins --remove` uninstalls them and drops the
+dev marketplace. Facts behind this design, verified on omp 18.3.5:
+
+- omp rejects plugin sources that resolve outside the marketplace root, so the
+  dev marketplace must be a real copy; a symlink to `plugins/` fails to install.
+- Two installs sharing a runtime package name cannot live in the same scope.
+  Project scope avoids the clash, and an enabled project install shadows the
+  user install, so sessions in this repo run the dev copy while every other
+  directory keeps the released one.
+- Installation caches another copy under `~/.omp/plugins/cache/plugins/`.
+  Verify against that cached path, never the source tree. Failures that only
+  appear once the plugin has left this repo — an invalid `imports` key, a stray
+  runtime dependency — are invisible from here. That is how the `#/*` breakage
+  above was found.
+- `omp plugin link` is not a substitute: it registers an npm-style plugin at
+  user scope, overriding the release install everywhere.
 
 ## Linter / formatter (Biome only)
 

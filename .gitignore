@@ -39,5 +39,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # agent harness scratch
 .omo
 
-# project-scope plugin installs (local plugin testing)
+# project-scope plugin installs and the dev marketplace copy (local plugin testing)
 .omp/plugins
+.omp/dev-marketplace
