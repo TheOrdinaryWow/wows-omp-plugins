@@ -10,13 +10,11 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { findScopedSettings, type Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
-import { cfgExtensionHandlersToolCallTimeoutMs } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 import { type JudgmentUsageLedger, journalJudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
-import { cfgTaskAgentModelOverrides } from "@oh-my-pi/pi-coding-agent/task/settings";
 
+import { readHostSetting } from "#src/host-settings.ts";
 import {
   acceptRoutingDecision,
   type IntegrationMode,
@@ -147,9 +145,8 @@ function selectedModel(patterns: readonly string[], settings: Settings, ctx: Ext
   return resolved.explicitThinkingLevel && resolved.thinkingLevel ? `${selector}:${resolved.thinkingLevel}` : selector;
 }
 
-function fallbackChain(patterns: readonly string[], role: string | undefined, settings: Settings): string[] {
+function fallbackChain(patterns: readonly string[], role: string | undefined, chains: Record<string, unknown>): string[] {
   if (patterns.length > 1) return patterns.slice(1);
-  const chains = cfgRetryFallbackChains.get(settings);
   const inherited = chains[role ?? "default"] ?? (role ? chains.default : undefined);
   return Array.isArray(inherited) ? inherited.filter((entry): entry is string => typeof entry === "string") : [];
 }
@@ -173,7 +170,8 @@ async function discoverStandardCandidates(
   const agents = deduplicateAgents([...discovery.agents, ...(currentSession?.getSessionAgents() ?? [])]);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
   const blockedAgent = process.env.PI_BLOCKED_AGENT?.trim();
-  const modelOverrides = cfgTaskAgentModelOverrides.get(settings) as Record<string, string | string[] | undefined>;
+  const modelOverrides = (await readHostSetting(settings, "task.agentModelOverrides")) as Record<string, string | string[] | undefined>;
+  const fallbackChains = (await readHostSetting(settings, "retry.fallbackChains")) as Record<string, unknown>;
   const activeModelPattern = ctx.model ? formatModelStringWithRouting(ctx.model) : undefined;
 
   return legalNames
@@ -199,7 +197,7 @@ async function discoverStandardCandidates(
           patterns: selection.patterns,
           ...(selection.role ? { role: selection.role } : {}),
           ...(selected ? { selected } : {}),
-          fallbackChain: fallbackChain(selection.patterns, selection.role, settings),
+          fallbackChain: fallbackChain(selection.patterns, selection.role, fallbackChains),
         },
       } satisfies RoutingCandidate;
     });
@@ -318,7 +316,7 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
       const config = await effectivePluginSettings(ctx.cwd);
       const apiKey = requireJevApiKey(config);
       const settings = scopedSettings(ctx);
-      const deadlineMs = standardRoutingDeadlineMs(cfgExtensionHandlersToolCallTimeoutMs.get(settings));
+      const deadlineMs = standardRoutingDeadlineMs(await readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
       if (deadlineMs === undefined) return undefined;
       const taskTool = pi.getAllTools().find((tool) => tool.name === "task");
       const legalNames = taskTool ? parseLegalAgentNames(taskTool.description) : undefined;

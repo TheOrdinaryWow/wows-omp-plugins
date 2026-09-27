@@ -14,6 +14,8 @@ omp plugin install jev-dispatch@wows-omp-plugins
 
 Restart the session afterwards so the extension can register.
 
+Requires OMP 18.2.7 or newer.
+
 The plugin needs a TypeSafe API key before it can route anything; see
 [TypeSafe API key](#typesafe-api-key). It authenticates directly with TypeSafe
 through OMP's native client, separately from the host's `judge` role and login

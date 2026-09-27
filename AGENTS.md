@@ -109,6 +109,12 @@ It also derives its legal agent set from the live `task` tool description and
 bootstraps per session through `session_start` (never `process.cwd()`), because
 plugin settings are project-scoped and several sessions can share one process.
 
+Its runtime floor is omp 18.2.7, older than the dev dependency it compiles
+against. Host APIs that changed shape since then go through feature detection,
+as `src/host-settings.ts` does for `Settings.get` versus the setting registry.
+Before relying on a new host API, type-check a throwaway copy against 18.2.7
+(`bun add -d @oh-my-pi/pi-coding-agent@18.2.7`) and keep a fallback.
+
 Jev credentials are plugin-scoped: `TYPESAFE_API_KEY` wins over the secret
 `apiKey` setting. Neither the OMP login store nor its `judge` chain is a fallback.
 Missing keys block spawning; network failures still preserve the original
