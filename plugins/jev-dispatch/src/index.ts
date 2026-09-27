@@ -10,9 +10,12 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { findScopedSettings, type Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
+import { cfgExtensionHandlersToolCallTimeoutMs } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 import { type JudgmentUsageLedger, journalJudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
+import { cfgTaskAgentModelOverrides } from "@oh-my-pi/pi-coding-agent/task/settings";
 
 import {
   acceptRoutingDecision,
@@ -146,7 +149,7 @@ function selectedModel(patterns: readonly string[], settings: Settings, ctx: Ext
 
 function fallbackChain(patterns: readonly string[], role: string | undefined, settings: Settings): string[] {
   if (patterns.length > 1) return patterns.slice(1);
-  const chains = settings.get("retry.fallbackChains");
+  const chains = cfgRetryFallbackChains.get(settings);
   const inherited = chains[role ?? "default"] ?? (role ? chains.default : undefined);
   return Array.isArray(inherited) ? inherited.filter((entry): entry is string => typeof entry === "string") : [];
 }
@@ -170,7 +173,7 @@ async function discoverStandardCandidates(
   const agents = deduplicateAgents([...discovery.agents, ...(currentSession?.getSessionAgents() ?? [])]);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
   const blockedAgent = process.env.PI_BLOCKED_AGENT?.trim();
-  const modelOverrides = settings.get("task.agentModelOverrides") as Record<string, string | string[] | undefined>;
+  const modelOverrides = cfgTaskAgentModelOverrides.get(settings) as Record<string, string | string[] | undefined>;
   const activeModelPattern = ctx.model ? formatModelStringWithRouting(ctx.model) : undefined;
 
   return legalNames
@@ -315,7 +318,7 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
       const config = await effectivePluginSettings(ctx.cwd);
       const apiKey = requireJevApiKey(config);
       const settings = scopedSettings(ctx);
-      const deadlineMs = standardRoutingDeadlineMs(settings.get("extensionHandlers.toolCallTimeoutMs"));
+      const deadlineMs = standardRoutingDeadlineMs(cfgExtensionHandlersToolCallTimeoutMs.get(settings));
       if (deadlineMs === undefined) return undefined;
       const taskTool = pi.getAllTools().find((tool) => tool.name === "task");
       const legalNames = taskTool ? parseLegalAgentNames(taskTool.description) : undefined;
