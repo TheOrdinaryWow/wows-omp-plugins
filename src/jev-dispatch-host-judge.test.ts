@@ -116,11 +116,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
     const sessionReports: SessionReport[] = [];
     for (const [sessionIndex, session] of scenario.sessions.entries()) {
       const settings = await Settings.loadIsolated({ cwd: session.project, agentDir });
-      const registry = new ModelRegistry(
-        await discoverAuthStorage(agentDir, { settings, cwd: session.project }),
-        join(agentDir, "models.yml"),
-        { settings },
-      );
+      const registry = new ModelRegistry(await discoverAuthStorage(agentDir), join(agentDir, "models.yml"), { settings });
       const handlers = new Map<string, TestHandler[]>();
       const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [] };
 
