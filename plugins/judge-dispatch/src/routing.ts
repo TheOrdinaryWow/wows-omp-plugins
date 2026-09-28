@@ -61,7 +61,6 @@ const STANDARD_MAX_DEADLINE_MS = 8_000;
 const TOOL_CALL_SAFETY_MARGIN_MS = 1_000;
 const MINIMUM_USEFUL_DEADLINE_MS = 250;
 
-/** Select exactly one routing event surface for a session-bound extension instance. */
 export function selectRoutingSurface(mode: IntegrationMode, apiVersion: unknown): RoutingSurfaceSelection {
   if (mode === "enhanced" && apiVersion === 2) {
     return { surface: "enhanced", warnAboutEnhancedFallback: false };
@@ -104,7 +103,6 @@ function compactDescription(value: string): string {
 }
 
 function optionalNonEmptyString(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
@@ -152,7 +150,6 @@ export function parseTaskInput(input: unknown): ParsedTaskRoute[] | undefined {
   ];
 }
 
-/** Clone only records whose agent changes, preserving effort and every unrelated field. */
 export function rewriteTaskAgents(
   input: Record<string, unknown>,
   routes: readonly ParsedTaskRoute[],
