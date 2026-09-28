@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.2.0...omo-prometheus@0.3.0) (2026-09-28)
+
+
+### Features
+
+* **omo-prometheus:** run final gates on fresh children and gate metis and momus to planning ([5ae80f9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/5ae80f9dbd5d4a3ba33f1ce4208679beb3fe4662))
+
 ## [0.2.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.1.0...omo-prometheus@0.2.0) (2026-09-28)
 
 
