@@ -22,7 +22,7 @@ const plan = `# Work plan
   - Depends on: T1
   - Acceptance: changed behavior observed
 - [~] T3. Check downstream behavior
-  - Agent: qa-executor
+  - Agent: deep-low
   - Depends on: T2
   - Acceptance: exercised real interface
 
@@ -40,7 +40,7 @@ describe("Prometheus execution ledger", () => {
     expect(result.items.map(({ id, agent, dependsOn, status }) => ({ id, agent, dependsOn, status }))).toEqual([
       { id: "T1", agent: "deep-low", dependsOn: [], status: "done" },
       { id: "T2", agent: "sonic", dependsOn: ["T1"], status: "open" },
-      { id: "T3", agent: "qa-executor", dependsOn: ["T2"], status: "in_progress" },
+      { id: "T3", agent: "deep-low", dependsOn: ["T2"], status: "in_progress" },
     ]);
     expect(result.gates.map(({ id, status }) => ({ id, status }))).toEqual([
       { id: "F1", status: "done" },
@@ -90,21 +90,13 @@ describe("Prometheus execution ledger", () => {
   });
 
   test("persists installed agents or available fallbacks for tasks and gates", () => {
-    const toolkit = createLedger("local://example-plan.md", plan, [
-      "task",
-      "sonic",
-      "deep-low",
-      "qa-executor",
-      "momus",
-      "code-reviewer",
-      "gate-reviewer",
-    ]);
-    expect(toolkit.items.map((item) => item.dispatchAgent)).toEqual(["deep-low", "sonic", "qa-executor"]);
-    expect(toolkit.gates.map((gate) => gate.dispatchAgent)).toEqual(["momus", "code-reviewer", "qa-executor", "gate-reviewer"]);
+    const toolkit = createLedger("local://example-plan.md", plan, ["task", "sonic", "deep-low", "deep-high", "momus"]);
+    expect(toolkit.items.map((item) => item.dispatchAgent)).toEqual(["deep-low", "sonic", "deep-low"]);
+    expect(toolkit.gates.map((gate) => gate.dispatchAgent)).toEqual(["momus", "deep-high", "deep-low", "deep-high"]);
 
     const bundled = createLedger("local://example-plan.md", plan, ["task", "sonic", "scout", "reviewer"]);
     expect(bundled.items.map((item) => item.dispatchAgent)).toEqual(["task", "sonic", "task"]);
-    expect(bundled.gates.map((gate) => gate.dispatchAgent)).toEqual(["reviewer", "reviewer", "task", "reviewer"]);
+    expect(bundled.gates.map((gate) => gate.dispatchAgent)).toEqual(["reviewer", "task", "task", "task"]);
     expect(renderLedgerSummary(bundled)).toContain("deep-low -> task");
     expect(renderLedgerSummary(bundled)).toContain("momus -> reviewer");
     expect(createLedger("local://example-plan.md", plan).items[0]?.dispatchAgent).toBe("deep-low");
@@ -119,7 +111,7 @@ describe("Prometheus execution ledger", () => {
     expect(oldLedger.items[0]?.dispatchAgent).toBeUndefined(); // T1 was completed before the roster changed.
     expect(oldLedger.items[1]?.dispatchAgent).toBe("task");
     expect(oldLedger.gates[0]?.dispatchAgent).toBeUndefined(); // F1 was completed before the roster changed.
-    expect(oldLedger.gates[1]?.dispatchAgent).toBe("reviewer");
+    expect(oldLedger.gates[1]?.dispatchAgent).toBe("task");
     expect(refreshDispatchAgents(oldLedger, ["task", "reviewer"])).toBe(false);
     expect(refreshDispatchAgents(oldLedger, ["task", "sonic", "reviewer"])).toBe(true);
     expect(oldLedger.items[1]?.dispatchAgent).toBe("sonic");

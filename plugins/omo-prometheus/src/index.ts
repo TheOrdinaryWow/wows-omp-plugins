@@ -47,6 +47,7 @@ import {
   planReferencesMatch,
   prometheusArtifactUrl,
   proposedPlanPathFromToolResult,
+  taskSpawnBlockReason,
 } from "./workflow.ts";
 
 const ACTIVATE_TOOL = "prometheus_activate";
@@ -985,6 +986,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!live) return undefined;
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (event.toolName === "ask" && record) record.pendingConsent = undefined;
+    if (event.toolName === "task") {
+      const taskSpawnDetail = taskSpawnBlockReason(record?.phase, event.input);
+      if (taskSpawnDetail) return { block: true, reason: taskSpawnDetail };
+    }
     if (record?.phase !== "executing") return undefined;
 
     let detail = executionBlockReason(event.toolName, event.input);

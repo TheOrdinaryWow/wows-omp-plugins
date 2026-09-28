@@ -96,9 +96,9 @@ The resolver tries the requested name first, then these fallbacks in order (only
 
 |Requested agent|Fallback chain|
 |---|---|
-|`deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `qa-executor`|`task`|
+|`deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`|`task`|
 |`librarian`|`scout` → `task`|
-|`metis`, `momus`, `oracle`, `code-reviewer`, `gate-reviewer`|`reviewer` → `task`|
+|`metis`, `momus`, `oracle`|`reviewer` → `task`|
 |`sonic`, `scout`, `reviewer`, `security-reviewer`|`task`|
 |`task`|none|
 
@@ -125,9 +125,9 @@ After every `T` row is done, Atlas dispatches the four gates to separate verific
 |Gate|Agent|Fallback|Checks|
 |---|---|---|---|
 |F1. Plan compliance review|`momus` (`review_kind: compliance`)|`reviewer`|executed changes match the approved plan, using the ledger summary and `git diff --stat`|
-|F2. Code quality review|`code-reviewer` (omo-toolkit)|`reviewer`|quality of the changed code|
-|F3. Real-surface QA|`qa-executor` (omo-toolkit)|`task`|the plan's Verification section run on the real surface|
-|F4. Success-criteria fidelity|`gate-reviewer` (omo-toolkit)|`reviewer`|every plan outcome against the collected evidence|
+|F2. Code quality review|`deep-high`|`task`|maintainability, scope, test value, and AI-slop review with CLEAR/WATCH/BLOCK report|
+|F3. Real-surface QA|`deep-low`|`task`|every scenario in the plan's Verification section run on the real surface with command and observed result|
+|F4. Success-criteria fidelity|`deep-high`|`task`|independent evidence audit with APPROVE/REJECT and criterion-tied blockers|
 
 A rejected gate reopens the `T` rows it names; Atlas re-runs those rows and then only the failed gate.
 

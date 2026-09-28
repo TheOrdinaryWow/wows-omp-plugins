@@ -30,9 +30,9 @@ const ROW = /^- \[([ xX~])\] (T\d+|F[1-4])\. (.+)$/;
 const AGENT_NAME = /^[A-Za-z0-9_-]+$/;
 const GATES = [
   { id: "F1", title: "Plan compliance review", agent: "momus" },
-  { id: "F2", title: "Code quality review", agent: "code-reviewer" },
-  { id: "F3", title: "Real-surface QA", agent: "qa-executor" },
-  { id: "F4", title: "Success-criteria fidelity", agent: "gate-reviewer" },
+  { id: "F2", title: "Code quality review", agent: "deep-high" },
+  { id: "F3", title: "Real-surface QA", agent: "deep-low" },
+  { id: "F4", title: "Success-criteria fidelity", agent: "deep-high" },
 ] as const;
 
 type ParsedItem = Omit<LedgerItem, "updatedAt">;

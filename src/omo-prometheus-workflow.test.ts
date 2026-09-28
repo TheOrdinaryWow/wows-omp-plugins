@@ -10,6 +10,7 @@ import {
   PROMETHEUS_OPT_IN_QUESTION_ID,
   parsePrometheusCommand,
   proposedPlanPathFromToolResult,
+  taskSpawnBlockReason,
 } from "../plugins/omo-prometheus/src/workflow.ts";
 
 const optInInput = {
@@ -126,5 +127,36 @@ describe("Atlas execution guard", () => {
     expect(executionToolSourceBlockReason("prometheus_ledger", "extension", true)).toBeUndefined();
     expect(executionToolSourceBlockReason("prometheus_ledger", "extension", false)).toBeTruthy();
     expect(executionToolSourceBlockReason("prometheus_ledger", "mcp", false)).toBeTruthy();
+  });
+});
+
+describe("plan-gated reviewer spawns", () => {
+  test("allows both gated reviewers during planning", () => {
+    expect(taskSpawnBlockReason("planning", { task: "Review the planning gap", agent: "metis" })).toBeUndefined();
+  });
+
+  test("blocks gated reviewers while idle or without a session record", () => {
+    const input = { task: "Review the plan", agent: "momus" };
+    expect(taskSpawnBlockReason("idle", input)).toContain("reviewer");
+    expect(taskSpawnBlockReason(undefined, input)).toContain("reviewer");
+  });
+
+  test("allows only Momus compliance review during execution", () => {
+    expect(taskSpawnBlockReason("executing", { task: "F1 review_kind: compliance", agent: "momus" })).toBeUndefined();
+    expect(taskSpawnBlockReason("executing", { task: "Review the plan", agent: "momus" })).toContain("reviewer");
+    expect(taskSpawnBlockReason("executing", { task: "F1 review_kind: compliance", agent: "metis" })).toContain("reviewer");
+  });
+
+  test("rejects a batch containing a disallowed gated reviewer", () => {
+    expect(
+      taskSpawnBlockReason("executing", {
+        context: "Run independent checks.",
+        tasks: [
+          { task: "F1 review_kind: compliance", agent: "momus" },
+          { task: "Consult for planning gaps", agent: "metis" },
+          { task: "Run tests", agent: "task" },
+        ],
+      }),
+    ).toContain("reviewer");
   });
 });

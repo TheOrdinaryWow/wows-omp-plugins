@@ -92,7 +92,7 @@ Write the complete plan with `write` to `local://<slug>-plan.md` while native pl
 After approval the runtime parses these two sections into a durable execution ledger that drives Atlas progress, continuation, and release. A plan that breaks this grammar executes without a ledger, so Momus rejects it.
 
 - A top-level `## Tasks` section where every task is one markdown checkbox row at column 0: `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order. The task body is indented sub-bullets under its row and must contain three lines: `Agent: <name>`, `Depends on: <comma-separated T-ids, or none>`, and `Acceptance: <observable check>`.
-- `Agent:` names the requested child agent. Use the `<available-agents>` block injected into the planning context: pick the most specific listed specialist for each task, preferring installed omo-toolkit specialists over generic `task`/`sonic`. User-defined agents are valid when listed there. An unlisted name is allowed only if it has a known fallback: `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, and `qa-executor` → `task`; `librarian` → `scout` → `task`; `metis`, `momus`, `oracle`, `code-reviewer`, `gate-reviewer` → `reviewer` → `task`; `sonic`, `scout`, `reviewer`, `security-reviewer` → `task`. `task` itself has no fallback. If the list is unavailable, use only these known names. Runtime records both the requested and resolved dispatch agent; do not invent another fallback.
+- `Agent:` names the requested child agent. Use the `<available-agents>` block injected into the planning context: pick the most specific listed specialist for each task, preferring installed omo-toolkit specialists over generic `task`/`sonic`. User-defined agents are valid when listed there. An unlisted name is allowed only if it has a known fallback: `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, and `writing` → `task`; `librarian` → `scout` → `task`; `metis`, `momus`, and `oracle` → `reviewer` → `task`; `sonic`, `scout`, `reviewer`, and `security-reviewer` → `task`; `task` itself has no fallback. If the list is unavailable, use only these known names. Runtime records both the requested and resolved dispatch agent; do not invent another fallback.
 - A `## Final gates` section after it with exactly these four rows and no others:
 
 ```markdown
@@ -115,6 +115,8 @@ A task row and its body look like this:
 ```
 
 Other sections may use checkboxes freely; only rows at column 0 under these two headings are ledger rows. Every row starts unchecked (`- [ ]`).
+
+After all task rows are complete, the four separate verification children use the ledger's resolved gate agents: F1 requests `momus` with `review_kind: compliance`; F2 and F4 request `deep-high` (fallback `task`); F3 requests `deep-low` (fallback `task`).
 
 Size the plan to the work. Split slices where they are genuinely independent, and keep one cohesive task when splitting would sever shared reasoning. **Do not pad**: no template sections that carry no content, no invented phases, no minimum number of tasks, children, or verification lanes, and no implementation minutiae a competent worker derives from the code you already referenced.
 

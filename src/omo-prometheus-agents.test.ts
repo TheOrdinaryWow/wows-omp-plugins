@@ -14,8 +14,8 @@ Read-only investigation
 Code review
 ### librarian
 External research
-### code-reviewer
-Code quality
+### deep-high
+High-effort investigation
 ### custom-worker
 User-defined agent
 `;
@@ -27,13 +27,13 @@ const currentDescription = `Spawn tasks[] concurrently.
 - \`scout\` (READ-ONLY; investigation only): Read-only investigation
 - \`reviewer\`: Code review
 - \`librarian\`: External research
-- \`code-reviewer\`: Code quality
+- \`deep-high\`: High-effort investigation
 - \`custom-worker\`: User-defined agent
 `;
 
 describe("Prometheus live agent routing", () => {
   test("parses the available-agent section in legacy and current task descriptions", () => {
-    const expected = ["task", "scout", "reviewer", "librarian", "code-reviewer", "custom-worker"];
+    const expected = ["task", "scout", "reviewer", "librarian", "deep-high", "custom-worker"];
     expect(parseLegalAgentNames(legacyDescription)).toEqual(expected);
     expect(parseLegalAgentNames(currentDescription)).toEqual(expected);
     expect(parseLegalAgentNames("# Available Agents\nAgent spawning is currently disabled.")).toEqual([]);
@@ -45,10 +45,10 @@ describe("Prometheus live agent routing", () => {
     const toolkit = parseLegalAgentNames(currentDescription);
     const bundled = ["task", "sonic", "scout", "reviewer"];
     expect(resolveAgent("librarian", toolkit)).toEqual({ dispatchAgent: "librarian", fellBack: false });
-    expect(resolveAgent("code-reviewer", toolkit)).toEqual({ dispatchAgent: "code-reviewer", fellBack: false });
+    expect(resolveAgent("deep-high", toolkit)).toEqual({ dispatchAgent: "deep-high", fellBack: false });
     expect(resolveAgent("librarian", bundled)).toEqual({ dispatchAgent: "scout", fellBack: true });
-    expect(resolveAgent("code-reviewer", bundled)).toEqual({ dispatchAgent: "reviewer", fellBack: true });
-    expect(resolveAgent("qa-executor", bundled)).toEqual({ dispatchAgent: "task", fellBack: true });
+    expect(resolveAgent("deep-high", bundled)).toEqual({ dispatchAgent: "task", fellBack: true });
+    expect(resolveAgent("deep-low", bundled)).toEqual({ dispatchAgent: "task", fellBack: true });
     expect(resolveAgent("librarian", ["task"])).toEqual({ dispatchAgent: "task", fellBack: true });
     expect(resolveAgent("momus", ["task"])).toEqual({ dispatchAgent: "task", fellBack: true });
     expect(resolveAgent("librarian", [])).toEqual({ dispatchAgent: undefined, fellBack: false });

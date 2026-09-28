@@ -31,6 +31,60 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
+export type PrometheusPhase = "idle" | "planning" | "executing";
+
+interface ParsedTaskSpawn {
+  assignment: string;
+  requestedAgent?: string;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+/** Parse the ordinary single and batch task-tool shapes without importing another plugin. */
+function parseTaskSpawns(input: unknown): ParsedTaskSpawn[] | undefined {
+  const args = record(input);
+  if (!args) return undefined;
+  if (Object.hasOwn(args, "tasks")) {
+    if (!Array.isArray(args.tasks) || args.tasks.length === 0 || Object.hasOwn(args, "task") || !nonEmptyString(args.context)) {
+      return undefined;
+    }
+    const routes: ParsedTaskSpawn[] = [];
+    for (const rawItem of args.tasks) {
+      const item = record(rawItem);
+      const assignment = nonEmptyString(item?.task);
+      if (!item || !assignment || (Object.hasOwn(item, "agent") && typeof item.agent !== "string")) return undefined;
+      routes.push({ assignment, requestedAgent: nonEmptyString(item.agent) });
+    }
+    return routes;
+  }
+  const assignment = nonEmptyString(args.task);
+  if (!assignment || (Object.hasOwn(args, "agent") && typeof args.agent !== "string")) return undefined;
+  return [{ assignment, requestedAgent: nonEmptyString(args.agent) }];
+}
+
+const PLAN_GATED_AGENTS: Record<string, true> = { metis: true, momus: true };
+const PLAN_GATED_SPAWN_REASON =
+  "`metis` and `momus` are spawnable only during Prometheus planning; during Atlas execution only `momus` with `review_kind: compliance` is allowed for F1. Use `reviewer` outside planning.";
+
+/** Return a block reason for plan-gated reviewer spawns, or undefined for an allowed/ordinary task call. */
+export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: unknown): string | undefined {
+  const routes = parseTaskSpawns(input);
+  if (!routes) return undefined;
+  const gated = routes.filter((route) => route.requestedAgent && PLAN_GATED_AGENTS[route.requestedAgent] === true);
+  if (gated.length === 0 || phase === "planning") return undefined;
+  if (
+    phase === "executing" &&
+    gated.every((route) => route.requestedAgent === "momus" && /\breview_kind\s*:\s*compliance\b/.test(route.assignment))
+  ) {
+    return undefined;
+  }
+  return PLAN_GATED_SPAWN_REASON;
+}
+
 function stringArray(value: unknown): string[] | undefined {
   return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined;
 }
