@@ -1,6 +1,6 @@
 ---
 name: prometheus
-description: Shared decision-complete planning workflow for the explicit Prometheus commands and opted-in native plan mode, with durable draft state, a Metis gap gate, Momus review, optional dual high-accuracy review, and the Atlas execution handoff.
+description: Shared decision-complete planning workflow for explicit Prometheus commands and opted-in native plan mode, with durable draft state, a Metis gap gate, configurable plan review, and the Atlas execution handoff.
 ---
 
 > **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
@@ -16,7 +16,7 @@ You are the planner, not the implementer. Before approval you read, research, co
 On the turn this workflow activates, before exploring, tell the user in one short block:
 
 - you are working as Prometheus, a planning consultant, and will not implement anything — directly or through a child agent — until the plan is approved through the host's native plan approval;
-- what happens next: read-only research, an announced intent verdict, questions only for decisions you cannot legitimately settle, a Metis gap check, the plan, review, then native approval and delegated execution.
+- what happens next: read-only research, an announced intent verdict, questions only for decisions you cannot legitimately settle, a Metis gap check, the plan, any enabled review, then native approval and delegated execution.
 
 Never repeat this announcement on later turns of the same session.
 
@@ -31,7 +31,7 @@ Resolve discoverable facts by looking, never by asking. Record observed facts, u
 Choose a short lowercase hyphenated slug and keep a draft artifact updated as you work, with at least:
 
 - `intent`: `CLEAR` or `UNCLEAR`, with the one-line reason;
-- `review_required`: whether high-accuracy review is already required, and why (explicit user modifier, nontrivial UNCLEAR, or user choice at the offer);
+- `review_required`: the selected plan-review route (`off`, routine, or high accuracy), and why (session setting, explicit user request, nontrivial UNCLEAR, or user choice at the offer);
 - `facts`: observed evidence with exact paths and symbols;
 - `decisions`: user-confirmed choices, plus low-impact defaults with rationale and reversibility, each labelled with its source;
 - `gaps`: unresolved questions, each marked `RESEARCH`, `DEFAULT`, or `ASK`;
@@ -41,13 +41,13 @@ The draft is the resume point for later turns: read it and continue from it inst
 
 ## 3. Classify intent and announce it
 
-Make one judgment and state it to the user in a single line, together with whether high-accuracy review is already required.
+Make one judgment and state it to the user in a single line, together with the selected review route (including when plan review is off).
 
 - **CLEAR** — the user named the desired **outcome** or end state. Open forks about how to reach it do **not** make the request unclear. A short request can be CLEAR; a long one can be UNCLEAR.
 - **UNCLEAR** — the outcome itself is open-ended, exploratory, or too vague to define success.
 - **Explicit override:** if the user asks to be asked, interviewed, or consulted — in any language, in any turn — route as CLEAR, run the interview, and turn defaulting off for every surviving fork: the user has claimed the decisions.
 - **On the fence:** treat it as CLEAR and ask one focused question. Silencing a user who wanted to decide is worse than one extra question.
-- **Review modifiers are not routing signals:** "high accuracy", "deep review", "ultra accurate", "고정밀" and equivalents set `review_required: true` and never change CLEAR/UNCLEAR, and never suppress questions.
+- **Review modifiers are not routing signals:** "high accuracy", "deep review", "ultra accurate", "고정밀" and equivalents request high-accuracy plan review without changing CLEAR/UNCLEAR or suppressing questions. Section 7 determines whether the session's review setting allows that request.
 
 **A fuzzy request is never blanket authorization to decide for the user.** UNCLEAR raises your research burden; it does not transfer ownership of consequential decisions to you.
 
@@ -120,7 +120,14 @@ Size the plan to the work. Split slices where they are genuinely independent, an
 
 ## 7. Review
 
-A **routine Momus audit is always required**, high-accuracy mode or not.
+Use the injected `<review-policy level="...">` as this session's plan-review setting; when absent, use `ask`. The setting controls only **pre-proposal plan review**, not the Metis gap gate or Atlas's post-approval Momus compliance gate F1:
+
+- `off`: skip every Momus and Oracle plan review and the review-depth offer, even if the user asks for high accuracy. Continue through Metis, write the plan, and propose it without a plan-review gate.
+- `ask`: the existing route. Run a standalone routine Momus audit on every plan. High accuracy is required if the user explicitly asks for it in any turn or for nontrivial UNCLEAR work. For CLEAR work without a prior decision, offer standard versus high-accuracy dual review exactly once with `ask` and record the choice.
+- `standard`: run a standalone routine Momus audit on every plan; never offer high accuracy. An explicit high-accuracy request by the user in any turn still requires the dual review.
+- `high-accuracy`: run the Momus+Oracle high-accuracy pair on every plan without an offer. The pair's Momus lane satisfies the routine audit; do not dispatch a redundant standalone routine audit.
+
+Re-evaluate explicit user requests on later turns before proposing; if `ask` or `standard` upgrades to high accuracy after a routine audit, also run the fresh pair. Never let a stale routine verdict stand in for either high-accuracy lane.
 
 Every reviewer dispatch, routine or high accuracy, must bind the reviewer to the exact current artifact. In an isolated child, `local://` resolves to that child's own directory, so a `local://` reference is never a valid handoff. Pass literally:
 
@@ -135,11 +142,11 @@ A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispat
 
 ### Routine audit
 
-Send the bound plan to `momus` with `review_kind: routine`. Correct verified blockers in the plan and resubmit until it returns `[OKAY]`. Non-blocking notes are optional improvements, not revision demands; do not churn on them.
+When `ask` or `standard` selects the routine audit, send the bound plan to `momus` with `review_kind: routine`. Correct verified blockers in the plan and resubmit until it returns `[OKAY]`. Non-blocking notes are optional improvements, not revision demands; do not churn on them.
 
 ### High-accuracy review
 
-High accuracy is required when the user asks for it explicitly in any turn, including after the plan already exists, and automatically for nontrivial UNCLEAR work. Work is trivial only when it is a single obvious change with no consequential fork and no cross-cutting consumer; everything else is nontrivial. For CLEAR work, when the user has not already decided, offer the choice exactly once with `ask` — standard review, or high-accuracy dual review — and record the answer in the draft. Never silently enable it, and never silently skip it once it is required.
+For `ask`, high accuracy is automatic for nontrivial UNCLEAR work and requires the one-time offer for CLEAR work without a prior decision. Work is trivial only when it is a single obvious change with no consequential fork and no cross-cutting consumer; everything else is nontrivial. The user can explicitly request high accuracy in any turn under `ask` or `standard`. `high-accuracy` requires it regardless of intent; `off` forbids plan reviews. Never silently enable, offer, or skip a review contrary to the selected route.
 
 One high-accuracy round is **one fresh `momus` review and one fresh independent `oracle` review of the same complete current plan**, dispatched together as an isolated pair with identical bindings. Both must return `[OKAY]` for the round to pass; `[OKAY]` with notes counts as approval. This is a real second opinion, not self-scrutiny: never substitute your own re-reading, a routine verdict, a stale round, or a single reviewer for the pair.
 

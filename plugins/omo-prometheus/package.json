@@ -11,6 +11,19 @@
   "omp": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "settings": {
+      "reviewLevel": {
+        "type": "enum",
+        "values": [
+          "off",
+          "ask",
+          "standard",
+          "high-accuracy"
+        ],
+        "default": "ask",
+        "description": "Choose no plan review, the default review offer, routine Momus only, or Momus and Oracle on every plan"
+      }
+    }
   }
 }

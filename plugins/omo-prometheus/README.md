@@ -6,7 +6,7 @@ It keeps OMP's native Plan Mode and approval flow, then adds the workflow that m
 
 - Metis performs pre-planning intent and GAP analysis.
 - Prometheus asks only the questions that can change the plan, with an iterative clarification loop.
-- Momus reviews the drafted plan for blocking reference, executability, QA, and task-grammar gaps.
+- Configurable Momus and Oracle plan review checks blocking reference, executability, QA, and task-grammar gaps when enabled.
 - Oracle is available for architecture and high-risk decisions.
 - Atlas takes over after approval, delegates every plan task to child agents, tracks progress in a durable execution ledger, and runs four final verification gates before it may release.
 
@@ -46,6 +46,27 @@ The plugin leaves small, well-defined requests on the normal OMP path. For large
 After approval, the main session becomes Atlas. The execution prompt explicitly overrides OMP's delegation preference for this approved Prometheus plan, and the extension also blocks direct implementation tools in the parent session. Use `task` to assign work to child agents. Running `/prometheus` during execution toggles Atlas off and is the emergency escape hatch for the current session.
 
 Both approval choices hand off to Atlas. "Approve and execute" starts a fresh session: when the plan is proposed, the plugin writes a marker to `local://prometheus/<slug>.proposal.json`, which OMP copies into the new session together with the plan, so the handoff survives the session switch without any in-process state. A plan approved in ordinary Plan Mode has no marker and is left alone.
+
+## Settings
+
+The installed package name used by `omp plugin config` is
+`wows-omp-plugin-omo-prometheus`:
+
+```bash
+omp plugin config list wows-omp-plugin-omo-prometheus
+omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
+```
+
+| Setting | Values | Default | Effect |
+| ------- | ------ | ------- | ------ |
+| `reviewLevel` | `off` \| `ask` \| `standard` \| `high-accuracy` | `ask` | Controls pre-proposal plan review. |
+
+- `ask` retains the existing behavior: routine Momus review on every plan; high-accuracy Momus+Oracle review for an explicit request or nontrivial unclear work; a one-time choice for clear work.
+- `standard` runs routine Momus review without offering high accuracy, but an explicit request still upgrades to the Momus+Oracle pair.
+- `high-accuracy` always runs the Momus+Oracle pair without offering a choice.
+- `off` skips Momus and Oracle plan review entirely, even on an explicit high-accuracy request. Metis still checks planning gaps, and Atlas still runs the Momus compliance gate F1 after approval.
+
+OMP merges user settings with project overrides. The plugin reads the effective setting for each session's cwd at session startup; restart the session after changing it.
 
 ## Plan grammar
 

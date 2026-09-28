@@ -19,6 +19,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
@@ -60,6 +61,15 @@ const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
 const BLOCK_NOTICE_BURST_MS = 5_000;
 const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
+const PACKAGE_NAME = "wows-omp-plugin-omo-prometheus";
+
+type ReviewLevel = "off" | "ask" | "standard" | "high-accuracy";
+
+function parseReviewLevel(value: unknown): ReviewLevel {
+  if (value === undefined) return "ask";
+  if (value === "off" || value === "ask" || value === "standard" || value === "high-accuracy") return value;
+  throw new Error(`invalid reviewLevel ${JSON.stringify(value)}`);
+}
 
 type Phase = "idle" | "planning" | "executing";
 
@@ -93,6 +103,17 @@ function errorMessage(error: unknown): string {
 export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
   const authorizedActivationCalls = new Map<string, string>();
+  const reviewLevels = new Map<string, ReviewLevel>();
+
+  const loadReviewLevel = async (ctx: ExtensionContext): Promise<void> => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    try {
+      reviewLevels.set(sessionId, parseReviewLevel((await getPluginSettings(PACKAGE_NAME, ctx.cwd)).reviewLevel));
+    } catch (error) {
+      reviewLevels.set(sessionId, "ask");
+      pi.logger.warn("prometheus reviewLevel is invalid; using ask", { error: errorMessage(error) });
+    }
+  };
 
   const notify = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void => {
     try {
@@ -431,13 +452,16 @@ export default function prometheus(pi: ExtensionAPI): void {
       : '<available-agents status="unknown">The task tool\'s spawnable-agent list could not be parsed; use only known agents with documented fallbacks.</available-agents>';
     const guidance =
       "Choose the most specific listed specialist for each Agent: row; prefer installed specialist agents (including omo-toolkit) over task/sonic. Names not listed are allowed only when they have a known fallback. Pass this exact available-agents list (or unknown) into every Momus review binding.";
+    const reviewPolicy =
+      `<review-policy level="${reviewLevels.get(ctx.sessionManager.getSessionId()) ?? "ask"}">` +
+      "Apply this session's plan-review setting in section 7 of the planning skill.</review-policy>";
     try {
-      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${await loadPromptAsset(SKILL_ASSET)}`;
+      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${reviewPolicy}\n\n${await loadPromptAsset(SKILL_ASSET)}`;
     } catch (error) {
       const detail = errorMessage(error);
       pi.logger.warn("prometheus planning asset became unavailable", { error: detail });
       notify(ctx, `Prometheus planning instructions could not be loaded (${detail}).`, "error");
-      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}`;
+      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${reviewPolicy}`;
     }
   };
 
@@ -1067,6 +1091,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    await loadReviewLevel(ctx);
     const restored = rehydrate(ctx, true);
     await resumeLedger(ctx, restored);
     const executing = restored?.phase === "executing";
@@ -1075,6 +1100,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("session_switch", async (event, ctx) => {
     authorizedActivationCalls.clear();
+    await loadReviewLevel(ctx);
     if (event.reason === "new") {
       records.delete(ctx.sessionManager.getSessionId());
       await syncTools(false, false, false);
@@ -1102,6 +1128,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", (_event, ctx) => {
     records.delete(ctx.sessionManager.getSessionId());
+    reviewLevels.delete(ctx.sessionManager.getSessionId());
     authorizedActivationCalls.clear();
   });
 }

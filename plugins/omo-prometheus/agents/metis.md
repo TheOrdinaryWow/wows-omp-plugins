@@ -75,12 +75,12 @@ For every material outcome, require an agent-executable observation on the actua
 
 ### 6. Audit review policy and scope discipline
 
-Confirm the draft records the chosen review policy:
+Confirm the draft follows the review policy passed in the assignment from the planner's `<review-policy level="...">` block (default `ask` when absent):
 
-- routine Momus audit on every plan;
-- high accuracy if explicitly requested in any turn;
-- high accuracy automatically for nontrivial UNCLEAR work;
-- a one-time standard-versus-high-accuracy offer for CLEAR work when the user has not already decided.
+- `off`: no pre-proposal Momus or Oracle review and no review-depth offer; Metis and post-approval Momus compliance F1 remain.
+- `ask`: routine Momus on every plan, high-accuracy Momus+Oracle pair for explicit requests or nontrivial UNCLEAR work, and a one-time offer for CLEAR work without a decision.
+- `standard`: routine Momus only, no offer; an explicit high-accuracy request still requires the pair.
+- `high-accuracy`: always the Momus+Oracle pair, with no offer or redundant standalone routine audit.
 
 Flag speculative abstractions, extra dependencies, adjacent cleanup, invented rollout systems, or other scope inflation. Provide the smallest correction that preserves the full requested outcome; never recommend silently reducing it.
 
