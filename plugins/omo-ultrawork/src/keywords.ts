@@ -1,5 +1,7 @@
 const INJECTED_BLOCK = /<(omo-[a-z0-9-]+-pointer|ultrawork-mode|omo-ultrawork-reminder)>[\s\S]*?<\/\1>/gi;
 const INLINE_CODE = /(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
+// Comments, paired elements, then lone tags: the host ignores keywords in all of them.
+const HTML_REGION = /<!--[\s\S]*?(?:-->|$)|<([A-Za-z][A-Za-z0-9-]*)\b[^>]*>[\s\S]*?<\/\1\s*>|<\/?[A-Za-z][A-Za-z0-9-]*\b[^>]*>/g;
 
 // Mask non-newlines rather than remove them, preserving offsets and preventing false adjacent keywords.
 function mask(region: string): string {
@@ -22,6 +24,16 @@ function stripQuotedRegions(text: string): string {
     fenceStart.lastIndex = end;
   }
   return visible.replace(INLINE_CODE, mask);
+}
+
+/**
+ * Standalone-prose match under OMP's magic-keyword rules: exact case, no identifier/path/call neighbours, and
+ * nothing inside code or HTML/XML. The host's own matcher is not exposed to extensions.
+ */
+export function containsHostKeyword(text: string, word: string): boolean {
+  const escaped = word.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  const pattern = new RegExp(String.raw`(?<![\p{L}\p{N}_./\\-])(?<!::)${escaped}(?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()`, "u");
+  return pattern.test(stripQuotedRegions(text).replace(HTML_REGION, mask));
 }
 
 const DEFAULT_KEYWORDS = ["ulw", "ultrawork"];

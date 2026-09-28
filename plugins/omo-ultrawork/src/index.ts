@@ -7,7 +7,9 @@ import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugi
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 import { DIRECTIVE_ASSET, HYPERPLAN_ASSET, loadPromptAsset, RESEARCH_ASSET } from "#src/assets.ts";
+import { readHostSetting } from "#src/host-settings.ts";
 import { detectPointers, detectUltrawork, hasEmbeddedDirective } from "#src/keywords.ts";
+import { triggersOrchestrate } from "#src/orchestrate.ts";
 
 const STATE_ENTRY = "wows-omp-omo-ultrawork.state";
 const DIRECTIVE_MESSAGE = "wows-omp-omo-ultrawork.directive";
@@ -21,6 +23,8 @@ const ARMED_REMINDER =
   "<omo-ultrawork-reminder>ultrawork mode is already armed for this session - the ultrawork directive above remains binding; re-read it and continue.</omo-ultrawork-reminder>";
 const MASS_ULW_POINTER =
   "<omo-mass-ulw-pointer>The request names mass-ulw. Read skill://mass-ulw before decomposing the work and follow its wave and verification protocol.</omo-mass-ulw-pointer>";
+const ORCHESTRATE_CONFLICT =
+  "OMP's orchestrate keyword conflicts with ultrawork. Remove that word, or disable it with `omp config set magicKeywords.orchestrate false`.";
 const TODO_FANOUT_REMINDER = [
   "<system-reminder>",
   "ultrawork mode is active and this session just started its todo list. Before working any todo:",
@@ -142,16 +146,25 @@ export default function ultrawork(pi: ExtensionAPI): void {
     status(ctx, states.get(sessionId));
   };
 
-  pi.on("session_start", (_event, ctx) => {
+  const startSession = (ctx: ExtensionContext): void => {
     settings.delete(ctx.sessionManager.getSessionId());
     void settingsFor(ctx);
     rehydrate(ctx);
-  });
-  pi.on("session_switch", (_event, ctx) => {
-    settings.delete(ctx.sessionManager.getSessionId());
-    void settingsFor(ctx);
-    rehydrate(ctx);
-  });
+  };
+
+  const orchestrateConflict = async (session: AgentSession, text: string): Promise<boolean> => {
+    try {
+      return await triggersOrchestrate(text, session.getEnabledToolNames(), (id) => readHostSetting(session.settings, id));
+    } catch (error) {
+      pi.logger.warn("ultrawork could not read the orchestrate keyword settings; assuming the host default", {
+        error: errorMessage(error),
+      });
+      return true;
+    }
+  };
+
+  pi.on("session_start", (_event, ctx) => startSession(ctx));
+  pi.on("session_switch", (_event, ctx) => startSession(ctx));
   pi.on("session_branch", (_event, ctx) => rehydrate(ctx));
   pi.on("session_tree", (_event, ctx) => rehydrate(ctx));
 
@@ -170,7 +183,8 @@ export default function ultrawork(pi: ExtensionAPI): void {
   });
 
   pi.on("input", async (event, ctx) => {
-    if (!mainSession(ctx) || event.source === "extension" || event.text.trimStart().startsWith("/")) return undefined;
+    const session = mainSession(ctx);
+    if (!session || event.source === "extension" || event.text.trimStart().startsWith("/")) return undefined;
 
     const state = stateFor(ctx.sessionManager.getSessionId());
     const configured = state.mode ? undefined : await settingsFor(ctx);
@@ -185,6 +199,10 @@ export default function ultrawork(pi: ExtensionAPI): void {
       return undefined;
     }
     if (!state.mode && !keyword && pointers.length === 0) return undefined;
+    if (await orchestrateConflict(session, event.text)) {
+      ctx.ui.notify(`Ultrawork skipped for this message: ${ORCHESTRATE_CONFLICT}`, "warning");
+      return undefined;
+    }
 
     let content = "";
     if (state.mode || keyword) {
@@ -231,7 +249,8 @@ export default function ultrawork(pi: ExtensionAPI): void {
   const toggleCommand = {
     description: "Toggle persistent ultrawork mode for ordinary user input",
     handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
-      if (!mainSession(ctx)) {
+      const session = mainSession(ctx);
+      if (!session) {
         ctx.ui.notify("ultrawork runs in the main session only", "warning");
         return;
       }
@@ -250,6 +269,21 @@ export default function ultrawork(pi: ExtensionAPI): void {
         );
         return;
       }
+      const request = args.trim();
+      if (await orchestrateConflict(session, request)) {
+        ctx.ui.notify(`Ultrawork mode not enabled: ${ORCHESTRATE_CONFLICT}`, "warning");
+        return;
+      }
+      // With nothing to submit now, leave the directive to the next ordinary input so its orchestrate check applies.
+      if (!request && ctx.isIdle()) {
+        state.mode = true;
+        state.armed = false;
+        state.rearmPending = false;
+        persist(state);
+        status(ctx, state);
+        ctx.ui.notify("Ultrawork mode on", "info");
+        return;
+      }
 
       try {
         const content = `<ultrawork-mode>\n${await loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
@@ -263,7 +297,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
           { customType: DIRECTIVE_MESSAGE, content, display: false, attribution: "user" },
           { deliverAs: ctx.isIdle() ? "nextTurn" : "aside" },
         );
-        if (args.trim()) pi.sendUserMessage(args.trim());
+        if (request) pi.sendUserMessage(request);
       } catch (error) {
         ctx.ui.notify(`Ultrawork directive could not be loaded (${errorMessage(error)}).`, "error");
       }

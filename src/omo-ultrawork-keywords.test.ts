@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { detectPointers, detectUltrawork, hasEmbeddedDirective } from "../plugins/omo-ultrawork/src/keywords.ts";
+import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
+
+import { containsHostKeyword, detectPointers, detectUltrawork, hasEmbeddedDirective } from "../plugins/omo-ultrawork/src/keywords.ts";
+import { triggersOrchestrate } from "../plugins/omo-ultrawork/src/orchestrate.ts";
 
 describe("ultrawork keyword detection", () => {
   test("recognizes standalone triggers without matching longer identifiers", () => {
@@ -41,5 +44,50 @@ describe("ultrawork keyword detection", () => {
     }
     expect(detectPointers("ulw")).toEqual([]);
     expect(detectPointers("`mulw`\n~~~\nmeth\n~~~")).toEqual([]);
+  });
+});
+
+describe("orchestrate conflict detection", () => {
+  const settings =
+    (overrides: Record<string, boolean> = {}) =>
+    async (id: string) =>
+      overrides[id] ?? true;
+
+  test("agrees with the host's magic-keyword matcher", () => {
+    const samples = [
+      "ulw orchestrate the migration",
+      "orchestrate, then ship",
+      '"orchestrate" it',
+      "ulw `orchestrate` it",
+      "``a `orchestrate` b``",
+      "```\norchestrate\n```\nulw",
+      "~~~\norchestrate\n~~~",
+      "ulw orchestrated it",
+      "ulw Orchestrate it",
+      "ulw orchestrate.ts",
+      "foo::orchestrate",
+      "orchestrate() now",
+      "src/orchestrate here",
+      "re-orchestrate",
+      "<!-- orchestrate --> ulw",
+      "<note>orchestrate</note> ulw",
+      "<br> orchestrate",
+      "a < b orchestrate",
+    ];
+    for (const text of samples) {
+      expect({ text, match: containsHostKeyword(text, "orchestrate") }).toEqual({ text, match: containsMagicKeyword(text, "orchestrate") });
+    }
+  });
+
+  test("requires the host to recognize orchestrate in the message", async () => {
+    expect(await triggersOrchestrate("ulw orchestrate the migration", ["task"], settings())).toBe(true);
+    expect(await triggersOrchestrate("ulw `orchestrate` it", ["task"], settings())).toBe(false);
+  });
+
+  test("ignores orchestrate when the host keyword is disabled or task is inactive", async () => {
+    const text = "ulw orchestrate the migration";
+    expect(await triggersOrchestrate(text, [], settings())).toBe(false);
+    expect(await triggersOrchestrate(text, ["task"], settings({ "magicKeywords.orchestrate": false }))).toBe(false);
+    expect(await triggersOrchestrate(text, ["task"], settings({ "magicKeywords.enabled": false }))).toBe(false);
   });
 });
