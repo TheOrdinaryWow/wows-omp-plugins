@@ -32,16 +32,6 @@ const ROUND_TOOL = "audit_round";
 const LOOP_TOOLS = ["goal", ROUND_TOOL];
 const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
 
-/** Present on hosts whose subagent lifecycle hook can refuse a spawn; older hosts never emit it. */
-interface SubagentSpawnEvent {
-  agent?: unknown;
-  invocationKind?: unknown;
-}
-type SubagentSpawnOn = (
-  event: "before_subagent_spawn",
-  handler: (event: SubagentSpawnEvent, ctx: ExtensionContext) => { block: true; reason: string } | undefined,
-) => void;
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -462,8 +452,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     inflight.delete(ctx.sessionManager.getSessionId());
   });
 
-  const spawnOn = pi.on as unknown as SubagentSpawnOn;
-  spawnOn.call(pi, "before_subagent_spawn", (event, ctx) => {
+  pi.on("before_subagent_spawn", (event, ctx) => {
     if (!isAuditAgent(event.agent)) return undefined;
     if (event.invocationKind === "eval") {
       return { block: true, reason: "audit-auditor and audit-fixer are dispatched only through the task tool by the /audit loop." };

@@ -10,8 +10,8 @@ the goal carries an audit protocol, a round ledger, and two reserved agents.
 omp plugin install audit-goal@wows-omp-plugins
 ```
 
-Restart the session after installing. Goal mode must be enabled
-(`goal.enabled`, the default).
+Requires OMP 18.2.11 or newer. Restart the session after installing. Goal mode
+must be enabled (`goal.enabled`, the default).
 
 ## Usage
 
@@ -88,9 +88,8 @@ Sessions without an interactive UI stop at the limit.
 
 `audit-auditor` (read-only) and `audit-fixer` appear in the `task` agent list of
 every session, because OMP cannot hide plugin agents. The plugin refuses to
-dispatch them outside a running `/audit` loop or from subagents. On OMP versions
-with the `before_subagent_spawn` hook it also refuses them through `eval`
-`agent()`. Both are blocking: the main agent waits for each batch.
+dispatch them outside a running `/audit` loop, from subagents, or through
+`eval` `agent()`. Both are blocking: the main agent waits for each batch.
 `judge-dispatch` from this marketplace never routes to or away from them.
 
 ## Behavior notes
