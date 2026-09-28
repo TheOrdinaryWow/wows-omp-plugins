@@ -26,7 +26,7 @@ Research and review agents:
 
 |Agent|Use for|Default model role|
 |---|---|---|
-|`librarian`|Read-only open-source research with GitHub permalinks and official documentation|`@smol`|
+|`librarian`|Read-only open-source research with GitHub permalinks and official documentation; thinking off for speed|`@smol`|
 |`code-reviewer`|Final code-quality review; writes `local://reviews/<goal-slug>-code-review.md`|`@slow`|
 |`qa-executor`|Real-surface manual QA; writes `local://reviews/<goal-slug>-manual-qa.md`|`@task`|
 |`gate-reviewer`|Final evidence-backed approval or rejection; writes `local://reviews/<goal-slug>-gate-review.md`|`@slow`|
