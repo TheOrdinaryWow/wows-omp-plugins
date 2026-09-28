@@ -22,6 +22,7 @@ import {
   parseTaskInput,
   type RoutingCandidate,
   rewriteTaskAgents,
+  routableCandidates,
   type SerializedCandidate,
   selectRoutingSurface,
   serializeCandidate,
@@ -212,13 +213,14 @@ function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
 
 async function routeAgent(
   route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
-  candidates: readonly RoutingCandidate[],
+  allCandidates: readonly RoutingCandidate[],
   config: JudgeDispatchSettings,
   judge: ChainJudge,
   signal: AbortSignal,
 ): Promise<string | undefined | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
-  if (candidates.length < 2) return undefined;
+  const candidates = routableCandidates(route.requestedAgent, allCandidates);
+  if (!candidates || candidates.length < 2) return undefined;
   const serialized = candidates.map(serializeCandidate);
   const criteria = Object.fromEntries(serialized.map((candidate) => [candidate.name, candidateCriterion(candidate)]));
   const state = {

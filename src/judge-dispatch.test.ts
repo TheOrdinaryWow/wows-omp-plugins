@@ -5,6 +5,7 @@ import {
   parseLegalAgentNames,
   parseTaskInput,
   rewriteTaskAgents,
+  routableCandidates,
   selectRoutingSurface,
   serializeCandidate,
   standardRoutingDeadlineMs,
@@ -142,6 +143,19 @@ describe("legal agent extraction", () => {
 
   test("returns undefined when the section is absent so callers can fail open", () => {
     expect(parseLegalAgentNames("Delegate work to ONE background subagent per call.")).toBeUndefined();
+  });
+});
+
+describe("reserved audit agents", () => {
+  const candidates = [{ name: "task" }, { name: "audit-auditor" }, { name: "scout" }, { name: "audit-fixer" }];
+
+  test("never offers audit agents as routing targets", () => {
+    expect(routableCandidates("task", candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout"]);
+    expect(routableCandidates(undefined, candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout"]);
+  });
+
+  test("keeps a requested audit agent unrouted", () => {
+    expect(routableCandidates("audit-fixer", candidates)).toBeUndefined();
   });
 });
 

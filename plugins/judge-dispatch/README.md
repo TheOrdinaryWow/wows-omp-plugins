@@ -47,6 +47,10 @@ version at startup. Ask for enhanced mode on an older host and that session
 falls back to standard mode and warns once on its first `task` call; the plugin
 never patches the host.
 
+Both modes leave agents named `audit-*` alone. The `audit-goal` plugin reserves
+them for its `/audit` loop, so a request for one is never rerouted and no other
+request is ever routed to one.
+
 ## Settings
 
 The installed package name used by `omp plugin config` is

@@ -196,6 +196,18 @@ export function serializeCandidate(candidate: RoutingCandidate): SerializedCandi
   };
 }
 
+/** The audit-goal plugin dispatches these agents under its own guard; routing must neither leave nor enter them. */
+const RESERVED_AGENT_PREFIX = "audit-";
+
+/** Candidates routing may choose from, or undefined when the requested agent is reserved and must be kept. */
+export function routableCandidates<T extends { name: string }>(
+  requestedAgent: string | undefined,
+  candidates: readonly T[],
+): T[] | undefined {
+  if (requestedAgent?.startsWith(RESERVED_AGENT_PREFIX)) return undefined;
+  return candidates.filter((candidate) => !candidate.name.startsWith(RESERVED_AGENT_PREFIX));
+}
+
 /** Accept only a legal, sufficiently confident answer from a native judgment transport. */
 export function acceptRoutingDecision(
   decision: RoutingDecision,
