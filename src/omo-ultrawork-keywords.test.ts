@@ -8,6 +8,14 @@ describe("ultrawork keyword detection", () => {
     expect(detectUltrawork("ULTRAWORK now")).toBe(true);
     expect(detectUltrawork("ulwmode and my_ulw_var")).toBe(false);
   });
+  test("uses configured whole-word triggers and escapes regex punctuation", () => {
+    expect(detectUltrawork("ulw", ["focus", "c++"])).toBe(false);
+    expect(detectUltrawork("FOCUS now", ["focus", "c++"])).toBe(true);
+    expect(detectUltrawork("c++ now", ["focus", "c++"])).toBe(true);
+    expect(detectUltrawork("myfocus_var", ["focus"])).toBe(false);
+    expect(detectUltrawork("`focus` then act", ["focus"])).toBe(false);
+    expect(detectUltrawork("focus", [])).toBe(false);
+  });
 
   test("ignores paired directive, reminder, pointer, inline code, and fenced text", () => {
     expect(detectUltrawork("explain `ulw` today")).toBe(false);

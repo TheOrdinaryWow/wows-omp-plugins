@@ -14,10 +14,11 @@ Before work, establish criteria: every named axis has an owner; every EXPAND lea
 
 ## Epistemic journal
 
-Create an actual filesystem directory because the vendored Node CLIs use `node:path` and cannot resolve `local://` URLs. In the workspace run:
+Create an actual filesystem directory because the vendored Node CLIs use `node:path` and cannot resolve `local://` URLs. The extension supplied `Research scratch root: <absolute path>` after this procedure. Use that directory as `SCRATCH_ROOT`; in the workspace run:
 
 ```bash
-SESSION_DIR="$(pwd)/.omp/tmp/ulw-research/$(date +%Y%m%d-%H%M%S)"
+SCRATCH_ROOT="<Research scratch root>"
+SESSION_DIR="$SCRATCH_ROOT/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$SESSION_DIR"
 ASSETS="<Research assets directory>"
 ```

@@ -10,7 +10,7 @@ No plugin runtime dependencies are installed. The research helper scripts are de
 
 ## Keyword and session behavior
 
-Writing `ulw` or `ultrawork` as a standalone word in ordinary user input injects the full hidden directive before the user's own text on the first trigger. The visible reply begins `ULTRAWORK MODE ENABLED!`. Subsequent triggers in that session inject only a short reminder because the directive remains in context. After compaction, the next keyword re-injects the full directive. Arming and reminder state persist in session entries and restore on session resume, switching, branching, and tree navigation; child sessions and extension-origin messages are ignored. A pasted complete `<ultrawork-mode>…</ultrawork-mode>` block arms the session without duplication. Text inside inline code, fenced blocks, and injected directive/reminder blocks is ignored, as are slash commands.
+Writing `ulw` or `ultrawork` as a standalone word in ordinary user input injects the full hidden directive before the user's own text on the first trigger. The visible reply begins `ULTRAWORK MODE ENABLED!`. Subsequent keyword triggers in that session inject only a short reminder because the directive remains in context. After compaction, the next trigger re-injects the full directive. `/ultrawork` and `/ulw` toggle persistent mode: entering queues the full hidden directive and optionally submits command arguments as the next user message (for example, `/ultrawork fix X`); while on, **every** ordinary user input injects a reminder, or the full directive after compaction, without needing a keyword. Repeating either command turns the mode off and queues a hidden exit notice. The footer shows `Ultrawork mode` while enabled or `Ultrawork armed` after keyword arming, and clears on exit or an unarmed session switch. Mode, arming, and reminder state persist in session entries and restore on session resume, switching, branching, and tree navigation; child sessions and extension-origin messages are ignored. A pasted complete `<ultrawork-mode>…</ultrawork-mode>` block arms the session without duplication. Text inside inline code, fenced blocks, and injected directive/reminder blocks is ignored, as are slash commands.
 
 Writing `mass ulw`, `mass-ulw`, `ulw-mass`, `mulw`, or `meth` also injects a pointer to read `skill://mass-ulw`. The `mulw` and `meth` forms do not arm ultrawork by themselves. If `todo init` or `todo append` runs while armed, one hidden fan-out reminder tells the agent to size independent work and explain its delegation decision; compaction resets that reminder.
 
@@ -22,9 +22,28 @@ The model-invocable `mass-ulw` skill defines an acyclic graph of `{ id, prompt, 
 
 `/hyperplan <request>` launches the prompt for a five-role, three-round adversarial debate and a separate planner handoff. Skeptic uses `task`, validator uses `task` with `effort: "hi"`, and researcher, architect, and creative use `deep-low`, `ultrabrain`, and `artistry` respectively when listed in the task tool description. If `deep-low` is unavailable, the debate runs with four roles; unavailable `ultrabrain` and `artistry` use `task`. The planner uses `ultrabrain` or `task`. It prints `HYPERPLAN MODE ENABLED!` as the first visible line.
 
-`/ulw-research <request>` starts a claim-graph research procedure with expansion, counter-search, cited synthesis, ordered QA gates, and a checked deliverable. Mechanical work uses `sonic`, bounded judgment uses `task`, and high-effort work uses `task` with `effort: "hi"`. `scout` handles local discovery; `librarian` if listed (otherwise `scout`) handles source research; `writing` if listed (otherwise `task`) proofreads. Other category agents fall back to `task`. Report scripts operate on an absolute scratch directory under `.omp/tmp/ulw-research/`, while the final output goes to the user's requested destination. It prints `ULW-RESEARCH MODE ENABLED!` as the first visible line.
+`/ulw-research <request>` starts a claim-graph research procedure with expansion, counter-search, cited synthesis, ordered QA gates, and a checked deliverable. Mechanical work uses `sonic`, bounded judgment uses `task`, and high-effort work uses `task` with `effort: "hi"`. `scout` handles local discovery; `librarian` if listed (otherwise `scout`) handles source research; `writing` if listed (otherwise `task`) proofreads. Other category agents fall back to `task`. Report scripts operate on an absolute scratch directory under the system temporary directory by default (`<tmpdir>/ulw-research/`), or under the configured `researchScratchDir`; the final output goes to the user's requested destination. It prints `ULW-RESEARCH MODE ENABLED!` as the first visible line.
 
-Both commands reject empty requests with a usage warning and run only in the main session. Their procedures live in private prompt assets, not OMP skills: they are **not** discoverable through `skill://` or `/skill:` and cannot be invoked by a child or the model. `mass-ulw` is the only exposed skill. Install `omo-toolkit` for the named category and reviewer agents and `omo-prometheus` for the reviewed `/prometheus` plan option; the documented fallbacks keep each command usable when those plugins are absent.
+`/hyperplan` and `/ulw-research` reject empty requests with a usage warning; all commands run only in the main session. Their procedures live in private prompt assets, not OMP skills: they are **not** discoverable through `skill://` or `/skill:` and cannot be invoked by a child or the model. `mass-ulw` is the only exposed skill. Install `omo-toolkit` for the named category and reviewer agents and `omo-prometheus` for the reviewed `/prometheus` plan option; the documented fallbacks keep each command usable when those plugins are absent.
+
+## Settings
+
+The installed package name for `omp plugin config` is `wows-omp-plugin-omo-ultrawork`:
+
+```bash
+omp plugin config list wows-omp-plugin-omo-ultrawork
+omp plugin config set wows-omp-plugin-omo-ultrawork keywordTrigger false
+omp plugin config set wows-omp-plugin-omo-ultrawork keywords 'focus,ship'
+omp plugin config set wows-omp-plugin-omo-ultrawork researchScratchDir /tmp/my-research
+```
+
+| Setting | Type | Default | Effect |
+| ------- | ---- | ------- | ------ |
+| `keywordTrigger` | boolean | `true` | When false, typed keywords do not arm or inject ultrawork; the mass-ulw pointer still works. Commands remain available. |
+| `keywords` | comma-separated string | `ulw,ultrawork` | Case-insensitive whole-word triggers outside quoted regions; an empty string disables keyword triggering. |
+| `researchScratchDir` | string | empty (`<tmpdir>/ulw-research`) | Root for research session scratch files; relative paths resolve against the active session's cwd. |
+
+Settings are read for each session at `session_start` (and reloaded on session switch); restart the session after changing them.
 
 ## Licenses
 

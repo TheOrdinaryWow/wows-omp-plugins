@@ -24,11 +24,16 @@ export function stripQuotedRegions(text: string): string {
   return visible.replace(INLINE_CODE, mask);
 }
 
-export const ULTRAWORK_PATTERN = /\b(?:ultrawork|ulw)\b/i;
+const DEFAULT_KEYWORDS = ["ulw", "ultrawork"];
 const MASS_ULW_PATTERN = /\b(?:mass[\s-]*ulw|ulw[\s-]*mass|mulw|meth)\b/i;
 
-export function detectUltrawork(text: string): boolean {
-  return ULTRAWORK_PATTERN.test(stripQuotedRegions(text));
+export function detectUltrawork(text: string, keywords: readonly string[] = DEFAULT_KEYWORDS): boolean {
+  if (keywords.length === 0) return false;
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9_])(?:${keywords.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
+    "i",
+  );
+  return pattern.test(stripQuotedRegions(text));
 }
 
 export function hasEmbeddedDirective(text: string): boolean {

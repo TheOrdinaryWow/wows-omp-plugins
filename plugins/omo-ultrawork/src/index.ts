@@ -1,6 +1,9 @@
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 import { DIRECTIVE_ASSET, HYPERPLAN_ASSET, loadPromptAsset, RESEARCH_ASSET } from "#src/assets.ts";
@@ -9,6 +12,11 @@ import { detectPointers, detectUltrawork, hasEmbeddedDirective } from "#src/keyw
 const STATE_ENTRY = "wows-omp-omo-ultrawork.state";
 const DIRECTIVE_MESSAGE = "wows-omp-omo-ultrawork.directive";
 const REMINDER_MESSAGE = "wows-omp-omo-ultrawork.fanout-reminder";
+const EXIT_MESSAGE = "wows-omp-omo-ultrawork.exit";
+const STATUS_KEY = "omo-ultrawork";
+const PACKAGE_NAME = "wows-omp-plugin-omo-ultrawork";
+const EXIT_NOTICE =
+  "<omo-ultrawork-exit>ultrawork mode is off; the ultrawork directive no longer applies. Resume normal operation.</omo-ultrawork-exit>";
 const ARMED_REMINDER =
   "<omo-ultrawork-reminder>ultrawork mode is already armed for this session - the ultrawork directive above remains binding; re-read it and continue.</omo-ultrawork-reminder>";
 const MASS_ULW_POINTER =
@@ -24,9 +32,39 @@ const TODO_FANOUT_REMINDER = [
 ].join("\n");
 
 interface ArmingState {
+  mode: boolean;
   armed: boolean;
   rearmPending: boolean;
   reminderSent: boolean;
+}
+
+interface UltraworkSettings {
+  keywordTrigger: boolean;
+  keywords: string[];
+  researchScratchDir: string;
+}
+
+const DEFAULT_SETTINGS: UltraworkSettings = {
+  keywordTrigger: true,
+  keywords: ["ulw", "ultrawork"],
+  researchScratchDir: "",
+};
+
+function parseSettings(raw: Record<string, unknown>): UltraworkSettings {
+  const keywordTrigger = raw.keywordTrigger ?? DEFAULT_SETTINGS.keywordTrigger;
+  const keywords = raw.keywords ?? "ulw,ultrawork";
+  const researchScratchDir = raw.researchScratchDir ?? DEFAULT_SETTINGS.researchScratchDir;
+  if (typeof keywordTrigger !== "boolean" || typeof keywords !== "string" || typeof researchScratchDir !== "string") {
+    throw new Error("invalid ultrawork plugin settings");
+  }
+  return {
+    keywordTrigger,
+    keywords: keywords
+      .split(",")
+      .map((word) => word.trim().toLowerCase())
+      .filter(Boolean),
+    researchScratchDir,
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -35,6 +73,25 @@ function errorMessage(error: unknown): string {
 
 export default function ultrawork(pi: ExtensionAPI): void {
   const states = new Map<string, ArmingState>();
+  const settings = new Map<string, Promise<UltraworkSettings>>();
+
+  const settingsFor = (ctx: ExtensionContext): Promise<UltraworkSettings> => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const existing = settings.get(sessionId);
+    if (existing) return existing;
+    const loading = getPluginSettings(PACKAGE_NAME, ctx.cwd)
+      .then(parseSettings)
+      .catch((error: unknown) => {
+        pi.logger.warn("ultrawork could not load plugin settings; using defaults", { error: errorMessage(error) });
+        return DEFAULT_SETTINGS;
+      });
+    settings.set(sessionId, loading);
+    return loading;
+  };
+
+  const status = (ctx: ExtensionContext, state: ArmingState | undefined): void => {
+    ctx.ui.setStatus?.(STATUS_KEY, state?.mode ? "Ultrawork mode" : state?.armed ? "Ultrawork armed" : undefined);
+  };
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
     try {
@@ -52,14 +109,14 @@ export default function ultrawork(pi: ExtensionAPI): void {
   const stateFor = (sessionId: string): ArmingState => {
     const existing = states.get(sessionId);
     if (existing) return existing;
-    const created = { armed: false, rearmPending: false, reminderSent: false };
+    const created = { mode: false, armed: false, rearmPending: false, reminderSent: false };
     states.set(sessionId, created);
     return created;
   };
 
   const persist = (state: ArmingState): void => {
     try {
-      pi.appendEntry(STATE_ENTRY, { version: 1, ...state });
+      pi.appendEntry(STATE_ENTRY, { version: 2, ...state });
     } catch (error) {
       pi.logger.warn("ultrawork could not persist arming state", { error: errorMessage(error) });
     }
@@ -71,23 +128,37 @@ export default function ultrawork(pi: ExtensionAPI): void {
     states.delete(sessionId);
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom" || entry.customType !== STATE_ENTRY) continue;
-      const data = entry.data as { version?: unknown; armed?: unknown; rearmPending?: unknown; reminderSent?: unknown } | undefined;
-      if (data?.version !== 1) continue;
+      const data = entry.data as
+        | { version?: unknown; mode?: unknown; armed?: unknown; rearmPending?: unknown; reminderSent?: unknown }
+        | undefined;
+      if (data?.version !== 1 && data?.version !== 2) continue;
       states.set(sessionId, {
+        mode: data.version === 2 && data.mode === true,
         armed: typeof data.armed === "boolean" ? data.armed : false,
         rearmPending: typeof data.rearmPending === "boolean" ? data.rearmPending : false,
         reminderSent: typeof data.reminderSent === "boolean" ? data.reminderSent : false,
       });
     }
+    status(ctx, states.get(sessionId));
   };
 
-  pi.on("session_start", (_event, ctx) => rehydrate(ctx));
-  pi.on("session_switch", (_event, ctx) => rehydrate(ctx));
+  pi.on("session_start", (_event, ctx) => {
+    settings.delete(ctx.sessionManager.getSessionId());
+    void settingsFor(ctx);
+    rehydrate(ctx);
+  });
+  pi.on("session_switch", (_event, ctx) => {
+    settings.delete(ctx.sessionManager.getSessionId());
+    void settingsFor(ctx);
+    rehydrate(ctx);
+  });
   pi.on("session_branch", (_event, ctx) => rehydrate(ctx));
   pi.on("session_tree", (_event, ctx) => rehydrate(ctx));
 
   pi.on("session_shutdown", (_event, ctx) => {
     states.delete(ctx.sessionManager.getSessionId());
+    settings.delete(ctx.sessionManager.getSessionId());
+    if (mainSession(ctx)) status(ctx, undefined);
   });
 
   pi.on("session_compact", (_event, ctx) => {
@@ -101,25 +172,27 @@ export default function ultrawork(pi: ExtensionAPI): void {
   pi.on("input", async (event, ctx) => {
     if (!mainSession(ctx) || event.source === "extension" || event.text.trimStart().startsWith("/")) return undefined;
 
-    const keyword = detectUltrawork(event.text);
+    const state = stateFor(ctx.sessionManager.getSessionId());
+    const configured = state.mode ? undefined : await settingsFor(ctx);
+    const keyword = !state.mode && configured?.keywordTrigger === true && detectUltrawork(event.text, configured.keywords);
     const embedded = hasEmbeddedDirective(event.text);
     const pointers = detectPointers(event.text);
-    const state = stateFor(ctx.sessionManager.getSessionId());
     if (embedded) {
       state.armed = true;
       state.rearmPending = false;
       persist(state);
+      status(ctx, state);
       return undefined;
     }
-    if (!keyword && pointers.length === 0) return undefined;
+    if (!state.mode && !keyword && pointers.length === 0) return undefined;
 
     let content = "";
-    if (keyword) {
+    if (state.mode || keyword) {
       if (!state.armed || state.rearmPending) {
         try {
           content = `<ultrawork-mode>\n${await loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
         } catch (error) {
-          ctx.ui.notify(`Ultrawork directive could not be loaded (${errorMessage(error)}); keyword ignored.`, "error");
+          ctx.ui.notify(`Ultrawork directive could not be loaded (${errorMessage(error)}); input ignored.`, "error");
           return undefined;
         }
       } else {
@@ -132,10 +205,11 @@ export default function ultrawork(pi: ExtensionAPI): void {
       { customType: DIRECTIVE_MESSAGE, content, display: false, attribution: "user" },
       { deliverAs: ctx.isIdle() ? "nextTurn" : "aside" },
     );
-    if (keyword) {
+    if (state.mode || keyword) {
       state.armed = true;
       state.rearmPending = false;
       persist(state);
+      status(ctx, state);
     }
     return undefined;
   });
@@ -153,6 +227,50 @@ export default function ultrawork(pi: ExtensionAPI): void {
     persist(state);
     return undefined;
   });
+
+  const toggleCommand = {
+    description: "Toggle persistent ultrawork mode for ordinary user input",
+    handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+      if (!mainSession(ctx)) {
+        ctx.ui.notify("ultrawork runs in the main session only", "warning");
+        return;
+      }
+      const state = stateFor(ctx.sessionManager.getSessionId());
+      if (state.mode) {
+        state.mode = false;
+        state.armed = false;
+        state.rearmPending = false;
+        state.reminderSent = false;
+        persist(state);
+        status(ctx, state);
+        ctx.ui.notify("Ultrawork mode off", "info");
+        pi.sendMessage(
+          { customType: EXIT_MESSAGE, content: EXIT_NOTICE, display: false, attribution: "user" },
+          { deliverAs: ctx.isIdle() ? "nextTurn" : "aside" },
+        );
+        return;
+      }
+
+      try {
+        const content = `<ultrawork-mode>\n${await loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
+        state.mode = true;
+        state.armed = true;
+        state.rearmPending = false;
+        persist(state);
+        status(ctx, state);
+        ctx.ui.notify("Ultrawork mode on", "info");
+        pi.sendMessage(
+          { customType: DIRECTIVE_MESSAGE, content, display: false, attribution: "user" },
+          { deliverAs: ctx.isIdle() ? "nextTurn" : "aside" },
+        );
+        if (args.trim()) pi.sendUserMessage(args.trim());
+      } catch (error) {
+        ctx.ui.notify(`Ultrawork directive could not be loaded (${errorMessage(error)}).`, "error");
+      }
+    },
+  };
+  pi.registerCommand("ultrawork", toggleCommand);
+  pi.registerCommand("ulw", toggleCommand);
 
   pi.registerCommand("hyperplan", {
     description: "Adversarial multi-agent planning: five specialist critics, three rounds, then a planner handoff",
@@ -190,7 +308,13 @@ export default function ultrawork(pi: ExtensionAPI): void {
       try {
         const body = await loadPromptAsset(RESEARCH_ASSET);
         const dir = fileURLToPath(new URL("../assets/ulw-research", import.meta.url));
-        pi.sendUserMessage(`<ulw-research-request>\n${request}\n</ulw-research-request>\n\n${body}\n\nResearch assets directory: ${dir}`);
+        const configured = await settingsFor(ctx);
+        const scratchRoot = configured.researchScratchDir.trim()
+          ? path.resolve(ctx.cwd, configured.researchScratchDir)
+          : path.join(tmpdir(), "ulw-research");
+        pi.sendUserMessage(
+          `<ulw-research-request>\n${request}\n</ulw-research-request>\n\n${body}\n\nResearch assets directory: ${dir}\nResearch scratch root: ${scratchRoot}`,
+        );
       } catch (error) {
         ctx.ui.notify(`Research procedure could not be loaded (${errorMessage(error)}).`, "error");
       }

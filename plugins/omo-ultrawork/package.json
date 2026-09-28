@@ -11,6 +11,23 @@
   "omp": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "settings": {
+      "keywordTrigger": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable automatic ultrawork arming when configured keywords appear in user input"
+      },
+      "keywords": {
+        "type": "string",
+        "default": "ulw,ultrawork",
+        "description": "Comma-separated, case-insensitive whole-word ultrawork triggers; empty disables keyword triggers"
+      },
+      "researchScratchDir": {
+        "type": "string",
+        "default": "",
+        "description": "Root directory for ulw-research scratch sessions; empty uses the system temporary directory"
+      }
+    }
   }
 }
