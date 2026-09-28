@@ -11,7 +11,7 @@ Use a graph only when real ordering exists: if every child is independent, use o
 
 ## Definition and durable state
 
-A node has `{ id, prompt, agent, dependsOn?, label? }`; `agent` is an OMP agent listed in the task tool description (default `task`), not a model category. If `quick` is absent use `sonic`; if any other category agent is absent use `task`. `dependsOn` is ordering only, not data interpolation. The prompt must stand alone, with `TASK`, `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN` sections. Give siblings disjoint write scopes. Verify ids are unique, all dependencies exist, and the graph is acyclic before spawning anything.
+A node has `{ id, prompt, agent, dependsOn?, label? }`; `agent` is an OMP agent listed in the task tool description (default `task`), not a model category. Use `sonic` for mechanical work; if another category agent is absent, use `task`. The eval runner cannot set child effort. For high-effort work requiring `task` with `effort: "hi"`, dispatch via the `task` tool outside this graph and use its verified result when defining the next stage. `dependsOn` is ordering only, not data interpolation. The prompt must stand alone, with `TASK`, `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN` sections. Give siblings disjoint write scopes. Verify ids are unique, all dependencies exist, and the graph is acyclic before spawning anything.
 
 Create `local://mass-ulw/<run-key>.json` with `write`. Choose a stable short key for the current stage and fill this shape:
 
@@ -20,7 +20,7 @@ Create `local://mass-ulw/<run-key>.json` with `write`. Choose a stable short key
   "key": "docs-refresh",
   "name": "Refresh the documentation",
   "nodes": [
-    { "id": "audit", "agent": "quick", "prompt": "TASK: Audit docs for obsolete APIs. DELIVERABLE: A bounded file report. SCOPE: Read docs and src only. VERIFY: Cite current declarations. STOP WHEN: Every obsolete link is listed." },
+    { "id": "audit", "agent": "sonic", "prompt": "TASK: Audit docs for obsolete APIs. DELIVERABLE: A bounded file report. SCOPE: Read docs and src only. VERIFY: Cite current declarations. STOP WHEN: Every obsolete link is listed." },
     { "id": "rewrite", "agent": "writing", "dependsOn": ["audit"], "prompt": "TASK: Rewrite the identified pages. DELIVERABLE: Updated docs. SCOPE: Only docs pages named in the audit. VERIFY: Check links and examples. STOP WHEN: All named pages reflect current APIs." },
     { "id": "verify", "agent": "task", "dependsOn": ["rewrite"], "prompt": "TASK: Check all revised examples. DELIVERABLE: Captured command results. SCOPE: Read docs and build outputs; no edits. VERIFY: Run the documented examples. STOP WHEN: Every command is observed passing or a failure is reported." }
   ],

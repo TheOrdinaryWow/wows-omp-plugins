@@ -8,7 +8,7 @@ The main session leads a five-member hostile cross-critique. Each member attacks
 
 ## Five roles and full identity prompts
 
-Spawn a single `task` batch with names `skeptic`, `validator`, `researcher`, `architect`, `creative`. Choose `agent: "unspecified-low"` for skeptic (if not listed in task tool description, use `task`), `agent: "unspecified-high"` for validator (if not listed, use `task`), `agent: "deep-low"` for researcher (if not listed, run with the other four), `agent: "ultrabrain"` for architect (if not listed, use `task`), and `agent: "artistry"` for creative (if not listed, use `task`). A degraded four-member roster is permitted only when `deep-low` is unavailable. Each child's prompt starts with its full role identity below, then the Round 1 request, and ends: "Wait for round instructions over IRC (`wait`) and reply with `write agent://<lead-id>`." Replace `<lead-id>` with the actual parent handle. All children retain their role across three rounds.
+Spawn a single `task` batch with names `skeptic`, `validator`, `researcher`, `architect`, `creative`. Choose `agent: "task"` for skeptic, `agent: "task"` with `effort: "hi"` for validator, `agent: "deep-low"` for researcher (if not listed, run with the other four), `agent: "ultrabrain"` for architect (if not listed, use `task`), and `agent: "artistry"` for creative (if not listed, use `task`). A degraded four-member roster is permitted only when `deep-low` is unavailable. Each child's prompt starts with its full role identity below, then the Round 1 request, and ends: "Wait for round instructions over IRC (`wait`) and reply with `write agent://<lead-id>`." Replace `<lead-id>` with the actual parent handle. All children retain their role across three rounds.
 
 ### Skeptic: simplicity and scope
 
@@ -136,7 +136,7 @@ Say the exact banner once, restate the user's planning request without changing 
 
 ### Phase 1 — Launch one roster
 
-Start one `task` batch with the five named roles and the identity prompts above. The Round 1 assignment is part of each self-contained child prompt, not a separate launch. Supply the lead handle for IRC replies; record member names and handles. If `deep-low` is not listed, omit researcher and say why. The remaining four are required; their unavailable category agents fall back to `task`.
+Start one `task` batch with the five named roles and the identity prompts above. The Round 1 assignment is part of each self-contained child prompt, not a separate launch. Supply the lead handle for IRC replies; record member names and handles. If `deep-low` is not listed, omit researcher and say why. The remaining four are required; architect and creative use `task` when their category agents are unavailable.
 
 ### Phase 2 — Round 1: independent findings
 
