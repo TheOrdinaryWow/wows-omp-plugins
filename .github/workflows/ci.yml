@@ -39,8 +39,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `locked` is the version in bun.lock; 18.2.7 is the oldest host judge-dispatch supports.
-        omp: [locked, 18.2.7]
+        # `locked` is the version in bun.lock; 18.2.11 is the oldest host the plugins support.
+        omp: [locked, 18.2.11]
     steps:
       - uses: actions/checkout@v7
         with:

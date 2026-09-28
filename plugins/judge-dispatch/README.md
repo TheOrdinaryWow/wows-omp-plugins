@@ -14,7 +14,7 @@ omp plugin install judge-dispatch@wows-omp-plugins
 
 Restart the session afterwards so the extension can register.
 
-Requires OMP 18.2.7 or newer.
+Requires OMP 18.2.11 or newer.
 
 The plugin has no credentials of its own. It judges through OMP's built-in
 judgment support; see [Enabling the judge role](#enabling-the-judge-role).
