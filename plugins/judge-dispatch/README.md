@@ -3,8 +3,8 @@
 Asks OMP's `judge` model role which subagent type OMP should spawn, instead of
 leaving that choice to the parent agent.
 
-The plugin picks the type and nothing else. OMP still decides `effort` and
-still validates every spawn.
+The plugin picks the type and, with `judgeEffort` on, the thinking effort of
+`task` calls. OMP still validates every spawn.
 
 ## Install
 
@@ -61,6 +61,7 @@ omp plugin config list wows-omp-plugin-judge-dispatch
 omp plugin config set wows-omp-plugin-judge-dispatch integrationMode enhanced
 omp plugin config set wows-omp-plugin-judge-dispatch minimumConfidence 0.8
 omp plugin config set wows-omp-plugin-judge-dispatch includeSharedContext false
+omp plugin config set wows-omp-plugin-judge-dispatch judgeEffort true
 ```
 
 | Setting | Type | Default | Effect |
@@ -68,8 +69,26 @@ omp plugin config set wows-omp-plugin-judge-dispatch includeSharedContext false
 | `integrationMode` | `standard` \| `enhanced` | `standard` | Selects task interception or API v2 lifecycle routing. Restart after changing it. |
 | `minimumConfidence` | number from 0 to 1 | `0.70` | Minimum native judgment confidence required to replace the requested type. |
 | `includeSharedContext` | boolean | `true` | Includes shared task/subagent context in the routing request. |
+| `judgeEffort` | boolean | `false` | Also lets the judge set each `task` call's thinking effort. Standard mode only; see [Thinking effort](#thinking-effort). |
 
 OMP merges user settings with project overrides before the plugin reads them.
+
+## Thinking effort
+
+With `judgeEffort` on, each routing judgment also asks for the `task` tool's
+`effort` field: `lo`, `med`, or `hi`, chosen by how open-ended the assignment
+is. OMP maps that onto the lowest, middle, or highest thinking level the child's
+resolved model supports and still caps it at `task.maxEffort`, so the judge
+never selects a level the model lacks.
+
+An effort judged at or above `minimumConfidence` replaces whatever effort the
+parent requested; a less confident answer leaves the call as it was. The effort
+is judged even when only one agent type is legal, and OMP applies it whether or
+not `task.enableEffort` shows the field to the parent. Requests for `audit-*`
+agents stay untouched.
+
+Only standard mode can apply the effort, because the routing API v2 spawn result
+carries just the agent type. Enhanced sessions never ask the judge for effort.
 
 ## Enabling the judge role
 
@@ -106,4 +125,4 @@ choices, rejected credentials, and network errors all leave the original route
 in place; nothing is blocked. Standard routing takes at most eight
 seconds and keeps a one-second safety margin below the session's configured
 tool-call handler timeout; with no useful budget left it does no routing. A
-rewrite keeps every unrelated field, including `effort`.
+rewrite keeps every unrelated field; `effort` changes only with `judgeEffort` on.

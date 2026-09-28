@@ -1,4 +1,4 @@
-import type { JudgmentState } from "@oh-my-pi/pi-ai";
+import type { ChoiceQuestion, JudgmentState } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
   formatModelStringWithRouting,
@@ -20,13 +20,16 @@ import {
   type ParsedTaskRoute,
   parseLegalAgentNames,
   parseTaskInput,
+  type RouteChoice,
   type RoutingCandidate,
-  rewriteTaskAgents,
+  rewriteTaskRoutes,
   routableCandidates,
   type SerializedCandidate,
   selectRoutingSurface,
   serializeCandidate,
   standardRoutingDeadlineMs,
+  TASK_EFFORTS,
+  type TaskEffort,
 } from "#src/routing.ts";
 
 const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
@@ -35,6 +38,7 @@ const DEFAULT_SETTINGS: JudgeDispatchSettings = {
   integrationMode: "standard",
   minimumConfidence: 0.7,
   includeSharedContext: true,
+  judgeEffort: false,
 };
 
 interface BeforeSubagentSpawnEvent {
@@ -94,10 +98,16 @@ function parseSettings(raw: Record<string, unknown>): JudgeDispatchSettings {
     throw new Error(`invalid includeSharedContext ${JSON.stringify(includeSharedContext)}`);
   }
 
+  const judgeEffort = raw.judgeEffort ?? DEFAULT_SETTINGS.judgeEffort;
+  if (typeof judgeEffort !== "boolean") {
+    throw new Error(`invalid judgeEffort ${JSON.stringify(judgeEffort)}`);
+  }
+
   return {
     integrationMode: parseIntegrationMode(raw.integrationMode),
     minimumConfidence,
     includeSharedContext,
+    judgeEffort,
   };
 }
 
@@ -211,32 +221,48 @@ function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
   });
 }
 
-async function routeAgent(
+const EFFORT_QUESTION: ChoiceQuestion<TaskEffort> = {
+  type: "choice",
+  instructions:
+    "Choose how much thinking effort the subagent needs for this assignment, judged by how open-ended the problem is rather than by how much work it involves.",
+  criteria: {
+    lo: "Mechanical or fully specified work: the fix or steps are given and little reasoning is needed.",
+    med: "Ordinary multi-step work whose approach is mostly settled but still needs some reasoning.",
+    hi: "Open-ended, ambiguous, or logic-heavy work where causes or designs remain open.",
+  },
+};
+
+async function judgeRoute(
   route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
   allCandidates: readonly RoutingCandidate[],
   config: JudgeDispatchSettings,
   judge: ChainJudge,
   signal: AbortSignal,
-): Promise<string | undefined | typeof JUDGE_UNAVAILABLE> {
+): Promise<RouteChoice | undefined | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
   const candidates = routableCandidates(route.requestedAgent, allCandidates);
-  if (!candidates || candidates.length < 2) return undefined;
+  if (!candidates) return undefined;
+  const routesAgent = candidates.length >= 2;
+  if (!routesAgent && !config.judgeEffort) return undefined;
+
   const serialized = candidates.map(serializeCandidate);
-  const criteria = Object.fromEntries(serialized.map((candidate) => [candidate.name, candidateCriterion(candidate)]));
+  const candidateNames = serialized.map((candidate) => candidate.name);
   const state = {
     assignment: route.assignment,
     ...(config.includeSharedContext && route.context ? { context: route.context } : {}),
     requestedAgent: route.requestedAgent ?? null,
     candidates: serialized,
   } as unknown as JudgmentState;
-  const questions = {
-    agent: {
-      type: "choice" as const,
+  const questions: Record<string, ChoiceQuestion> = {};
+  if (routesAgent) {
+    questions.agent = {
+      type: "choice",
       instructions:
         "Choose the single agent type best suited to complete this assignment. Match the declared specialization and access needs; do not classify effort.",
-      criteria,
-    },
-  };
+      criteria: Object.fromEntries(serialized.map((candidate) => [candidate.name, candidateCriterion(candidate)])),
+    };
+  }
+  if (config.judgeEffort) questions.effort = EFFORT_QUESTION;
 
   // A chat-model judge cannot reproduce a native judge's calibrated confidence, so
   // the chain's first usable candidate must be native; anything else is never called.
@@ -246,13 +272,16 @@ async function routeAgent(
       async (candidate, kind) => {
         if (kind !== "native") return JUDGE_UNAVAILABLE;
         reachedNative = true;
-        const judged = await candidate.judge({ state, questions }, { signal });
-        const answer = judged.answers.agent;
-        return acceptRoutingDecision(
-          { kind, choice: answer.choice, confidence: answer.confidence },
-          candidates.map((candidate) => candidate.name),
-          config.minimumConfidence,
-        );
+        const { answers } = await candidate.judge({ state, questions }, { signal });
+        const accept = <T extends string>(id: string, legal: readonly T[]): T | undefined => {
+          const answer = answers[id];
+          return (
+            answer && acceptRoutingDecision({ kind, choice: answer.choice, confidence: answer.confidence }, legal, config.minimumConfidence)
+          );
+        };
+        const agent = routesAgent ? accept("agent", candidateNames) : undefined;
+        const effort = config.judgeEffort ? accept("effort", TASK_EFFORTS) : undefined;
+        return { ...(agent ? { agent } : {}), ...(effort ? { effort } : {}) };
       },
       { signal },
     );
@@ -270,18 +299,18 @@ interface RoutingSession {
   notifyUnavailable(ctx: ExtensionContext): void;
 }
 
-async function routeAgentFailOpen(
+async function judgeRouteFailOpen(
   session: RoutingSession,
   route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
   candidates: readonly RoutingCandidate[],
   signal: AbortSignal,
-): Promise<string | undefined> {
+): Promise<RouteChoice | undefined> {
   try {
-    const choice = await routeAgent(route, candidates, session.config, session.judge, signal);
+    const choice = await judgeRoute(route, candidates, session.config, session.judge, signal);
     if (choice !== JUDGE_UNAVAILABLE) return choice;
     session.notifyUnavailable(session.ctx);
   } catch {
-    session.pi.logger.warn("judge-dispatch judgment failed; preserving the original agent");
+    session.pi.logger.warn("judge-dispatch judgment failed; preserving the original route");
   }
   return undefined;
 }
@@ -336,8 +365,8 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
         if (!routes) return undefined;
         const candidates = await discoverStandardCandidates(ctx, settings, legalNames);
         const session = { pi, ctx, config, judge: sessionJudge(ctx, settings), notifyUnavailable };
-        const choices = await Promise.all(routes.map((route) => routeAgentFailOpen(session, route, candidates, signal)));
-        const rewritten = rewriteTaskAgents(input, routes, choices);
+        const choices = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
+        const rewritten = rewriteTaskRoutes(input, routes, choices);
         return rewritten === input ? undefined : { input: rewritten };
       });
     } catch (error) {
@@ -353,9 +382,10 @@ function registerEnhanced(pi: ExtensionAPI): void {
   enhancedPi.on("before_subagent_spawn", async (event, ctx) => {
     try {
       return await withRoutingDeadline(MAX_ROUTING_DEADLINE_MS, async (signal) => {
-        const config = await effectivePluginSettings(ctx.cwd);
+        // The API v2 spawn result carries only `agent`, so enhanced routing never asks for an effort it cannot apply.
+        const config = { ...(await effectivePluginSettings(ctx.cwd)), judgeEffort: false };
         const session = { pi, ctx, config, judge: sessionJudge(ctx, scopedSettings(ctx)), notifyUnavailable };
-        const agent = await routeAgentFailOpen(
+        const choice = await judgeRouteFailOpen(
           session,
           {
             assignment: event.assignment,
@@ -365,7 +395,7 @@ function registerEnhanced(pi: ExtensionAPI): void {
           event.candidates,
           signal,
         );
-        return agent ? { agent } : undefined;
+        return choice?.agent ? { agent: choice.agent } : undefined;
       });
     } catch (error) {
       pi.logger.warn("judge-dispatch enhanced routing failed open", { error: errorMessage(error) });

@@ -1,9 +1,14 @@
 export type IntegrationMode = "standard" | "enhanced";
 
+/** Coarse per-spawn thinking effort the host task tool accepts; it maps onto the target model's supported thinking levels. */
+export const TASK_EFFORTS = ["lo", "med", "hi"] as const;
+export type TaskEffort = (typeof TASK_EFFORTS)[number];
+
 export interface JudgeDispatchSettings {
   integrationMode: IntegrationMode;
   minimumConfidence: number;
   includeSharedContext: boolean;
+  judgeEffort: boolean;
 }
 
 export interface RoutingSurfaceSelection {
@@ -54,6 +59,12 @@ export interface RoutingDecision {
   kind: string;
   choice: string;
   confidence: number;
+}
+
+/** Accepted judgments for one route; an absent field leaves that part of the call as requested. */
+export interface RouteChoice {
+  agent?: string;
+  effort?: TaskEffort;
 }
 
 const DESCRIPTION_LIMIT = 320;
@@ -150,29 +161,41 @@ export function parseTaskInput(input: unknown): ParsedTaskRoute[] | undefined {
   ];
 }
 
-export function rewriteTaskAgents(
+function rewriteTaskItem(
+  item: Record<string, unknown>,
+  requestedAgent: string | undefined,
+  choice: RouteChoice | undefined,
+): Record<string, unknown> {
+  const agentChanged = choice?.agent !== undefined && choice.agent !== requestedAgent;
+  const effortChanged = choice?.effort !== undefined && choice.effort !== item.effort;
+  if (!agentChanged && !effortChanged) return item;
+  return {
+    ...item,
+    ...(agentChanged ? { agent: choice.agent } : {}),
+    ...(effortChanged ? { effort: choice.effort } : {}),
+  };
+}
+
+export function rewriteTaskRoutes(
   input: Record<string, unknown>,
   routes: readonly ParsedTaskRoute[],
-  choices: readonly (string | undefined)[],
+  choices: readonly (RouteChoice | undefined)[],
 ): Record<string, unknown> {
   if (routes.length !== choices.length) return input;
 
   const flatRoute = routes.length === 1 && routes[0]?.index === null ? routes[0] : undefined;
-  if (flatRoute) {
-    const choice = choices[0];
-    if (!choice || choice === flatRoute.requestedAgent) return input;
-    return { ...input, agent: choice };
-  }
+  if (flatRoute) return rewriteTaskItem(input, flatRoute.requestedAgent, choices[0]);
 
   if (!Array.isArray(input.tasks)) return input;
   let changed = false;
   const tasks = [...input.tasks];
   for (const [routeIndex, route] of routes.entries()) {
-    const choice = choices[routeIndex];
-    if (!choice || route.index === null || choice === route.requestedAgent) continue;
+    if (route.index === null) continue;
     const item = tasks[route.index];
     if (!item || typeof item !== "object" || Array.isArray(item)) return input;
-    tasks[route.index] = { ...(item as Record<string, unknown>), agent: choice };
+    const rewritten = rewriteTaskItem(item as Record<string, unknown>, route.requestedAgent, choices[routeIndex]);
+    if (rewritten === item) continue;
+    tasks[route.index] = rewritten;
     changed = true;
   }
   return changed ? { ...input, tasks } : input;
@@ -209,12 +232,12 @@ export function routableCandidates<T extends { name: string }>(
 }
 
 /** Accept only a legal, sufficiently confident answer from a native judgment transport. */
-export function acceptRoutingDecision(
+export function acceptRoutingDecision<T extends string>(
   decision: RoutingDecision,
-  candidateNames: readonly string[],
+  legalChoices: readonly T[],
   minimumConfidence: number,
-): string | undefined {
+): T | undefined {
   if (decision.kind !== "native") return undefined;
   if (!Number.isFinite(decision.confidence) || decision.confidence < minimumConfidence) return undefined;
-  return candidateNames.includes(decision.choice) ? decision.choice : undefined;
+  return legalChoices.find((choice) => choice === decision.choice);
 }

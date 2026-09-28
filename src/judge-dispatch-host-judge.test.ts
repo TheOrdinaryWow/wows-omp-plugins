@@ -75,19 +75,26 @@ function startTypeSafeServer(scenario: ChildScenario, requests: RecordedRequest[
       requests.push({ authorization: request.headers.get("authorization"), body });
       if (scenario.response === "unauthorized") return new Response("invalid api key", { status: 401 });
 
-      const payload = JSON.parse(body) as { questions?: { agent?: { criteria?: Record<string, unknown> } } };
-      const choices = Object.keys(payload.questions?.agent?.criteria ?? {});
-      const choice = choices.find((name) => name !== "scout") ?? "";
+      // Answer every question asked: the agent question picks the first non-scout option, others their last (highest) option.
+      const payload = JSON.parse(body) as { questions?: Record<string, { criteria?: Record<string, unknown> }> };
+      const answers = Object.fromEntries(
+        Object.entries(payload.questions ?? {}).map(([id, question]) => {
+          const choices = Object.keys(question.criteria ?? {});
+          const choice = (id === "agent" ? choices.find((name) => name !== "scout") : choices.at(-1)) ?? "";
+          return [
+            id,
+            {
+              type: "choice",
+              choice,
+              probabilities: Object.fromEntries(choices.map((name) => [name, name === choice ? 1 : 0])),
+              confidence: 0.99,
+            },
+          ];
+        }),
+      );
       return Response.json({
         model: "system-one",
-        answers: {
-          agent: {
-            type: "choice",
-            choice,
-            probabilities: Object.fromEntries(choices.map((name) => [name, name === choice ? 1 : 0])),
-            confidence: 0.99,
-          },
-        },
+        answers,
         usage: { input_tokens: 17, output_tokens: 3 },
       });
     },
@@ -276,6 +283,32 @@ async function registerTests(): Promise<void> {
         }
         expect(diagnostics(report)).not.toContain(HOST_KEY);
       });
+    });
+
+    test("judgeEffort sets the task effort in standard mode and is never asked in enhanced mode", async () => {
+      await withProjects(
+        [
+          { integrationMode: "enhanced", judgeEffort: true },
+          { integrationMode: "standard", judgeEffort: true },
+        ],
+        async ([enhanced, standard]) => {
+          const report = await runIsolatedScenario({
+            sessions: [
+              { project: enhanced as string, surface: "enhanced", calls: 1 },
+              { project: standard as string, surface: "standard", calls: 1 },
+            ],
+            response: "success",
+            hostKey: HOST_KEY,
+          });
+
+          const askedQuestions = report.requests.map((request) => Object.keys(JSON.parse(request.body).questions ?? {}));
+          expect(askedQuestions).toEqual([["agent"], ["agent", "effort"]]);
+          expect(report.sessions[0]?.results).toEqual([{ agent: "writer" }]);
+          expect(report.sessions[1]?.results).toEqual([
+            { input: { task: "Implement the requested repository change", agent: "task", effort: "hi" } },
+          ]);
+        },
+      );
     });
 
     test("without a host credential both surfaces keep the requested agent and warn once per session", async () => {

@@ -4,7 +4,7 @@ import {
   acceptRoutingDecision,
   parseLegalAgentNames,
   parseTaskInput,
-  rewriteTaskAgents,
+  rewriteTaskRoutes,
   routableCandidates,
   selectRoutingSurface,
   serializeCandidate,
@@ -30,33 +30,46 @@ describe("task input routing", () => {
         requestedAgent: "task",
       },
     ]);
-    expect(rewriteTaskAgents(input, routes, ["security-reviewer"])).toEqual({
+    expect(rewriteTaskRoutes(input, routes, [{ agent: "security-reviewer" }])).toEqual({
       ...input,
       agent: "security-reviewer",
     });
-    expect(rewriteTaskAgents(input, routes, [undefined])).toBe(input);
+    expect(rewriteTaskRoutes(input, routes, [undefined])).toBe(input);
+    expect(rewriteTaskRoutes(input, routes, [{ agent: "task", effort: "hi" }])).toBe(input);
     expect(input.agent).toBe("task");
   });
 
-  test("rewrites batch agents without changing shared context, effort, or sibling fields", () => {
+  test("a judged effort replaces or fills the requested effort", () => {
+    const input = { agent: "task", task: "Trace the deadlock", effort: "lo" };
+    const routes = parseTaskInput(input);
+    if (!routes) throw new Error("expected valid flat task input");
+
+    expect(rewriteTaskRoutes(input, routes, [{ effort: "hi" }])).toEqual({ ...input, effort: "hi" });
+    const { effort: _, ...withoutEffort } = input;
+    expect(rewriteTaskRoutes(withoutEffort, routes, [{ effort: "med" }])).toEqual({ ...withoutEffort, effort: "med" });
+    expect(input.effort).toBe("lo");
+  });
+
+  test("rewrites batch items independently without changing shared context or sibling fields", () => {
     const input = {
       context: "Shared release constraints",
       async: true,
       tasks: [
         { name: "Audit", agent: "task", task: "Inspect the boundary", effort: "hi", isolated: true },
         { name: "Docs", agent: "sonic", task: "Correct one heading", effort: "lo", tools: ["lookup"] },
+        { name: "Plan", agent: "task", task: "Sketch the migration" },
       ],
     };
     const routes = parseTaskInput(input);
     if (!routes) throw new Error("expected valid batch task input");
-    const rewritten = rewriteTaskAgents(input, routes, ["security-reviewer", undefined]);
+    const rewritten = rewriteTaskRoutes(input, routes, [{ agent: "security-reviewer" }, undefined, { effort: "med" }]);
 
     expect(rewritten).toEqual({
       ...input,
-      tasks: [{ ...input.tasks[0], agent: "security-reviewer" }, input.tasks[1]],
+      tasks: [{ ...input.tasks[0], agent: "security-reviewer" }, input.tasks[1], { ...input.tasks[2], effort: "med" }],
     });
     expect(input.tasks[0]?.agent).toBe("task");
-    expect(input.tasks[1]?.effort).toBe("lo");
+    expect(input.tasks[2]).not.toHaveProperty("effort");
   });
 
   test("leaves malformed task shapes unparsed", () => {

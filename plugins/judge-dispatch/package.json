@@ -34,6 +34,11 @@
         "type": "boolean",
         "default": true,
         "description": "Include task batch or subagent shared context in the routing judgment"
+      },
+      "judgeEffort": {
+        "type": "boolean",
+        "default": false,
+        "description": "Also let the judge set each task call's thinking effort (lo/med/hi), replacing the requested one; standard task interception only"
       }
     }
   }
