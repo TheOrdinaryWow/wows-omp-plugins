@@ -11,7 +11,7 @@ Use a graph only when real ordering exists: if every child is independent, use o
 
 ## Definition and durable state
 
-A node has `{ id, prompt, agent, dependsOn?, label? }`; `agent` is an OMP agent listed in the task tool description (default `task`), not a model category. Use `sonic` for mechanical work; if another category agent is absent, use `task`. The eval runner cannot set child effort. For high-effort work requiring `task` with `effort: "hi"`, dispatch via the `task` tool outside this graph and use its verified result when defining the next stage. `dependsOn` is ordering only, not data interpolation. The prompt must stand alone, with `TASK`, `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN` sections. Give siblings disjoint write scopes. Verify ids are unique, all dependencies exist, and the graph is acyclic before spawning anything.
+A node has `{ id, prompt, agent, dependsOn?, label? }`; `agent` is an OMP agent listed in the task tool description (default `task`), not a model category. Use `sonic` for mechanical work; if another category agent is absent, use `task`. The eval runner cannot set child effort. For high-effort work requiring `task` with `effort: "hi"`, dispatch via the `task` tool outside this graph and use its verified result when defining the next stage. `dependsOn` is ordering only, not data interpolation. The prompt must stand alone, with `TASK`, `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN` sections. Give siblings disjoint write scopes. Preflight the entire definition and resume status before any child dispatch; invalid ids, references, cycles, or contradictory statuses must launch zero children.
 
 Create `local://mass-ulw/<run-key>.json` with `write`. Choose a stable short key for the current stage and fill this shape:
 
@@ -32,41 +32,109 @@ Create `local://mass-ulw/<run-key>.json` with `write`. Choose a stable short key
 }
 ```
 
-Every node's final result is stored at `local://mass-ulw/<run-key>/<id>.md`; a status record holds `state: pending|running|done|failed|skipped`, plus `handle` (`agent://…`), `resultPath`, or `error` when applicable. The run file is the source of truth; `read local://mass-ulw/<run-key>.json` shows its status after a kernel reset. Register the overall goal and its success criteria with `todo` before starting; the graph is complete only when the verification evidence proves them.
+Every node's final result is stored at `local://mass-ulw/<run-key>/<id>.md`; a status record holds `state: pending|running|done|failed|skipped`, plus `handle` (`agent://…`), `resultPath`, or `error` when applicable. The run file records returned child output, not acceptance: `done` means a child returned and its report was saved, while the goal is complete only when independent verification evidence proves the success criteria. `read local://mass-ulw/<run-key>.json` shows saved status after a kernel reset, but JSON cannot reattach live handles. Register the overall goal and its success criteria with `todo` before starting.
 
-## Run in one Python eval cell
+## Run one frontier per Python eval cell
 
-The kernel supplies synchronous `read`/`write`, `agent`, and `wait`. The following cell expects a definition already written as above. It records a wave before waiting, persists each child result, and skips transitive dependents of a failure. Substitute the real key before running:
+The kernel supplies synchronous `read`/`write`, `agent`, and `wait`. Substitute the real key before running. This cell validates the **whole** graph and saved status before any spawn, skips dependents of failures, dispatches only the current ready frontier, and persists each returned result. Inspect its child reports and evidence before rerunning the same cell for the next frontier:
 
 ```python
 import json
+import re
 
 key = "docs-refresh"
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", key):
+    raise ValueError("Run key must be a safe path segment")
 run_path = f"local://mass-ulw/{key}.json"
 run = json.loads(read(run_path))
-nodes = {node["id"]: node for node in run["nodes"]}
-status = run["status"]
-assert len(nodes) == len(run["nodes"])
-assert all(set(node.get("dependsOn", [])) <= nodes.keys() for node in nodes.values())
-assert all(node_id in status for node_id in nodes)
+if not isinstance(run, dict) or run.get("key") != key or not isinstance(run.get("nodes"), list) or not run["nodes"]:
+    raise ValueError("Run key or node list is invalid")
+
+nodes = {}
+for node in run["nodes"]:
+    if not isinstance(node, dict) or not isinstance(node.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", node["id"]):
+        raise ValueError("Node id must be a safe, nonempty path segment")
+    node_id = node["id"]
+    if node_id in nodes:
+        raise ValueError(f"Duplicate node id: {node_id}")
+    deps = node.get("dependsOn", [])
+    if not isinstance(deps, list) or any(not isinstance(dep, str) for dep in deps) or len(deps) != len(set(deps)):
+        raise ValueError(f"Invalid dependencies for {node_id}")
+    if not isinstance(node.get("prompt"), str) or not node["prompt"].strip():
+        raise ValueError(f"Missing prompt for {node_id}")
+    if not isinstance(node.get("agent", "task"), str) or not node.get("agent", "task"):
+        raise ValueError(f"Invalid agent for {node_id}")
+    if "label" in node and (not isinstance(node["label"], str) or not node["label"].strip()):
+        raise ValueError(f"Invalid label for {node_id}")
+    nodes[node_id] = node
+
+followers = {node_id: [] for node_id in nodes}
+indegree = {}
+for node_id, node in nodes.items():
+    deps = node.get("dependsOn", [])
+    for dep in deps:
+        if dep not in nodes:
+            raise ValueError(f"Unknown dependency {dep} for {node_id}")
+        followers[dep].append(node_id)
+    indegree[node_id] = len(deps)
+frontier = [node_id for node_id, degree in indegree.items() if degree == 0]
+seen = 0
+while frontier:
+    current = frontier.pop()
+    seen += 1
+    for follower in followers[current]:
+        indegree[follower] -= 1
+        if indegree[follower] == 0:
+            frontier.append(follower)
+if seen != len(nodes):
+    raise ValueError("Dependency graph has a cycle")
+
+status = run.get("status")
+if not isinstance(status, dict) or set(status) != set(nodes):
+    raise ValueError("Status rows must match node ids exactly")
+for node_id, row in status.items():
+    state = row.get("state") if isinstance(row, dict) else None
+    if state not in ("pending", "running", "done", "failed", "skipped"):
+        raise ValueError(f"Invalid status for {node_id}")
+    if state == "running":
+        raise ValueError(f"Resolve live child {node_id} before restarting; saved handles cannot be awaited here")
+for node_id, node in nodes.items():
+    row = status[node_id]
+    state = row["state"]
+    allowed = {"pending": {"state"}, "done": {"state", "handle", "resultPath"},
+               "failed": {"state", "handle", "error"}, "skipped": {"state", "error"}}
+    if not set(row) <= allowed[state]:
+        raise ValueError(f"Unexpected status fields for {node_id}")
+    if "handle" in row and (not isinstance(row["handle"], str) or not row["handle"].startswith("agent://")):
+        raise ValueError(f"Invalid handle for {node_id}")
+    deps = node.get("dependsOn", [])
+    if state == "pending" and set(row) != {"state"}:
+        raise ValueError(f"Reset stale fields on pending node {node_id}")
+    if state == "done":
+        if row.get("resultPath") != f"local://mass-ulw/{key}/{node_id}.md" or "error" in row:
+            raise ValueError(f"Invalid result path or error for done node {node_id}")
+        read(row["resultPath"])  # A saved status without its report is not recoverable evidence.
+    if state in ("failed", "skipped") and (not isinstance(row.get("error"), str) or not row["error"] or "resultPath" in row):
+        raise ValueError(f"Invalid failure status for {node_id}")
+    if state == "skipped" and ("handle" in row or not any(status[dep]["state"] in ("failed", "skipped") for dep in deps)):
+        raise ValueError(f"Skipped node {node_id} has no failed dependency")
+    if state in ("done", "failed") and any(status[dep]["state"] != "done" for dep in deps):
+        raise ValueError(f"Completed node {node_id} has an incomplete dependency")
 
 while True:
-    changed = False
-    for node_id, node in nodes.items():
-        if status[node_id]["state"] != "pending":
-            continue
-        if any(status[dep]["state"] in ("failed", "skipped") for dep in node.get("dependsOn", [])):
-            status[node_id] = {"state": "skipped", "error": "dependency failed"}
-            changed = True
-    if changed:
-        write(run_path, json.dumps(run, indent=2) + "\n")
-
-    ready = [node for node in run["nodes"] if status[node["id"]]["state"] == "pending"
-             and all(status[dep]["state"] == "done" for dep in node.get("dependsOn", []))]
-    if not ready:
-        assert not any(row["state"] == "pending" for row in status.values()), "Cycle or unresolved running child"
+    blocked = [node_id for node_id, node in nodes.items() if status[node_id]["state"] == "pending"
+               and any(status[dep]["state"] in ("failed", "skipped") for dep in node.get("dependsOn", []))]
+    if not blocked:
         break
+    for node_id in blocked:
+        status[node_id] = {"state": "skipped", "error": "dependency failed"}
+    write(run_path, json.dumps(run, indent=2) + "\n")
 
+ready = [node for node in run["nodes"] if status[node["id"]]["state"] == "pending"
+         and all(status[dep]["state"] == "done" for dep in node.get("dependsOn", []))]
+if not ready and any(row["state"] == "pending" for row in status.values()):
+    raise RuntimeError("Pending nodes have no ready frontier")
+if ready:
     handles = [agent(node["prompt"], agent=node.get("agent", "task"), label=node.get("label", node["id"])) for node in ready]
     for node, handle in zip(ready, handles):
         status[node["id"]] = {"state": "running", "handle": handle.handle}
@@ -76,7 +144,7 @@ while True:
     for node, result in zip(ready, results):
         node_id = node["id"]
         if isinstance(result, BaseException):
-            status[node_id] = {"state": "failed", "handle": status[node_id]["handle"], "error": str(result)}
+            status[node_id] = {"state": "failed", "handle": status[node_id]["handle"], "error": str(result) or repr(result)}
         else:
             result_path = f"local://mass-ulw/{key}/{node_id}.md"
             write(result_path, str(result))
@@ -86,13 +154,13 @@ while True:
 print({node_id: row["state"] for node_id, row in status.items()})
 ```
 
-A cycle should be rejected before launching, not discovered by the final assertion. If the cell loses its live handles while status is `running`, inspect child output/artifacts and mark unverified nodes `failed` for an explicit retry; a JSON record alone cannot reattach an in-memory handle. `wait(handles, raise_errors=False)` isolates failed children so unaffected nodes can complete.
+The preflight rejects a cycle before launching anything. If the cell loses live handles while status is `running`, inspect the child output and any saved artifacts, then explicitly reconcile the row: save a trustworthy returned report as `done` with its expected `resultPath`, or mark an unverified child `failed` with an error before retrying. A JSON handle is not a live wait handle; do not start another wave while its original child may still be writing. `wait(handles, raise_errors=False)` isolates failed children so unaffected nodes can complete.
 
 ## Recovery and supervision
 
-- **retry**: after the wave settles, edit the named `failed`/`skipped` status rows to `pending`, removing their `error` and stale `handle`; rerun the cell. Include skipped descendants whose failed ancestor you reset. Never rerun `done` nodes.
-- **amend**: edit the node definition, reset only changed nodes and their transitive dependents to `pending`, then rerun the cell. Keep other `done` results and their paths. Tell the user when changed write scopes alter the topology.
+- **retry**: after the wave settles, inspect the error, then reset only the named `failed`/`skipped` rows and skipped descendants to exactly `{ "state": "pending" }`; rerun the cell. Never rerun untouched `done` nodes.
+- **amend**: edit the node definition and reset only changed nodes and their transitive dependents to exactly `{ "state": "pending" }`, clearing stale `resultPath`, `handle`, and `error`; keep other `done` reports and paths. Tell the user when changed write scopes alter the topology.
 - **send**: `write agent://<handle>` with a concise steering message while a child is active; the status file records its handle.
 - **cancel**: `write proc://<id>/kill` for the active process that owns the run, then mark unverified nodes failed. Do not cancel merely because a model is quiet; use `wait` when blocked.
 
-Read child output at each frontier and verify claims before treating `done` as success. A graph changing code ends with a verification node depending on all producers and actually running the checks. For paginated deliverables, render and inspect every page. For broad research, harvest in waves, follow leads, then fan results into bounded synthesis reports rather than flooding one reducer with raw output. Stop when the user's success criteria pass, not when all handles return.
+Read each returned report and check its claims against the user's criteria **before** running the next frontier. `done` only records a returned report; if the evidence does not support a dependent task, repair or amend the graph rather than treating it as accepted. A code-changing graph ends with a verification node depending on all producers and actually running the checks. For paginated deliverables, render and inspect every page. For broad research, harvest in waves, follow leads, then fan results into bounded synthesis reports rather than flooding one reducer with raw output. Stop when the user's success criteria pass, not when all handles return.
