@@ -14,7 +14,6 @@ const HOST_KEY = ["host", "typesafe", "key"].join("-");
 
 interface SessionSpec {
   project: string;
-  surface: "enhanced" | "standard";
   calls: number;
 }
 
@@ -44,25 +43,8 @@ interface ChildReport {
 
 type TestHandler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown | Promise<unknown>;
 
-const ENHANCED_CANDIDATES = [
-  {
-    name: "scout",
-    description: "Read-only repository investigator",
-    source: "test fixture",
-    readOnly: true,
-    model: { patterns: ["fixture/scout"], fallbackChain: [] },
-  },
-  {
-    name: "writer",
-    description: "Write-capable implementation agent",
-    source: "test fixture",
-    readOnly: false,
-    model: { patterns: ["fixture/writer"], fallbackChain: [] },
-  },
-];
-
-/** Bundled OMP agents, so standard-mode discovery finds real definitions for both names. */
-const STANDARD_TASK_DESCRIPTION = "# Available Agents\n### scout\nRead-only investigator\n### task\nGeneral-purpose agent";
+/** Bundled OMP agents, so candidate discovery finds real definitions for both names. */
+const TASK_DESCRIPTION = "# Available Agents\n### scout\nRead-only investigator\n### task\nGeneral-purpose agent";
 
 function startTypeSafeServer(scenario: ChildScenario, requests: RecordedRequest[]): { origin: string; stop(): void } {
   if (scenario.response === "network-error") return { origin: "http://127.0.0.1:1", stop() {} };
@@ -128,7 +110,6 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [] };
 
       const api = {
-        pi: { SUBAGENT_ROUTING_EXTENSION_API_VERSION: 2 },
         logger: {
           warn(message: unknown, details?: unknown) {
             report.warnings.push(details === undefined ? message : [message, details]);
@@ -137,7 +118,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         on(event: string, handler: TestHandler) {
           handlers.set(event, [...(handlers.get(event) ?? []), handler]);
         },
-        getAllTools: () => [{ name: "task", description: STANDARD_TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
+        getAllTools: () => [{ name: "task", description: TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
       } as unknown as ExtensionAPI;
 
       const context = {
@@ -164,36 +145,19 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       };
 
       registerJudgeDispatch(api);
-      await onlyHandler("session_start")({ type: "session_start" }, context);
 
       for (let call = 0; call < session.calls; call += 1) {
-        if (session.surface === "enhanced") {
-          report.results.push(
-            await onlyHandler("before_subagent_spawn")(
-              {
-                type: "before_subagent_spawn",
-                invocationKind: "task",
-                assignment: "Implement the requested repository change",
-                context: "Preserve existing conventions",
-                requestedAgent: "scout",
-                candidates: ENHANCED_CANDIDATES,
-              },
-              context,
-            ),
-          );
-        } else {
-          report.results.push(
-            await onlyHandler("tool_call")(
-              {
-                type: "tool_call",
-                toolCallId: `host-judge-tool-${sessionIndex}-${call}`,
-                toolName: "task",
-                input: { task: "Implement the requested repository change", agent: "scout" },
-              },
-              context,
-            ),
-          );
-        }
+        report.results.push(
+          await onlyHandler("tool_call")(
+            {
+              type: "tool_call",
+              toolCallId: `host-judge-tool-${sessionIndex}-${call}`,
+              toolName: "task",
+              input: { task: "Implement the requested repository change", agent: "scout" },
+            },
+            context,
+          ),
+        );
       }
       sessionReports.push(report);
     }
@@ -263,60 +227,47 @@ async function registerTests(): Promise<void> {
   const { describe, expect, test } = await import("bun:test");
 
   describe.serial("judge-dispatch through the host judge role", () => {
-    test("a native judge that is not Jev routes both surfaces and journals usage", async () => {
-      await withProjects([{ integrationMode: "enhanced" }, { integrationMode: "standard" }], async ([enhanced, standard]) => {
+    test("a native judge that is not Jev routes task calls and journals usage", async () => {
+      await withProjects([{}], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [{ project: project as string, calls: 1 }],
+          response: "success",
+          hostKey: HOST_KEY,
+        });
+
+        expect(report.requests.map((request) => request.authorization)).toEqual([`Bearer ${HOST_KEY}`]);
+        expect(report.sessions[0]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "task" } }]);
+        expect(report.sessions[0]?.usage).toHaveLength(1);
+        expect(report.sessions[0]?.notifications).toEqual([]);
+        expect(diagnostics(report)).not.toContain(HOST_KEY);
+      });
+    });
+
+    test("judgeEffort adds the effort question and writes the judged effort", async () => {
+      await withProjects([{}, { judgeEffort: true }], async ([plain, effort]) => {
         const report = await runIsolatedScenario({
           sessions: [
-            { project: enhanced as string, surface: "enhanced", calls: 1 },
-            { project: standard as string, surface: "standard", calls: 1 },
+            { project: plain as string, calls: 1 },
+            { project: effort as string, calls: 1 },
           ],
           response: "success",
           hostKey: HOST_KEY,
         });
 
-        expect(report.requests.map((request) => request.authorization)).toEqual([`Bearer ${HOST_KEY}`, `Bearer ${HOST_KEY}`]);
-        expect(report.sessions[0]?.results).toEqual([{ agent: "writer" }]);
-        expect(report.sessions[1]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "task" } }]);
-        for (const session of report.sessions) {
-          expect(session.usage).toHaveLength(1);
-          expect(session.notifications).toEqual([]);
-        }
-        expect(diagnostics(report)).not.toContain(HOST_KEY);
+        const askedQuestions = report.requests.map((request) => Object.keys(JSON.parse(request.body).questions ?? {}));
+        expect(askedQuestions).toEqual([["agent"], ["agent", "effort"]]);
+        expect(report.sessions[1]?.results).toEqual([
+          { input: { task: "Implement the requested repository change", agent: "task", effort: "hi" } },
+        ]);
       });
     });
 
-    test("judgeEffort sets the task effort in standard mode and is never asked in enhanced mode", async () => {
-      await withProjects(
-        [
-          { integrationMode: "enhanced", judgeEffort: true },
-          { integrationMode: "standard", judgeEffort: true },
-        ],
-        async ([enhanced, standard]) => {
-          const report = await runIsolatedScenario({
-            sessions: [
-              { project: enhanced as string, surface: "enhanced", calls: 1 },
-              { project: standard as string, surface: "standard", calls: 1 },
-            ],
-            response: "success",
-            hostKey: HOST_KEY,
-          });
-
-          const askedQuestions = report.requests.map((request) => Object.keys(JSON.parse(request.body).questions ?? {}));
-          expect(askedQuestions).toEqual([["agent"], ["agent", "effort"]]);
-          expect(report.sessions[0]?.results).toEqual([{ agent: "writer" }]);
-          expect(report.sessions[1]?.results).toEqual([
-            { input: { task: "Implement the requested repository change", agent: "task", effort: "hi" } },
-          ]);
-        },
-      );
-    });
-
-    test("without a host credential both surfaces keep the requested agent and warn once per session", async () => {
-      await withProjects([{ integrationMode: "enhanced" }, { integrationMode: "standard" }], async ([enhanced, standard]) => {
+    test("without a host credential task calls keep the requested agent and warn once per session", async () => {
+      await withProjects([{}, {}], async ([first, second]) => {
         const report = await runIsolatedScenario({
           sessions: [
-            { project: enhanced as string, surface: "enhanced", calls: 2 },
-            { project: standard as string, surface: "standard", calls: 2 },
+            { project: first as string, calls: 2 },
+            { project: second as string, calls: 2 },
           ],
           response: "success",
         });
@@ -332,9 +283,9 @@ async function registerTests(): Promise<void> {
     });
 
     test("a rejected host credential fails open without the availability warning or leaking the key", async () => {
-      await withProjects([{ integrationMode: "enhanced" }], async ([project]) => {
+      await withProjects([{}], async ([project]) => {
         const report = await runIsolatedScenario({
-          sessions: [{ project: project as string, surface: "enhanced", calls: 1 }],
+          sessions: [{ project: project as string, calls: 1 }],
           response: "unauthorized",
           hostKey: HOST_KEY,
         });
@@ -349,9 +300,9 @@ async function registerTests(): Promise<void> {
     });
 
     test("a transport failure fails open without the availability warning", async () => {
-      await withProjects([{ integrationMode: "enhanced" }], async ([project]) => {
+      await withProjects([{}], async ([project]) => {
         const report = await runIsolatedScenario({
-          sessions: [{ project: project as string, surface: "enhanced", calls: 1 }],
+          sessions: [{ project: project as string, calls: 1 }],
           response: "network-error",
           hostKey: HOST_KEY,
         });

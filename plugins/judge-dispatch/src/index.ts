@@ -15,7 +15,6 @@ import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi
 import { readHostSetting } from "#src/host-settings.ts";
 import {
   acceptRoutingDecision,
-  type IntegrationMode,
   type JudgeDispatchSettings,
   type ParsedTaskRoute,
   parseLegalAgentNames,
@@ -24,42 +23,19 @@ import {
   type RoutingCandidate,
   rewriteTaskRoutes,
   routableCandidates,
+  routingDeadlineMs,
   type SerializedCandidate,
-  selectRoutingSurface,
   serializeCandidate,
-  standardRoutingDeadlineMs,
   TASK_EFFORTS,
   type TaskEffort,
 } from "#src/routing.ts";
 
 const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
-const MAX_ROUTING_DEADLINE_MS = 8_000;
 const DEFAULT_SETTINGS: JudgeDispatchSettings = {
-  integrationMode: "standard",
   minimumConfidence: 0.7,
   includeSharedContext: true,
   judgeEffort: false,
 };
-
-interface BeforeSubagentSpawnEvent {
-  type: "before_subagent_spawn";
-  invocationKind: "task" | "eval";
-  assignment: string;
-  context?: string;
-  requestedAgent: string;
-  candidates: RoutingCandidate[];
-}
-
-interface BeforeSubagentSpawnResult {
-  agent?: string;
-}
-
-type BeforeSubagentSpawnHandler = (
-  event: BeforeSubagentSpawnEvent,
-  ctx: ExtensionContext,
-) => Promise<BeforeSubagentSpawnResult | undefined> | BeforeSubagentSpawnResult | undefined;
-
-type EnhancedOn = (event: "before_subagent_spawn", handler: BeforeSubagentSpawnHandler) => void;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -81,12 +57,6 @@ async function withRoutingDeadline<T>(timeoutMs: number, operation: (signal: Abo
   }
 }
 
-function parseIntegrationMode(value: unknown): IntegrationMode {
-  if (value === undefined) return DEFAULT_SETTINGS.integrationMode;
-  if (value === "standard" || value === "enhanced") return value;
-  throw new Error(`invalid integrationMode ${JSON.stringify(value)}`);
-}
-
 function parseSettings(raw: Record<string, unknown>): JudgeDispatchSettings {
   const minimumConfidence = raw.minimumConfidence ?? DEFAULT_SETTINGS.minimumConfidence;
   if (typeof minimumConfidence !== "number" || !Number.isFinite(minimumConfidence) || minimumConfidence < 0 || minimumConfidence > 1) {
@@ -104,7 +74,6 @@ function parseSettings(raw: Record<string, unknown>): JudgeDispatchSettings {
   }
 
   return {
-    integrationMode: parseIntegrationMode(raw.integrationMode),
     minimumConfidence,
     includeSharedContext,
     judgeEffort,
@@ -144,16 +113,12 @@ function fallbackChain(patterns: readonly string[], role: string | undefined, ch
 }
 
 /**
- * Standard mode has no host preflight event, so the legal candidate set comes
+ * A `tool_call` hook sees no host spawn preflight, so the legal candidate set comes
  * from the host's own rendered `task` agent list (`legalNames`). Discovery here
  * only adds model metadata for those names; an agent the host did not list is
  * never described to a judge or selected.
  */
-async function discoverStandardCandidates(
-  ctx: ExtensionContext,
-  settings: Settings,
-  legalNames: readonly string[],
-): Promise<RoutingCandidate[]> {
+async function discoverCandidates(ctx: ExtensionContext, settings: Settings, legalNames: readonly string[]): Promise<RoutingCandidate[]> {
   if (legalNames.length === 0) return [];
   const currentSession = AgentRegistry.global()
     .list()
@@ -233,7 +198,7 @@ const EFFORT_QUESTION: ChoiceQuestion<TaskEffort> = {
 };
 
 async function judgeRoute(
-  route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
+  route: ParsedTaskRoute,
   allCandidates: readonly RoutingCandidate[],
   config: JudgeDispatchSettings,
   judge: ChainJudge,
@@ -301,7 +266,7 @@ interface RoutingSession {
 
 async function judgeRouteFailOpen(
   session: RoutingSession,
-  route: Pick<ParsedTaskRoute, "assignment" | "context" | "requestedAgent">,
+  route: ParsedTaskRoute,
   candidates: readonly RoutingCandidate[],
   signal: AbortSignal,
 ): Promise<RouteChoice | undefined> {
@@ -332,29 +297,14 @@ function unavailableNotifier(pi: ExtensionAPI): (ctx: ExtensionContext) => void 
   };
 }
 
-function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean): void {
-  let fallbackWarningShown = false;
+export default function judgeDispatch(pi: ExtensionAPI): void {
   const notifyUnavailable = unavailableNotifier(pi);
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "task") return undefined;
-    if (warnAboutEnhancedFallback && !fallbackWarningShown) {
-      fallbackWarningShown = true;
-      try {
-        ctx.ui.notify(
-          "judge-dispatch enhanced mode requires OMP subagent routing API v2; using standard task interception instead.",
-          "warning",
-        );
-      } catch (error) {
-        pi.logger.warn("judge-dispatch could not display its enhanced-mode fallback warning", {
-          error: errorMessage(error),
-        });
-      }
-    }
-
     try {
       const config = await effectivePluginSettings(ctx.cwd);
       const settings = scopedSettings(ctx);
-      const deadlineMs = standardRoutingDeadlineMs(await readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
+      const deadlineMs = routingDeadlineMs(await readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
       if (deadlineMs === undefined) return undefined;
       const taskTool = pi.getAllTools().find((tool) => tool.name === "task");
       const legalNames = taskTool ? parseLegalAgentNames(taskTool.description) : undefined;
@@ -363,7 +313,7 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
         const input = event.input as Record<string, unknown>;
         const routes = parseTaskInput(input);
         if (!routes) return undefined;
-        const candidates = await discoverStandardCandidates(ctx, settings, legalNames);
+        const candidates = await discoverCandidates(ctx, settings, legalNames);
         const session = { pi, ctx, config, judge: sessionJudge(ctx, settings), notifyUnavailable };
         const choices = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
         const rewritten = rewriteTaskRoutes(input, routes, choices);
@@ -373,58 +323,5 @@ function registerStandard(pi: ExtensionAPI, warnAboutEnhancedFallback: boolean):
       pi.logger.warn("judge-dispatch task interception failed open", { error: errorMessage(error) });
       return undefined;
     }
-  });
-}
-
-function registerEnhanced(pi: ExtensionAPI): void {
-  const enhancedPi = pi as unknown as { on: EnhancedOn };
-  const notifyUnavailable = unavailableNotifier(pi);
-  enhancedPi.on("before_subagent_spawn", async (event, ctx) => {
-    try {
-      return await withRoutingDeadline(MAX_ROUTING_DEADLINE_MS, async (signal) => {
-        // The API v2 spawn result carries only `agent`, so enhanced routing never asks for an effort it cannot apply.
-        const config = { ...(await effectivePluginSettings(ctx.cwd)), judgeEffort: false };
-        const session = { pi, ctx, config, judge: sessionJudge(ctx, scopedSettings(ctx)), notifyUnavailable };
-        const choice = await judgeRouteFailOpen(
-          session,
-          {
-            assignment: event.assignment,
-            context: event.context,
-            requestedAgent: event.requestedAgent,
-          },
-          event.candidates,
-          signal,
-        );
-        return choice?.agent ? { agent: choice.agent } : undefined;
-      });
-    } catch (error) {
-      pi.logger.warn("judge-dispatch enhanced routing failed open", { error: errorMessage(error) });
-      return undefined;
-    }
-  });
-}
-
-export default function judgeDispatch(pi: ExtensionAPI): void {
-  let bootstrapped = false;
-  pi.on("session_start", async (_event, ctx) => {
-    if (bootstrapped) return;
-    bootstrapped = true;
-
-    let mode: IntegrationMode = DEFAULT_SETTINGS.integrationMode;
-    try {
-      mode = (await withRoutingDeadline(MAX_ROUTING_DEADLINE_MS, () => effectivePluginSettings(ctx.cwd))).integrationMode;
-    } catch (error) {
-      pi.logger.warn("judge-dispatch configuration is invalid; loading standard fail-open interception", {
-        error: errorMessage(error),
-      });
-    }
-
-    const host = pi.pi as typeof pi.pi & { SUBAGENT_ROUTING_EXTENSION_API_VERSION?: unknown };
-    const selection = selectRoutingSurface(mode, host.SUBAGENT_ROUTING_EXTENSION_API_VERSION);
-    if (selection.surface === "enhanced") {
-      registerEnhanced(pi);
-      return;
-    }
-    registerStandard(pi, selection.warnAboutEnhancedFallback);
   });
 }

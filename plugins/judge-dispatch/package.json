@@ -13,15 +13,6 @@
       "./src/index.ts"
     ],
     "settings": {
-      "integrationMode": {
-        "type": "enum",
-        "values": [
-          "standard",
-          "enhanced"
-        ],
-        "default": "standard",
-        "description": "Use task tool interception (standard) or the host subagent lifecycle API when available (enhanced)"
-      },
       "minimumConfidence": {
         "type": "number",
         "default": 0.7,
@@ -33,12 +24,12 @@
       "includeSharedContext": {
         "type": "boolean",
         "default": true,
-        "description": "Include task batch or subagent shared context in the routing judgment"
+        "description": "Include the task call's shared context in the routing judgment"
       },
       "judgeEffort": {
         "type": "boolean",
         "default": false,
-        "description": "Also let the judge set each task call's thinking effort (lo/med/hi), replacing the requested one; standard task interception only"
+        "description": "Also let the judge set each task call's thinking effort (lo/med/hi), replacing the requested one"
       }
     }
   }

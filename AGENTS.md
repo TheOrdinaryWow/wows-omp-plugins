@@ -128,14 +128,15 @@ pi.registerTool({
 
 `pi.typebox.Type.Object(...)` infers without the annotation if you prefer it.
 
-`judge-dispatch` intentionally compiles against the marketplace's current omp
-version while feature-detecting a newer lifecycle event. Keep that event's
-typing structural inside the plugin; do not raise the repository's minimum omp
-version merely to acquire the event overload.
+`judge-dispatch` routes only by rewriting `task` tool calls. OMP's
+`before_subagent_spawn` hook can swap a child's model but not its agent type, so
+`eval.agent()` and `workpool()` stay unrouted. An earlier "enhanced" mode coded
+against a hypothetical routing API that no omp release ever shipped, and it was
+removed. Build on a host surface only once a released omp exposes it.
 
-It also derives its legal agent set from the live `task` tool description and
-bootstraps per session through `session_start` (never `process.cwd()`), because
-plugin settings are project-scoped and several sessions can share one process.
+It derives its legal agent set from the live `task` tool description and reads
+its settings on every call from `ctx.cwd` (never `process.cwd()`), because plugin
+settings are project-scoped and several sessions can share one process.
 
 Its runtime floor is omp 18.2.11, older than the dev dependency it compiles
 against. Host APIs that changed shape since then go through feature detection,

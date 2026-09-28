@@ -6,9 +6,8 @@ import {
   parseTaskInput,
   rewriteTaskRoutes,
   routableCandidates,
-  selectRoutingSurface,
+  routingDeadlineMs,
   serializeCandidate,
-  standardRoutingDeadlineMs,
 } from "../plugins/judge-dispatch/src/routing.ts";
 
 describe("task input routing", () => {
@@ -108,30 +107,11 @@ test("candidate serialization exposes only compact routing metadata", () => {
   });
 });
 
-test("selects exactly one routing surface from session-scoped mode and capability", () => {
-  expect(selectRoutingSurface("standard", 2)).toEqual({
-    surface: "standard",
-    warnAboutEnhancedFallback: false,
-  });
-  expect(selectRoutingSurface("enhanced", 2)).toEqual({
-    surface: "enhanced",
-    warnAboutEnhancedFallback: false,
-  });
-  expect(selectRoutingSurface("enhanced", undefined)).toEqual({
-    surface: "standard",
-    warnAboutEnhancedFallback: true,
-  });
-  expect(selectRoutingSurface("enhanced", 1)).toEqual({
-    surface: "standard",
-    warnAboutEnhancedFallback: true,
-  });
-});
-
-test("keeps standard routing below the scoped tool-call timeout", () => {
-  expect(standardRoutingDeadlineMs(30_000)).toBe(8_000);
-  expect(standardRoutingDeadlineMs(5_000)).toBe(4_000);
-  expect(standardRoutingDeadlineMs(1_200)).toBeUndefined();
-  expect(standardRoutingDeadlineMs(Number.NaN)).toBeUndefined();
+test("keeps routing below the scoped tool-call timeout", () => {
+  expect(routingDeadlineMs(30_000)).toBe(8_000);
+  expect(routingDeadlineMs(5_000)).toBe(4_000);
+  expect(routingDeadlineMs(1_200)).toBeUndefined();
+  expect(routingDeadlineMs(Number.NaN)).toBeUndefined();
 });
 
 describe("legal agent extraction", () => {

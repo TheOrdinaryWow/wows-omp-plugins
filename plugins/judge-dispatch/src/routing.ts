@@ -1,19 +1,11 @@
-export type IntegrationMode = "standard" | "enhanced";
-
 /** Coarse per-spawn thinking effort the host task tool accepts; it maps onto the target model's supported thinking levels. */
 export const TASK_EFFORTS = ["lo", "med", "hi"] as const;
 export type TaskEffort = (typeof TASK_EFFORTS)[number];
 
 export interface JudgeDispatchSettings {
-  integrationMode: IntegrationMode;
   minimumConfidence: number;
   includeSharedContext: boolean;
   judgeEffort: boolean;
-}
-
-export interface RoutingSurfaceSelection {
-  surface: IntegrationMode;
-  warnAboutEnhancedFallback: boolean;
 }
 
 export interface CandidateModelSummary {
@@ -68,21 +60,14 @@ export interface RouteChoice {
 }
 
 const DESCRIPTION_LIMIT = 320;
-const STANDARD_MAX_DEADLINE_MS = 8_000;
+const MAX_ROUTING_DEADLINE_MS = 8_000;
 const TOOL_CALL_SAFETY_MARGIN_MS = 1_000;
 const MINIMUM_USEFUL_DEADLINE_MS = 250;
 
-export function selectRoutingSurface(mode: IntegrationMode, apiVersion: unknown): RoutingSurfaceSelection {
-  if (mode === "enhanced" && apiVersion === 2) {
-    return { surface: "enhanced", warnAboutEnhancedFallback: false };
-  }
-  return { surface: "standard", warnAboutEnhancedFallback: mode === "enhanced" };
-}
-
-/** Fit standard routing safely inside OMP's scoped tool-call handler timeout. */
-export function standardRoutingDeadlineMs(toolCallTimeoutMs: unknown): number | undefined {
+/** Fit routing safely inside OMP's scoped tool-call handler timeout. */
+export function routingDeadlineMs(toolCallTimeoutMs: unknown): number | undefined {
   if (typeof toolCallTimeoutMs !== "number" || !Number.isFinite(toolCallTimeoutMs)) return undefined;
-  const deadline = Math.min(STANDARD_MAX_DEADLINE_MS, Math.floor(toolCallTimeoutMs) - TOOL_CALL_SAFETY_MARGIN_MS);
+  const deadline = Math.min(MAX_ROUTING_DEADLINE_MS, Math.floor(toolCallTimeoutMs) - TOOL_CALL_SAFETY_MARGIN_MS);
   return deadline >= MINIMUM_USEFUL_DEADLINE_MS ? deadline : undefined;
 }
 
@@ -93,7 +78,7 @@ const AGENT_HEADING_PATTERN = /^###\s+([A-Za-z0-9_-]+)/;
  * Read the spawnable agent names out of the live `task` tool description. The
  * host renders that list after applying the session's spawn policy and
  * disabled-agent settings, so it is the only authoritative legal set a plugin
- * can observe in standard mode. Returns `undefined` when the section is absent,
+ * can observe from a `tool_call` hook. Returns `undefined` when the section is absent,
  * which callers MUST treat as "policy unknown" rather than "everything".
  */
 export function parseLegalAgentNames(taskDescription: string): string[] | undefined {
