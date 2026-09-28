@@ -15,7 +15,7 @@
       "name": "audit-goal",
       "source": "./audit-goal",
       "description": "Goal-driven audit-and-fix loop with a round ledger, intensity levels, and reserved audit agents",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -32,7 +32,7 @@
       "name": "judge-dispatch",
       "source": "./judge-dispatch",
       "description": "Route OMP subagent types with native judge-role judgments",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -48,7 +48,7 @@
       "name": "omo-prometheus",
       "source": "./omo-prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -68,7 +68,7 @@
       "name": "omo-ultrawork",
       "source": "./omo-ultrawork",
       "description": "Port of oh-my-openagent ultrawork mode, mass-ulw, hyperplan, and ulw-research for OMP",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -87,7 +87,7 @@
       "name": "omo-toolkit",
       "source": "./omo-toolkit",
       "description": "Port of oh-my-openagent category agents, research agents, skills, and documentation MCPs for OMP",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": {
         "name": "TheOrdinaryWow"
       },
