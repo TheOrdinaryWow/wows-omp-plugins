@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "Port of oh-my-openagent category agents, reviewer agents, skills, and documentation MCPs for OMP",
+  "description": "Port of oh-my-openagent category agents, research agents, skills, and documentation MCPs for OMP",
   "license": "SEE LICENSES IN LICENSE-MIT AND LICENSE-SUL-1.0",
   "imports": {
     "#src/*": "./src/*"

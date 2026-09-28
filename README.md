@@ -34,7 +34,7 @@ Each plugin has its own README covering installation, settings, and behavior.
 | `judge-dispatch` | Routes subagent types through OMP judge-role judgments | [Documentation](plugins/judge-dispatch/README.md) |
 | `omo-prometheus` | Ports oh-my-openagent Prometheus planning and Atlas orchestration to OMP | [Documentation](plugins/omo-prometheus/README.md) |
 | `omo-ultrawork` | Ports ultrawork mode, mass-ulw, hyperplan, and ulw-research to OMP | [Documentation](plugins/omo-ultrawork/README.md) |
-| `omo-toolkit` | Ports category and reviewer agents, skills, and documentation MCPs to OMP | [Documentation](plugins/omo-toolkit/README.md) |
+| `omo-toolkit` | Ports category and research agents, skills, and documentation MCPs to OMP | [Documentation](plugins/omo-toolkit/README.md) |
 
 ## Repository layout
 
