@@ -1,4 +1,4 @@
 {
   "plugins/judge-dispatch": "0.1.0",
-  "plugins/prometheus": "0.2.0"
+  "plugins/prometheus": "0.2.1"
 }

@@ -31,7 +31,7 @@
       "name": "prometheus",
       "source": "./prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
