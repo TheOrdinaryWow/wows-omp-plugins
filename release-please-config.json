@@ -13,11 +13,25 @@
         { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='judge-dispatch')].version" }
       ]
     },
-    "plugins/prometheus": {
-      "component": "prometheus",
+    "plugins/omo-prometheus": {
+      "component": "omo-prometheus",
       "extra-files": [
         { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
-        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='prometheus')].version" }
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='omo-prometheus')].version" }
+      ]
+    },
+    "plugins/omo-ultrawork": {
+      "component": "omo-ultrawork",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='omo-ultrawork')].version" }
+      ]
+    },
+    "plugins/omo-toolkit": {
+      "component": "omo-toolkit",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='omo-toolkit')].version" }
       ]
     }
   }

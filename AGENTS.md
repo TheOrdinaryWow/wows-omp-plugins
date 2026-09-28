@@ -93,6 +93,7 @@ name segment — `#src/*`, not `#/*`.
 3. Add content in the conventional directories: `skills/<name>/SKILL.md`,
    `commands/*.md`, `agents/*.md`, `hooks/pre|post/`, `tools/`, `.mcp.json`.
 4. Declare a TypeScript extension entry in `package.json` under `omp.extensions`.
+   Content-only plugins omit `omp.extensions`.
 5. Write `plugins/<name>/README.md`. It owns that plugin's install steps,
    settings, and behavior; the root README only indexes plugins and links to it.
    The file ships with the plugin, so write it for the installing user.
@@ -105,8 +106,10 @@ name segment — `#src/*`, not `#/*`.
    `.release-please-manifest.json`.
 9. Run `bun run check-catalog && bun run check-types && bun run check`.
 
-[plugins/judge-dispatch/](file:///./plugins/judge-dispatch/) is the current example
-of a dependency-free extension package with manifest-backed settings.
+[plugins/judge-dispatch/](file:///./plugins/judge-dispatch/) illustrates a
+dependency-free extension with manifest-backed settings;
+[plugins/omo-prometheus/](file:///./plugins/omo-prometheus/) illustrates
+runtime assets and agents.
 
 ## Extension authoring gotcha
 

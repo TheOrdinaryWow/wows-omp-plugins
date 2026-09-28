@@ -31,7 +31,9 @@ Each plugin has its own README covering installation, settings, and behavior.
 | Plugin | Description | Documentation |
 | ------ | ----------- | ------------- |
 | `judge-dispatch` | Routes subagent types through OMP judge-role judgments | [Documentation](plugins/judge-dispatch/README.md) |
-| `prometheus` | Ports oh-my-openagent Prometheus planning and Atlas orchestration to OMP | [Documentation](plugins/prometheus/README.md) |
+| `omo-prometheus` | Ports oh-my-openagent Prometheus planning and Atlas orchestration to OMP | [Documentation](plugins/omo-prometheus/README.md) |
+| `omo-ultrawork` | Ports ultrawork mode, mass-ulw, hyperplan, and ulw-research to OMP | [Documentation](plugins/omo-ultrawork/README.md) |
+| `omo-toolkit` | Ports category and reviewer agents, skills, and documentation MCPs to OMP | [Documentation](plugins/omo-toolkit/README.md) |
 
 ## Repository layout
 
@@ -61,4 +63,6 @@ publishing.
 
 ## License
 
-Repository-original code and content are MIT unless a plugin says otherwise. The `prometheus` plugin carries modified OmO prompt assets under Sustainable Use License 1.0; see [its license notes](plugins/prometheus/README.md#native-state-and-compatibility).
+Repository-original code and content are MIT unless a plugin says otherwise.
+The three `omo-*` plugins carry modified OmO prompt assets under Sustainable
+Use License 1.0; see their linked README files and license notes.

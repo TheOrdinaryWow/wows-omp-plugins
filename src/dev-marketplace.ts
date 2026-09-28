@@ -8,7 +8,7 @@
  * run the working tree while every other directory keeps the released version.
  *
  *   bun run dev:plugins              sync and (re)install every plugin
- *   bun run dev:plugins prometheus   only the named plugins
+ *   bun run dev:plugins omo-prometheus   only the named plugins
  *   bun run dev:plugins --remove     uninstall them and drop the dev marketplace
  */
 import { cp, rm } from "node:fs/promises";

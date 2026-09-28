@@ -6,7 +6,13 @@
     "useIgnoreFile": true
   },
   "files": {
-    "ignoreUnknown": true
+    "ignoreUnknown": true,
+    "includes": [
+      "**",
+      "!plugins/omo-ultrawork/assets/ulw-research/scripts/**",
+      "!plugins/omo-toolkit/skills/debugging/references/scripts/**",
+      "!plugins/omo-toolkit/skills/visual-qa/scripts/**"
+    ]
   },
   "formatter": {
     "enabled": true,
