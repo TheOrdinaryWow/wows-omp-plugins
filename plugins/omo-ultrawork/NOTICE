@@ -1,0 +1,18 @@
+Ultrawork plugin licensing and attribution
+
+This plugin is a modified OMP port of ultrawork, mass-ulw, hyperplan, and saturation research material from oh-my-openagent, Copyright the oh-my-openagent contributors. The extension and prompt procedures are adapted to OMP's input hook, session entries, task and IRC coordination, eval kernel, skill URLs, and user-only commands. The upstream runtime is not bundled.
+
+Current upstream source used for this port:
+- Project: https://github.com/code-yeongyu/oh-my-openagent
+- Pinned revision: fe427efeed97e95f009dc6ca7fb17a3ac857f79f
+- Keyword and pointer sources: `packages/omo-senpi/src/components/ultrawork/index.ts`, `packages/omo-senpi/src/components/skill-pointers/index.ts`, `packages/omo-senpi/src/components/skill-pointers/strip-quoted-regions.ts`
+- Reminder source: `packages/omo-senpi/src/components/todo-fanout-reminder/reminder.ts`
+- Directive source: `packages/omo-senpi/skills/ultrawork/SKILL.md`
+- Graph guidance: `packages/omo-senpi/skills/mass-ulw/SKILL.md`, `packages/omo-senpi/skills/mass-ulw/references/planning.md`
+- Adversarial planning source: `packages/omo-senpi/skills/hyperplan/SKILL.md`
+- Saturation research sources: `packages/omo-senpi/skills/ulw-research/SKILL.md`, `packages/omo-senpi/skills/ulw-research/ATTRIBUTION.md`, `packages/omo-senpi/skills/ulw-research/references/latex-report.md`
+- Research overlays: `packages/shared-skills/skills/ulw-research/references/deliverable-phase.md`, `packages/shared-skills/skills/ulw-research/references/report-gates.md`, `packages/shared-skills/skills/ulw-research/scripts/*.mjs` (excluding tests, copied byte-for-byte)
+
+The modified/derived prompt assets in `assets/**/*.md` and `skills/mass-ulw/**` and the vendored research scripts in `assets/ulw-research/scripts/*.mjs` are licensed under the Sustainable Use License 1.0; the complete terms are in `LICENSE-SUL-1.0`. Those terms permit internal business use as well as personal/noncommercial use and permit free-of-charge distribution for noncommercial purposes. They do not categorically prohibit all business use. The third-party method ideas cited in `assets/ulw-research/ATTRIBUTION.md` are credited there, with no third-party implementation included.
+
+Original extension code and original packaging authored for this port are licensed under the MIT License in `LICENSE-MIT`. The upstream notices and prominent modified-port notices in each derived prompt must not be removed or obscured.
