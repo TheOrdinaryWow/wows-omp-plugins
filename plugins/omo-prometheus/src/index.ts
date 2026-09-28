@@ -300,6 +300,13 @@ export default function prometheus(pi: ExtensionAPI): void {
   const pauseMessage = (record: SessionRecord): string =>
     `Prometheus execution paused: ${record.ledgerError ?? "the approved execution ledger is unavailable"}. No new task dispatch or completion is permitted. Restore the exact approved plan/ledger, or run /prometheus to exit and obtain fresh native approval; do not use prompt-only execution.`;
 
+  const observeFinalJobs = (ctx: ExtensionContext): void => {
+    const live = mainSession(ctx);
+    if (typeof live?.getAsyncJobSnapshot === "function") {
+      childEvidence.observeAsyncJobs(ctx.sessionManager.getSessionId(), live.getAsyncJobSnapshot({ recentLimit: Number.MAX_SAFE_INTEGER }));
+    }
+  };
+
   const receiptEntries = (ctx: ExtensionContext): ChildReceipt[] => {
     const receipts: ChildReceipt[] = [];
     for (const entry of ctx.sessionManager.getBranch()) {
@@ -384,6 +391,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             receipt !== undefined &&
             receipt !== null &&
             typeof receipt === "object" &&
+            receipt.nativeFinal === true &&
             receipt.ledgerId === ledger.ledgerId &&
             receipt.planSha256 === ledger.planSha256 &&
             receipt.rowId === row.id &&
@@ -923,6 +931,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                 .list()
                 .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
               if (!parent) throw new Error("Registered parent identity is unavailable");
+              observeFinalJobs(ctx);
               const receipt = await childEvidence.capture({
                 registry: AgentRegistry.global(),
                 parentAgentId: parent.id,
@@ -1095,6 +1104,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.on("context", async (event, ctx) => {
     const live = mainSession(ctx);
     if (!live) return undefined;
+    observeFinalJobs(ctx);
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (!record || (record.phase !== "planning" && record.phase !== "executing")) return undefined;
     if (record.phase === "planning" && live.getPlanModeState()?.enabled !== true) return undefined;
@@ -1139,6 +1149,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     const live = mainSession(ctx);
+    observeFinalJobs(ctx);
     if (event.toolName === ACTIVATE_TOOL) {
       if (!live || !ctx.hasUI) return { block: true, reason: "Prometheus activation requires an interactive main session." };
       const provenance = toolProvenance(ACTIVATE_TOOL);
@@ -1205,6 +1216,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!live) return undefined;
     const sessionId = ctx.sessionManager.getSessionId();
     const record = records.get(sessionId) ?? rehydrate(ctx) ?? recordFor(sessionId);
+    observeFinalJobs(ctx);
+    if (event.toolName === "task" && record.phase === "executing" && provenanceBlockReason("task") === undefined) {
+      childEvidence.observeTaskResult(sessionId, event.toolCallId, event.details);
+    }
 
     if (event.toolName === "ask") {
       record.pendingConsent = undefined;
@@ -1276,6 +1291,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       await syncTools(false, true, true);
     }
   });
+
+  pi.on("message_end", (_event, ctx) => observeFinalJobs(ctx));
 
   pi.on("session_stop", async (_event, ctx) => {
     if (!mainSession(ctx)) return undefined;

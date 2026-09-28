@@ -71,6 +71,7 @@ async function scenario(name: string, root: string): Promise<void> {
   let reference: string | undefined;
   let sequence = 0;
   let confirmations = 0;
+  const nativeJobs: Array<{ id: string; agentId: string; type: "task"; status: string; startTime: number; label: string }> = [];
   const sessionManager = {
     getSessionId: () => "integrity-session",
     getArtifactsDir: () => artifacts,
@@ -80,6 +81,11 @@ async function scenario(name: string, root: string): Promise<void> {
     sessionManager,
     getPlanModeState: () => ({ enabled: mode }),
     getPlanReferencePath: () => reference,
+    getAsyncJobSnapshot: () => ({
+      running: nativeJobs.filter((job) => job.status === "running"),
+      recent: nativeJobs.filter((job) => job.status !== "running"),
+      delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+    }),
   } as unknown as AgentSession;
   const ctx = {
     cwd: root,
@@ -195,6 +201,9 @@ async function scenario(name: string, root: string): Promise<void> {
       observe?: boolean;
       createdAt?: number;
       nativeStatus?: string;
+      finalResult?: boolean;
+      finalError?: string;
+      asyncStatus?: string;
     } = {},
   ) => {
     const reviewed =
@@ -236,6 +245,25 @@ async function scenario(name: string, root: string): Promise<void> {
         sessionFile,
         parentToolCallId: prepared.toolCallId,
       });
+    if (options.asyncStatus !== undefined) {
+      nativeJobs.push({
+        id: `job-${childAgentId}`,
+        agentId: childAgentId,
+        type: "task",
+        status: options.asyncStatus,
+        startTime: Date.now(),
+        label: childAgentId,
+      });
+    } else if (options.finalResult !== false) {
+      await hook("tool_result", {
+        toolName: "task",
+        toolCallId: prepared.toolCallId,
+        input: prepared.input,
+        isError: false,
+        details: { results: [{ id: childAgentId, index: 0, exitCode: 0, aborted: false, error: options.finalError }] },
+        content: [{ type: "text", text: options.finalError ?? "Native task finished" }],
+      });
+    }
   };
   const done = (id: string, childAgentId: string) =>
     call({ action: "done", id, childAgentId, evidence: "Inspected behavior and child output" });
@@ -364,6 +392,26 @@ async function scenario(name: string, root: string): Promise<void> {
     refused(await done("F4", "WrongReports"));
     await publish(synthesis, "Synthesis");
     ok(await done("F4", "Synthesis"));
+    return;
+  }
+  if (name === "final-native-outcome") {
+    const prepared = await prepare("T1");
+    await publish(prepared, "EarlyCompletion", { finalResult: false });
+    refused(await done("T1", "EarlyCompletion"));
+    await publish(prepared, "CaptureFailed", { finalError: "Isolated patch capture failed after subprocess completion" });
+    refused(await done("T1", "CaptureFailed"));
+    await publish(prepared, "PendingCapture", { asyncStatus: "running" });
+    refused(await done("T1", "PendingCapture"));
+    const pending = nativeJobs.find((job) => job.agentId === "PendingCapture");
+    assert(pending);
+    pending.status = "failed";
+    refused(await done("T1", "PendingCapture"));
+    await publish(prepared, "SuccessfulCapture", { asyncStatus: "completed" });
+    await hook("context", { messages: [] });
+    nativeJobs.length = 0;
+    ok(await done("T1", "SuccessfulCapture"));
+    assert.equal((await row("T1")).status, "done");
+    assert.equal((await row("T2")).status, "open");
     return;
   }
   await tasksDone();
@@ -497,6 +545,7 @@ if (process.env[CHILD_ENV]) {
       "invalid-ledger",
       "ordering",
       "untrusted-children",
+      "final-native-outcome",
       "reopen-running",
       "resume",
       "missing-proof",

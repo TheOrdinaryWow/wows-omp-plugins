@@ -11,12 +11,14 @@ interface Assignment {
   sessionId: string;
   planSha256: string;
   rows: Record<string, string>;
+  dispatchedAt: number;
 }
 
 interface ObservedChild {
   assignment: Assignment;
   status: string;
   sessionFile: string;
+  finalStatus?: "completed" | "failed";
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -96,6 +98,7 @@ export class ChildEvidence {
     const tasks = Array.isArray(input.tasks) ? input.tasks : [input];
     if (!tasks.length) throw new Error("Task batch is empty");
     const bound = new Set<string>();
+    const dispatchedAt = Date.now();
     const assignments = tasks.map((task) => {
       if (!object(task) || typeof task.task !== "string") throw new Error("Every task needs an assignment body");
       const text = `${typeof input.context === "string" ? input.context : ""}\n${task.task}`;
@@ -119,7 +122,7 @@ export class ChildEvidence {
         bound.add(id);
         rows[id] = attempt;
       }
-      return { ledgerId: ledger.ledgerId, sessionId, planSha256: ledger.planSha256, rows };
+      return { ledgerId: ledger.ledgerId, sessionId, planSha256: ledger.planSha256, rows, dispatchedAt };
     });
     this.#dispatches.set(toolCallId, assignments);
   }
@@ -137,6 +140,35 @@ export class ChildEvidence {
     const assignment = this.#dispatches.get(payload.parentToolCallId)?.[payload.index];
     if (!assignment) return;
     this.#children.set(`${assignment.sessionId}:${payload.id}`, { assignment, status: payload.status, sessionFile: payload.sessionFile });
+  }
+
+  observeTaskResult(sessionId: string, toolCallId: string, details: unknown): void {
+    if (!object(details) || !Array.isArray(details.results)) return;
+    const assignments = this.#dispatches.get(toolCallId);
+    if (!assignments) return;
+    for (const result of details.results) {
+      if (!object(result) || typeof result.id !== "string" || !Number.isInteger(result.index)) continue;
+      const child = this.#children.get(`${sessionId}:${result.id}`);
+      if (!child || child.assignment !== assignments[result.index as number]) continue;
+      child.finalStatus =
+        child.finalStatus !== "failed" && result.exitCode === 0 && result.aborted !== true && result.error === undefined
+          ? "completed"
+          : "failed";
+    }
+  }
+
+  observeAsyncJobs(sessionId: string, snapshot: unknown): void {
+    if (!object(snapshot)) return;
+    for (const bucket of [snapshot.running, snapshot.recent]) {
+      if (!Array.isArray(bucket)) continue;
+      for (const job of bucket) {
+        if (!object(job) || job.type !== "task" || typeof job.agentId !== "string" || typeof job.startTime !== "number") continue;
+        const child = this.#children.get(`${sessionId}:${job.agentId}`);
+        if (!child || job.startTime < child.assignment.dispatchedAt) continue;
+        if (job.status === "failed" || job.status === "cancelled" || job.status === "aborted") child.finalStatus = "failed";
+        else if (job.status === "completed" && child.finalStatus !== "failed") child.finalStatus = "completed";
+      }
+    }
   }
 
   clearSession(sessionId: string): void {
@@ -177,6 +209,11 @@ export class ChildEvidence {
         "No native successful completion for this current assignment; use a fresh child to revalidate historical or stale work",
       );
     }
+    if (observed.finalStatus !== "completed") {
+      throw new Error(
+        "The native task has not reported final success, including isolated-work capture; wait for its final result or repair the failure",
+      );
+    }
     const outputPath = path.join(artifactsDir, `${childAgentId}.md`);
     if (
       !child.history?.outputPath ||
@@ -200,7 +237,8 @@ export class ChildEvidence {
     if (
       registry.get(childAgentId) !== child ||
       (child.status !== "idle" && child.status !== "parked") ||
-      this.#children.get(`${sessionId}:${childAgentId}`) !== observed
+      this.#children.get(`${sessionId}:${childAgentId}`) !== observed ||
+      observed.finalStatus !== "completed"
     )
       throw new Error("Child changed while evidence was being captured; retry after completion");
     return {
@@ -215,6 +253,7 @@ export class ChildEvidence {
       childCreatedAt: child.createdAt,
       outputSha256: planDigest(content),
       capturedAt: Date.now(),
+      nativeFinal: true,
     };
   }
 }

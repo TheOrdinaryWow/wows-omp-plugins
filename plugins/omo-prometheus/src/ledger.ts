@@ -44,6 +44,7 @@ export interface ChildReceipt {
   childCreatedAt: number;
   outputSha256: string;
   capturedAt: number;
+  nativeFinal: true;
 }
 
 export function planDigest(content: string): string {
