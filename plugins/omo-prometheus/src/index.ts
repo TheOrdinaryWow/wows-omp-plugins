@@ -10,16 +10,20 @@
  * prompt and runtime guard force all implementation and verification work into
  * child agents while keeping the host's native plan artifact and handoff.
  *
- * State is tracked per session id and mirrored into session entries, never in
- * process globals, the environment, or host settings, so child sessions and
- * ordinary plan-mode sessions are untouched.
+ * State is tracked per session id and mirrored into session entries; proposal
+ * markers and execution ledgers live in session-local artifacts that survive the
+ * host's fresh-session approval handoff. No process-global handoff state is used.
  */
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
+import { createLedger, type ExecutionLedger, isComplete, parsePlanChecklist, renderLedgerSummary } from "./ledger.ts";
 import {
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
@@ -27,21 +31,28 @@ import {
   EXECUTION_START_NOTICE,
   executionBlockReason,
   executionToolSourceBlockReason,
+  inlineApprovedPlan,
   isApprovedPlanHandoff,
   isPrometheusOptInConsent,
   isPrometheusOptInQuestion,
   nestedXdevToolCall,
   OPT_IN_ADDENDUM,
   PLANNING_PREAMBLE,
+  PLUGIN_OWNED_TOOLS,
   PROMETHEUS_DEEP_OPTION_INDEX,
   PROMETHEUS_OPT_IN_QUESTION_ID,
   parsePrometheusCommand,
   planReferencesMatch,
+  prometheusArtifactUrl,
   proposedPlanPathFromToolResult,
 } from "./workflow.ts";
 
 const ACTIVATE_TOOL = "prometheus_activate";
 const RELEASE_TOOL = "prometheus_release";
+const LEDGER_TOOL = "prometheus_ledger";
+/** Persisted `ledgerPath` sentinel: ledger creation failed once and is not retried for this run. */
+const LEDGER_DISABLED = "disabled";
+const GATE_EVIDENCE_PATTERN = /agent:\/\/[A-Za-z0-9_-]+/;
 const STATE_ENTRY = "wows-omp-omo-prometheus.state";
 const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
 const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
@@ -65,14 +76,13 @@ interface SessionRecord {
   pendingConsent?: { askToolCallId: string; modeEntryId: string };
   proposalAwaitingApproval?: boolean;
   approvalCompactionPending?: boolean;
+  /** `local://` URL of the execution ledger, or `LEDGER_DISABLED`. */
+  ledgerPath?: string;
+  /** In-memory: newest ledger `updatedAt` seen by the last session_stop continuation. */
+  lastContinuationLedgerStamp?: number;
+  /** In-memory: consecutive session_stop continuations without ledger progress. */
+  stallCount: number;
   lastBlockedAt: number;
-}
-
-interface PendingFreshHandoff {
-  sourceSessionId: string;
-  sourceSession: AgentSession;
-  targetSessionId?: string;
-  record: SessionRecord;
 }
 
 function errorMessage(error: unknown): string {
@@ -82,7 +92,6 @@ function errorMessage(error: unknown): string {
 export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
   const authorizedActivationCalls = new Map<string, string>();
-  let pendingFreshHandoff: PendingFreshHandoff | undefined;
 
   const notify = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void => {
     try {
@@ -131,7 +140,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const recordFor = (sessionId: string): SessionRecord => {
     const existing = records.get(sessionId);
     if (existing) return existing;
-    const created: SessionRecord = { phase: "idle", lastBlockedAt: 0 };
+    const created: SessionRecord = { phase: "idle", lastBlockedAt: 0, stallCount: 0 };
     records.set(sessionId, created);
     return created;
   };
@@ -139,13 +148,16 @@ export default function prometheus(pi: ExtensionAPI): void {
   const persist = (record: SessionRecord): void => {
     try {
       pi.appendEntry(STATE_ENTRY, {
-        version: 1,
+        version: 2,
         phase: record.phase,
         planningModeEntryId: record.planningModeEntryId,
         planFilePath: record.planFilePath,
         proposedByToolCallId: record.proposedByToolCallId,
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
+        proposalAwaitingApproval: record.proposalAwaitingApproval === true,
+        approvalCompactionPending: record.approvalCompactionPending === true,
+        ledgerPath: record.ledgerPath,
       });
     } catch (error) {
       pi.logger.warn("prometheus could not persist workflow state", { error: errorMessage(error) });
@@ -168,6 +180,9 @@ export default function prometheus(pi: ExtensionAPI): void {
             proposedByToolCallId?: unknown;
             offeredForModeEntryId?: unknown;
             suppressedForModeEntryId?: unknown;
+            proposalAwaitingApproval?: unknown;
+            approvalCompactionPending?: unknown;
+            ledgerPath?: unknown;
           }
         | undefined;
       if (data?.phase !== "idle" && data?.phase !== "planning" && data?.phase !== "executing") continue;
@@ -180,6 +195,10 @@ export default function prometheus(pi: ExtensionAPI): void {
           typeof data.offeredForModeEntryId === "string" && data.offeredForModeEntryId ? data.offeredForModeEntryId : undefined,
         suppressedForModeEntryId:
           typeof data.suppressedForModeEntryId === "string" && data.suppressedForModeEntryId ? data.suppressedForModeEntryId : undefined,
+        proposalAwaitingApproval: typeof data.proposalAwaitingApproval === "boolean" ? data.proposalAwaitingApproval : false,
+        approvalCompactionPending: typeof data.approvalCompactionPending === "boolean" ? data.approvalCompactionPending : false,
+        ledgerPath: typeof data.ledgerPath === "string" && data.ledgerPath ? data.ledgerPath : undefined,
+        stallCount: 0,
         lastBlockedAt: 0,
         planningModeEntryId:
           typeof data.planningModeEntryId === "string" && data.planningModeEntryId ? data.planningModeEntryId : undefined,
@@ -189,7 +208,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     return restored;
   };
 
-  const syncTools = async (wantActivate: boolean, wantRelease: boolean): Promise<void> => {
+  const syncTools = async (wantActivate: boolean, wantRelease: boolean, wantLedger: boolean): Promise<void> => {
     try {
       const active = pi.getActiveTools();
       const desired = new Set(active);
@@ -197,11 +216,82 @@ export default function prometheus(pi: ExtensionAPI): void {
       else desired.delete(ACTIVATE_TOOL);
       if (wantRelease) desired.add(RELEASE_TOOL);
       else desired.delete(RELEASE_TOOL);
+      if (wantLedger) desired.add(LEDGER_TOOL);
+      else desired.delete(LEDGER_TOOL);
       if (desired.size === active.length && active.every((name) => desired.has(name))) return;
       await pi.setActiveTools([...desired]);
     } catch (error) {
       pi.logger.warn("prometheus could not reconcile workflow tools", { error: errorMessage(error) });
     }
+  };
+
+  const localOptions = (ctx: ExtensionContext) => ({
+    getArtifactsDir: () => ctx.sessionManager.getArtifactsDir(),
+    getSessionId: () => ctx.sessionManager.getSessionId(),
+  });
+
+  const clearProposalMarker = async (ctx: ExtensionContext, planFilePath: string | undefined): Promise<void> => {
+    if (!planFilePath) return;
+    try {
+      await fs.rm(resolveLocalUrlToPath(prometheusArtifactUrl(planFilePath, "proposal"), localOptions(ctx)), { force: true });
+    } catch (error) {
+      pi.logger.warn("prometheus could not remove the proposal marker", { error: errorMessage(error) });
+    }
+  };
+
+  /** The real ledger for an executing record, or `undefined` when none exists or it cannot be read. */
+  const readLedger = async (ctx: ExtensionContext, record: SessionRecord): Promise<ExecutionLedger | undefined> => {
+    const ledgerUrl = record.ledgerPath;
+    if (!ledgerUrl || ledgerUrl === LEDGER_DISABLED) return undefined;
+    try {
+      const data = JSON.parse(await fs.readFile(resolveLocalUrlToPath(ledgerUrl, localOptions(ctx)), "utf8")) as Partial<ExecutionLedger>;
+      return data.version === 1 && Array.isArray(data.items) && Array.isArray(data.gates) ? (data as ExecutionLedger) : undefined;
+    } catch (error) {
+      pi.logger.warn("prometheus could not read the execution ledger", { ledgerUrl, error: errorMessage(error) });
+      return undefined;
+    }
+  };
+
+  const writeLedger = async (ctx: ExtensionContext, ledgerUrl: string, ledger: ExecutionLedger): Promise<void> => {
+    const ledgerFile = resolveLocalUrlToPath(ledgerUrl, localOptions(ctx));
+    await fs.mkdir(path.dirname(ledgerFile), { recursive: true });
+    await fs.writeFile(ledgerFile, `${JSON.stringify(ledger, null, 2)}\n`);
+  };
+
+  /** Create the execution ledger once per approved plan; failures disable it for the run instead of blocking Atlas. */
+  const ensureLedger = async (ctx: ExtensionContext, record: SessionRecord, planContent?: string): Promise<void> => {
+    const planFilePath = record.planFilePath;
+    if (record.ledgerPath || !planFilePath) return;
+    const ledgerUrl = prometheusArtifactUrl(planFilePath, "ledger");
+    let notice: string | undefined;
+    if (!ctx.sessionManager.getArtifactsDir()) {
+      notice = "Prometheus: this session has no artifact directory; ledger disabled";
+    } else {
+      try {
+        const content = planContent ?? (await fs.readFile(resolveLocalUrlToPath(planFilePath, localOptions(ctx)), "utf8"));
+        const { errors } = parsePlanChecklist(content);
+        if (errors.length === 0) {
+          await writeLedger(ctx, ledgerUrl, createLedger(planFilePath, content));
+        } else {
+          pi.logger.warn("prometheus plan lacks the ledger checklist grammar", { planFilePath, errors });
+          notice = "Prometheus: plan lacks the T/F checklist grammar; ledger disabled for this run";
+        }
+      } catch (error) {
+        notice = `Prometheus: the execution ledger could not be created (${errorMessage(error)}); ledger disabled for this run`;
+      }
+    }
+    record.ledgerPath = notice ? LEDGER_DISABLED : ledgerUrl;
+    if (notice) notify(ctx, notice, "warning");
+    persist(record);
+  };
+
+  /** On resume, a vanished ledger file is dropped so the next turn rebuilds it from the approved plan. */
+  const resumeLedger = async (ctx: ExtensionContext, record: SessionRecord | undefined): Promise<void> => {
+    if (record?.phase !== "executing" || !record.ledgerPath || record.ledgerPath === LEDGER_DISABLED) return;
+    if (await readLedger(ctx, record)) return;
+    notify(ctx, `Prometheus: execution ledger ${record.ledgerPath} is missing; it will be rebuilt from the approved plan.`, "warning");
+    record.ledgerPath = undefined;
+    persist(record);
   };
 
   const release = async (ctx: ExtensionContext, reason: string): Promise<void> => {
@@ -211,14 +301,13 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const episodeId = planModeEpisodeId(ctx);
     authorizedActivationCalls.clear();
-    pendingFreshHandoff = undefined;
     const record =
       records.get(ctx.sessionManager.getSessionId()) ??
       rehydrate(ctx) ??
       (episodeId ? recordFor(ctx.sessionManager.getSessionId()) : undefined);
     if (!record) {
       notify(ctx, "Prometheus is not active in this session.");
-      await syncTools(false, false);
+      await syncTools(false, false, false);
       return;
     }
     if (record.phase === "idle") {
@@ -231,11 +320,12 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.offeredForModeEntryId = episodeId;
         persist(record);
       }
-      await syncTools(false, false);
+      await syncTools(false, false, false);
       notify(ctx, episodeId ? "Prometheus opt-in is off for this native plan-mode session." : "Prometheus is not active in this session.");
       return;
     }
     const wasExecuting = record.phase === "executing";
+    await clearProposalMarker(ctx, record.planFilePath);
     record.phase = "idle";
     record.planFilePath = undefined;
     record.proposedByToolCallId = undefined;
@@ -246,8 +336,11 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.approvalCompactionPending = false;
     record.planningModeEntryId = undefined;
     record.offerPendingForModeEntryId = undefined;
+    record.ledgerPath = undefined;
+    record.lastContinuationLedgerStamp = undefined;
+    record.stallCount = 0;
     persist(record);
-    await syncTools(false, false);
+    await syncTools(false, false, false);
     notify(
       ctx,
       wasExecuting
@@ -281,6 +374,9 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.approvalCompactionPending = false;
       record.offerPendingForModeEntryId = undefined;
       record.planningModeEntryId = planModeEpisodeId(ctx);
+      record.ledgerPath = undefined;
+      record.lastContinuationLedgerStamp = undefined;
+      record.stallCount = 0;
     }
     persist(record);
     return true;
@@ -298,7 +394,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const provenanceBlockReason = (toolName: string): string | undefined => {
     const provenance = toolProvenance(toolName);
     const trustedPrometheusTool =
-      toolName === RELEASE_TOOL && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
+      PLUGIN_OWNED_TOOLS.has(toolName) && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
     return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool);
   };
 
@@ -314,20 +410,27 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const atlasBlock = async (ctx: ExtensionContext, record: SessionRecord): Promise<string> => {
-    const path = record.planFilePath ?? "unavailable (retain the inline native plan and report this recovery limitation)";
+    const planPath = record.planFilePath ?? "unavailable (retain the inline native plan and report this recovery limitation)";
     const taskIssue =
       provenanceBlockReason("task") ??
       (pi.getActiveTools().includes("task") ? undefined : "the native task tool is disabled in this session");
     const capability = taskIssue
       ? `\n\n<capability-block>The required native task tool is unavailable: ${taskIssue}. Report this blocker; do not implement in the parent.</capability-block>`
       : "";
+    const ledger = await readLedger(ctx, record);
+    const ledgerBlock = ledger
+      ? `\n\n<execution-ledger path="${record.ledgerPath}">\n${renderLedgerSummary(ledger)}\n</execution-ledger>`
+      : record.ledgerPath === LEDGER_DISABLED
+        ? '\n\n<execution-ledger status="disabled">No execution ledger is available for this run: track the plan with `todo` and inspected child evidence, and do not call `prometheus_ledger`.</execution-ledger>'
+        : "";
+    const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}`;
     try {
-      return `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${path}" provenance="native-xd-propose" />${capability}\n\n${await loadPromptAsset(ATLAS_ASSET)}`;
+      return `${header}\n\n${await loadPromptAsset(ATLAS_ASSET)}`;
     } catch (error) {
       const detail = errorMessage(error);
       pi.logger.warn("prometheus Atlas asset became unavailable", { error: detail });
       notify(ctx, `Prometheus could not load the Atlas asset (${detail}); the execution guard remains active.`, "error");
-      return `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${path}" provenance="native-xd-propose" />${capability}`;
+      return header;
     }
   };
 
@@ -339,15 +442,18 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.offeredForModeEntryId = undefined;
     record.offerPendingForModeEntryId = undefined;
     record.planningModeEntryId = undefined;
+    record.lastContinuationLedgerStamp = undefined;
+    record.stallCount = 0;
     persist(record);
     notify(ctx, EXECUTION_START_NOTICE);
   };
 
   pi.on("input", async (event, ctx) => {
+    const current = records.get(ctx.sessionManager.getSessionId());
+    if (current && event.source !== "extension") current.stallCount = 0;
     const command = parsePrometheusCommand(event.text);
     if (!command) {
       const trimmed = event.text.trim();
-      const current = records.get(ctx.sessionManager.getSessionId());
       if (trimmed.startsWith("/") && current?.phase === "planning") current.proposalAwaitingApproval = false;
       if (trimmed.startsWith("/") && current?.phase === "planning") current.approvalCompactionPending = false;
       if (/^\/plan(?:[ \t]|$)/.test(trimmed)) {
@@ -355,6 +461,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         const record = current ?? rehydrate(ctx);
         if (live?.getPlanModeState()?.enabled === true && record?.phase === "planning") {
           record.phase = "idle";
+          await clearProposalMarker(ctx, record.planFilePath);
           record.planFilePath = undefined;
           record.proposedByToolCallId = undefined;
           record.planningModeEntryId = undefined;
@@ -363,7 +470,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           record.approvalCompactionPending = false;
           record.offerPendingForModeEntryId = undefined;
           persist(record);
-          await syncTools(false, false);
+          await syncTools(false, false, false);
         }
       }
       return undefined;
@@ -427,6 +534,23 @@ export default function prometheus(pi: ExtensionAPI): void {
   const releaseParameters = z.object({
     reason: z.string().describe("Concise summary of completed child-produced evidence shown to the user before release"),
   });
+  const ledgerParameters = z.object({
+    action: z
+      .enum(["status", "start", "done", "block", "reopen"])
+      .describe("status shows every row; start, done, block, and reopen change the row named by id"),
+    id: z.string().optional().describe("Plan row id such as T3 or F2; required for every action except status"),
+    evidence: z
+      .string()
+      .optional()
+      .describe("Inspected child evidence; required for done, and F gates must cite the verification child's agent:// output"),
+    childAgentId: z.string().optional().describe("Id of the child agent working on or verifying the row"),
+  });
+  type LedgerParams = {
+    action: "status" | "start" | "done" | "block" | "reopen";
+    id?: string;
+    evidence?: string;
+    childAgentId?: string;
+  };
 
   pi.registerTool({
     name: ACTIVATE_TOOL,
@@ -474,7 +598,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           details: {},
         };
       }
-      await syncTools(false, false);
+      await syncTools(false, false, false);
       return {
         content: [
           {
@@ -496,7 +620,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Prometheus Release",
     description:
-      "After every delegated plan item has verified child evidence, request human confirmation to release Atlas. Never releases without confirmation.",
+      "After every delegated plan item and final gate has verified child evidence, request human confirmation to release Atlas. Refused while execution-ledger rows remain unfinished; never releases without confirmation.",
     parameters: releaseParameters,
     defaultInactive: true,
     loadMode: "essential",
@@ -507,6 +631,20 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (!live || record?.phase !== "executing") {
         return {
           content: [{ type: "text" as const, text: "Prometheus Atlas execution is not active in this main session." }],
+          isError: true,
+          details: {},
+        };
+      }
+      const ledger = await readLedger(ctx, record);
+      if (ledger && !isComplete(ledger)) {
+        const unfinished = [...ledger.items, ...ledger.gates].filter((item) => item.status !== "done");
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Release refused: unfinished ledger rows remain (${unfinished.map((item) => `${item.id} ${item.status}`).join(", ")}). Keep delegating.\n\n${renderLedgerSummary(ledger)}`,
+            },
+          ],
           isError: true,
           details: {},
         };
@@ -539,21 +677,94 @@ export default function prometheus(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool({
+    name: LEDGER_TOOL,
+    sourcePath: RUNTIME_SOURCE_PATH,
+    label: "Prometheus Ledger",
+    description:
+      "Read or update the approved Prometheus plan's execution ledger. `status` lists every T/F row; `start`, `done`, `block`, and `reopen` change one row. `done` requires inspected evidence and finished dependencies; F gates also require every T row done and evidence citing the verification child's agent:// output.",
+    parameters: ledgerParameters,
+    defaultInactive: true,
+    loadMode: "essential",
+    approval: "read",
+    execute: async (_toolCallId, params: LedgerParams, _signal, _onUpdate, ctx) => {
+      const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
+      const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+      if (!mainSession(ctx) || record?.phase !== "executing") return fail("Prometheus Atlas execution is not active in this main session.");
+      const ledger = await readLedger(ctx, record);
+      const ledgerUrl = record.ledgerPath;
+      if (!ledger || !ledgerUrl) {
+        return fail("No execution ledger is available for this run; track the plan with todo and inspected child evidence.");
+      }
+      if (params.action === "status") return { content: [{ type: "text" as const, text: renderLedgerSummary(ledger) }], details: {} };
+
+      const id = params.id?.trim();
+      const item = [...ledger.items, ...ledger.gates].find((entry) => entry.id === id);
+      if (!item) return fail(`Unknown ledger row ${id || "(missing id)"}; use an id from prometheus_ledger status.`);
+      const evidence = params.evidence?.trim();
+      if (params.action === "done") {
+        if (!evidence) return fail(`Marking ${item.id} done requires non-empty evidence.`);
+        const unfinished = item.dependsOn.filter((dependency) => ledger.items.find((entry) => entry.id === dependency)?.status !== "done");
+        if (unfinished.length > 0) return fail(`${item.id} depends on unfinished rows: ${unfinished.join(", ")}.`);
+        if (ledger.gates.includes(item)) {
+          const openTasks = ledger.items.filter((entry) => entry.status !== "done").map((entry) => entry.id);
+          if (openTasks.length > 0)
+            return fail(`Final gate ${item.id} cannot pass while task rows are unfinished: ${openTasks.join(", ")}.`);
+          if (!GATE_EVIDENCE_PATTERN.test(evidence)) return fail("Gate evidence must cite the verification child's agent:// output");
+        }
+      }
+      item.status =
+        params.action === "start" ? "in_progress" : params.action === "done" ? "done" : params.action === "block" ? "blocked" : "open";
+      item.evidence = evidence || undefined;
+      const childAgentId = params.childAgentId?.trim();
+      if (childAgentId) item.childAgentId = childAgentId;
+      item.updatedAt = Date.now();
+      try {
+        await writeLedger(ctx, ledgerUrl, ledger);
+      } catch (error) {
+        return fail(`The execution ledger could not be written: ${errorMessage(error)}`);
+      }
+      persist(record);
+      return {
+        content: [{ type: "text" as const, text: `${item.id} is now ${item.status}.\n\n${renderLedgerSummary(ledger)}` }],
+        details: { id: item.id, status: item.status },
+      };
+    },
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     const live = mainSession(ctx);
     if (!live) return undefined;
     const sessionId = ctx.sessionManager.getSessionId();
     let record = records.get(sessionId) ?? rehydrate(ctx);
-    const fresh = pendingFreshHandoff;
-    if (fresh?.targetSessionId === sessionId && fresh.sourceSession === live) {
-      if (
-        (!record || record.phase === "idle") &&
-        isApprovedPlanHandoff(event.prompt, fresh.record.planFilePath, live.getPlanReferencePath())
-      ) {
-        record = { ...fresh.record, phase: "planning", pendingConsent: undefined, lastBlockedAt: 0 };
-        records.set(sessionId, record);
+    const reference = live.getPlanReferencePath();
+    if ((!record || record.phase === "idle") && reference && isApprovedPlanHandoff(event.prompt, reference, reference)) {
+      try {
+        const marker = JSON.parse(
+          await fs.readFile(resolveLocalUrlToPath(prometheusArtifactUrl(reference, "proposal"), localOptions(ctx)), "utf8"),
+        ) as { version?: unknown; planFilePath?: unknown; proposedByToolCallId?: unknown };
+        if (
+          marker.version === 1 &&
+          typeof marker.planFilePath === "string" &&
+          planReferencesMatch(marker.planFilePath, reference) &&
+          typeof marker.proposedByToolCallId === "string" &&
+          marker.proposedByToolCallId
+        ) {
+          record = {
+            phase: "planning",
+            planFilePath: reference,
+            proposedByToolCallId: marker.proposedByToolCallId,
+            lastBlockedAt: 0,
+            stallCount: 0,
+          };
+          records.set(sessionId, record);
+        }
+      } catch (error) {
+        // No marker means an ordinary native plan approval, which stays untouched.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          pi.logger.warn("prometheus could not read the proposal marker", { error: errorMessage(error) });
+        }
       }
-      pendingFreshHandoff = undefined;
     }
 
     const planModeActive = live.getPlanModeState()?.enabled === true;
@@ -584,19 +795,16 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     let injected: string | undefined;
     let wantActivate = false;
-    let wantRelease = false;
+    let executing = record?.phase === "executing";
 
-    if (record?.phase === "executing") {
-      wantRelease = true;
-      injected = await atlasBlock(ctx, record);
-    } else if (record?.phase === "planning") {
+    if (record?.phase === "planning") {
       if (planModeActive) {
         injected = await planningBlock(ctx);
       } else if (isApprovedPlanHandoff(event.prompt, record.planFilePath, live.getPlanReferencePath())) {
         enterExecution(ctx, record);
-        wantRelease = true;
-        injected = await atlasBlock(ctx, record);
+        executing = true;
       } else {
+        await clearProposalMarker(ctx, record.planFilePath);
         record.phase = "idle";
         record.planFilePath = undefined;
         record.proposedByToolCallId = undefined;
@@ -607,7 +815,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.offerPendingForModeEntryId = undefined;
         persist(record);
       }
-    } else if (planModeActive) {
+    } else if (!executing && planModeActive) {
       const episodeId = planModeEpisodeId(ctx);
       const tracked = record ?? recordFor(sessionId);
       if (episodeId && tracked.suppressedForModeEntryId !== episodeId) {
@@ -619,7 +827,18 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
     }
 
-    await syncTools(wantActivate, wantRelease);
+    if (executing && record) {
+      if (record.ledgerPath === undefined) {
+        const inlinePlan =
+          record.planFilePath && isApprovedPlanHandoff(event.prompt, record.planFilePath, live.getPlanReferencePath())
+            ? inlineApprovedPlan(event.prompt, record.planFilePath)
+            : undefined;
+        await ensureLedger(ctx, record, inlinePlan);
+      }
+      injected = await atlasBlock(ctx, record);
+    }
+
+    await syncTools(wantActivate, executing, executing);
     if (!injected) return undefined;
     return { systemPrompt: [...event.systemPrompt, injected] };
   });
@@ -740,7 +959,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         } else {
           record.suppressedForModeEntryId = episodeId;
           persist(record);
-          await syncTools(false, false);
+          await syncTools(false, false, false);
         }
       }
       return undefined;
@@ -753,11 +972,22 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.proposalAwaitingApproval = true;
     record.approvalCompactionPending = false;
     persist(record);
+    try {
+      const markerFile = resolveLocalUrlToPath(prometheusArtifactUrl(proposedPath, "proposal"), localOptions(ctx));
+      await fs.mkdir(path.dirname(markerFile), { recursive: true });
+      await fs.writeFile(
+        markerFile,
+        `${JSON.stringify({ version: 1, planFilePath: proposedPath, proposedByToolCallId: event.toolCallId, createdAt: Date.now() })}\n`,
+      );
+    } catch (error) {
+      pi.logger.warn("prometheus could not write the proposal marker", { error: errorMessage(error) });
+    }
 
     const approvedInResult = event.content.some((part) => part.type === "text" && part.text.trimStart().startsWith("Plan approved at "));
     if (approvedInResult && live.getPlanModeState()?.enabled !== true && planReferencesMatch(live.getPlanReferencePath(), proposedPath)) {
       enterExecution(ctx, record);
-      await syncTools(false, true);
+      await ensureLedger(ctx, record);
+      await syncTools(false, true, true);
     }
     return undefined;
   });
@@ -781,75 +1011,65 @@ export default function prometheus(pi: ExtensionAPI): void {
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase === "planning" && record.approvalCompactionPending === true) {
       enterExecution(ctx, record);
-      await syncTools(false, true);
+      await syncTools(false, true, true);
     }
   });
 
-  pi.on("session_before_switch", (event, ctx) => {
-    pendingFreshHandoff = undefined;
-    if (event.reason !== "new") return undefined;
-    const live = mainSession(ctx);
-    const sessionId = ctx.sessionManager.getSessionId();
-    const record = records.get(sessionId) ?? rehydrate(ctx);
-    if (
-      live &&
-      record?.phase === "planning" &&
-      record.planFilePath &&
-      record.proposedByToolCallId &&
-      record.proposalAwaitingApproval === true &&
-      live.getPlanModeState()?.enabled !== true
-    ) {
-      pendingFreshHandoff = {
-        sourceSessionId: sessionId,
-        sourceSession: live,
-        record: { ...record, pendingConsent: undefined, lastBlockedAt: 0 },
-      };
+  pi.on("session_stop", async (_event, ctx) => {
+    if (!mainSession(ctx)) return undefined;
+    const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+    if (record?.phase !== "executing") return undefined;
+    const ledger = await readLedger(ctx, record);
+    if (!ledger || isComplete(ledger)) return undefined;
+    const stamp = Math.max(...[...ledger.items, ...ledger.gates].map((item) => item.updatedAt));
+    record.stallCount = stamp === record.lastContinuationLedgerStamp ? record.stallCount + 1 : 0;
+    if (record.stallCount >= 2) {
+      notify(ctx, "Prometheus: execution stalled; run /prometheus to release or send new instructions", "warning");
+      return undefined;
     }
-    return undefined;
+    record.lastContinuationLedgerStamp = stamp;
+    return {
+      continue: true,
+      additionalContext: `<prometheus-continuation>\n${renderLedgerSummary(ledger)}\nDispatch the next unblocked items with task; record progress with prometheus_ledger; call prometheus_release only when every T and F row is done.\n</prometheus-continuation>`,
+    };
   });
 
   pi.on("session_start", async (_event, ctx) => {
     const restored = rehydrate(ctx, true);
-    await syncTools(false, restored?.phase === "executing");
+    await resumeLedger(ctx, restored);
+    const executing = restored?.phase === "executing";
+    await syncTools(false, executing, executing);
   });
 
   pi.on("session_switch", async (event, ctx) => {
-    const live = mainSession(ctx);
-    const sessionId = ctx.sessionManager.getSessionId();
     authorizedActivationCalls.clear();
     if (event.reason === "new") {
-      if (pendingFreshHandoff && live === pendingFreshHandoff.sourceSession) {
-        records.delete(pendingFreshHandoff.sourceSessionId);
-        pendingFreshHandoff.targetSessionId = sessionId;
-      } else {
-        pendingFreshHandoff = undefined;
-      }
-      records.delete(sessionId);
-      await syncTools(false, false);
+      records.delete(ctx.sessionManager.getSessionId());
+      await syncTools(false, false, false);
       return;
     }
-    pendingFreshHandoff = undefined;
     const restored = rehydrate(ctx, true);
-    await syncTools(false, restored?.phase === "executing");
+    await resumeLedger(ctx, restored);
+    const executing = restored?.phase === "executing";
+    await syncTools(false, executing, executing);
   });
 
   pi.on("session_branch", async (_event, ctx) => {
-    pendingFreshHandoff = undefined;
     authorizedActivationCalls.clear();
     const restored = rehydrate(ctx, true);
-    await syncTools(false, restored?.phase === "executing");
+    const executing = restored?.phase === "executing";
+    await syncTools(false, executing, executing);
   });
 
   pi.on("session_tree", async (_event, ctx) => {
-    pendingFreshHandoff = undefined;
     authorizedActivationCalls.clear();
     const restored = rehydrate(ctx, true);
-    await syncTools(false, restored?.phase === "executing");
+    const executing = restored?.phase === "executing";
+    await syncTools(false, executing, executing);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
     records.delete(ctx.sessionManager.getSessionId());
     authorizedActivationCalls.clear();
-    pendingFreshHandoff = undefined;
   });
 }

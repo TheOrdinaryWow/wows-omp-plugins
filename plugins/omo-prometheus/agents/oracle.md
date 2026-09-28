@@ -5,7 +5,7 @@ model: "@slow"
 tools: [read, glob, grep]
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `7dd8ad4fc1b75bff13fe3dac3310d7d17f71b249`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Oracle: architecture consultation and independent plan review
 

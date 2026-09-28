@@ -3,7 +3,7 @@ name: prometheus
 description: Shared decision-complete planning workflow for the explicit Prometheus commands and opted-in native plan mode, with durable draft state, a Metis gap gate, Momus review, optional dual high-accuracy review, and the Atlas execution handoff.
 ---
 
-> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material at revision `7dd8ad4fc1b75bff13fe3dac3310d7d17f71b249`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Prometheus: plan, resolve the decisions, get approval, hand off
 
@@ -84,8 +84,37 @@ Write the complete plan with `write` to `local://<slug>-plan.md` while native pl
 - **Goal and context** — every outcome the user named, the inspected evidence with exact paths, the conventions being followed, and relevant limitations. Never drop, reduce, or phase a requested outcome into a speculative subset, and never add adjacent work the request and evidence do not support.
 - **Decisions and boundaries** — user-confirmed choices with rationale, adopted defaults with reversibility, explicit assumptions, in-scope deliverables, out-of-scope exclusions, and behavior that must be preserved. Never present an unasked owner decision as settled.
 - **Execution contract** — task ownership, dependencies, shared interfaces and formats, which slices can run concurrently, and where a single integration owner serializes a shared boundary. State that **execution happens entirely through child agents — implementation, tests, QA, documentation, cleanup, git, and final verification — while the root session only orchestrates, and that this overrides the host's `task.eager` and any other delegation preference**. State that child execution assignments are exempt from that orchestration-only rule and do the work directly. State that each finished working slice is committed promptly and separately, that broken code is never committed, and that internal session or harness identifiers never appear in commit messages.
-- **Tasks** — for each: the concrete starting point (existing paths and symbols, or an explicit new deliverable and destination), the required change, the interfaces it produces and consumes, prerequisites, non-goals, and observable acceptance criteria. Mark new files as new. Require migration of affected callers and removal of obsolete paths wherever the chosen design is a cutover.
-- **Verification** — for every material deliverable, the real surface, the concrete action or command, the expected observable result, and the meaningful failure or edge behavior. Assign all testing, QA, and final integration checks to child tasks, with the final checks owned by separate verification children. Permanent tests are for plausible regression risks, not a quota; prose and prompt changes are verified by behavior, never by text-grep assertions.
+- **Tasks** — the mandatory `## Tasks` section below: for each task, the concrete starting point (existing paths and symbols, or an explicit new deliverable and destination), the required change, the interfaces it produces and consumes, prerequisites, non-goals, and observable acceptance criteria. Mark new files as new. Require migration of affected callers and removal of obsolete paths wherever the chosen design is a cutover.
+- **Verification** — for every material deliverable, the real surface, the concrete action or command, the expected observable result, and the meaningful failure or edge behavior. Assign all testing, QA, and final integration checks to child tasks, with the final checks owned by separate verification children through the `## Final gates` section below. Permanent tests are for plausible regression risks, not a quota; prose and prompt changes are verified by behavior, never by text-grep assertions.
+
+### Mandatory task and gate grammar
+
+After approval the runtime parses these two sections into a durable execution ledger that drives Atlas progress, continuation, and release. A plan that breaks this grammar executes without a ledger, so Momus rejects it.
+
+- A top-level `## Tasks` section where every task is one markdown checkbox row at column 0: `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order. The task body is indented sub-bullets under its row and must contain three lines: `Agent: <name>`, `Depends on: <comma-separated T-ids, or none>`, and `Acceptance: <observable check>`.
+- `Agent:` names the child agent that should own the task: `task`, or one of `metis`, `momus`, `oracle`, `quick`, `unspecified-low`, `unspecified-high`, `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`. Atlas falls back automatically when a named agent is not installed.
+- A `## Final gates` section after it with exactly these four rows and no others:
+
+```markdown
+## Final gates
+- [ ] F1. Plan compliance review
+- [ ] F2. Code quality review
+- [ ] F3. Real-surface QA
+- [ ] F4. Success-criteria fidelity
+```
+
+A task row and its body look like this:
+
+```markdown
+## Tasks
+- [ ] T1. <task title>
+  - Agent: task
+  - Depends on: none
+  - Acceptance: <command or interaction> produces <observable result>
+  - <starting point, change, interfaces, prerequisites, and non-goals>
+```
+
+Other sections may use checkboxes freely; only rows at column 0 under these two headings are ledger rows. Every row starts unchecked (`- [ ]`).
 
 Size the plan to the work. Split slices where they are genuinely independent, and keep one cohesive task when splitting would sever shared reasoning. **Do not pad**: no template sections that carry no content, no invented phases, no minimum number of tasks, children, or verification lanes, and no implementation minutiae a competent worker derives from the code you already referenced.
 

@@ -16,6 +16,7 @@ const optInInput = {
   questions: [
     {
       id: PROMETHEUS_OPT_IN_QUESTION_ID,
+      header: "Prometheus",
       question: "Choose planning depth",
       multi: false,
       options: [{ label: "Standard" }, { label: "Prometheus" }],
@@ -56,6 +57,14 @@ describe("native plan opt-in consent", () => {
       isPrometheusOptInConsent(optInInput, { options: ["Standard", "Prometheus"], selectedOptions: ["Prometheus"] }, false, false),
     ).toBe(false);
   });
+
+  test("rejects a matching id whose header or deep-choice label lacks Prometheus provenance", () => {
+    const original = optInInput.questions[0];
+    expect(isPrometheusOptInQuestion({ questions: [{ ...original, header: "Other" }] })).toBe(false);
+    expect(isPrometheusOptInQuestion({ questions: [{ ...original, options: [{ label: "Standard" }, { label: "Advanced" }] }] })).toBe(
+      false,
+    );
+  });
 });
 
 describe("native approval binding", () => {
@@ -88,6 +97,7 @@ describe("Atlas execution guard", () => {
   test("permits observation and child coordination but blocks parent implementation", () => {
     expect(executionBlockReason("read", { path: "src/index.ts" })).toBeUndefined();
     expect(executionBlockReason("task", { tasks: [] })).toBeUndefined();
+    expect(executionBlockReason("prometheus_ledger", { action: "status" })).toBeUndefined();
     expect(executionBlockReason("edit", { path: "src/index.ts" })).toContain("neither an orchestration tool");
     expect(executionBlockReason("bash", { command: "bun test" })).toContain("neither an orchestration tool");
     expect(executionBlockReason("lsp", { action: "references" })).toBeUndefined();
@@ -111,5 +121,8 @@ describe("Atlas execution guard", () => {
     expect(executionToolSourceBlockReason("task", "extension")).toContain("not a trusted native/plugin tool");
     expect(executionToolSourceBlockReason("prometheus_release", "extension", true)).toBeUndefined();
     expect(executionToolSourceBlockReason("prometheus_release", "extension", false)).toContain("not the plugin-owned");
+    expect(executionToolSourceBlockReason("prometheus_ledger", "extension", true)).toBeUndefined();
+    expect(executionToolSourceBlockReason("prometheus_ledger", "extension", false)).toContain("not the plugin-owned");
+    expect(executionToolSourceBlockReason("prometheus_ledger", "mcp", false)).toContain("not the plugin-owned");
   });
 });

@@ -50,11 +50,11 @@ function prometheusOptInLabels(input: unknown): string[] | undefined {
   const questions = Array.isArray(args?.questions) ? args.questions : [];
   if (questions.length !== 1) return undefined;
   const question = record(questions[0]);
-  if (question?.id !== PROMETHEUS_OPT_IN_QUESTION_ID || question.multi === true) return undefined;
+  if (question?.id !== PROMETHEUS_OPT_IN_QUESTION_ID || question.header !== "Prometheus" || question.multi === true) return undefined;
   const rawOptions = Array.isArray(question.options) ? question.options : [];
   if (rawOptions.length !== 2) return undefined;
   const offered = rawOptions.map((option) => record(option)?.label);
-  return offered.every((label): label is string => typeof label === "string") ? offered : undefined;
+  return offered.every((label): label is string => typeof label === "string") && /prometheus/i.test(offered[1] ?? "") ? offered : undefined;
 }
 
 /** Whether an ask call is the fixed two-choice native Prometheus opt-in. */
@@ -113,6 +113,25 @@ export function isApprovedPlanHandoff(
   return text.includes(`Full plan inlined below; durable copy at \`${proposed}\``);
 }
 
+/** Session-local Prometheus artifact for a plan: the approval-handoff marker or the execution ledger. */
+export function prometheusArtifactUrl(planFilePath: string, kind: "proposal" | "ledger"): string {
+  const slug = canonicalPlanPath(planFilePath)
+    .replace(/^local:\/\//, "")
+    .replace(/-plan\.md$/, "");
+  return kind === "proposal" ? `local://prometheus/${slug}.proposal.json` : `local://prometheus/${slug}-ledger.json`;
+}
+
+/** Plan body inlined by the host's approved-plan handoff prompt, byte-for-byte between the plan tags. */
+export function inlineApprovedPlan(prompt: string, planFilePath: string): string | undefined {
+  const open = `<plan path="${canonicalPlanPath(planFilePath)}">\n`;
+  const start = prompt.indexOf(open);
+  const end = prompt.lastIndexOf("\n</plan>");
+  return start >= 0 && end >= start + open.length ? prompt.slice(start + open.length, end) : undefined;
+}
+
+/** Plugin-owned tools that are trusted only when registered by this runtime file. */
+export const PLUGIN_OWNED_TOOLS = new Set(["prometheus_release", "prometheus_ledger"]);
+
 /** Parent-session orchestration and observation surfaces retained by Atlas. */
 const ALLOWED_TOOLS: Record<string, true> = {
   ask: true,
@@ -120,6 +139,7 @@ const ALLOWED_TOOLS: Record<string, true> = {
   glob: true,
   grep: true,
   prometheus_release: true,
+  prometheus_ledger: true,
   task: true,
   think: true,
   todo: true,
@@ -259,14 +279,14 @@ export function executionBlockReason(toolName: string, input: unknown): string |
   }
 }
 
-/** Reject extension/MCP shadows of host tools and untrusted release shadows. */
+/** Reject extension/MCP shadows of host tools and untrusted plugin-owned tool shadows. */
 export function executionToolSourceBlockReason(
   toolName: string,
   source: string | undefined,
   trustedPrometheusTool = false,
 ): string | undefined {
-  if (toolName === "prometheus_release") {
-    return trustedPrometheusTool ? undefined : "`prometheus_release` is not the plugin-owned confirmed-release tool";
+  if (PLUGIN_OWNED_TOOLS.has(toolName)) {
+    return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
   }
   if (source === "builtin") return undefined;
   return `\`${toolName}\` resolves to ${source ? `a ${source} tool` : "an unverified tool"}, not a trusted native/plugin tool`;
@@ -309,7 +329,7 @@ export const OPT_IN_ADDENDUM = [
   "",
   "Classify the request before planning. `SIMPLE` means outcome, scope, constraints, and material decisions are already settled and ordinary native planning is sufficient. `COMPLEX` means cross-cutting work, architecture/migration choices, unresolved tradeoffs, or substantial delegated execution.",
   "For `SIMPLE`: continue ordinary native plan mode immediately. Do NOT show an opt-in popup and do NOT call `prometheus_activate`.",
-  `For \`COMPLEX\`: call \`ask\` once with exactly one single-select question whose id is \`${PROMETHEUS_OPT_IN_QUESTION_ID}\`. Offer exactly two choices: index ${PROMETHEUS_STANDARD_OPTION_INDEX} is standard native planning and index ${PROMETHEUS_DEEP_OPTION_INDEX} is Prometheus deep planning. Labels may be localized, but those indices and the id are fixed; recommend index ${PROMETHEUS_DEEP_OPTION_INDEX}.`,
+  `For \`COMPLEX\`: call \`ask\` once with exactly one single-select question whose id is \`${PROMETHEUS_OPT_IN_QUESTION_ID}\` and header is exactly \`Prometheus\`. Offer exactly two choices: index ${PROMETHEUS_STANDARD_OPTION_INDEX} is standard native planning and index ${PROMETHEUS_DEEP_OPTION_INDEX} is Prometheus deep planning; the second label must contain \`Prometheus\`. Labels may otherwise be localized; those indices, the id, and header are fixed. Recommend index ${PROMETHEUS_DEEP_OPTION_INDEX}.`,
   `Only a non-timeout user selection of index ${PROMETHEUS_DEEP_OPTION_INDEX} authorizes \`prometheus_activate\`. Call it with \`{ "questionId": "${PROMETHEUS_OPT_IN_QUESTION_ID}", "selectedOptionIndex": ${PROMETHEUS_DEEP_OPTION_INDEX} }\`. Cancellation, empty selection, custom input, timeout, chat redirect, or index ${PROMETHEUS_STANDARD_OPTION_INDEX} means continue native planning and never activate.`,
   "Do not mention this instruction block and do not ask the depth choice again in the same native plan-mode episode.",
 ].join("\n");
