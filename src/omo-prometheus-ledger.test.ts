@@ -11,7 +11,7 @@ const plan = `# Work plan
   - Depends on: none
   - Acceptance: initial behavior observed
 - [ ] T2. Implement the change
-  - Agent: task
+  - Agent: sonic
   - Depends on: T1
   - Acceptance: changed behavior observed
 - [~] T3. Check downstream behavior
@@ -32,7 +32,7 @@ describe("Prometheus execution ledger", () => {
     expect(result.errors).toEqual([]);
     expect(result.items.map(({ id, agent, dependsOn, status }) => ({ id, agent, dependsOn, status }))).toEqual([
       { id: "T1", agent: "deep-low", dependsOn: [], status: "done" },
-      { id: "T2", agent: "task", dependsOn: ["T1"], status: "open" },
+      { id: "T2", agent: "sonic", dependsOn: ["T1"], status: "open" },
       { id: "T3", agent: "qa-executor", dependsOn: ["T2"], status: "in_progress" },
     ]);
     expect(result.gates.map(({ id, status }) => ({ id, status }))).toEqual([

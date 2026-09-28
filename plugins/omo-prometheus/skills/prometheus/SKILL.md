@@ -92,7 +92,7 @@ Write the complete plan with `write` to `local://<slug>-plan.md` while native pl
 After approval the runtime parses these two sections into a durable execution ledger that drives Atlas progress, continuation, and release. A plan that breaks this grammar executes without a ledger, so Momus rejects it.
 
 - A top-level `## Tasks` section where every task is one markdown checkbox row at column 0: `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order. The task body is indented sub-bullets under its row and must contain three lines: `Agent: <name>`, `Depends on: <comma-separated T-ids, or none>`, and `Acceptance: <observable check>`.
-- `Agent:` names the child agent that should own the task: `task`, or one of `metis`, `momus`, `oracle`, `quick`, `unspecified-low`, `unspecified-high`, `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`. Atlas falls back automatically when a named agent is not installed.
+- `Agent:` names the child agent that should own the task: `task`, `sonic` for cheap mechanical work, or one of `metis`, `momus`, `oracle`, `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`. Atlas uses its fallback mapping for optional category and review agents when they are not installed.
 - A `## Final gates` section after it with exactly these four rows and no others:
 
 ```markdown
@@ -107,8 +107,8 @@ A task row and its body look like this:
 
 ```markdown
 ## Tasks
-- [ ] T1. <task title>
-  - Agent: task
+- [ ] T1. Update the command help text for the new flag
+  - Agent: sonic
   - Depends on: none
   - Acceptance: <command or interaction> produces <observable result>
   - <starting point, change, interfaces, prerequisites, and non-goals>

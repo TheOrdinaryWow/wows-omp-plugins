@@ -57,10 +57,10 @@ Every Prometheus plan ends its body with two machine-readable sections. Tasks ar
   - Agent: task
   - Depends on: none
   - Acceptance: the new unit test passes and the CLI prints the parsed value
-- [ ] T2. Wire the parser into the command
-  - Agent: quick
+- [ ] T2. Update the command help text for the new flag
+  - Agent: sonic
   - Depends on: T1
-  - Acceptance: running the command with the new flag prints the expected output
+  - Acceptance: CLI help lists the new flag
 
 ## Final gates
 - [ ] F1. Plan compliance review
@@ -69,7 +69,7 @@ Every Prometheus plan ends its body with two machine-readable sections. Tasks ar
 - [ ] F4. Success-criteria fidelity
 ```
 
-`Agent:` is `task` or one of `metis`, `momus`, `oracle`, the omo-toolkit category agents (`quick`, `unspecified-low`, `unspecified-high`, `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`), or `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`. Momus rejects a plan whose sections are missing or whose rows break this grammar.
+`Agent:` is `task`, `sonic` for cheap mechanical work, or one of `metis`, `momus`, `oracle`, the omo-toolkit category agents (`deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`), or `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`. Momus rejects a plan whose sections are missing or whose rows break this grammar.
 
 ## Execution ledger
 
