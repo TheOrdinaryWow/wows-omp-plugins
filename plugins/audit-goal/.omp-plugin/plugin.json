@@ -1,0 +1,9 @@
+{
+  "name": "audit-goal",
+  "version": "0.1.0",
+  "description": "Goal-driven audit-and-fix loop with a round ledger, intensity levels, and reserved audit agents",
+  "author": {
+    "name": "TheOrdinaryWow"
+  },
+  "license": "MIT"
+}

@@ -12,6 +12,23 @@
   },
   "plugins": [
     {
+      "name": "audit-goal",
+      "source": "./audit-goal",
+      "description": "Goal-driven audit-and-fix loop with a round ledger, intensity levels, and reserved audit agents",
+      "version": "0.1.0",
+      "author": {
+        "name": "TheOrdinaryWow"
+      },
+      "category": "productivity",
+      "keywords": [
+        "audit",
+        "goal",
+        "review",
+        "delegation"
+      ],
+      "license": "MIT"
+    },
+    {
       "name": "judge-dispatch",
       "source": "./judge-dispatch",
       "description": "Route OMP subagent types with native judge-role judgments",

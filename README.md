@@ -30,6 +30,7 @@ Each plugin has its own README covering installation, settings, and behavior.
 
 | Plugin | Description | Documentation |
 | ------ | ----------- | ------------- |
+| `audit-goal` | Runs `/audit`: a goal-driven loop of independent audits and fixes with a round ledger | [Documentation](plugins/audit-goal/README.md) |
 | `judge-dispatch` | Routes subagent types through OMP judge-role judgments | [Documentation](plugins/judge-dispatch/README.md) |
 | `omo-prometheus` | Ports oh-my-openagent Prometheus planning and Atlas orchestration to OMP | [Documentation](plugins/omo-prometheus/README.md) |
 | `omo-ultrawork` | Ports ultrawork mode, mass-ulw, hyperplan, and ulw-research to OMP | [Documentation](plugins/omo-ultrawork/README.md) |

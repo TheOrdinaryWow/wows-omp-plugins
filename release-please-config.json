@@ -6,6 +6,13 @@
   "tag-separator": "@",
   "separate-pull-requests": false,
   "packages": {
+    "plugins/audit-goal": {
+      "component": "audit-goal",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='audit-goal')].version" }
+      ]
+    },
     "plugins/judge-dispatch": {
       "component": "judge-dispatch",
       "extra-files": [

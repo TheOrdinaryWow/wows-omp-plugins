@@ -1,0 +1,40 @@
+{
+  "name": "wows-omp-plugin-audit-goal",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Goal-driven audit-and-fix loop with a round ledger, intensity levels, and reserved audit agents",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "settings": {
+      "intensity": {
+        "type": "enum",
+        "values": [
+          "relaxed",
+          "standard",
+          "strict"
+        ],
+        "default": "standard",
+        "description": "Audit depth and gate: relaxed reports visible problems and fixes Critical/Major; standard requires credible production triggers and also fixes Minor; strict digs into toolchain and dependency boundaries and fixes every level"
+      },
+      "maxRounds": {
+        "type": "number",
+        "min": 1,
+        "step": 1,
+        "description": "Default maximum audit rounds per /audit loop; empty means unlimited. When reached, you are asked whether to add rounds"
+      },
+      "maxParallelLanes": {
+        "type": "number",
+        "min": 1,
+        "step": 1,
+        "description": "Maximum audit/fix subagents running at once; empty means no plugin limit. OMP's task.maxConcurrency always caps it"
+      }
+    }
+  }
+}
