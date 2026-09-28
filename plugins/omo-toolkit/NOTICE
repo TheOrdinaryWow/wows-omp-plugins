@@ -6,7 +6,7 @@ Current upstream source used for this port:
 - Project: https://github.com/code-yeongyu/oh-my-openagent
 - Pinned revision: fe427efeed97e95f009dc6ca7fb17a3ac857f79f
 - Category agent sources: `packages/senpi-task/src/category/builtins.ts`, `packages/senpi-task/src/category/openai-categories.ts`, `packages/senpi-task/src/category/anthropic-categories.ts`, `packages/senpi-task/src/category/google-categories.ts`, and `packages/senpi-task/src/category/kimi-categories.ts`
-- Research and reviewer agent sources: `packages/senpi-task/src/agents/builtin/librarian.ts`, `packages/senpi-task/src/agents/builtin/code-reviewer.ts`, `packages/senpi-task/src/agents/builtin/qa-executor.ts`, and `packages/senpi-task/src/agents/builtin/gate-reviewer.ts`
+- Research agent source: `packages/senpi-task/src/agents/builtin/librarian.ts`; the review-work skill incorporates the independent verification contract derived from upstream reviewer material.
 - MCP source: `packages/omo-senpi/src/components/builtin-mcps/index.ts`
 - Skill sources: `packages/shared-skills/skills/git-master/`, `packages/shared-skills/skills/review-work/`, `packages/shared-skills/skills/remove-ai-slops/`, `packages/shared-skills/skills/refactor/`, `packages/shared-skills/skills/debugging/`, `packages/shared-skills/skills/frontend/`, `packages/shared-skills/skills/visual-qa/`, and `packages/omo-senpi/skills/init-deep/SKILL.md`
 

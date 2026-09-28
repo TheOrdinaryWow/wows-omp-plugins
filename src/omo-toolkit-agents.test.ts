@@ -21,8 +21,6 @@ const CATEGORY_AGENTS: Record<string, true> = {
 const TOOL_RESTRICTED_AGENTS: Record<string, true> = {
   architect: true,
   librarian: true,
-  "code-reviewer": true,
-  "gate-reviewer": true,
 };
 
 const agentFiles = readdirSync(agentDir)

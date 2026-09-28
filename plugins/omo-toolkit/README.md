@@ -1,6 +1,6 @@
 # omo-toolkit
 
-Content-only OMP plugin with oh-my-openagent-style task agents, research and review agents, workflow skills, and documentation MCP servers.
+Content-only OMP plugin with oh-my-openagent-style category agents, research support, workflow skills, and documentation MCP servers.
 
 ```bash
 omp plugin install omo-toolkit@wows-omp-plugins
@@ -22,14 +22,11 @@ Category agents use the same worker base as OMP's bundled `task` agent, then add
 |`artistry`|Creative, unconventional problem solving|`@task`|`high`|
 |`writing`|Documentation, prose, and technical writing|`@task`|`low`|
 
-Research and review agents:
+Research agent:
 
 |Agent|Use for|Default model role|
 |---|---|---|
 |`librarian`|Read-only open-source research with GitHub permalinks and official documentation; thinking off for speed|`@smol`|
-|`code-reviewer`|Final code-quality review; writes `local://reviews/<goal-slug>-code-review.md`|`@slow`|
-|`qa-executor`|Real-surface manual QA; writes `local://reviews/<goal-slug>-manual-qa.md`|`@task`|
-|`gate-reviewer`|Final evidence-backed approval or rejection; writes `local://reviews/<goal-slug>-gate-review.md`|`@slow`|
 
 Model roles resolve through the user's OMP `modelRoles`. Override one agent without editing plugin files through `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
 
@@ -39,7 +36,7 @@ task:
     ultrabrain: anthropic/claude-opus-5-5
 ```
 
-`omo-prometheus` and `omo-ultrawork` prompts, including Atlas, `hyperplan`, and `ulw-research`, refer to these agents by name. When an agent is absent from the `task` tool description, those prompts fall back to bundled OMP agents: `task` for category agents, `scout` for `librarian`, and `reviewer` for the three reviewer agents.
+`omo-prometheus` and `omo-ultrawork` use these category agents when available, falling back to `task` otherwise; `librarian` falls back to `scout` and then `task`. Final code-quality, real-surface QA, and evidence gates instead use fresh `deep-high` or `deep-low` children (falling back to `task`) whose assignments carry the complete verification contracts.
 
 ## Skills
 
