@@ -6,7 +6,7 @@ function mask(region: string): string {
   return region.replace(/[^\r\n]/g, "\0");
 }
 
-export function stripQuotedRegions(text: string): string {
+function stripQuotedRegions(text: string): string {
   let visible = text.replace(INJECTED_BLOCK, mask);
   const fenceStart = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/gm;
   while (true) {

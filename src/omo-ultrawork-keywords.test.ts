@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { detectPointers, detectUltrawork, hasEmbeddedDirective, stripQuotedRegions } from "../plugins/omo-ultrawork/src/keywords.ts";
+import { detectPointers, detectUltrawork, hasEmbeddedDirective } from "../plugins/omo-ultrawork/src/keywords.ts";
 
 describe("ultrawork keyword detection", () => {
   test("recognizes standalone triggers without matching longer identifiers", () => {
@@ -25,7 +25,8 @@ describe("ultrawork keyword detection", () => {
     expect(detectUltrawork("<omo-ultrawork-reminder>ulw</omo-ultrawork-reminder>")).toBe(false);
     expect(detectUltrawork("<omo-mass-ulw-pointer>ulw</omo-mass-ulw-pointer>")).toBe(false);
     expect(detectUltrawork("a `ulw` b ulw")).toBe(true);
-    expect(stripQuotedRegions("a `ulw` b")).toHaveLength("a `ulw` b".length);
+    expect(detectUltrawork("ul`quoted`w")).toBe(false);
+    expect(detectPointers("mass`quoted`ulw")).toEqual([]);
   });
 
   test("requires both directive tags before treating input as an embedded directive", () => {
