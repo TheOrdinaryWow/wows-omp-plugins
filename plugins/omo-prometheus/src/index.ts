@@ -22,8 +22,9 @@ import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionCont
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
+import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
-import { createLedger, type ExecutionLedger, isComplete, parsePlanChecklist, renderLedgerSummary } from "./ledger.ts";
+import { createLedger, type ExecutionLedger, isComplete, refreshDispatchAgents, renderLedgerSummary } from "./ledger.ts";
 import {
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
@@ -225,6 +226,18 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
+  const availableAgents = (): string[] | undefined => {
+    try {
+      const description = pi.getAllTools().find((tool) => tool.name === "task")?.description;
+      return typeof description === "string" ? parseLegalAgentNames(description) : undefined;
+    } catch (error) {
+      pi.logger.warn("prometheus could not inspect available task agents", { error: errorMessage(error) });
+      return undefined;
+    }
+  };
+
+  const ledgerSummary = (ledger: ExecutionLedger): string => renderLedgerSummary(ledger, availableAgents());
+
   const localOptions = (ctx: ExtensionContext) => ({
     getArtifactsDir: () => ctx.sessionManager.getArtifactsDir(),
     getSessionId: () => ctx.sessionManager.getSessionId(),
@@ -269,13 +282,15 @@ export default function prometheus(pi: ExtensionAPI): void {
     } else {
       try {
         const content = planContent ?? (await fs.readFile(resolveLocalUrlToPath(planFilePath, localOptions(ctx)), "utf8"));
-        const { errors } = parsePlanChecklist(content);
-        if (errors.length === 0) {
-          await writeLedger(ctx, ledgerUrl, createLedger(planFilePath, content));
-        } else {
-          pi.logger.warn("prometheus plan lacks the ledger checklist grammar", { planFilePath, errors });
+        const roster = availableAgents();
+        let ledger: ExecutionLedger | undefined;
+        try {
+          ledger = createLedger(planFilePath, content, roster);
+        } catch (error) {
+          pi.logger.warn("prometheus plan lacks the ledger checklist grammar", { planFilePath, error: errorMessage(error) });
           notice = "Prometheus: plan lacks the T/F checklist grammar; ledger disabled for this run";
         }
+        if (ledger) await writeLedger(ctx, ledgerUrl, ledger);
       } catch (error) {
         notice = `Prometheus: the execution ledger could not be created (${errorMessage(error)}); ledger disabled for this run`;
       }
@@ -285,10 +300,21 @@ export default function prometheus(pi: ExtensionAPI): void {
     persist(record);
   };
 
-  /** On resume, a vanished ledger file is dropped so the next turn rebuilds it from the approved plan. */
+  /** On resume, rebind unfinished work to the current roster or rebuild a vanished ledger. */
   const resumeLedger = async (ctx: ExtensionContext, record: SessionRecord | undefined): Promise<void> => {
     if (record?.phase !== "executing" || !record.ledgerPath || record.ledgerPath === LEDGER_DISABLED) return;
-    if (await readLedger(ctx, record)) return;
+    const ledger = await readLedger(ctx, record);
+    if (ledger) {
+      if (refreshDispatchAgents(ledger, availableAgents())) {
+        try {
+          await writeLedger(ctx, record.ledgerPath, ledger);
+        } catch (error) {
+          pi.logger.warn("prometheus could not rebind execution ledger agents", { error: errorMessage(error) });
+          notify(ctx, "Prometheus: execution agents changed but the ledger could not be saved.", "warning");
+        }
+      }
+      return;
+    }
     notify(ctx, `Prometheus: execution ledger ${record.ledgerPath} is missing; it will be rebuilt from the approved plan.`, "warning");
     record.ledgerPath = undefined;
     persist(record);
@@ -399,13 +425,19 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const planningBlock = async (ctx: ExtensionContext): Promise<string> => {
+    const roster = availableAgents();
+    const agentBlock = roster
+      ? `<available-agents>\n${roster.join("\n") || "(none; spawning is disabled)"}\n</available-agents>`
+      : '<available-agents status="unknown">The task tool\'s spawnable-agent list could not be parsed; use only known agents with documented fallbacks.</available-agents>';
+    const guidance =
+      "Choose the most specific listed specialist for each Agent: row; prefer installed specialist agents (including omo-toolkit) over task/sonic. Names not listed are allowed only when they have a known fallback. Pass this exact available-agents list (or unknown) into every Momus review binding.";
     try {
-      return `${PLANNING_PREAMBLE}\n\n${await loadPromptAsset(SKILL_ASSET)}`;
+      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${await loadPromptAsset(SKILL_ASSET)}`;
     } catch (error) {
       const detail = errorMessage(error);
       pi.logger.warn("prometheus planning asset became unavailable", { error: detail });
       notify(ctx, `Prometheus planning instructions could not be loaded (${detail}).`, "error");
-      return PLANNING_PREAMBLE;
+      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}`;
     }
   };
 
@@ -419,7 +451,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       : "";
     const ledger = await readLedger(ctx, record);
     const ledgerBlock = ledger
-      ? `\n\n<execution-ledger path="${record.ledgerPath}">\n${renderLedgerSummary(ledger)}\n</execution-ledger>`
+      ? `\n\n<execution-ledger path="${record.ledgerPath}">\n${ledgerSummary(ledger)}\n</execution-ledger>`
       : record.ledgerPath === LEDGER_DISABLED
         ? '\n\n<execution-ledger status="disabled">No execution ledger is available for this run: track the plan with `todo` and inspected child evidence, and do not call `prometheus_ledger`.</execution-ledger>'
         : "";
@@ -642,7 +674,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           content: [
             {
               type: "text" as const,
-              text: `Release refused: unfinished ledger rows remain (${unfinished.map((item) => `${item.id} ${item.status}`).join(", ")}). Keep delegating.\n\n${renderLedgerSummary(ledger)}`,
+              text: `Release refused: unfinished ledger rows remain (${unfinished.map((item) => `${item.id} ${item.status}`).join(", ")}). Keep delegating.\n\n${ledgerSummary(ledger)}`,
             },
           ],
           isError: true,
@@ -696,7 +728,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (!ledger || !ledgerUrl) {
         return fail("No execution ledger is available for this run; track the plan with todo and inspected child evidence.");
       }
-      if (params.action === "status") return { content: [{ type: "text" as const, text: renderLedgerSummary(ledger) }], details: {} };
+      if (params.action === "status") return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: {} };
 
       const id = params.id?.trim();
       const item = [...ledger.items, ...ledger.gates].find((entry) => entry.id === id);
@@ -726,7 +758,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       persist(record);
       return {
-        content: [{ type: "text" as const, text: `${item.id} is now ${item.status}.\n\n${renderLedgerSummary(ledger)}` }],
+        content: [{ type: "text" as const, text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}` }],
         details: { id: item.id, status: item.status },
       };
     },
@@ -1030,7 +1062,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.lastContinuationLedgerStamp = stamp;
     return {
       continue: true,
-      additionalContext: `<prometheus-continuation>\n${renderLedgerSummary(ledger)}\nDispatch the next unblocked items with task; record progress with prometheus_ledger; call prometheus_release only when every T and F row is done.\n</prometheus-continuation>`,
+      additionalContext: `<prometheus-continuation>\n${ledgerSummary(ledger)}\nDispatch the next unblocked items with task; record progress with prometheus_ledger; call prometheus_release only when every T and F row is done.\n</prometheus-continuation>`,
     };
   });
 

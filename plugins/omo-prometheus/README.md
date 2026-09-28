@@ -69,11 +69,23 @@ Every Prometheus plan ends its body with two machine-readable sections. Tasks ar
 - [ ] F4. Success-criteria fidelity
 ```
 
-`Agent:` is `task`, `sonic` for cheap mechanical work, or one of `metis`, `momus`, `oracle`, the omo-toolkit category agents (`deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`), or `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`. Momus rejects a plan whose sections are missing or whose rows break this grammar.
+During planning, Prometheus reads the current `task` tool's available-agent list after spawn-policy and disabled-agent filtering, injects the names into the planning context, and binds that list into Momus reviews. Choose the most specific **listed** specialist for each `Agent:` row: installed omo-toolkit agents are preferred to generic `task`/`sonic`, and a user-defined agent is valid only when listed. An unlisted name is valid only if it has a known fallback. If the tool description cannot be parsed, planning still works with known names; user-defined names cannot be validated.
+
+The resolver tries the requested name first, then these fallbacks in order (only agents actually in the live list may be selected):
+
+|Requested agent|Fallback chain|
+|---|---|
+|`deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `qa-executor`|`task`|
+|`librarian`|`scout` → `task`|
+|`metis`, `momus`, `oracle`, `code-reviewer`, `gate-reviewer`|`reviewer` → `task`|
+|`sonic`, `scout`, `reviewer`, `security-reviewer`|`task`|
+|`task`|none|
+
+If none in a chain are spawnable, the ledger shows `unavailable` and Atlas reports a blocker rather than dispatching an illegal agent. If the list cannot be parsed, the resolver leaves known requested names unchanged instead of guessing which specialists are installed.
 
 ## Execution ledger
 
-When execution starts, the plugin parses the approved plan into `local://prometheus/<slug>-ledger.json` in the session's artifact directory: one row per `T` task and `F` gate with status (`open`, `in_progress`, `done`, `blocked`), owner agent, dependencies, evidence, and the plan's SHA-256. Atlas reads and updates it with the `prometheus_ledger` tool, which is active only during execution:
+When execution starts, the plugin parses the approved plan into `local://prometheus/<slug>-ledger.json` in the session's artifact directory: one row per `T` task and `F` gate with status (`open`, `in_progress`, `done`, `blocked`), requested `agent`, resolved `dispatchAgent`, dependencies, evidence, and the plan's SHA-256. `prometheus_ledger status` displays `requested -> dispatch` when they differ. Atlas dispatches to `dispatchAgent` and updates progress through the tool, which is active only during execution:
 
 - `status` prints the ledger table and the next dispatchable tasks.
 - `start`, `block`, and `reopen` change one row's status.
@@ -83,11 +95,11 @@ When execution starts, the plugin parses the approved plan into `local://prometh
 
 **Auto-continuation.** When Atlas stops while ledger rows are unfinished, the plugin asks OMP to continue the session with a hidden `<prometheus-continuation>` message that carries the ledger summary. OMP caps chained continuations at eight per user turn. If two continuations in a row make no ledger progress, the plugin stops continuing and notifies you: run `/prometheus` to release, or send new instructions. Any message you send resets the stall count.
 
-**Resume.** Workflow state, including the ledger path, is stored in session entries. Resuming or switching back to an executing session restores Atlas and injects the current ledger summary. If the ledger file has gone missing, the plugin notifies you and rebuilds it from the approved plan on the next turn.
+**Resume.** Workflow state, including the ledger path, is stored in session entries. Resuming or switching back to an executing session re-resolves unfinished rows against the current live agent list and saves any changes to the ledger, then restores Atlas with the current ledger summary. Older version-1 ledgers without `dispatchAgent` remain readable; their owners are resolved at read time. If the ledger file has gone missing, the plugin notifies you and rebuilds it from the approved plan on the next turn.
 
 ## Final gates
 
-After every `T` row is done, Atlas dispatches the four gates to separate verification children. Each gate names its agent, with a fallback for when the agent is not installed:
+After every `T` row is done, Atlas dispatches the four gates to separate verification children using each gate's resolved `dispatchAgent` (the table shows requested names and the usual first fallback):
 
 |Gate|Agent|Fallback|Checks|
 |---|---|---|---|

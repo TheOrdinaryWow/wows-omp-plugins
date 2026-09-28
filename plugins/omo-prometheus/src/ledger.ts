@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
 
+import { isKnownAgent, resolveAgent } from "./agents.ts";
+
 export type ItemStatus = "open" | "in_progress" | "done" | "blocked";
 
 export interface LedgerItem {
   id: string;
   title: string;
   agent: string;
+  /** Resolved against the live spawnable roster; absent on older persisted ledgers. */
+  dispatchAgent?: string;
   dependsOn: string[];
   status: ItemStatus;
   evidence?: string;
@@ -23,24 +27,7 @@ export interface ExecutionLedger {
 }
 
 const ROW = /^- \[([ xX~])\] (T\d+|F[1-4])\. (.+)$/;
-const TASK_AGENTS: Record<string, true> = {
-  task: true,
-  metis: true,
-  momus: true,
-  oracle: true,
-  sonic: true,
-  "deep-low": true,
-  "deep-high": true,
-  ultrabrain: true,
-  architect: true,
-  "visual-engineering": true,
-  artistry: true,
-  writing: true,
-  librarian: true,
-  "code-reviewer": true,
-  "qa-executor": true,
-  "gate-reviewer": true,
-};
+const AGENT_NAME = /^[A-Za-z0-9_-]+$/;
 const GATES = [
   { id: "F1", title: "Plan compliance review", agent: "momus" },
   { id: "F2", title: "Code quality review", agent: "code-reviewer" },
@@ -50,7 +37,10 @@ const GATES = [
 
 type ParsedItem = Omit<LedgerItem, "updatedAt">;
 
-export function parsePlanChecklist(planContent: string): { items: ParsedItem[]; gates: ParsedItem[]; errors: string[] } {
+export function parsePlanChecklist(
+  planContent: string,
+  availableAgents?: readonly string[],
+): { items: ParsedItem[]; gates: ParsedItem[]; errors: string[] } {
   const items: ParsedItem[] = [];
   const gates: ParsedItem[] = [];
   const errors: string[] = [];
@@ -69,8 +59,9 @@ export function parsePlanChecklist(planContent: string): { items: ParsedItem[]; 
       if (match?.[1] !== undefined && match[2] !== undefined) fields.set(match[1].toLowerCase(), match[2]);
     }
     const agent = fields.get("agent");
-    if (!agent || TASK_AGENTS[agent] !== true) errors.push(`${current.id}: Agent must name a known agent or task`);
-    else current.agent = agent;
+    if (!agent || !AGENT_NAME.test(agent) || (!isKnownAgent(agent) && !availableAgents?.includes(agent))) {
+      errors.push(`${current.id}: Agent must name an available or known fallback agent`);
+    } else current.agent = agent;
     const depends = fields.get("depends on");
     if (!depends || !/^(?:none|T[1-9]\d*(?:\s*,\s*T[1-9]\d*)*)$/i.test(depends)) {
       errors.push(`${current.id}: Depends on must list T-ids or none`);
@@ -154,18 +145,36 @@ export function parsePlanChecklist(planContent: string): { items: ParsedItem[]; 
   return { items, gates, errors };
 }
 
-export function createLedger(planFilePath: string, planContent: string): ExecutionLedger {
-  const parsed = parsePlanChecklist(planContent);
+export function createLedger(planFilePath: string, planContent: string, availableAgents?: readonly string[]): ExecutionLedger {
+  const parsed = parsePlanChecklist(planContent, availableAgents);
   if (parsed.errors.length) throw new Error(parsed.errors.join("; "));
   const now = Date.now();
+  const withDispatch = (item: ParsedItem): LedgerItem => ({
+    ...item,
+    dispatchAgent: resolveAgent(item.agent, availableAgents).dispatchAgent,
+    updatedAt: now,
+  });
   return {
     version: 1,
     planFilePath,
     planSha256: createHash("sha256").update(planContent).digest("hex"),
-    items: parsed.items.map((item) => ({ ...item, updatedAt: now })),
-    gates: parsed.gates.map((gate) => ({ ...gate, updatedAt: now })),
+    items: parsed.items.map(withDispatch),
+    gates: parsed.gates.map(withDispatch),
     createdAt: now,
   };
+}
+
+/** Rebind unfinished rows after the installed roster or spawn policy changes. */
+export function refreshDispatchAgents(ledger: ExecutionLedger, availableAgents?: readonly string[]): boolean {
+  let changed = false;
+  for (const item of [...ledger.items, ...ledger.gates]) {
+    if (item.status === "done") continue;
+    const dispatchAgent = resolveAgent(item.agent, availableAgents).dispatchAgent;
+    if (item.dispatchAgent === dispatchAgent) continue;
+    item.dispatchAgent = dispatchAgent;
+    changed = true;
+  }
+  return changed;
 }
 
 export function nextDispatchable(ledger: ExecutionLedger): LedgerItem[] {
@@ -177,7 +186,7 @@ export function isComplete(ledger: ExecutionLedger): boolean {
   return [...ledger.items, ...ledger.gates].every((item) => item.status === "done");
 }
 
-export function renderLedgerSummary(ledger: ExecutionLedger): string {
+export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: readonly string[]): string {
   const cell = (text: string) => text.replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|");
   const lines = [
     `Plan ledger: ${ledger.planFilePath} (sha256 ${ledger.planSha256})`,
@@ -186,7 +195,9 @@ export function renderLedgerSummary(ledger: ExecutionLedger): string {
   ];
   for (const item of [...ledger.items, ...ledger.gates]) {
     const dependsOn = item.dependsOn.join(", ") || "none";
-    lines.push(`| ${item.id}. ${cell(item.title)} | ${item.status} | ${item.agent} | ${dependsOn} | ${cell(item.evidence ?? "—")} |`);
+    const dispatch = item.dispatchAgent ?? resolveAgent(item.agent, availableAgents).dispatchAgent;
+    const owner = dispatch === item.agent ? item.agent : `${item.agent} -> ${dispatch ?? "unavailable"}`;
+    lines.push(`| ${item.id}. ${cell(item.title)} | ${item.status} | ${owner} | ${dependsOn} | ${cell(item.evidence ?? "—")} |`);
   }
   const next = nextDispatchable(ledger).map((item) => item.id);
   lines.push(`Next dispatchable: ${next.join(", ") || "none"}`);

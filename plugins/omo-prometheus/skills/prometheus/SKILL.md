@@ -92,7 +92,7 @@ Write the complete plan with `write` to `local://<slug>-plan.md` while native pl
 After approval the runtime parses these two sections into a durable execution ledger that drives Atlas progress, continuation, and release. A plan that breaks this grammar executes without a ledger, so Momus rejects it.
 
 - A top-level `## Tasks` section where every task is one markdown checkbox row at column 0: `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order. The task body is indented sub-bullets under its row and must contain three lines: `Agent: <name>`, `Depends on: <comma-separated T-ids, or none>`, and `Acceptance: <observable check>`.
-- `Agent:` names the child agent that should own the task: `task`, `sonic` for cheap mechanical work, or one of `metis`, `momus`, `oracle`, `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`. Atlas uses its fallback mapping for optional category and review agents when they are not installed.
+- `Agent:` names the requested child agent. Use the `<available-agents>` block injected into the planning context: pick the most specific listed specialist for each task, preferring installed omo-toolkit specialists over generic `task`/`sonic`. User-defined agents are valid when listed there. An unlisted name is allowed only if it has a known fallback: `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, and `qa-executor` → `task`; `librarian` → `scout` → `task`; `metis`, `momus`, `oracle`, `code-reviewer`, `gate-reviewer` → `reviewer` → `task`; `sonic`, `scout`, `reviewer`, `security-reviewer` → `task`. `task` itself has no fallback. If the list is unavailable, use only these known names. Runtime records both the requested and resolved dispatch agent; do not invent another fallback.
 - A `## Final gates` section after it with exactly these four rows and no others:
 
 ```markdown
@@ -128,6 +128,7 @@ Every reviewer dispatch, routine or high accuracy, must bind the reviewer to the
 - `plan_content` — the complete current plan text;
 - `review_round` — a fresh identifier;
 - `review_kind` — `routine` or `high_accuracy`;
+- `available_agents` — the exact names in the planning context's `<available-agents>` block, or `unknown` when that block reports an unparseable list. Pass this on every Momus review, including re-reviews, so the reviewer can validate user-defined names against the same roster; do not substitute the child's own task-tool list.
 - the frozen blocker ledger, from round two of a high-accuracy review onward.
 
 A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispatch a fresh round. Never accept a review of a different, older, or autosaved artifact, and never tell a reviewer to go find the plan.

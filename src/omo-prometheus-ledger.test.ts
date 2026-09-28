@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 
-import { createLedger, isComplete, nextDispatchable, parsePlanChecklist } from "../plugins/omo-prometheus/src/ledger.ts";
+import {
+  createLedger,
+  isComplete,
+  nextDispatchable,
+  parsePlanChecklist,
+  refreshDispatchAgents,
+  renderLedgerSummary,
+} from "../plugins/omo-prometheus/src/ledger.ts";
 
 const plan = `# Work plan
 
@@ -75,5 +82,53 @@ describe("Prometheus execution ledger", () => {
     const ledger = createLedger("local://example-plan.md", plan);
     expect(ledger.planSha256).toBe(createHash("sha256").update(plan).digest("hex"));
     expect(() => createLedger("local://example-plan.md", plan.replace(/## Final gates[\s\S]*$/, ""))).toThrow("Final gates");
+  });
+
+  test("accepts user-defined names only in the live roster and retains known fallback names", () => {
+    const custom = plan.replace("Agent: deep-low", "Agent: custom-worker");
+    expect(parsePlanChecklist(custom, ["task", "custom-worker"]).errors).toEqual([]);
+    expect(createLedger("local://custom-plan.md", custom, ["task", "custom-worker"]).items[0]?.dispatchAgent).toBe("custom-worker");
+    expect(parsePlanChecklist(custom, ["task"]).errors).toContain("T1: Agent must name an available or known fallback agent");
+    expect(parsePlanChecklist(custom).errors).toContain("T1: Agent must name an available or known fallback agent");
+    expect(parsePlanChecklist(plan, ["task"]).errors).toEqual([]);
+    expect(parsePlanChecklist(plan.replace("Agent: deep-low", "Agent: unknown-worker"), ["task"]).errors).toContain(
+      "T1: Agent must name an available or known fallback agent",
+    );
+  });
+
+  test("persists installed agents or available fallbacks for tasks and gates", () => {
+    const toolkit = createLedger("local://example-plan.md", plan, [
+      "task",
+      "sonic",
+      "deep-low",
+      "qa-executor",
+      "momus",
+      "code-reviewer",
+      "gate-reviewer",
+    ]);
+    expect(toolkit.items.map((item) => item.dispatchAgent)).toEqual(["deep-low", "sonic", "qa-executor"]);
+    expect(toolkit.gates.map((gate) => gate.dispatchAgent)).toEqual(["momus", "code-reviewer", "qa-executor", "gate-reviewer"]);
+
+    const bundled = createLedger("local://example-plan.md", plan, ["task", "sonic", "scout", "reviewer"]);
+    expect(bundled.items.map((item) => item.dispatchAgent)).toEqual(["task", "sonic", "task"]);
+    expect(bundled.gates.map((gate) => gate.dispatchAgent)).toEqual(["reviewer", "reviewer", "task", "reviewer"]);
+    expect(renderLedgerSummary(bundled)).toContain("deep-low -> task");
+    expect(renderLedgerSummary(bundled)).toContain("momus -> reviewer");
+    expect(createLedger("local://example-plan.md", plan).items[0]?.dispatchAgent).toBe("deep-low");
+  });
+
+  test("rebinds only unfinished rows on resume and resolves legacy version-one rows at read time", () => {
+    const ledger = createLedger("local://example-plan.md", plan, ["task", "sonic", "reviewer"]);
+    const oldLedger = JSON.parse(JSON.stringify(ledger)) as typeof ledger;
+    for (const row of [...oldLedger.items, ...oldLedger.gates]) delete row.dispatchAgent;
+    expect(renderLedgerSummary(oldLedger, ["task", "reviewer"])).toContain("deep-low -> task");
+    expect(refreshDispatchAgents(oldLedger, ["task", "reviewer"])).toBe(true);
+    expect(oldLedger.items[0]?.dispatchAgent).toBeUndefined(); // T1 was completed before the roster changed.
+    expect(oldLedger.items[1]?.dispatchAgent).toBe("task");
+    expect(oldLedger.gates[0]?.dispatchAgent).toBeUndefined(); // F1 was completed before the roster changed.
+    expect(oldLedger.gates[1]?.dispatchAgent).toBe("reviewer");
+    expect(refreshDispatchAgents(oldLedger, ["task", "reviewer"])).toBe(false);
+    expect(refreshDispatchAgents(oldLedger, ["task", "sonic", "reviewer"])).toBe(true);
+    expect(oldLedger.items[1]?.dispatchAgent).toBe("sonic");
   });
 });

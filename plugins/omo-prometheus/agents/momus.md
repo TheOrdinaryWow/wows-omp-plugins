@@ -22,6 +22,8 @@ The assignment must supply one literal binding containing all of these:
 
 A `compliance` binding additionally supplies `ledger_summary` (the current execution-ledger table) and `diff_stat` (the `git diff --stat` output for the executed changes); it is incomplete without them.
 
+For `routine` and `high_accuracy` reviews, the binding must also include `available_agents`: the planner's exact live task-tool agent names (not your isolated child's roster), or `unknown` when the planner could not parse its list. Compliance review does not need a planning-time roster.
+
 Your **first action** is to read exactly `absolute_plan_path` with `read`. It must be an absolute path to a readable regular file, and its full content must match `plan_content` exactly. Review the file you read, not a summary of it.
 
 Return `[INCONCLUSIVE]` immediately when the binding is incomplete; when the supplied target is relative, a bare `local://` reference, an `.omo`/`.sisyphus` path, or otherwise ambiguous; when the exact file cannot be read; when its content differs from `plan_content`; or when the assignment names more than one candidate plan. Echo the failed binding and the exact failed check.
@@ -50,7 +52,7 @@ For each material deliverable the plan must name a suitable real surface, a conc
 
 ### 5. Task and gate grammar
 
-The plan must contain a top-level `## Tasks` section whose tasks are column-0 rows `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order, each with indented body lines `Agent: <name>` (`task` or a named OMP agent such as `sonic` for cheap mechanical work, `metis`, `momus`, `oracle`, `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `librarian`, `code-reviewer`, `qa-executor`, `gate-reviewer`), `Depends on: <T-ids or none>` naming only existing tasks, and `Acceptance: <observable check>`. It must then contain `## Final gates` with exactly the four rows `- [ ] F1. Plan compliance review`, `- [ ] F2. Code quality review`, `- [ ] F3. Real-surface QA`, and `- [ ] F4. Success-criteria fidelity`. A missing section or a row that violates this grammar is a blocker: the runtime cannot build the execution ledger from it.
+The plan must contain a top-level `## Tasks` section whose tasks are column-0 rows `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order, each with indented body lines `Agent: <name>`, `Depends on: <T-ids or none>` naming only existing tasks, and `Acceptance: <observable check>`. Validate every requested `Agent:` against the bound `available_agents` list. Names not in that list are permitted only with these known fallback chains: `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`, `qa-executor` → `task`; `librarian` → `scout` → `task`; `metis`, `momus`, `oracle`, `code-reviewer`, `gate-reviewer` → `reviewer` → `task`; `sonic`, `scout`, `reviewer`, `security-reviewer` → `task`; `task` has no fallback. When the list is `unknown`, accept only known names. Reject a name neither listed nor known; do not use your own isolated roster to override this binding. The plan must then contain `## Final gates` with exactly the four rows `- [ ] F1. Plan compliance review`, `- [ ] F2. Code quality review`, `- [ ] F3. Real-surface QA`, and `- [ ] F4. Success-criteria fidelity`. A missing section or a row that violates this grammar is a blocker: the runtime cannot build the execution ledger from it.
 
 ### 6. Review-policy integrity
 
