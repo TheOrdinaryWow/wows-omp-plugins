@@ -106,30 +106,33 @@ If none in a chain are spawnable, the ledger shows `unavailable` and Atlas repor
 
 ## Execution ledger
 
-When execution starts, the plugin parses the approved plan into `local://prometheus/<slug>-ledger.json` in the session's artifact directory: one row per `T` task and `F` gate with status (`open`, `in_progress`, `done`, `blocked`), requested `agent`, resolved `dispatchAgent`, dependencies, evidence, and the plan's SHA-256. `prometheus_ledger status` displays `requested -> dispatch` when they differ. Atlas dispatches to `dispatchAgent` and updates progress through the tool, which is active only during execution:
+Execution creates `local://prometheus/<slug>-ledger.json` with a version-2 ledger: every T/F row retains its acceptance criteria, dependencies, status, requested and resolved agents, current attempt, evidence receipt, and the exact approved plan SHA-256. The complete dependency graph is validated first; cyclic plans cannot partially execute. Checked plan boxes do not count as receipts.
 
-- `status` prints the ledger table and the next dispatchable tasks.
-- `start`, `block`, and `reopen` change one row's status.
-- `done` requires non-empty evidence and finished dependencies. A final gate additionally requires every `T` row to be done and evidence that cites the verification child's `agent://<id>` output.
+- `status` prints rows, acceptance criteria, dependencies, evidence and dispatchable tasks/gates.
+- `start` must run **before** spawning. It returns a fresh attempt and a standalone `prometheus_assignment: {"planSha256":"…","rows":{"T1":"…"}}` line to put in native `task.task` or unambiguous batch `context`. No new native tool argument is introduced. One implementation child can cover several independent started T rows only when the dispatch binds all their attempts; each F row requires its own child.
+- `done` requires `childAgentId` and inspected `evidence`. The extension correlates the native task call and successful completion lifecycle with the real direct-child registry identity and owned output artifact. Foreign, running, failed, nonexistent, stale or unbound children cannot complete work. A filename or caller-written `agent://` string is not proof.
+- `block` requires a reason; `reopen` clears an old attempt. Both invalidate transitive descendants and dependent gates, including running attempts whose inputs became stale. Start blocked work only after reopening it.
 
-`prometheus_release` is refused while any row is unfinished. If the plan lacks the grammar, or the session has no artifact directory (a non-persisted session), the plugin notifies you and Atlas runs without a ledger for that plan.
+`prometheus_release` requires every row's valid receipt and then explicit user confirmation. Missing, corrupt, unavailable or mismatched ledgers pause dispatch and completion instead of downgrading to prompt-only execution. Missing artifacts are not silently rebuilt. Restore the exact approved artifacts, or use `/prometheus` to exit and obtain new native approval for a changed plan. An invalid ledger does not cause endless auto-continuation.
 
 **Auto-continuation.** When Atlas stops while ledger rows are unfinished, the plugin asks OMP to continue the session with a hidden `<prometheus-continuation>` message that carries the ledger summary. OMP caps chained continuations at eight per user turn. If two continuations in a row make no ledger progress, the plugin stops continuing and notifies you: run `/prometheus` to release, or send new instructions. Any message you send resets the stall count.
 
-**Resume.** Workflow state, including the ledger path, is stored in session entries. Resuming or switching back to an executing session re-resolves unfinished rows against the current live agent list and saves any changes to the ledger, then restores Atlas with the current ledger summary. Older version-1 ledgers without `dispatchAgent` remain readable; their owners are resolved at read time. If the ledger file has gone missing, the plugin notifies you and rebuilds it from the approved plan on the next turn.
+**Resume and persistence.** Workflow state stores the proposal-time plan hash and ledger path. Native completion receipts and the latest attempt checkpoints are independently recorded in session entries; artifact digests are rechecked on use. Verified completed rows survive restart without a populated live registry, but an empty registry cannot authorize a new completion. Missing historical proof, changed output, or unrecorded in-flight attempts reopen for fresh verification. Version-1 ledgers with the same approved bytes migrate with all rows open, never grandfathering status-only completion. Resume still re-resolves unfinished agents against the current roster. Read/validate/update operations serialize per ledger inside the host process and replace JSON files atomically; this is not a multi-process workflow engine, and concurrent independent hosts editing one session are unsupported.
 
 ## Final gates
 
-After every `T` row is done, Atlas dispatches the four gates to separate verification children using each gate's resolved `dispatchAgent` (the table shows requested names and the usual first fallback):
+After every T row is done, Atlas dispatches F1–F3 to distinct fresh verification children. F4 is dispatched only after all three have passed and consumes their actual reports. None may be an implementation child or a previously consumed verifier. Each uses its resolved `dispatchAgent` (requested names and usual first fallback below):
 
 |Gate|Agent|Fallback|Checks|
 |---|---|---|---|
 |F1. Plan compliance review|`momus` (`review_kind: compliance`)|`reviewer`|executed changes match the approved plan, using the ledger summary and `git diff --stat`|
-|F2. Code quality review|`deep-high`|`task`|maintainability, scope, test value, and AI-slop review with CLEAR/WATCH/BLOCK report|
+|F2. Code quality review|`deep-high`|`task`|maintainability, scope, test value, and evidence-backed blockers|
 |F3. Real-surface QA|`deep-low`|`task`|every scenario in the plan's Verification section run on the real surface with command and observed result|
-|F4. Success-criteria fidelity|`deep-high`|`task`|independent evidence audit with APPROVE/REJECT and criterion-tied blockers|
+|F4. Success-criteria fidelity|`deep-high`|`task`|independent synthesis of completed F1–F3 reports and criterion-tied evidence|
 
-A rejected gate reopens the `T` rows it names; Atlas re-runs those rows and then only the failed gate.
+Each gate's `start` result supplies its exact native `outputSchema`; dispatch with that schema and `schemaMode: "strict"`. The actual child output must be a JSON object containing `gateId`, `planSha256`, `attempt`, `verdict` (`PASS`, `FAIL`, `INCONCLUSIVE`), a nonempty `summary`, a nonempty `evidence` array, and `reviewedGates`. F1–F3 use an empty `reviewedGates` object; F4 must echo the supplied F1–F3 output digests after inspecting those reports. Only a matching structured `PASS` authorizes completion; prose containing a passing word is never parsed as a verdict. Native per-spawn schemas override agent-native prose formats, including Momus's planning-only `[OKAY]` format.
+
+A rejected gate reopens the affected T rows, their transitive dependents, and all final gates. Cancel stale running work and re-run fresh attempts in dependency order. Reopening only F1, F2 or F3 leaves the other independent reviews intact but always invalidates F4. Session attempt checkpoints prevent old receipts from becoming current again after a ledger rollback.
 
 ## Models
 

@@ -22,10 +22,24 @@ import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionCont
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
-import { createLedger, type ExecutionLedger, isComplete, refreshDispatchAgents, renderLedgerSummary } from "./ledger.ts";
+import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
+import {
+  type ChildReceipt,
+  createLedger,
+  type ExecutionLedger,
+  invalidateRows,
+  isComplete,
+  planDigest,
+  refreshDispatchAgents,
+  renderLedgerSummary,
+  restoreLedger,
+  startRow,
+} from "./ledger.ts";
+import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
 import {
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
@@ -53,10 +67,9 @@ import {
 const ACTIVATE_TOOL = "prometheus_activate";
 const RELEASE_TOOL = "prometheus_release";
 const LEDGER_TOOL = "prometheus_ledger";
-/** Persisted `ledgerPath` sentinel: ledger creation failed once and is not retried for this run. */
-const LEDGER_DISABLED = "disabled";
-const GATE_EVIDENCE_PATTERN = /agent:\/\/[A-Za-z0-9_-]+/;
 const STATE_ENTRY = "wows-omp-omo-prometheus.state";
+const RECEIPT_ENTRY = "wows-omp-omo-prometheus.child-receipt";
+const ATTEMPTS_ENTRY = "wows-omp-omo-prometheus.execution-attempts";
 const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
 const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
@@ -78,6 +91,8 @@ interface SessionRecord {
   phase: Phase;
   /** Canonical path returned by the host's successful xd://propose dispatch. */
   planFilePath?: string;
+  /** Exact content observed at the successful native proposal. */
+  planSha256?: string;
   /** Tool-call provenance for the proposal that chose planFilePath. */
   proposedByToolCallId?: string;
   /** `mode_change` entry for which native opt-in guidance was already supplied. */
@@ -88,8 +103,11 @@ interface SessionRecord {
   pendingConsent?: { askToolCallId: string; modeEntryId: string };
   proposalAwaitingApproval?: boolean;
   approvalCompactionPending?: boolean;
-  /** `local://` URL of the execution ledger, or `LEDGER_DISABLED`. */
+  /** Expected `local://` URL. A missing/corrupt ledger pauses, never disables, enforcement. */
   ledgerPath?: string;
+  ledgerError?: string;
+  /** Set only by the native approval transition, never restored from session state. */
+  mayInitializeLedger?: boolean;
   /** In-memory: newest ledger `updatedAt` seen by the last session_stop continuation. */
   lastContinuationLedgerStamp?: number;
   /** In-memory: consecutive session_stop continuations without ledger progress. */
@@ -105,6 +123,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
   const authorizedActivationCalls = new Map<string, string>();
   const reviewLevels = new Map<string, ReviewLevel>();
+  const childEvidence = new ChildEvidence();
+  const evidenceSubscription = pi.events?.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (payload) => childEvidence.observe(payload));
 
   const loadReviewLevel = async (ctx: ExtensionContext): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
@@ -175,6 +195,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         phase: record.phase,
         planningModeEntryId: record.planningModeEntryId,
         planFilePath: record.planFilePath,
+        planSha256: record.planSha256,
         proposedByToolCallId: record.proposedByToolCallId,
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
@@ -199,6 +220,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         | {
             phase?: unknown;
             planFilePath?: unknown;
+            planSha256?: unknown;
             planningModeEntryId?: unknown;
             proposedByToolCallId?: unknown;
             offeredForModeEntryId?: unknown;
@@ -212,6 +234,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       restored = {
         phase: data.phase,
         planFilePath: typeof data.planFilePath === "string" && data.planFilePath.trim() ? data.planFilePath : undefined,
+        planSha256: typeof data.planSha256 === "string" && /^[a-f0-9]{64}$/.test(data.planSha256) ? data.planSha256 : undefined,
         proposedByToolCallId:
           typeof data.proposedByToolCallId === "string" && data.proposedByToolCallId ? data.proposedByToolCallId : undefined,
         offeredForModeEntryId:
@@ -274,72 +297,185 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  /** The real ledger for an executing record, or `undefined` when none exists or it cannot be read. */
-  const readLedger = async (ctx: ExtensionContext, record: SessionRecord): Promise<ExecutionLedger | undefined> => {
-    const ledgerUrl = record.ledgerPath;
-    if (!ledgerUrl || ledgerUrl === LEDGER_DISABLED) return undefined;
+  const pauseMessage = (record: SessionRecord): string =>
+    `Prometheus execution paused: ${record.ledgerError ?? "the approved execution ledger is unavailable"}. No new task dispatch or completion is permitted. Restore the exact approved plan/ledger, or run /prometheus to exit and obtain fresh native approval; do not use prompt-only execution.`;
+
+  const receiptEntries = (ctx: ExtensionContext): ChildReceipt[] => {
+    const receipts: ChildReceipt[] = [];
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== RECEIPT_ENTRY || !entry.data || typeof entry.data !== "object") continue;
+      // Only the plugin writes this entry. Full equality with the ledger receipt is checked before use.
+      const receipt = entry.data as ChildReceipt;
+      if (typeof receipt.receiptId === "string" && typeof receipt.childAgentId === "string") receipts.push(receipt);
+    }
+    return receipts;
+  };
+
+  const currentAttempts = (ctx: ExtensionContext, ledgerId: string): Map<string, string | null> => {
+    let attempts = new Map<string, string | null>();
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== ATTEMPTS_ENTRY || !entry.data || typeof entry.data !== "object") continue;
+      if (!("ledgerId" in entry.data) || entry.data.ledgerId !== ledgerId) continue;
+      if (!("attempts" in entry.data) || !entry.data.attempts || typeof entry.data.attempts !== "object")
+        throw new Error("Invalid attempt checkpoint");
+      attempts = new Map();
+      for (const [id, attempt] of Object.entries(entry.data.attempts)) {
+        if (attempt !== null && typeof attempt !== "string") throw new Error("Invalid attempt checkpoint");
+        attempts.set(id, attempt);
+      }
+    }
+    return attempts;
+  };
+
+  const persistAttempts = (ledger: ExecutionLedger): void => {
+    pi.appendEntry(ATTEMPTS_ENTRY, {
+      ledgerId: ledger.ledgerId,
+      attempts: Object.fromEntries([...ledger.items, ...ledger.gates].map((row) => [row.id, row.attempt ?? null])),
+    });
+  };
+
+  const withExecutionLedger = async <T>(
+    ctx: ExtensionContext,
+    record: SessionRecord,
+    run: (ledger: ExecutionLedger) => T | Promise<T>,
+    save = false,
+    resume = false,
+  ): Promise<T> => {
     try {
-      const data = JSON.parse(await fs.readFile(resolveLocalUrlToPath(ledgerUrl, localOptions(ctx)), "utf8")) as Partial<ExecutionLedger>;
-      return data.version === 1 && Array.isArray(data.items) && Array.isArray(data.gates) ? (data as ExecutionLedger) : undefined;
+      if (!record.ledgerPath || record.ledgerPath === "disabled" || !record.planFilePath || !ctx.sessionManager.getArtifactsDir()) {
+        throw new Error("missing execution ledger or durable approved-plan binding");
+      }
+      if (!planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), record.planFilePath)) {
+        throw new Error("the host plan reference differs from the approved execution plan");
+      }
+      const ledgerFile = resolveLocalUrlToPath(record.ledgerPath, localOptions(ctx));
+      if (record.ledgerPath !== prometheusArtifactUrl(record.planFilePath, "ledger")) throw new Error("unexpected execution ledger path");
+      return await withLedgerLock(ledgerFile, async () => {
+        if (record.phase !== "executing") throw new Error("execution is no longer active");
+        const data: unknown = JSON.parse(await fs.readFile(ledgerFile, "utf8"));
+        const content = await fs.readFile(resolveLocalUrlToPath(record.planFilePath as string, localOptions(ctx)), "utf8");
+        // Version-one ledgers already pinned the approved bytes, but had no trustworthy completion receipts.
+        if (
+          !record.planSha256 &&
+          data &&
+          typeof data === "object" &&
+          "version" in data &&
+          data.version === 1 &&
+          "planSha256" in data &&
+          data.planSha256 === planDigest(content)
+        ) {
+          record.planSha256 = data.planSha256 as string;
+          persist(record);
+        }
+        if (!record.planSha256) throw new Error("the exact approved plan hash is missing; fresh native approval is required");
+        const ledger = restoreLedger(data, record.planFilePath as string, content, record.planSha256);
+        let changed = ledger !== data;
+        const receipts = receiptEntries(ctx);
+        const attempts = currentAttempts(ctx, ledger.ledgerId);
+        const artifactsDir = ctx.sessionManager.getArtifactsDir() as string;
+        for (const row of [...ledger.items, ...ledger.gates]) {
+          if (row.status === "in_progress" && (resume || attempts.get(row.id) !== row.attempt)) {
+            invalidateRows(ledger, row.id, "Unrecorded or invalidated attempt reopened; cancel old work and dispatch a fresh child.");
+            changed = true;
+          }
+          if (row.status !== "done") continue;
+          const receipt = row.receipt;
+          let valid =
+            receipt !== undefined &&
+            receipt !== null &&
+            typeof receipt === "object" &&
+            receipt.ledgerId === ledger.ledgerId &&
+            receipt.planSha256 === ledger.planSha256 &&
+            receipt.rowId === row.id &&
+            receipt.attempt === row.attempt &&
+            attempts.get(row.id) === row.attempt &&
+            receipt.childAgentId === row.childAgentId &&
+            receipt.sessionId === ctx.sessionManager.getSessionId() &&
+            receipts.some((saved) => JSON.stringify(saved) === JSON.stringify(receipt));
+          if (valid && receipt) {
+            try {
+              const file = path.join(artifactsDir, `${receipt.childAgentId}.md`);
+              const child = AgentRegistry.global().get(receipt.childAgentId);
+              valid =
+                (await fs.lstat(file)).isFile() &&
+                planDigest(await fs.readFile(file, "utf8")) === receipt.outputSha256 &&
+                (!child ||
+                  (child.parentId === receipt.parentAgentId &&
+                    (child.status === "idle" || child.status === "parked") &&
+                    child.sessionFile !== null &&
+                    path.resolve(child.sessionFile) === path.resolve(artifactsDir, `${receipt.childAgentId}.jsonl`)));
+            } catch {
+              valid = false;
+            }
+          }
+          if (!valid) {
+            invalidateRows(ledger, row.id, "Historical child proof is missing or changed; a fresh child must revalidate this row.");
+            changed = true;
+          }
+        }
+        changed = refreshDispatchAgents(ledger, availableAgents()) || changed;
+        // Recovery invalidations must survive even when the requested mutation is refused.
+        if (changed) {
+          persistAttempts(ledger);
+          await writeLedgerAtomic(ledgerFile, ledger);
+        }
+        record.ledgerError = undefined;
+        const result = await run(ledger);
+        if (save) {
+          if (record.phase !== "executing") throw new Error("execution was released during the ledger update");
+          persistAttempts(ledger);
+          await writeLedgerAtomic(ledgerFile, ledger);
+        }
+        return result;
+      });
     } catch (error) {
-      pi.logger.warn("prometheus could not read the execution ledger", { ledgerUrl, error: errorMessage(error) });
+      record.ledgerError = errorMessage(error);
+      throw error;
+    }
+  };
+
+  const readLedger = async (ctx: ExtensionContext, record: SessionRecord): Promise<ExecutionLedger | undefined> => {
+    try {
+      return await withExecutionLedger(ctx, record, (ledger) => ledger);
+    } catch (error) {
+      pi.logger.warn("prometheus execution ledger is unavailable", { error: errorMessage(error) });
       return undefined;
     }
   };
 
-  const writeLedger = async (ctx: ExtensionContext, ledgerUrl: string, ledger: ExecutionLedger): Promise<void> => {
-    const ledgerFile = resolveLocalUrlToPath(ledgerUrl, localOptions(ctx));
-    await fs.mkdir(path.dirname(ledgerFile), { recursive: true });
-    await fs.writeFile(ledgerFile, `${JSON.stringify(ledger, null, 2)}\n`);
-  };
-
-  /** Create the execution ledger once per approved plan; failures disable it for the run instead of blocking Atlas. */
+  /** Only a newly approved execution may initialize a ledger. Resume never reconstructs a missing file. */
   const ensureLedger = async (ctx: ExtensionContext, record: SessionRecord, planContent?: string): Promise<void> => {
     const planFilePath = record.planFilePath;
-    if (record.ledgerPath || !planFilePath) return;
-    const ledgerUrl = prometheusArtifactUrl(planFilePath, "ledger");
-    let notice: string | undefined;
-    if (!ctx.sessionManager.getArtifactsDir()) {
-      notice = "Prometheus: this session has no artifact directory; ledger disabled";
-    } else {
-      try {
-        const content = planContent ?? (await fs.readFile(resolveLocalUrlToPath(planFilePath, localOptions(ctx)), "utf8"));
-        const roster = availableAgents();
-        let ledger: ExecutionLedger | undefined;
-        try {
-          ledger = createLedger(planFilePath, content, roster);
-        } catch (error) {
-          pi.logger.warn("prometheus plan lacks the ledger checklist grammar", { planFilePath, error: errorMessage(error) });
-          notice = "Prometheus: plan lacks the T/F checklist grammar; ledger disabled for this run";
-        }
-        if (ledger) await writeLedger(ctx, ledgerUrl, ledger);
-      } catch (error) {
-        notice = `Prometheus: the execution ledger could not be created (${errorMessage(error)}); ledger disabled for this run`;
-      }
-    }
-    record.ledgerPath = notice ? LEDGER_DISABLED : ledgerUrl;
-    if (notice) notify(ctx, notice, "warning");
+    if (record.ledgerPath || !planFilePath || !record.mayInitializeLedger) return;
+    record.mayInitializeLedger = false;
+    record.ledgerPath = prometheusArtifactUrl(planFilePath, "ledger");
     persist(record);
+    try {
+      if (!ctx.sessionManager.getArtifactsDir()) throw new Error("this session has no durable artifact directory");
+      const content = await fs.readFile(resolveLocalUrlToPath(planFilePath, localOptions(ctx)), "utf8");
+      if (
+        !record.planSha256 ||
+        planDigest(content) !== record.planSha256 ||
+        (planContent !== undefined && planDigest(planContent) !== record.planSha256)
+      ) {
+        throw new Error("the current or handed-off plan differs from the exact native proposal");
+      }
+      const file = resolveLocalUrlToPath(record.ledgerPath, localOptions(ctx));
+      await withLedgerLock(file, () => writeLedgerAtomic(file, createLedger(planFilePath, content, availableAgents())));
+      record.ledgerError = undefined;
+    } catch (error) {
+      record.ledgerError = errorMessage(error);
+      notify(ctx, pauseMessage(record), "error");
+    }
   };
 
-  /** On resume, rebind unfinished work to the current roster or rebuild a vanished ledger. */
   const resumeLedger = async (ctx: ExtensionContext, record: SessionRecord | undefined): Promise<void> => {
-    if (record?.phase !== "executing" || !record.ledgerPath || record.ledgerPath === LEDGER_DISABLED) return;
-    const ledger = await readLedger(ctx, record);
-    if (ledger) {
-      if (refreshDispatchAgents(ledger, availableAgents())) {
-        try {
-          await writeLedger(ctx, record.ledgerPath, ledger);
-        } catch (error) {
-          pi.logger.warn("prometheus could not rebind execution ledger agents", { error: errorMessage(error) });
-          notify(ctx, "Prometheus: execution agents changed but the ledger could not be saved.", "warning");
-        }
-      }
-      return;
+    if (record?.phase !== "executing") return;
+    try {
+      await withExecutionLedger(ctx, record, () => undefined, false, true);
+    } catch {
+      notify(ctx, pauseMessage(record), "error");
     }
-    notify(ctx, `Prometheus: execution ledger ${record.ledgerPath} is missing; it will be rebuilt from the approved plan.`, "warning");
-    record.ledgerPath = undefined;
-    persist(record);
   };
 
   const release = async (ctx: ExtensionContext, reason: string): Promise<void> => {
@@ -376,6 +512,9 @@ export default function prometheus(pi: ExtensionAPI): void {
     await clearProposalMarker(ctx, record.planFilePath);
     record.phase = "idle";
     record.planFilePath = undefined;
+    record.planSha256 = undefined;
+    record.ledgerError = undefined;
+    childEvidence.clearSession(ctx.sessionManager.getSessionId());
     record.proposedByToolCallId = undefined;
     record.offeredForModeEntryId = episodeId;
     record.suppressedForModeEntryId = episodeId;
@@ -414,6 +553,8 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (record.phase !== "planning") {
       record.phase = "planning";
       record.planFilePath = undefined;
+      record.planSha256 = undefined;
+      record.ledgerError = undefined;
       record.proposedByToolCallId = undefined;
       record.offeredForModeEntryId = undefined;
       record.suppressedForModeEntryId = undefined;
@@ -477,9 +618,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const ledger = await readLedger(ctx, record);
     const ledgerBlock = ledger
       ? `\n\n<execution-ledger path="${record.ledgerPath}">\n${ledgerSummary(ledger)}\n</execution-ledger>`
-      : record.ledgerPath === LEDGER_DISABLED
-        ? '\n\n<execution-ledger status="disabled">No execution ledger is available for this run: track the plan with `todo` and inspected child evidence, and do not call `prometheus_ledger`.</execution-ledger>'
-        : "";
+      : `\n\n<execution-ledger status="paused">${pauseMessage(record)}</execution-ledger>`;
     const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}`;
     try {
       return `${header}\n\n${await loadPromptAsset(ATLAS_ASSET)}`;
@@ -493,6 +632,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   const enterExecution = (ctx: ExtensionContext, record: SessionRecord): void => {
     record.phase = "executing";
+    record.mayInitializeLedger = record.ledgerPath === undefined;
     record.pendingConsent = undefined;
     record.proposalAwaitingApproval = false;
     record.approvalCompactionPending = false;
@@ -599,8 +739,13 @@ export default function prometheus(pi: ExtensionAPI): void {
     evidence: z
       .string()
       .optional()
-      .describe("Inspected child evidence; required for done, and F gates must cite the verification child's agent:// output"),
-    childAgentId: z.string().optional().describe("Id of the child agent working on or verifying the row"),
+      .describe(
+        "Inspected observable evidence; required for done and block. Gate verdicts are read from native child output, not this text",
+      ),
+    childAgentId: z
+      .string()
+      .optional()
+      .describe("Required for done: exact id of the owned native child dispatched for this started attempt"),
   });
   type LedgerParams = {
     action: "status" | "start" | "done" | "block" | "reopen";
@@ -693,7 +838,8 @@ export default function prometheus(pi: ExtensionAPI): void {
         };
       }
       const ledger = await readLedger(ctx, record);
-      if (ledger && !isComplete(ledger)) {
+      if (!ledger) return { content: [{ type: "text" as const, text: pauseMessage(record) }], isError: true, details: {} };
+      if (!isComplete(ledger)) {
         const unfinished = [...ledger.items, ...ledger.gates].filter((item) => item.status !== "done");
         return {
           content: [
@@ -729,8 +875,15 @@ export default function prometheus(pi: ExtensionAPI): void {
           details: {},
         };
       }
-      await release(ctx, "human-confirmed completion release");
-      return { content: [{ type: "text" as const, text: "Prometheus execution guard released by the user." }], details: {} };
+      try {
+        return await withExecutionLedger(ctx, record, async (current) => {
+          if (!isComplete(current)) throw new Error("Completion evidence changed while awaiting confirmation; release refused");
+          await release(ctx, "human-confirmed completion release");
+          return { content: [{ type: "text" as const, text: "Prometheus execution guard released by the user." }], details: {} };
+        });
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `Release refused: ${errorMessage(error)}` }], isError: true, details: {} };
+      }
     },
   });
 
@@ -739,7 +892,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Prometheus Ledger",
     description:
-      "Read or update the approved Prometheus plan's execution ledger. `status` lists every T/F row; `start`, `done`, `block`, and `reopen` change one row. `done` requires inspected evidence and finished dependencies; F gates also require every T row done and evidence citing the verification child's agent:// output.",
+      "Read or update the approved execution ledger. Start a row BEFORE task dispatch and copy its prometheus_assignment binding. Done requires the id of its real completed native child and inspected evidence. Gates require distinct fresh children with structured PASS output; F4 follows F1–F3. Reopen/block invalidates descendants and stale gate attempts.",
     parameters: ledgerParameters,
     defaultInactive: true,
     loadMode: "essential",
@@ -748,44 +901,70 @@ export default function prometheus(pi: ExtensionAPI): void {
       const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
       const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
       if (!mainSession(ctx) || record?.phase !== "executing") return fail("Prometheus Atlas execution is not active in this main session.");
-      const ledger = await readLedger(ctx, record);
-      const ledgerUrl = record.ledgerPath;
-      if (!ledger || !ledgerUrl) {
-        return fail("No execution ledger is available for this run; track the plan with todo and inspected child evidence.");
-      }
-      if (params.action === "status") return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: {} };
-
-      const id = params.id?.trim();
-      const item = [...ledger.items, ...ledger.gates].find((entry) => entry.id === id);
-      if (!item) return fail(`Unknown ledger row ${id || "(missing id)"}; use an id from prometheus_ledger status.`);
-      const evidence = params.evidence?.trim();
-      if (params.action === "done") {
-        if (!evidence) return fail(`Marking ${item.id} done requires non-empty evidence.`);
-        const unfinished = item.dependsOn.filter((dependency) => ledger.items.find((entry) => entry.id === dependency)?.status !== "done");
-        if (unfinished.length > 0) return fail(`${item.id} depends on unfinished rows: ${unfinished.join(", ")}.`);
-        if (ledger.gates.includes(item)) {
-          const openTasks = ledger.items.filter((entry) => entry.status !== "done").map((entry) => entry.id);
-          if (openTasks.length > 0)
-            return fail(`Final gate ${item.id} cannot pass while task rows are unfinished: ${openTasks.join(", ")}.`);
-          if (!GATE_EVIDENCE_PATTERN.test(evidence)) return fail("Gate evidence must cite the verification child's agent:// output");
-        }
-      }
-      item.status =
-        params.action === "start" ? "in_progress" : params.action === "done" ? "done" : params.action === "block" ? "blocked" : "open";
-      item.evidence = evidence || undefined;
-      const childAgentId = params.childAgentId?.trim();
-      if (childAgentId) item.childAgentId = childAgentId;
-      item.updatedAt = Date.now();
       try {
-        await writeLedger(ctx, ledgerUrl, ledger);
+        return await withExecutionLedger(
+          ctx,
+          record,
+          async (ledger) => {
+            if (params.action === "status")
+              return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: { ledger } };
+            const id = params.id?.trim();
+            const item = [...ledger.items, ...ledger.gates].find((entry) => entry.id === id);
+            if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
+            const evidence = params.evidence?.trim();
+            let schema: Record<string, unknown> | undefined;
+            if (params.action === "start") {
+              startRow(ledger, item.id);
+              if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
+            } else if (params.action === "done") {
+              const childAgentId = params.childAgentId?.trim();
+              if (!evidence || !childAgentId) throw new Error(`Marking ${item.id} done requires inspected evidence and childAgentId`);
+              const parent = AgentRegistry.global()
+                .list()
+                .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
+              if (!parent) throw new Error("Registered parent identity is unavailable");
+              const receipt = await childEvidence.capture({
+                registry: AgentRegistry.global(),
+                parentAgentId: parent.id,
+                sessionId: ctx.sessionManager.getSessionId(),
+                artifactsDir: ctx.sessionManager.getArtifactsDir() as string,
+                ledger,
+                row: item,
+                childAgentId,
+                priorReceipts: receiptEntries(ctx),
+              });
+              // Persist the host-observed receipt independently before publishing completion in the ledger.
+              pi.appendEntry(RECEIPT_ENTRY, receipt);
+              item.receipt = receipt;
+              item.childAgentId = childAgentId;
+              item.evidence = `agent://${childAgentId}: ${evidence}`;
+              item.status = "done";
+              item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
+            } else {
+              if (params.action === "block" && !evidence) throw new Error("Blocking a row requires an explanation");
+              if ((params.action === "reopen" && item.status === "open") || (params.action === "block" && item.status === "blocked")) {
+                throw new Error(`${item.id} is already ${item.status}`);
+              }
+              invalidateRows(ledger, item.id, evidence);
+              if (params.action === "block") item.status = "blocked";
+            }
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}${schema ? `\nGate task outputSchema (use schemaMode strict): ${JSON.stringify(schema)}` : ""}`,
+                },
+              ],
+              details: { id: item.id, status: item.status, outputSchema: schema },
+            };
+          },
+          params.action !== "status",
+        );
       } catch (error) {
-        return fail(`The execution ledger could not be written: ${errorMessage(error)}`);
+        return fail(
+          `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid approved ledger; /prometheus remains the user exit.`,
+        );
       }
-      persist(record);
-      return {
-        content: [{ type: "text" as const, text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}` }],
-        details: { id: item.id, status: item.status },
-      };
     },
   });
 
@@ -799,27 +978,31 @@ export default function prometheus(pi: ExtensionAPI): void {
       try {
         const marker = JSON.parse(
           await fs.readFile(resolveLocalUrlToPath(prometheusArtifactUrl(reference, "proposal"), localOptions(ctx)), "utf8"),
-        ) as { version?: unknown; planFilePath?: unknown; proposedByToolCallId?: unknown };
+        ) as { version?: unknown; planFilePath?: unknown; planSha256?: unknown; proposedByToolCallId?: unknown };
+        // A present but invalid plugin marker must pause this handoff, not silently become ordinary execution.
         if (
-          marker.version === 1 &&
-          typeof marker.planFilePath === "string" &&
-          planReferencesMatch(marker.planFilePath, reference) &&
-          typeof marker.proposedByToolCallId === "string" &&
-          marker.proposedByToolCallId
-        ) {
-          record = {
-            phase: "planning",
-            planFilePath: reference,
-            proposedByToolCallId: marker.proposedByToolCallId,
-            lastBlockedAt: 0,
-            stallCount: 0,
-          };
-          records.set(sessionId, record);
-        }
+          (marker.version !== 1 && marker.version !== 2) ||
+          typeof marker.planFilePath !== "string" ||
+          !planReferencesMatch(marker.planFilePath, reference) ||
+          typeof marker.proposedByToolCallId !== "string" ||
+          !marker.proposedByToolCallId
+        )
+          throw new Error("Invalid Prometheus proposal marker");
+        record = {
+          phase: "planning",
+          planFilePath: reference,
+          planSha256: typeof marker.planSha256 === "string" && /^[a-f0-9]{64}$/.test(marker.planSha256) ? marker.planSha256 : undefined,
+          proposedByToolCallId: marker.proposedByToolCallId,
+          lastBlockedAt: 0,
+          stallCount: 0,
+        };
+        records.set(sessionId, record);
       } catch (error) {
         // No marker means an ordinary native plan approval, which stays untouched.
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
           pi.logger.warn("prometheus could not read the proposal marker", { error: errorMessage(error) });
+          record = { phase: "planning", planFilePath: reference, lastBlockedAt: 0, stallCount: 0 };
+          records.set(sessionId, record);
         }
       }
     }
@@ -954,7 +1137,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     return { messages };
   });
 
-  pi.on("tool_call", (event, ctx) => {
+  pi.on("tool_call", async (event, ctx) => {
     const live = mainSession(ctx);
     if (event.toolName === ACTIVATE_TOOL) {
       if (!live || !ctx.hasUI) return { block: true, reason: "Prometheus activation requires an interactive main session." };
@@ -996,6 +1179,19 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!detail) detail = provenanceBlockReason(event.toolName);
     const nested = event.toolName === "write" ? nestedXdevToolCall(event.input) : undefined;
     if (!detail && nested) detail = provenanceBlockReason(nested.toolName);
+    if (!detail && (event.toolName === "task" || nested?.toolName === "task")) {
+      try {
+        if (!evidenceSubscription) throw new Error("native child lifecycle evidence is unavailable on this host");
+        await withExecutionLedger(ctx, record, (ledger) => {
+          childEvidence.rememberDispatch(event.toolCallId, ctx.sessionManager.getSessionId(), ledger, nested?.input ?? event.input);
+        });
+      } catch (error) {
+        return {
+          block: true,
+          reason: `Task dispatch refused: ${errorMessage(error)}. Use a valid ledger and its current start binding; /prometheus is the user exit.`,
+        };
+      }
+    }
     if (!detail) return undefined;
 
     const now = Date.now();
@@ -1032,17 +1228,22 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.proposedByToolCallId = event.toolCallId;
     record.proposalAwaitingApproval = true;
     record.approvalCompactionPending = false;
-    persist(record);
+    record.ledgerPath = undefined;
+    record.planSha256 = undefined;
     try {
+      record.planSha256 = planDigest(await fs.readFile(resolveLocalUrlToPath(proposedPath, localOptions(ctx)), "utf8"));
       const markerFile = resolveLocalUrlToPath(prometheusArtifactUrl(proposedPath, "proposal"), localOptions(ctx));
-      await fs.mkdir(path.dirname(markerFile), { recursive: true });
-      await fs.writeFile(
-        markerFile,
-        `${JSON.stringify({ version: 1, planFilePath: proposedPath, proposedByToolCallId: event.toolCallId, createdAt: Date.now() })}\n`,
-      );
+      await writeLedgerAtomic(markerFile, {
+        version: 2,
+        planFilePath: proposedPath,
+        planSha256: record.planSha256,
+        proposedByToolCallId: event.toolCallId,
+        createdAt: Date.now(),
+      });
     } catch (error) {
       pi.logger.warn("prometheus could not write the proposal marker", { error: errorMessage(error) });
     }
+    persist(record);
 
     const approvedInResult = event.content.some((part) => part.type === "text" && part.text.trimStart().startsWith("Plan approved at "));
     if (approvedInResult && live.getPlanModeState()?.enabled !== true && planReferencesMatch(live.getPlanReferencePath(), proposedPath)) {
@@ -1081,7 +1282,11 @@ export default function prometheus(pi: ExtensionAPI): void {
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase !== "executing") return undefined;
     const ledger = await readLedger(ctx, record);
-    if (!ledger || isComplete(ledger)) return undefined;
+    if (!ledger) {
+      notify(ctx, pauseMessage(record), "error");
+      return undefined;
+    }
+    if (isComplete(ledger)) return undefined;
     const stamp = Math.max(...[...ledger.items, ...ledger.gates].map((item) => item.updatedAt));
     record.stallCount = stamp === record.lastContinuationLedgerStamp ? record.stallCount + 1 : 0;
     if (record.stallCount >= 2) {
@@ -1120,6 +1325,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.on("session_branch", async (_event, ctx) => {
     authorizedActivationCalls.clear();
     const restored = rehydrate(ctx, true);
+    await resumeLedger(ctx, restored);
     const executing = restored?.phase === "executing";
     await syncTools(false, executing, executing);
   });
@@ -1127,12 +1333,14 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.on("session_tree", async (_event, ctx) => {
     authorizedActivationCalls.clear();
     const restored = rehydrate(ctx, true);
+    await resumeLedger(ctx, restored);
     const executing = restored?.phase === "executing";
     await syncTools(false, executing, executing);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
     records.delete(ctx.sessionManager.getSessionId());
+    childEvidence.clearSession(ctx.sessionManager.getSessionId());
     reviewLevels.delete(ctx.sessionManager.getSessionId());
     authorizedActivationCalls.clear();
   });

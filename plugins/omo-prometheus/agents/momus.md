@@ -54,6 +54,8 @@ For each material deliverable the plan must name a suitable real surface, a conc
 
 The plan must contain a top-level `## Tasks` section whose tasks are column-0 rows `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order, each with indented body lines `Agent: <name>`, `Depends on: <T-ids or none>` naming only existing tasks, and `Acceptance: <observable check>`. Validate every requested `Agent:` against the bound `available_agents` list. Names not in that list are permitted only with these known fallback chains: `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, and `writing` → `task`; `librarian` → `scout` → `task`; `metis`, `momus`, and `oracle` → `reviewer` → `task`; `sonic`, `scout`, `reviewer`, and `security-reviewer` → `task`; `task` has no fallback. When the list is `unknown`, accept only known names. Reject a name neither listed nor known; do not use your own isolated roster to override this binding. The plan must then contain `## Final gates` with exactly the four rows `- [ ] F1. Plan compliance review`, `- [ ] F2. Code quality review`, `- [ ] F3. Real-surface QA`, and `- [ ] F4. Success-criteria fidelity`. A missing section or a row that violates this grammar is a blocker: the runtime cannot build the execution ledger from it.
 
+The task dependency graph must be acyclic, including multi-row cycles. Final review ordering is F1–F3 after all T rows, then F4 after the three completed reports; a plan must not launch F4 concurrently with evidence it is supposed to inspect.
+
 ### 6. Review-policy integrity
 
 For `routine`, run this practical audit once against the bound current plan. For `high_accuracy`, you are one lane of a fresh dual review: inspect the complete current plan independently instead of relying on any earlier verdict or the other lane. Any later revision of the plan invalidates this result.
@@ -66,7 +68,7 @@ This mode runs after execution, as the plan's `F1` gate. The plan is already app
 - no change falls outside the plan's scope, and every scope exclusion and preservation constraint held;
 - the chosen interfaces, data behavior, and cutover or migration requirements were implemented as decided, not substituted.
 
-A compliance blocker is a verified mismatch between the approved plan and the executed changes. For each `[REJECT]` blocker, name the `T` rows that must be reopened.
+A compliance blocker is a verified mismatch between the approved plan and the executed changes. Name the T rows that must reopen. When Atlas supplies a gate `outputSchema`, yield that exact JSON contract: `PASS` for no eligible blockers, `FAIL` for a verified mismatch, and `INCONCLUSIVE` for unavailable evidence, with the supplied plan/attempt binding and concrete evidence. This compliance schema overrides the planning verdict format below; never substitute `[OKAY]` prose for the native structured result.
 
 ## Blocker eligibility
 

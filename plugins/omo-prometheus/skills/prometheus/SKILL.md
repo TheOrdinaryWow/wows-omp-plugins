@@ -89,9 +89,10 @@ Write the complete plan with `write` to `local://<slug>-plan.md` while native pl
 
 ### Mandatory task and gate grammar
 
-After approval the runtime parses these two sections into a durable execution ledger that drives Atlas progress, continuation, and release. A plan that breaks this grammar executes without a ledger, so Momus rejects it.
+After approval the runtime parses these sections into a durable execution ledger that drives Atlas progress, continuation, and release. Invalid grammar or an unsatisfiable dependency graph pauses execution; there is no ledger-free fallback, so Momus rejects such a plan.
 
 - A top-level `## Tasks` section where every task is one markdown checkbox row at column 0: `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order. The task body is indented sub-bullets under its row and must contain three lines: `Agent: <name>`, `Depends on: <comma-separated T-ids, or none>`, and `Acceptance: <observable check>`.
+- Dependencies must form a directed acyclic graph: reject unknown ids, self-dependencies, and multi-row cycles before proposal. Keep `Acceptance:` concrete; the ledger retains it for execution and review.
 - `Agent:` names the requested child agent. Use the `<available-agents>` block injected into the planning context: pick the most specific listed specialist for each task, preferring installed omo-toolkit specialists over generic `task`/`sonic`. User-defined agents are valid when listed there. An unlisted name is allowed only if it has a known fallback: `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, and `writing` → `task`; `librarian` → `scout` → `task`; `metis`, `momus`, and `oracle` → `reviewer` → `task`; `sonic`, `scout`, `reviewer`, and `security-reviewer` → `task`; `task` itself has no fallback. If the list is unavailable, use only these known names. Runtime records both the requested and resolved dispatch agent; do not invent another fallback.
 - A `## Final gates` section after it with exactly these four rows and no others:
 
@@ -116,7 +117,7 @@ A task row and its body look like this:
 
 Other sections may use checkboxes freely; only rows at column 0 under these two headings are ledger rows. Every row starts unchecked (`- [ ]`).
 
-After all task rows are complete, the four separate verification children use the ledger's resolved gate agents: F1 requests `momus` with `review_kind: compliance`; F2 and F4 request `deep-high` (fallback `task`); F3 requests `deep-low` (fallback `task`).
+After all task rows are complete, independent fresh children perform F1–F3 first; F4 starts only after their reports pass and synthesizes that completed evidence. F1 requests `momus` with `review_kind: compliance`; F2 and F4 request `deep-high` (fallback `task`); F3 requests `deep-low` (fallback `task`). Atlas uses each ledger-resolved agent, fresh attempt binding, and the runtime-supplied structured gate outputSchema. Verification children are distinct from implementation children and from one another.
 
 Size the plan to the work. Split slices where they are genuinely independent, and keep one cohesive task when splitting would sever shared reasoning. **Do not pad**: no template sections that carry no content, no invented phases, no minimum number of tasks, children, or verification lanes, and no implementation minutiae a competent worker derives from the code you already referenced.
 
