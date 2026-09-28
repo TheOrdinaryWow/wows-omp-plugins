@@ -3,22 +3,58 @@ import { describe, expect, test } from "bun:test";
 import {
   type AuditState,
   auditItemsIn,
+  createConclusion,
   effectiveLaneLimit,
   extensionChoices,
   parseSettings,
   type RoundRecord,
+  remainingFindings,
   renderTemplate,
+  restoreAuditState,
+  selfFeedingSignal,
+  validateConclusion,
   validateRound,
   verdict,
 } from "../plugins/audit-goal/src/ledger.ts";
 
 function round(n: number, counts: Partial<RoundRecord> = {}): RoundRecord {
-  return { round: n, critical: 0, major: 0, minor: 0, picky: 0, rejected: 0, loopInduced: 0, ...counts };
+  const critical = counts.critical ?? 0;
+  const major = counts.major ?? 0;
+  const minor = counts.minor ?? 0;
+  const picky = counts.picky ?? 0;
+  const loopInduced = counts.loopInduced ?? 0;
+  let index = 0;
+  const findings = (["critical", "major", "minor", "picky"] as const).flatMap((severity) =>
+    Array.from({ length: Math.max(0, counts[severity] ?? 0) }, () => ({
+      id: `round-${n}-${++index}`,
+      severity,
+      summary: `Verified ${severity} finding ${index}`,
+      evidence: `source:${n}:${index} exercise failed`,
+      origin: index <= loopInduced ? ("loop-induced" as const) : ("pre-existing" as const),
+      status: "open" as const,
+    })),
+  );
+  return {
+    round: n,
+    critical,
+    major,
+    minor,
+    picky,
+    rejected: 0,
+    loopInduced,
+    auditorModels: ["auditor-model-A"],
+    coverage: `round ${n} production chain axis`,
+    checks: `round ${n} CI pass`,
+    findings,
+    resolutions: [],
+    rejectedEvidence: [],
+    ...counts,
+  };
 }
 
 function state(overrides: Partial<AuditState> = {}): AuditState {
   return {
-    version: 1,
+    version: 2,
     status: "active",
     goalId: "g1",
     target: "plan X",
@@ -28,6 +64,7 @@ function state(overrides: Partial<AuditState> = {}): AuditState {
     baseline: "abc123",
     rounds: [],
     capPending: false,
+    conclusion: null,
     addedTools: [],
     ...overrides,
   };
@@ -35,25 +72,25 @@ function state(overrides: Partial<AuditState> = {}): AuditState {
 
 describe("exit gates by intensity", () => {
   test("relaxed converges on the first round without Critical or Major", () => {
-    expect(verdict(state({ intensity: "relaxed", rounds: [round(1, { minor: 4, picky: 2 })] }))).toBe("converged");
+    expect(verdict(state({ intensity: "relaxed", rounds: [round(1, { minor: 4, picky: 2 })] }))).toBe("threshold-ready");
   });
 
   test("standard needs two consecutive rounds without Critical or Major", () => {
     expect(verdict(state({ rounds: [round(1, { minor: 3 })] }))).toBe("continue");
     expect(verdict(state({ rounds: [round(1, { major: 1 }), round(2, { minor: 1 })] }))).toBe("continue");
-    expect(verdict(state({ rounds: [round(1, { major: 1 }), round(2, { minor: 1 }), round(3, { picky: 5 })] }))).toBe("converged");
+    expect(verdict(state({ rounds: [round(1, { major: 1 }), round(2, { minor: 1 }), round(3, { picky: 5 })] }))).toBe("threshold-ready");
   });
 
   test("strict also counts Minor findings", () => {
     const rounds = [round(1), round(2, { minor: 1 })];
     expect(verdict(state({ intensity: "strict", rounds }))).toBe("continue");
-    expect(verdict(state({ intensity: "strict", rounds: [...rounds, round(3, { picky: 2 }), round(4)] }))).toBe("converged");
+    expect(verdict(state({ intensity: "strict", rounds: [...rounds, round(3, { picky: 2 }), round(4)] }))).toBe("threshold-ready");
   });
 });
 
 describe("round limit", () => {
   test("a met exit gate wins over an exhausted limit", () => {
-    expect(verdict(state({ maxRounds: 2, rounds: [round(1), round(2)] }))).toBe("converged");
+    expect(verdict(state({ maxRounds: 2, rounds: [round(1), round(2)] }))).toBe("threshold-ready");
   });
 
   test("an exhausted limit without convergence is cap-reached", () => {
@@ -71,21 +108,12 @@ describe("round limit", () => {
   });
 });
 
-describe("self-feeding signal", () => {
-  test("fires when every finding is loop-induced and severity falls", () => {
-    const previous = round(1, { major: 2, minor: 1 });
-    expect(verdict(state({ rounds: [previous, round(2, { major: 1, minor: 3, loopInduced: 4 })] }))).toBe("self-feeding");
-    expect(verdict(state({ rounds: [previous, round(2, { major: 2, minor: 1, loopInduced: 3 })] }))).toBe("continue");
-  });
-
-  test("fires when loop-induced findings are at least half of two consecutive rounds", () => {
-    const latest = round(2, { major: 3, minor: 3, loopInduced: 3 });
-    expect(verdict(state({ rounds: [round(1, { major: 3, minor: 1, loopInduced: 2 }), latest] }))).toBe("self-feeding");
-    expect(verdict(state({ rounds: [round(1, { major: 3, minor: 1, loopInduced: 1 }), latest] }))).toBe("continue");
-  });
-
-  test("does not fire when the latest findings are pre-existing", () => {
-    expect(verdict(state({ rounds: [round(1, { major: 2, loopInduced: 2 }), round(2, { major: 1 })] }))).toBe("continue");
+describe("self-feeding signal is only diagnostic", () => {
+  test("detects a loop-induced majority without declaring convergence", () => {
+    const previous = round(1, { major: 2, minor: 1, loopInduced: 2 });
+    const latest = round(2, { major: 1, minor: 1, loopInduced: 2 });
+    expect(selfFeedingSignal([previous, latest])).toBe(true);
+    expect(verdict(state({ rounds: [previous, latest] }))).toBe("continue");
   });
 });
 
@@ -97,6 +125,101 @@ describe("round validation", () => {
     expect(validateRound(current, round(2, { critical: Number.NaN }))).toContain("critical");
     expect(validateRound(current, round(2, { minor: 1, loopInduced: 2 }))).toContain("loopInduced");
     expect(validateRound(current, round(2))).toBeUndefined();
+  });
+});
+describe("finding and conclusion integrity", () => {
+  test("keeps unresolved Major findings open after a threshold discovery streak", () => {
+    const rounds = [round(1, { major: 1 }), round(2), round(3)];
+    const current = state({ rounds });
+    expect(verdict(current)).toBe("threshold-ready");
+    const evidence = [{ round: 3, observation: "Second clean production-chain audit; no new blocking discoveries" }];
+    expect(validateConclusion(current, "threshold-convergence", "Standard two-round discovery gate met", evidence)).toBeUndefined();
+    const conclusion = createConclusion(current, "threshold-convergence", "Standard two-round discovery gate met", evidence);
+    expect(conclusion.remaining.counts.major).toBe(1);
+    expect(conclusion.remaining.findings.map((finding) => finding.id)).toEqual(["round-1-1"]);
+    expect(conclusion.artifactAccepted).toBe(false);
+    expect(restoreAuditState({ ...current, conclusion })).toEqual({ ...current, conclusion });
+  });
+
+  test("closes earlier findings only with an evidenced resolution", () => {
+    const first = round(1, { major: 1 });
+    const second = round(2, { resolutions: [{ findingId: "round-1-1", evidence: "Patch abc verified by checkout scenario" }] });
+    expect(validateRound(state({ rounds: [first] }), second)).toBeUndefined();
+    expect(remainingFindings([first, second]).counts.major).toBe(0);
+    expect(
+      validateRound(state({ rounds: [first] }), round(2, { resolutions: [{ findingId: "not-recorded", evidence: "claim" }] })),
+    ).toContain("previously open");
+  });
+
+  test("requires concrete matching round evidence, not an unsupported tally", () => {
+    const falseCounts = round(1, { major: 1, findings: [] });
+    expect(validateRound(state(), falseCounts)).toContain("Severity counts");
+    const duplicate = round(2, { major: 1 });
+    const firstFinding = duplicate.findings.at(0);
+    if (!firstFinding) throw new Error("Test fixture must have a finding");
+    firstFinding.id = "round-1-1";
+    expect(validateRound(state({ rounds: [round(1, { major: 1 })] }), duplicate)).toContain("already recorded");
+  });
+
+  test("saturation needs repeated same-model varied axes and observations, not a self-feeding flag", () => {
+    const rounds = [
+      round(1, { major: 3, coverage: "entry to DB" }),
+      round(2, { major: 2, coverage: "restart and replay" }),
+      round(3, { major: 1, coverage: "shutdown and recovery" }),
+    ];
+    const current = state({ rounds });
+    const evidence = rounds.map(({ round: number, coverage }) => ({
+      round: number,
+      observation: `Inspected ${coverage}; remaining behavior still needs repair`,
+    }));
+    expect(verdict(current)).toBe("continue");
+    expect(
+      validateConclusion(
+        current,
+        "capability-saturation",
+        "Three repeated same-model passes have exhausted credible new axes; repairs remain open",
+        evidence,
+      ),
+    ).toBeUndefined();
+    const conclusion = createConclusion(
+      current,
+      "capability-saturation",
+      "Same-model discovery limit reached; repairs remain open",
+      evidence,
+    );
+    expect(conclusion.remaining.counts.major).toBe(6);
+    expect(conclusion.artifactAccepted).toBe(false);
+    expect(restoreAuditState({ ...current, conclusion })).toEqual({ ...current, conclusion });
+    expect(validateConclusion(state({ rounds: rounds.slice(0, 1) }), "capability-saturation", "one pass", evidence.slice(0, 1))).toContain(
+      "at least three",
+    );
+    expect(validateConclusion(current, "capability-saturation", "unsubstantiated", evidence.slice(1))).toContain("last three");
+    const [first, second, third] = rounds;
+    if (!first || !second || !third) throw new Error("Test fixture must have three rounds");
+    expect(
+      validateConclusion(
+        state({ rounds: [first, { ...second, auditorModels: ["other"] }, third] }),
+        "capability-saturation",
+        "mixed",
+        evidence,
+      ),
+    ).toContain("same model");
+    expect(validateConclusion(state({ maxRounds: 3, rounds }), "capability-saturation", "finite", evidence)).toContain("unlimited");
+  });
+
+  test("rejects corrupt or internally contradictory resume entries", () => {
+    const first = round(1, { major: 1 });
+    const current = state({ rounds: [first] });
+    expect(restoreAuditState({ ...current, version: 1 })).toBeUndefined();
+    expect(restoreAuditState({ ...current, rounds: [{ ...first, major: 7 }] })).toBeUndefined();
+    expect(restoreAuditState({ ...current, capPending: true })).toBeUndefined();
+    const stopped = createConclusion(current, "stop", "User stopped the audit", []);
+    expect(
+      restoreAuditState({
+        ...current,
+        conclusion: { ...stopped, remaining: { counts: { critical: 0, major: 0, minor: 0, picky: 0 }, findings: [] } },
+      }),
+    ).toBeUndefined();
   });
 });
 

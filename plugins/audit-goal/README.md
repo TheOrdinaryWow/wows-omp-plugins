@@ -1,8 +1,8 @@
 # audit-goal
 
 Adds `/audit <audit-target>`: an OMP goal that loops independent audits and
-fixes until the target converges. It behaves like `/goal <audit-target>`, but
-the goal carries an audit protocol, a round ledger, and two reserved agents.
+fixes until a recorded audit-process conclusion or explicit stop. The goal
+carries an audit protocol, a persisted evidence ledger, and two reserved agents.
 
 ## Install
 
@@ -25,8 +25,10 @@ command refuses to start while plan mode or vibe mode is active, while another
 goal is unfinished, or while an audit is already running in the session.
 
 Once started, the audit is an ordinary OMP goal. `/goal` shows, pauses,
-resumes, or drops it; dropping the goal ends the audit. The footer shows the
-round count, the limit, and the intensity.
+resumes, or drops it; user-issued `/goal drop` stops the audit. Model-issued
+`goal({op:"complete"})`, including nested device invocation, is refused until
+`audit_round` has recorded a valid conclusion. The footer shows the round
+count, limit, intensity, and any pending conclusion.
 
 Each round the main agent:
 
@@ -63,26 +65,39 @@ would push running audit subagents over the limit.
 | Fixed | Critical, Major | Critical, Major, Minor | every level |
 | Converges after | one round with no Critical or Major | two consecutive rounds with no Critical or Major | two consecutive rounds with no Critical, Major, or Minor |
 
-Long audit loops tend to feed themselves: each round's fixes add mechanisms,
-and the next round audits those mechanisms. To keep that visible, `/audit`
-records the git `HEAD` at start as the loop's baseline. Every finding is
-classified as pre-existing or loop-induced (its root cause lies in a commit
-after the baseline), and loop-induced findings are resolved by reverting or
-simplifying the earlier fix rather than stacking a new one. The ledger flags a
-self-feeding loop when every finding of a round is loop-induced while severity
-falls, or when loop-induced findings make up at least half of two consecutive
-rounds; the agent then stops adding mechanisms and may declare convergence.
-Without a round limit, it may also stop after 20 to 30 rounds if only a few
-Major findings remain and more rounds no longer pay off.
+Long audit loops can feed themselves: each round's fixes add mechanisms,
+and the next round audits those mechanisms. `/audit` records the git `HEAD`
+at start and tracks loop-induced findings separately. A self-feeding signal
+calls for simplifying or reverting mechanisms; it is not an automatic exit.
+
+`audit_round({op:"record", ...})` persists each round's auditor model set, actual
+coverage and checks, verified finding IDs with source evidence, provenance,
+open/resolved status, cited repairs of earlier open findings, and reasons for
+rejected claims. Severity counts describe new discoveries, not unresolved
+issues; the ledger separately lists **remaining open findings** and counts.
+At the configured intensity, an exit gate yields `threshold-ready`. The agent
+must record `threshold-convergence` with a reason and round observations before
+reporting and completing the goal. This is a discovery gate, not proof of
+semantic bug absence or acceptance of the audited artifact. Earlier confirmed
+Critical/Major findings remain open until a recorded repair closes them.
+
+With unlimited rounds, the orchestrator can record distinct
+`capability-saturation` convergence when at least three comparable rounds by
+the same auditor model set with varied axes establish, with cited observations,
+why another pass has limited expected discovery value. This includes the former optional
+20–30-round low-benefit exit; it is now an explicit, reasoned outcome. Open
+Critical/Major findings remain open. Saturation is never accepted repair or
+artifact acceptance; counts or a self-feeding flag alone are insufficient.
 
 ### Round limit
 
 OMP's `/goal budget` is a token budget; rounds are counted by this plugin. When
-the limit runs out before convergence, the agent first reports that the audit
-is **not** finished and what remains open, then asks you whether to continue.
-The options scale with the current limit: with 10 rounds you can add 5 or 10,
-remove the limit, or stop. Stopping completes the goal with that report.
-Sessions without an interactive UI stop at the limit.
+the finite limit runs out before threshold convergence, the agent reports that
+the audit is **not** finished and asks whether to continue. You can add rounds,
+remove the limit, or explicitly stop. Stopping records `stop`, with its reason
+and remaining findings, not convergence. Canceling the choice leaves the cap
+pending and prevents model completion; headless sessions record a distinct
+noninteractive cap stop. You can directly use `/goal drop` at any time.
 
 ## Reserved agents
 
@@ -98,5 +113,12 @@ dispatch them outside a running `/audit` loop, from subagents, or through
   after every compaction, together with the round ledger.
 - The plugin activates the `goal` and `audit_round` tools for the loop and
   deactivates the ones it added when the goal completes or is dropped.
+- A malformed latest ledger entry blocks model goal completion and reserved
+  agent dispatch; it never silently restores an older successful snapshot.
+  The user can use `/goal drop` directly and start a new audit.
+- Recorded threshold, saturation, and stop outcomes always report
+  `artifactAccepted: false`. Only the user and the audited project's separate
+  acceptance process can accept the artifact; the plugin never infers that
+  unobserved defects are absent.
 - Commit conventions and project rules come from the audited project's own
   context files; the plugin hardcodes none.

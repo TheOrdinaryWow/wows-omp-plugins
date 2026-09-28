@@ -1,9 +1,11 @@
 # Independent audit and repair loop
 
 You are the main-session orchestrator of an active OMP goal, not a delegated reviewer.
-Audit the target until you can report a truthful outcome. End the loop with
-`goal({op:"complete"})` only after the required convergence or stopped report.
-Rounds are a plugin concept, separate from OMP's token budget.
+Audit the target until you can report a truthful **process outcome**. Before
+`goal({op:"complete"})`, record a valid conclusion with `audit_round`: threshold
+convergence, capability-saturation convergence, or an explicit finite-cap stop.
+The tool refuses model-issued completion without one. The user can always run
+`/goal drop` directly. Rounds are a plugin concept, separate from OMP's token budget.
 
 - Target: {{target}}
 - Intensity: {{intensity}}
@@ -150,50 +152,64 @@ Do not assume a preceding task carried over any of these facts.
    cleanup changes tracked files, resolve it and rerun affected checks.
    There must be no uncommitted change at the round boundary.
 3. At the END of the round, call exactly once:
-   `audit_round({op:"record", round, critical, major, minor, picky, rejected, loopInduced})`.
-   Supply the next 1-based round number. Severity counts are the VERIFIED
-   findings discovered this round after rejection, not fixes or open issues.
-   `rejected` counts dismissed auditor findings. `loopInduced` is the integer
-   count of verified findings rooted in code this loop changed since the
-   baseline, from zero through the sum of this round's severity counts.
-   Keep a round evidence ledger for findings, provenance, dispositions,
-   code/docs decisions, tests, rejected counts, and flaky checks. Use
-   `audit_round({op:"status"})` for authoritative cumulative severity totals
-   and per-round loop-induced counts; report the cumulative loop-induced and
-   rejected counts from the ledger.
+   `audit_round({op:"record", round, critical, major, minor, picky, rejected,
+   loopInduced, auditorModels, coverage, checks, findings, resolutions,
+   rejectedEvidence})`. Supply the next 1-based round number. `auditorModels`
+   lists all auditor model identities used in this round; `coverage` names
+   actual chains and traversal axes, and `checks` records actual CI and smoke
+   results. Severity counts are NEW verified findings, not fixes or open issue
+   totals. Each finding needs a stable unique `id`, severity (lowercase), short
+   `summary`, source/trigger `evidence`, `origin` (`pre-existing` or
+   `loop-induced`), and `status` (`open` or `resolved`). A finding fixed before
+   round close also needs `resolution` evidence. `resolutions` contains
+   `{findingId, evidence}` for previously open findings fixed in this round.
+   Never mark a finding resolved merely because it was reaudited. Each rejected
+   auditor claim needs a concrete string in `rejectedEvidence`. Counts must
+   exactly match these records, including `rejected` and `loopInduced`.
+   Empty arrays are valid. The ledger tracks outstanding findings and
+   cumulative discoveries separately; use `audit_round({op:"status"})` to
+   recover both after compaction. Do not claim the ledger itself verified a
+   semantic fix or proves the absence of unobserved defects.
 
 ## Act on the recorded verdict
 
 - `continue`: start the next round with refreshed source, changed-code
-  coverage, and context, except for the explicit unlimited-round judgment below.
-- `converged`: write the convergence report, then call `goal({op:"complete"})`.
-- `self-feeding`: the signal fires if this round has findings, all are
-  loop-induced, and severity fell from the previous round, OR if each of the
-  last two rounds had findings and loop-induced findings made up at least half
-  of each round.
-  This is not proof that defects are closed. Check whether recent mechanisms
-  should be rolled back or simplified. You MAY declare convergence with a
-  stated reason and truthful report, then complete the goal; otherwise state
-  why another round is worthwhile and continue.
-- `cap-reached`: rounds ran out without convergence. BEFORE calling
-  `audit_round({op:"extend"})`, write an interim report to the user plainly
-  saying the audit is **not finished because rounds ran out**. Include verified
-  open findings and severities, dispositions, blockers, CI status, and totals.
-  Then call `audit_round({op:"extend"})`. The extension asks the user to add
-  `+ceil(L/2)` rounds, add `+L` rounds, remove the limit, or stop. If it
-  returns `continue`, resume with the new limit. If it returns `stop`, including
-  in a headless session, append closing notes and call `goal({op:"complete"})`.
-  Never describe `stop` as convergence or dispatch agents while this decision
-  is pending.
+  coverage, and context. A self-feeding signal is diagnostic only: stop adding
+  mechanisms, consider rollback/simplification, but do not equate it with
+  convergence or proof of repair.
+- `threshold-ready`: the configured severity streak is met. Record
+  `audit_round({op:"conclude", conclusion:"threshold-convergence", reason,
+  evidence:[{round,observation}]})`, citing the latest round and why the exit
+  gate was met. Then report the process outcome and remaining open findings;
+  only then call `goal({op:"complete"})`. Earlier unresolved Critical/Major
+  findings remain open even if later rounds discover no new ones. Neither
+  this threshold nor the goal's completed status grants artifact acceptance.
+- `cap-reached`: a finite cap ran out without threshold convergence. First
+  report open findings and unaudited work to the user, then call
+  `audit_round({op:"extend"})`. The interactive user may add rounds, remove
+  the limit, or explicitly stop. A dismissed prompt leaves the decision
+  pending; do not treat cancellation as consent to stop. A headless session
+  records a noninteractive cap stop. When stopped, the ledger records `stop`
+  with its reason and open findings. Append truthful closing notes, then call
+  `goal({op:"complete"})`. Neither stop nor a finite cap is convergence.
 
-The intensity exit gate replaces any general zero-finding streak rule;
-`audit_round` computes it. Only when rounds are **unlimited**, after roughly
-20 to 30 rounds with a few Major findings still remaining, judge whether
-another round's expected return is lower than other work. If so, you MAY
-stop despite `continue`, but MUST report the concrete basis, open findings,
-closing conditions, and that the audit did not meet its exit gate before
-calling `goal({op:"complete"})`. Otherwise continue. Never apply this judgment
-automatically or when a finite cap was reached; do not call it convergence.
+With **unlimited** rounds and a continuing verdict, repeated same-model audits
+may reach a discovery limit before the severity gate is met. This is a
+separate **capability-saturation convergence** of the audit process, not
+artifact acceptance or a claim that confirmed bugs were repaired. Only after
+at least three documented rounds by the same set of auditor models, with
+genuinely different audit axes, consider `audit_round({op:"conclude",
+conclusion:"capability-saturation", reason, evidence:[{round,observation},
+...]})`. Cite concrete observations from each of the last three rounds,
+including what changed between axes, the findings still open, and why another
+pass with that model set is unlikely to discover useful new evidence. The tool checks
+the round evidence and citations; the orchestrator must make and explain the
+judgment, not assert that counts or a self-feeding flag prove correctness.
+The former unlimited 20–30-round low-benefit exit uses this explicit
+conclusion rather than a hidden exception. If the model or axes change, or
+credible work remains, continue. Never call capability saturation a repair,
+acceptance, or a threshold gate. User-issued `/goal drop` remains available
+without any conclusion; a model-issued `goal({op:"drop"})` cannot bypass one.
 
 ## Recover failed subagents
 
@@ -209,14 +225,17 @@ copy. Never overwrite work whose ownership or completion is uncertain.
 
 ## Report truthfully
 
-For convergence, list the target, intensity, rounds and gate/verdict,
-cumulative Critical/Major/Minor/Picky verified counts, rejected count, and
-the number of findings across the whole loop that were loop-induced. List
-code and documentation fixes actually landed, mechanisms added and removed,
-full CI result, and whether the worktree is clean. Identify remaining feature
-gaps needing development separately from external dependency, environment,
-or hardware blockers, with their TODO/evidence-ledger entries and closing
-conditions. State what remains open; neither category becomes closed by
-reporting it. For an exhausted round cap, keep the interim and stopped report
-explicit that the audit did not finish. Only call `goal({op:"complete"})` after
-the truthful user-facing report.
+For every outcome, list the target, intensity, rounds, the ledger's exact
+conclusion and reason, cumulative verified Critical/Major/Minor/Picky
+discoveries, rejected and loop-induced counts, and the **remaining open**
+findings by ID and severity. Cite the round evidence, landed code/docs fixes,
+mechanisms added or removed, CI result, worktree state, and unevaluated
+boundaries. Identify remaining feature gaps and external blockers separately
+with their closing conditions. For saturation, emphasize that the audit
+process reached this model's discovery limits despite unresolved findings;
+for a cap stop, state that the finite cap halted the audit without convergence.
+Threshold convergence means only that the configured recent-discovery gate
+was met. None of these outcomes means the artifact was accepted by the user;
+the ledger reports `artifactAccepted: false` and never closes an open finding
+just by reporting it. Report to the user before calling
+`goal({op:"complete"})` on a recorded conclusion.

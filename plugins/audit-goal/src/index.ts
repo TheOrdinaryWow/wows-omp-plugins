@@ -10,6 +10,9 @@ import {
   type AuditSettings,
   type AuditState,
   auditItemsIn,
+  type ConclusionEvidence,
+  type ConclusionKind,
+  createConclusion,
   effectiveLaneLimit,
   extensionChoices,
   isAuditAgent,
@@ -17,9 +20,12 @@ import {
   limitLabel,
   parseSettings,
   type RoundRecord,
+  remainingFindings,
   renderTemplate,
+  restoreAuditState,
   selfFeedingSignal,
   totals,
+  validateConclusion,
   validateRound,
   verdict,
 } from "#src/ledger.ts";
@@ -63,20 +69,38 @@ async function buildProtocol(state: AuditState): Promise<string> {
 
 function ledgerSummary(state: AuditState): string {
   const sum = totals(state.rounds);
+  const remaining = remainingFindings(state.rounds);
   const lines = [
     `Target: ${state.target}`,
     `Intensity: ${state.intensity}`,
     `Baseline: ${state.baseline ?? "none (not a git repository)"}`,
     `Rounds recorded: ${state.rounds.length} (limit: ${limitLabel(state.maxRounds)})`,
     `Lane limit: ${laneLabel(state.laneLimit)}`,
-    `Verified findings so far: critical ${sum.critical}, major ${sum.major}, minor ${sum.minor}, picky ${sum.picky} (loop-induced ${sum.loopInduced}); rejected ${sum.rejected}`,
+    `Verified discoveries: critical ${sum.critical}, major ${sum.major}, minor ${sum.minor}, picky ${sum.picky} (loop-induced ${sum.loopInduced}); rejected ${sum.rejected}`,
   ];
   for (const round of state.rounds) {
     lines.push(
       `- round ${round.round}: C${round.critical} M${round.major} m${round.minor} p${round.picky}, loop-induced ${round.loopInduced}, rejected ${round.rejected}`,
+      `  model: ${round.auditorModels}; coverage: ${round.coverage}; checks: ${round.checks}`,
     );
+    for (const finding of round.findings)
+      lines.push(
+        `  ${finding.id} [${finding.severity}, ${finding.status}, ${finding.origin}]: ${finding.summary}; ${finding.evidence}${finding.resolution ? `; resolved: ${finding.resolution}` : ""}`,
+      );
+    for (const resolution of round.resolutions) lines.push(`  resolved ${resolution.findingId}: ${resolution.evidence}`);
+    for (const rejected of round.rejectedEvidence) lines.push(`  rejected: ${rejected}`);
   }
+  lines.push(
+    `Remaining confirmed findings: critical ${remaining.counts.critical}, major ${remaining.counts.major}, minor ${remaining.counts.minor}, picky ${remaining.counts.picky}`,
+  );
+  for (const finding of remaining.findings)
+    lines.push(`- OPEN ${finding.id} [${finding.severity}]: ${finding.summary}; ${finding.evidence}`);
   if (state.capPending) lines.push("Round limit exhausted: awaiting audit_round op=extend.");
+  if (state.conclusion) {
+    lines.push(`Conclusion: ${state.conclusion.kind}; reason: ${state.conclusion.reason}`);
+    for (const evidence of state.conclusion.evidence) lines.push(`  round ${evidence.round}: ${evidence.observation}`);
+  } else lines.push("Conclusion: none recorded.");
+  lines.push("Artifact acceptance: false (audit process outcome is not acceptance; open findings remain open).");
   return lines.join("\n");
 }
 
@@ -92,6 +116,8 @@ function textResult(text: string, isError = false) {
 
 export default function auditGoal(pi: ExtensionAPI): void {
   const states = new Map<string, AuditState>();
+  /** A malformed latest entry must not fall back to an older, apparently successful ledger. */
+  const invalidStates = new Set<string>();
   /** In-flight audit subagents per session, keyed by the dispatching task tool call. */
   const inflight = new Map<string, Map<string, number>>();
 
@@ -112,24 +138,30 @@ export default function auditGoal(pi: ExtensionAPI): void {
   const liveAudit = (ctx: ExtensionContext): { session: AgentSession; state: AuditState } | undefined => {
     const session = mainSession(ctx);
     const state = states.get(ctx.sessionManager.getSessionId());
-    if (!session || state?.status !== "active") return undefined;
+    if (!session || invalidStates.has(ctx.sessionManager.getSessionId()) || state?.status !== "active") return undefined;
     const goal = session.getGoalModeState()?.goal;
     if (!goal || goal.id !== state.goalId || goal.status === "complete" || goal.status === "dropped") return undefined;
     return { session, state };
   };
 
-  const persist = (state: AuditState): void => {
+  const persist = (ctx: ExtensionContext, state: AuditState): void => {
+    const sessionId = ctx.sessionManager.getSessionId();
     try {
       pi.appendEntry(STATE_ENTRY, state);
+      invalidStates.delete(sessionId);
+      states.set(sessionId, state);
     } catch (error) {
+      invalidStates.add(sessionId);
       pi.logger.warn("audit-goal could not persist its ledger", { error: errorMessage(error) });
+      throw error;
     }
   };
 
   const showStatus = (ctx: ExtensionContext, state: AuditState | undefined): void => {
-    const text =
-      state?.status === "active"
-        ? `Audit ${state.rounds.length}/${state.maxRounds ?? "∞"} · ${state.intensity}${state.capPending ? " · limit reached" : ""}`
+    const text = invalidStates.has(ctx.sessionManager.getSessionId())
+      ? "Audit ledger invalid · use /goal drop"
+      : state?.status === "active"
+        ? `Audit ${state.rounds.length}/${state.maxRounds ?? "∞"} · ${state.intensity}${state.capPending ? " · limit reached" : ""}${state.conclusion ? ` · ${state.conclusion.kind}` : ""}`
         : undefined;
     ctx.ui.setStatus?.(STATUS_KEY, text);
   };
@@ -152,28 +184,67 @@ export default function auditGoal(pi: ExtensionAPI): void {
     }
   };
 
-  const endAudit = async (ctx: ExtensionContext, state: AuditState, reason: string): Promise<void> => {
-    state.status = "ended";
-    state.capPending = false;
-    await syncLoopTools(state, false);
-    persist(state);
-    showStatus(ctx, state);
+  const endAudit = async (ctx: ExtensionContext, state: AuditState, reason: string, completed: boolean): Promise<void> => {
+    const ended = structuredClone(state);
+    ended.status = "ended";
+    ended.capPending = false;
+    if (!completed || !ended.conclusion) {
+      const last = ended.rounds.at(-1);
+      ended.conclusion = createConclusion(ended, "stop", reason, last ? [{ round: last.round, observation: last.coverage }] : []);
+    }
+    await syncLoopTools(ended, false);
+    try {
+      persist(ctx, ended);
+    } catch {
+      ctx.ui.notify("Audit ledger could not be saved; do not treat this audit as concluded.", "error");
+      return;
+    }
+    showStatus(ctx, ended);
     inflight.delete(ctx.sessionManager.getSessionId());
-    ctx.ui.notify(`Audit loop ${reason} after ${state.rounds.length} round${state.rounds.length === 1 ? "" : "s"}.`, "info");
+    ctx.ui.notify(`Audit loop ${reason} after ${ended.rounds.length} round${ended.rounds.length === 1 ? "" : "s"}.`, "info");
   };
 
-  const rehydrate = (ctx: ExtensionContext): void => {
+  const rehydrate = async (ctx: ExtensionContext): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
     states.delete(sessionId);
+    invalidStates.delete(sessionId);
     inflight.delete(sessionId);
     if (!mainSession(ctx)) return;
+    let latest: unknown;
+    let found = false;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom" || entry.customType !== STATE_ENTRY) continue;
-      const data: unknown = entry.data;
-      if (data && typeof data === "object" && "version" in data && data.version === 1) {
-        // Written only by persist() above, from a fully typed AuditState.
-        const restored = structuredClone(data) as AuditState;
-        states.set(sessionId, restored);
+      latest = entry.data;
+      found = true;
+    }
+    if (found) {
+      try {
+        const restored = restoreAuditState(latest);
+        if (restored) {
+          states.set(sessionId, restored);
+          const currentGoal = mainSession(ctx)?.getGoalModeState()?.goal;
+          if (restored.status === "active" && currentGoal?.id === restored.goalId) {
+            if (currentGoal.status === "complete" || currentGoal.status === "dropped") {
+              await endAudit(
+                ctx,
+                restored,
+                currentGoal.status === "dropped" ? "dropped by the user" : "completed before ledger reconciliation",
+                currentGoal.status === "complete",
+              );
+            } else {
+              const before = restored.addedTools.length;
+              await syncLoopTools(restored, true);
+              if (states.get(sessionId) === restored && !invalidStates.has(sessionId) && before !== restored.addedTools.length)
+                persist(ctx, restored);
+            }
+          } else if (restored.status === "ended" && restored.addedTools.length > 0) {
+            await syncLoopTools(restored, false);
+            persist(ctx, restored);
+          }
+        } else invalidStates.add(sessionId);
+      } catch (error) {
+        invalidStates.add(sessionId);
+        pi.logger.warn("audit-goal could not restore its ledger", { error: errorMessage(error) });
       }
     }
     showStatus(ctx, states.get(sessionId));
@@ -263,7 +334,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     }
 
     const state: AuditState = {
-      version: 1,
+      version: 2,
       status: "active",
       goalId: "",
       target,
@@ -273,6 +344,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
       baseline,
       rounds: [],
       capPending: false,
+      conclusion: null,
       addedTools: [],
     };
     try {
@@ -291,37 +363,77 @@ export default function auditGoal(pi: ExtensionAPI): void {
       ctx.ui.notify(`Could not start the audit goal (${errorMessage(error)}).`, "error");
       return;
     }
-    states.set(ctx.sessionManager.getSessionId(), state);
-    persist(state);
+    try {
+      persist(ctx, state);
+    } catch (error) {
+      await syncLoopTools(state, false);
+      await session.goalRuntime.dropGoal();
+      invalidStates.delete(ctx.sessionManager.getSessionId());
+      ctx.ui.notify(`Could not save the audit ledger (${errorMessage(error)}); the goal was dropped.`, "error");
+      return;
+    }
     showStatus(ctx, state);
     if (!(await sendProtocol(ctx, state, false))) return;
     pi.sendUserMessage(`Run the audit loop.\n\n<audit-target>\n${target}\n</audit-target>`);
   };
 
   pi.registerCommand("audit", {
-    description: "Start a goal that loops independent audits and fixes until the target converges",
+    description: "Start a goal that audits and repairs until an explicit process conclusion or stop",
     handler: startAudit,
   });
 
   const z = pi.zod;
   const roundParameters = z.object({
     op: z
-      .enum(["record", "extend", "status"])
-      .describe("record closes a finished round; extend asks the user for more rounds after cap-reached; status shows the ledger"),
-    round: z.number().int().optional().describe("record: 1-based number of the round being closed"),
-    critical: z.number().int().optional().describe("record: verified Critical findings this round"),
-    major: z.number().int().optional().describe("record: verified Major findings this round"),
-    minor: z.number().int().optional().describe("record: verified Minor findings this round"),
-    picky: z.number().int().optional().describe("record: verified Picky findings this round"),
-    rejected: z.number().int().optional().describe("record: auditor findings rejected after source verification"),
-    loopInduced: z
-      .number()
-      .int()
+      .enum(["record", "conclude", "extend", "status"])
+      .describe("record a finished round; conclude threshold convergence or justified saturation; extend a finite cap; show status"),
+    round: z.number().int().optional().describe("record: 1-based round number"),
+    critical: z.number().int().optional(),
+    major: z.number().int().optional(),
+    minor: z.number().int().optional(),
+    picky: z.number().int().optional(),
+    rejected: z.number().int().optional(),
+    loopInduced: z.number().int().optional(),
+    auditorModels: z
+      .array(z.string())
       .optional()
-      .describe("record: how many of this round's verified findings have their root cause in code the loop changed since the baseline"),
+      .describe("record: all auditor models used in this round; stable sets support comparable saturation evidence"),
+    coverage: z.string().optional().describe("record: concrete coverage and traversal axes"),
+    checks: z.string().optional().describe("record: actual CI / verification result"),
+    findings: z
+      .array(
+        z.object({
+          id: z.string(),
+          severity: z.enum(["critical", "major", "minor", "picky"]),
+          summary: z.string(),
+          evidence: z.string(),
+          origin: z.enum(["pre-existing", "loop-induced"]),
+          status: z.enum(["open", "resolved"]),
+          resolution: z.string().optional(),
+        }),
+      )
+      .optional()
+      .describe("record: every verified finding, even if repaired within this round; [] when none"),
+    resolutions: z
+      .array(z.object({ findingId: z.string(), evidence: z.string() }))
+      .optional()
+      .describe("record: repairs of findings left open in earlier rounds"),
+    rejectedEvidence: z.array(z.string()).optional().describe("record: one concrete reason for each rejected auditor claim"),
+    conclusion: z
+      .enum(["threshold-convergence", "capability-saturation"])
+      .optional()
+      .describe("conclude: process outcome; never artifact acceptance"),
+    reason: z
+      .string()
+      .optional()
+      .describe("conclude: reason for the outcome, including why further same-model audit has limited return for saturation"),
+    evidence: z
+      .array(z.object({ round: z.number().int(), observation: z.string() }))
+      .optional()
+      .describe("conclude: observations citing recorded rounds"),
   });
   type RoundParams = {
-    op: "record" | "extend" | "status";
+    op: "record" | "conclude" | "extend" | "status";
     round?: number;
     critical?: number;
     major?: number;
@@ -329,6 +441,15 @@ export default function auditGoal(pi: ExtensionAPI): void {
     picky?: number;
     rejected?: number;
     loopInduced?: number;
+    auditorModels?: string[];
+    coverage?: string;
+    checks?: string;
+    findings?: RoundRecord["findings"];
+    resolutions?: RoundRecord["resolutions"];
+    rejectedEvidence?: string[];
+    conclusion?: ConclusionKind;
+    reason?: string;
+    evidence?: ConclusionEvidence[];
   };
 
   const recordRound = (ctx: ExtensionContext, state: AuditState, params: RoundParams) => {
@@ -340,59 +461,97 @@ export default function auditGoal(pi: ExtensionAPI): void {
       picky: params.picky ?? Number.NaN,
       rejected: params.rejected ?? Number.NaN,
       loopInduced: params.loopInduced ?? Number.NaN,
+      auditorModels: params.auditorModels ?? [],
+      coverage: params.coverage ?? "",
+      checks: params.checks ?? "",
+      findings: params.findings ?? [],
+      resolutions: params.resolutions ?? [],
+      rejectedEvidence: params.rejectedEvidence ?? [],
     };
     const invalid = validateRound(state, record);
     if (invalid) return textResult(invalid, true);
-    state.rounds.push(record);
-    const outcome = verdict(state);
-    state.capPending = outcome === "cap-reached";
-    persist(state);
-    showStatus(ctx, state);
+    const next = structuredClone(state);
+    next.rounds.push(record);
+    const outcome = verdict(next);
+    next.capPending = outcome === "cap-reached";
+    persist(ctx, next);
+    showStatus(ctx, next);
 
-    const header = `Round ${record.round} recorded.\n${ledgerSummary(state)}\n\nVerdict: ${outcome}.`;
-    switch (outcome) {
-      case "converged":
-        return textResult(
-          `${header}\nThe ${state.intensity} exit gate is met. Write the final convergence report as the protocol requires, then call goal({op:"complete"}).`,
-        );
-      case "self-feeding":
-        return textResult(
-          `${header}\nThe loop is feeding itself: its recent findings come mostly from its own earlier fixes. Stop adding mechanisms. You MAY declare convergence (final report, then goal({op:"complete"})); if you continue with round ${record.round + 1}, state why, and prefer reverting or simplifying loop-introduced mechanisms over layering new fixes.`,
-        );
-      case "cap-reached":
-        return textResult(
-          `${header}\nThe round limit is exhausted without convergence${selfFeedingSignal(state.rounds) ? " (a self-feeding signal is present; say so)" : ""}. First write the interim report to the user: state plainly that the audit is NOT finished because the round limit ran out, and list the open findings by severity and what remains unaudited. Then call ${ROUND_TOOL}({op:"extend"}). Do not dispatch further audit or fix work before that.`,
-        );
-      default:
-        return textResult(`${header}\nStart round ${record.round + 1}.`);
-    }
+    const header = `Round ${record.round} recorded.\n${ledgerSummary(next)}\n\nVerdict: ${outcome}.`;
+    if (outcome === "threshold-ready")
+      return textResult(
+        `${header}\nThe ${next.intensity} exit gate is met. Record threshold-convergence with audit_round({op:"conclude", conclusion:"threshold-convergence", reason, evidence}), write the truthful report, then call goal({op:"complete"}). Open findings remain open.`,
+      );
+    if (outcome === "cap-reached")
+      return textResult(
+        `${header}\nThe round limit is exhausted without convergence${selfFeedingSignal(next.rounds) ? " (self-feeding signal observed, not a conclusion)" : ""}. Report the open findings and unaudited work, then call audit_round({op:"extend"}) to request the user's decision. Do not dispatch more audit work while the cap is pending.`,
+      );
+    return textResult(
+      `${header}\n${selfFeedingSignal(next.rounds) ? "Self-feeding signal: simplify or revert mechanisms; this alone does not establish convergence. " : ""}Start round ${record.round + 1}, or, only with unlimited rounds and multi-round same-model evidence of discovery limits, record capability-saturation explicitly using op=conclude.`,
+    );
+  };
+
+  const conclude = (ctx: ExtensionContext, state: AuditState, params: RoundParams) => {
+    if (state.conclusion) return textResult("An audit conclusion is already recorded. Report it truthfully before goal completion.", true);
+    if (!params.conclusion) return textResult("op=conclude requires conclusion: threshold-convergence or capability-saturation.", true);
+    const reason = params.reason ?? "";
+    const evidence = params.evidence ?? [];
+    const invalid = validateConclusion(state, params.conclusion, reason, evidence);
+    if (invalid) return textResult(invalid, true);
+    const next = { ...state, conclusion: createConclusion(state, params.conclusion, reason, evidence) };
+    persist(ctx, next);
+    showStatus(ctx, next);
+    return textResult(
+      `${ledgerSummary(next)}\nAudit process conclusion recorded. ${params.conclusion === "capability-saturation" ? "Capability saturation is not an accepted repair; unresolved findings remain open. " : "Threshold convergence is a discovery gate, not artifact acceptance. "}Report the outcome and remaining findings, then call goal({op:"complete"}).`,
+    );
   };
 
   const extendRounds = async (ctx: ExtensionContext, state: AuditState) => {
-    if (!state.capPending || state.maxRounds === null) {
-      return textResult("op=extend is only valid after record returned cap-reached.", true);
-    }
-    const stop = textResult(
-      `The user did not extend the audit. Append closing notes to your interim report (what remains unaudited, open findings, where they are recorded), then call goal({op:"complete"}).`,
-    );
-    if (!ctx.hasUI) return stop;
+    if (!state.capPending || state.maxRounds === null || state.conclusion)
+      return textResult("op=extend is only valid while a finite round cap decision is pending.", true);
     const choices = extensionChoices(state.maxRounds);
     let selected: string | undefined;
-    try {
-      selected = await ctx.ui.select(
-        `Audit round limit reached (${state.rounds.length}/${state.maxRounds}) and the audit is not finished. Keep auditing?`,
-        choices.map((choice) => choice.label),
+    if (ctx.hasUI) {
+      try {
+        selected = await ctx.ui.select(
+          `Audit round limit reached (${state.rounds.length}/${state.maxRounds}) and the audit is not finished. Keep auditing?`,
+          choices.map((choice) => choice.label),
+        );
+      } catch (error) {
+        pi.logger.warn("audit-goal round extension prompt failed", { error: errorMessage(error) });
+      }
+      if (selected === undefined)
+        return textResult(
+          "No round-limit decision was made. The audit remains cap-pending; ask the user again or let them use /goal drop.",
+          true,
+        );
+    }
+    if (liveAudit(ctx)?.state !== state) {
+      return textResult(
+        "The audit goal or ledger changed while awaiting the user's round-limit decision; no stale decision was applied.",
+        true,
       );
-    } catch (error) {
-      pi.logger.warn("audit-goal round extension prompt failed", { error: errorMessage(error) });
     }
     const choice = choices.find((candidate) => candidate.label === selected);
-    if (!choice || choice.newLimit === undefined) return stop;
-    state.maxRounds = choice.newLimit;
-    state.capPending = false;
-    persist(state);
-    showStatus(ctx, state);
-    return textResult(`The user extended the audit. New limit: ${limitLabel(state.maxRounds)}. Start round ${state.rounds.length + 1}.`);
+    const next = structuredClone(state);
+    if (!ctx.hasUI || choice?.newLimit === undefined) {
+      const reason = ctx.hasUI
+        ? "User explicitly stopped at the finite round limit."
+        : "Noninteractive finite round limit reached; the audit stopped without convergence.";
+      const last = state.rounds.at(-1);
+      next.conclusion = createConclusion(state, "stop", reason, last ? [{ round: last.round, observation: last.coverage }] : []);
+      next.capPending = false;
+      persist(ctx, next);
+      showStatus(ctx, next);
+      return textResult(
+        `${ledgerSummary(next)}\nStop recorded, not convergence or acceptance. Append truthful closing notes to the interim report, then call goal({op:"complete"}).`,
+      );
+    }
+    next.maxRounds = choice.newLimit;
+    next.capPending = false;
+    persist(ctx, next);
+    showStatus(ctx, next);
+    return textResult(`The user extended the audit. New limit: ${limitLabel(next.maxRounds)}. Start round ${next.rounds.length + 1}.`);
   };
 
   pi.registerTool({
@@ -400,15 +559,18 @@ export default function auditGoal(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Audit Round",
     description:
-      "Round ledger for the active /audit loop. record once at the end of every round (after fixes landed, full CI ran, and the tree is clean) with verified finding counts; it returns the verdict and next action. extend only after cap-reached, to ask the user for more rounds. status shows the ledger.",
+      "Persist verified round findings and evidence; explicitly conclude threshold convergence or multi-round capability saturation; ask the user about finite cap; show open findings and acceptance state.",
     parameters: roundParameters,
     defaultInactive: true,
     loadMode: "essential",
     approval: "read",
     execute: async (_toolCallId, params: RoundParams, _signal, _onUpdate, ctx) => {
+      if (invalidStates.has(ctx.sessionManager.getSessionId()))
+        return textResult("Audit ledger is invalid or could not be saved. Do not complete or dispatch; use /goal drop explicitly.", true);
       const live = liveAudit(ctx);
       if (!live) return textResult("No /audit loop is active in this main session.", true);
       if (params.op === "status") return textResult(ledgerSummary(live.state));
+      if (params.op === "conclude") return conclude(ctx, live.state, params);
       if (params.op === "extend") return await extendRounds(ctx, live.state);
       return recordRound(ctx, live.state, params);
     },
@@ -419,6 +581,8 @@ export default function auditGoal(pi: ExtensionAPI): void {
     if (!live) {
       return "audit-auditor and audit-fixer are reserved for the /audit loop and cannot be dispatched here. Use another agent.";
     }
+    if (live.state.conclusion)
+      return "The audit has recorded its conclusion; report it and complete the goal instead of dispatching more audit work.";
     if (live.state.capPending)
       return `The audit round limit is exhausted. Call ${ROUND_TOOL}({op:"extend"}) before dispatching more audit work.`;
     const limit = live.state.laneLimit;
@@ -430,6 +594,25 @@ export default function auditGoal(pi: ExtensionAPI): void {
   };
 
   pi.on("tool_call", (event, ctx) => {
+    if (event.toolName === "goal") {
+      const live = liveAudit(ctx);
+      const current = mainSession(ctx)?.getGoalModeState()?.goal;
+      const invalidAudit = invalidStates.has(ctx.sessionManager.getSessionId()) && current?.objective.startsWith("Audit loop (/audit): ");
+      if (event.input.op === "complete" && (live || invalidAudit) && (!live?.state.conclusion || invalidAudit)) {
+        return {
+          block: true,
+          reason:
+            "The /audit goal cannot complete without a valid recorded conclusion. Use audit_round op=conclude, resolve the cap with op=extend, or explicitly use /goal drop.",
+        };
+      }
+      if (event.input.op === "drop" && (live || invalidAudit)) {
+        return {
+          block: true,
+          reason: "Only the user can drop this /audit goal with /goal drop; a model-issued goal drop cannot bypass its conclusion.",
+        };
+      }
+      return undefined;
+    }
     if (event.toolName !== "task") return undefined;
     const requested = auditItemsIn(event.input);
     if (requested === 0) return undefined;
@@ -457,7 +640,10 @@ export default function auditGoal(pi: ExtensionAPI): void {
     if (event.invocationKind === "eval") {
       return { block: true, reason: "audit-auditor and audit-fixer are dispatched only through the task tool by the /audit loop." };
     }
-    return liveAudit(ctx) ? undefined : { block: true, reason: "audit-auditor and audit-fixer are reserved for the /audit loop." };
+    const live = liveAudit(ctx);
+    return live && !live.state.conclusion && !live.state.capPending
+      ? undefined
+      : { block: true, reason: "audit-auditor and audit-fixer are reserved for an active /audit round before its conclusion or cap." };
   });
 
   pi.on("goal_updated", async (event, ctx) => {
@@ -465,15 +651,20 @@ export default function auditGoal(pi: ExtensionAPI): void {
     if (state?.status !== "active" || !state.goalId) return;
     const goal = event.goal;
     if (!goal || goal.id !== state.goalId) {
-      await endAudit(ctx, state, "ended because the session goal changed");
+      await endAudit(ctx, state, "stopped because the session goal changed", false);
       return;
     }
     if (goal.status === "complete") {
-      await endAudit(ctx, state, "completed");
+      await endAudit(
+        ctx,
+        state,
+        state.conclusion ? `completed with ${state.conclusion.kind}` : "completed outside the audit conclusion protocol",
+        true,
+      );
       return;
     }
     if (goal.status === "dropped") {
-      await endAudit(ctx, state, "dropped");
+      await endAudit(ctx, state, "dropped by the user", false);
       return;
     }
     if (goal.status === "active") await syncLoopTools(state, true);
@@ -491,6 +682,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
   pi.on("session_shutdown", (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     states.delete(sessionId);
+    invalidStates.delete(sessionId);
     inflight.delete(sessionId);
   });
 }
