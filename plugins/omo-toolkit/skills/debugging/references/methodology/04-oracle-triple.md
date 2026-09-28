@@ -2,9 +2,7 @@
 
 # Phase 4 — Oracle Triple Consultation
 
-At 2 consecutive failed hypothesis rounds, stop investigating and reframe. Continuing past two failures usually means the real cause is in a category you haven't imagined — and more time on your current mental model is wasted time.
-
-The Oracle Triple is how you break out of the mental box.
+Use this optional reframing when a genuinely open root-cause hunt has repeated inconclusive rounds and parallel analysis is likely to add a decisive observation. It is not a prerequisite for asking an unapproved consequential question, nor a replacement for runtime evidence.
 
 > ⚠️ **Wrong tool for non-debugging tasks.** The Triple is for *stuck root-cause hunts*. If your task is producing an artifact (extraction, reverse engineering, audit, compliance documentation) and you want a skeptical review before declaring it done, use the **Verification Oracle** pattern in [partial-runtime-evidence.md](partial-runtime-evidence.md#verification-oracle-pattern-for-non-debug-tasks). Running the Triple on a finished extraction returns three diverging "what if you tried…" tangents that are not what you need.
 
@@ -12,13 +10,12 @@ The Oracle Triple is how you break out of the mental box.
 
 ## When to invoke
 
-| Situation | Invoke? |
+| Situation | Use it? |
 |---|---|
-| 1 round failed, you have new distinguishing evidence | No — run one more round with a refined hypothesis set |
-| 2 rounds failed, hypotheses now feel like variations of each other | **Yes — invoke now** |
-| 2 rounds failed, no new evidence angles left to try | **Yes — invoke now** |
-| You've been investigating >2 hours on the same bug | **Yes — invoke now regardless of round count** |
-| 1 round failed but the user is watching and wants speed | No — one round isn't enough to justify Oracle cost. Resist the urge. |
+| One inconclusive round with new distinguishing evidence | Usually no — refine and run the next observation |
+| Repeated inconclusive rounds whose hypotheses have converged into variants | Consider it when orthogonal framings are likely to change the next observation |
+| The cause is known but the fix is a user-owned trade-off | No — escalate the decision |
+| A small or already-localized defect | No — continue inline with focused evidence |
 
 ---
 
@@ -32,7 +29,7 @@ The three framings below are chosen to cover distinct bug-cause categories:
 - **B (system-boundary)** — causes living at integration seams, not in the code being read.
 - **C (invariant-violation)** — assumptions load-bearing to current hypotheses that may themselves be false.
 
-Spawn all three in parallel.
+If used, launch the three framings in one parallel batch as **read-only** analyses. They must not edit, spawn, ask the user, or choose a contract; each returns evidence-linked candidates or falsification queries to the lead.
 
 ---
 
@@ -40,7 +37,7 @@ Spawn all three in parallel.
 
 ```
 task(agent="deep-high",
-     prompt="[CONTEXT: bug description + evidence captured so far, verbatim, with file:line refs]
+     prompt="[CONTEXT: bug description + evidence captured so far, verbatim, with file:line refs]. Read-only analysis: do not edit, spawn, ask the user, or choose a fix/contract.
 
      Framing A — OBVIOUS-BUT-MISSED.
      What is the most embarrassing, most obvious cause that a senior engineer would spot in 30 seconds and we've overlooked? Consider:
@@ -54,7 +51,7 @@ task(agent="deep-high",
      Give me exactly three candidate causes ranked by likelihood, with one sentence each explaining why our evidence is consistent with each.")
 
 task(agent="deep-high",
-     prompt="[CONTEXT: bug description + evidence captured so far]
+     prompt="[CONTEXT: bug description + evidence captured so far]. Read-only analysis: do not edit, spawn, ask the user, or choose a fix/contract.
 
      Framing B — SYSTEM-BOUNDARY.
      What if the bug is NOT in the code we've been reading, but at a boundary? Consider:
@@ -70,7 +67,7 @@ task(agent="deep-high",
      Give me three candidate causes, each naming the specific boundary and the specific contract assumption that might be violated.")
 
 task(agent="deep-high",
-     prompt="[CONTEXT: bug description + evidence captured so far]
+     prompt="[CONTEXT: bug description + evidence captured so far]. Read-only analysis: do not edit, spawn, ask the user, or choose a fix/contract.
 
      Framing C — INVARIANT-VIOLATION.
      Which invariants that we've been ASSUMING TRUE might actually be false?
@@ -101,9 +98,9 @@ Note where Oracles disagree. Disagreement is genuine uncertainty that runtime ev
 
 Framing C produces concrete "one query that would decide it" suggestions. Pull these verbatim into your new round's evidence-gathering plan — they are designed to be decisive.
 
-### 4. Build the new hypothesis set
+### 4. Build the next observation set
 
-Minimum 3, same rules as Phase 2. Aim to have hypotheses drawn from the agreement scan (likely cause) AND from the disagreement scan (so one round's evidence resolves the disagreement).
+Keep only distinct hypotheses that alter the next query or fix. Draw candidates from both agreement and disagreement where that helps one round of evidence discriminate among them.
 
 Record in the journal:
 
@@ -123,18 +120,8 @@ Record in the journal:
 2. ...
 ```
 
-### 5. Reset the counter
+### 5. Continue from evidence
 
-Reset the "consecutive failed rounds" counter to 0. Return to Phase 3 (parallel investigation) with the new set.
+Return to investigation with the new observations. If the cause becomes clear but choosing a repair requires an unapproved trade-off, escalate that choice immediately (`05-escalate.md`). If evidence remains exhausted, present the full trace, current uncertainty and options instead of guessing a fix; a delegated worker sends that brief to its parent.
 
----
-
-## If *another* 2 rounds fail after the Oracle Triple
-
-You are genuinely stuck. This is the escalation threshold.
-
-Escalate to the user (see `05-escalate.md`) with the full trace: every hypothesis tried, every piece of evidence captured, both Oracle syntheses. Do not guess a fix.
-
-This is rare — in practice, the Oracle Triple resolves almost all stuck debugging sessions within one round, because it pulls in framings the investigator was too close to the code to see.
-
-If `deep-high` is not listed in the task tool description, use `task` for the skeptical review.
+If `deep-high` is not listed in the task tool description, use `task` with the same read-only framing.

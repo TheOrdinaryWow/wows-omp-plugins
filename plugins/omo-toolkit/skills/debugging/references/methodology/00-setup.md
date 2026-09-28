@@ -88,7 +88,7 @@ Goal: <one-sentence user request>
 ## Failed hypothesis round counter
 - Round 1: <result>
 - Round 2: <result>
-<!-- At 2 consecutive failures, invoke Oracle Triple (see 04-oracle-triple.md). -->
+<!-- After repeated inconclusive rounds on an open cause, consider optional orthogonal review (see 04-oracle-triple.md). -->
 
 ## Artifacts to revert
 <!-- Every temp edit, tmux session, fixture, env override, saved debugger session goes here

@@ -7,7 +7,7 @@ description: "Use when a task requires Git commits, rebases, branch-history rewr
 
 # Git Master
 
-Use this skill when the user asks you to operate on Git history or answer a Git-history question. Be exact, conservative, and evidence-led. Read the repository state before you infer anything.
+Use this skill when operating on Git history or answering a Git-history question. Be exact, conservative, and evidence-led. Read repository state before inferring anything.
 
 ## Mode Gate
 
@@ -18,7 +18,7 @@ Classify the request first:
 - `HISTORY`: answer when, where, who, why, or which commit changed something.
 - `STATUS`: inspect branch, diff, or working-tree state without changing it.
 
-Do not commit, rebase, push, force-push, reset, stash-pop, or delete anything unless the user explicitly asked for that operation. If the request is only investigative, report findings and stop.
+Do not commit, rebase, push, force-push, reset, stash-pop, or delete anything without the user's authorization. An explicitly approved implementation plan with a per-slice commit cadence already authorizes those commits once each slice is verified; it does not authorize rebases, pushes, or destructive commands. Do not ask again for a decision the user already made. If the request is only investigative, report findings and stop.
 
 ## Ground Truth
 
@@ -52,7 +52,7 @@ Commit only the user's requested changes. Preserve unrelated dirty work.
 
 Grouping rules:
 
-- Split different features, modules, generated artifacts, config, docs, and test-only changes unless they are inseparable.
+- Split unrelated features or modules. Keep implementation with its direct behavior tests and matching documentation when splitting would leave a commit inconsistent; never split a finished slice retroactively just to manufacture commit count.
 - Keep generated files with the source change that produced them when omitting them would leave the repo inconsistent.
 - Never hide failing or unrelated changes inside a broad commit.
 

@@ -147,7 +147,7 @@ If you cannot achieve a complete Tier 2 capture **or** two independent non-Tier-
 
 ## Verification Oracle pattern (for non-debug tasks)
 
-The skill's main Oracle Triple (`04-oracle-triple.md`) is for **stuck debugging** — 2 failed rounds, mental box, three orthogonal framings to break out.
+The skill's optional Oracle Triple (`04-oracle-triple.md`) is for **stuck debugging** — repeated inconclusive rounds where orthogonal framings may break a mental box.
 
 For tasks where the deliverable is an **artifact, not a bug fix** (reverse engineering, extraction, audit, compliance documentation), use a different pattern: **single Oracle, late, skeptical, with the deliverable in hand**.
 
@@ -189,7 +189,7 @@ Be skeptical. Don't rubber-stamp.
 
 | | Oracle Triple (debug) | Verification Oracle (artifact) |
 |---|---|---|
-| Trigger | 2 failed hypothesis rounds | About to declare "done" |
+| Trigger | Repeated inconclusive open-cause rounds (optional) | About to declare "done" |
 | Count | 3 in parallel, orthogonal framings | 1 sequential, focused review |
 | Goal | Break out of mental box | Catch unsubstantiated claims |
 | Tone of prompt | Brainstorm wide alternatives | Skeptical audit |

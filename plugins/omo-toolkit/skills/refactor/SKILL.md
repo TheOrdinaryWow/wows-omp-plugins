@@ -11,17 +11,17 @@ Use this workflow when asked to refactor, simplify, extract, or restructure code
 
 ## Intent gate
 
-Identify the target, desired outcome, scope (file, module, or project), and success criteria. For an open-ended request with materially different choices, use `ask` to surface the alternatives and recommend one. Use `todo` `init` for analysis, impact map, coverage, plan, edit, and verification; `start` and `done` each item as it changes state.
+Identify target, intended outcome, scope (file, module, or project), and success criteria. For an open-ended request with materially different choices, the lead uses `ask` to present evidence, alternatives, consequences, and a recommendation; a delegated worker instead escalates that decision to its parent. Track meaningful multi-step work with `todo`; a small bounded edit needs no ritual checklist.
 
 ## Map before editing
 
-Dispatch one `task` batch of five independent `scout` children to inspect: target definitions and usages; callers and public API; tests and coverage; analogous patterns and style; and dependency/runtime boundaries. Give each child a self-contained brief and concrete evidence to return. Use `lsp` for definitions/references and `ast_grep` for structural occurrences, not guessed file names. Synthesize an impact map with direct and indirect callers, invariants, affected tests, and rollback boundaries.
+Trace the target definitions, references, callers, public contract, affected tests, analogous patterns, and dependency/runtime boundaries before editing. Use `lsp` for definitions/references and `ast_grep` for structural occurrences, not guessed file names. Start with focused direct investigation. Delegate only independent, substantial slices whose parallel value exceeds handoff and coordination cost; if broad mapping truly needs scouts, give each a disjoint evidence territory and a concrete return, not a fixed five-agent roster. Record the invariants and rollback boundary proportionate to the change.
 
 ## Design and execute
 
-For a broad refactor, ask one `deep-high` child to produce a stepwise plan with interfaces, sequencing and risk (if `deep-high` is not listed in the task tool description, use `task`). Independent implementation pieces may run in one `task` batch; workers coordinate with `write agent://<name>` and return evidence through their outputs. Keep ownership of shared interfaces explicit; do not create a persistent team spec. For small contained refactors, edit directly after tracing the contract.
+For a broad refactor with unresolved design trade-offs, request an evidence-backed planning comparison from `deep-high` when listed (otherwise `task`); the lead resolves user-owned choices before implementation. Independent implementation pieces may run in one `task` batch with explicit shared interfaces and disjoint file ownership; workers coordinate with `write agent://<name>` and return evidence. For small contained refactors, edit directly after tracing the contract.
 
-Make the smallest behavior-preserving transformation that solves the user's request. Avoid migrations or abstractions not needed by the contract. Run affected checks after a coherent change, then exercise the changed surface. If behavior differs unexpectedly, fix the cause rather than masking the failing check. Review the final diff for unrelated changes and update documentation only where the user-visible contract changed.
+Make the smallest behavior-preserving transformation that solves the user's request. Avoid migrations or abstractions not needed by the contract. Run affected checks after a coherent change, then exercise the changed surface; a child's returned output is not verified acceptance. If behavior differs unexpectedly, fix the cause rather than masking the failing check. Review the final diff for unrelated changes and update documentation only where the user-visible contract changed.
 
 ## Completion evidence
 

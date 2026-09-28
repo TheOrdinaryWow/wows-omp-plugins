@@ -1,16 +1,14 @@
 > **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
-# Phase 2 + 3 — Hypothesis Formation & Parallel Investigation
+# Phase 2 + 3 — Hypothesis Formation & Investigation
 
-One hypothesis is a hunch. Three hypotheses is a decision. Investigation is how you turn the decision into runtime evidence.
+An observed failure is already evidence; do not rerun a user-reported scenario merely to confirm it. When the cause remains uncertain, write distinct hypotheses and choose observations that discriminate among them. Avoid manufacturing extra hypotheses after one mechanism is already established.
 
 ---
 
-## Phase 2 — Hypothesis Formation (Minimum Three)
+## Phase 2 — Hypothesis formation
 
-### Why three, not one
-
-A single hypothesis creates confirmation bias: you'll read runtime state looking for evidence that confirms it and unconsciously discount contradictions. Three hypotheses force you to design queries that *distinguish* between them, which is the only way runtime evidence becomes decisive.
+Compare independent plausible causes only where they change the investigation or fix. Multiple hypotheses reduce confirmation bias, but there is no minimum count for an already bounded defect.
 
 ### Generate across orthogonal axes
 
@@ -35,11 +33,11 @@ If your three hypotheses are all variations of "the handler has a bug", you don'
 
 ### Collapse rule
 
-If two hypotheses have identical distinguishing evidence, they aren't actually different — collapse them and find a real alternative. If you can't come up with a third distinct hypothesis, you don't understand the system well enough yet. Go read a little more code before investigating.
+If two hypotheses predict the same observable, collapse them. Seek another only when it would change what you inspect or implement.
 
 ---
 
-## Phase 3 — Parallel Investigation
+## Phase 3 — Investigation
 
 ### State freshness invariant
 
@@ -64,9 +62,9 @@ If two hypotheses have identical distinguishing evidence, they aren't actually d
 
 Branch depending on what's available.
 
-### Parallel investigation with one task batch
+### Investigation and delegation
 
-When there are at least three independent hypotheses, dispatch one `task` batch of named children, one hypothesis per child. Choose `deep-low` for focused runtime/reproduction work (if it is not listed in the task tool description, use `task`); choose `scout` for read-only log and source exploration. Assign the runtime-state inspector, log archaeologist, reproduction engineer and trace correlator only where their evidence source is relevant. Include the bug, hypothesis, scope, exact observable evidence and no-edit boundaries in each prompt. Children coordinate over IRC with `write agent://<name>`; the lead blocks with `wait` only when there is no other work.
+When multiple independent evidence territories merit parallel work, dispatch one `task` batch with disjoint sources and concrete observables. Choose `deep-low` for focused runtime/reproduction work (fallback `task`), and `scout` for read-only exploration. Include the bug, hypothesis, scope, exact evidence and no-edit boundaries in each prompt. A small already-localized defect stays inline; no fixed roster or minimum child count is required.
 
 The lead maintains the journal, approves source edits and synthesizes findings into statuses. For web bugs use the OMP `browser` tool, not a stand-in HTTP fetch. Preserve exact values, times and source locations; refute or confirm hypotheses against observed state. If parallelism adds no value, investigate sequentially with the same evidence standard.
 
@@ -95,4 +93,4 @@ If you find yourself about to paraphrase, stop, go back, and copy the raw value.
 
 ## Round completion
 
-A "round" is complete when every hypothesis has either confirming or refuting evidence — or when you have exhausted the evidence sources available without a decisive result. If the round ends inconclusively, that counts as a failed round for the counter in the journal. See `04-oracle-triple.md` for what to do at 2 consecutive failed rounds.
+A round is complete when the relevant hypotheses have confirming or refuting evidence, or when available sources cannot distinguish them. On an inconclusive, genuinely open diagnosis, `04-oracle-triple.md` offers an optional way to get orthogonal framings; do not delay a user-owned contract decision for it.

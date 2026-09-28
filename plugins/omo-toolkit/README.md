@@ -14,8 +14,8 @@ Category agents use the same worker base as OMP's bundled `task` agent, then add
 
 |Agent|Use for|Default model role|Thinking|
 |---|---|---|---|
-|`deep-low`|One deliverable whose decisions can be settled from the code and evidence; returns `ESCALATE: deep-high` when it cannot|`@task`|`medium`|
-|`deep-high`|Escalated work whose central decision cannot be settled from evidence alone|`@slow`|`xhigh`|
+|`deep-low`|One deliverable whose routine decisions follow evidence; sends unresolved consequential choices to its parent as `ESCALATE: deep-high`|`@task`|`medium`|
+|`deep-high`|Escalated reasoning and implementation after a material choice is authorized; otherwise returns options and recommendation to its parent|`@slow`|`xhigh`|
 |`ultrabrain`|Hard logic and architecture reasoning with clear goals|`@slow`|`max`|
 |`architect`|Read-only system design comparison and recommendation|`@slow`|`max`|
 |`visual-engineering`|UI/UX, styling, animation, frontend, and design-system work|`@task`|`high`|
@@ -36,17 +36,17 @@ task:
     ultrabrain: anthropic/claude-opus-5-5
 ```
 
-`omo-prometheus` and `omo-ultrawork` use these category agents when available, falling back to `task` otherwise; `librarian` falls back to `scout` and then `task`. Final code-quality, real-surface QA, and evidence gates instead use fresh `deep-high` or `deep-low` children (falling back to `task`) whose assignments carry the complete verification contracts.
+`omo-prometheus` and `omo-ultrawork` use these category agents when available, falling back to `task` otherwise; `librarian` falls back to `scout` and then `task`. Workers do not silently decide unapproved user-owned trade-offs or ask the user directly; their parent handles the decision. Final code-quality, real-surface QA, and evidence gates use fresh `deep-high` or `deep-low` children (fallback `task`) whose assignments carry the complete verification contracts.
 
 ## Skills
 
 |Skill|Triggers|
 |---|---|
-|`git-master`|Git commits, rebases, branch-history rewrites, and Git history investigation|
+|`git-master`|Authorized Git commits, rebases, branch-history rewrites, and Git history investigation; approved commit cadence needs no second confirmation|
 |`review-work`|Post-implementation real-surface QA and one independent gate review|
 |`remove-ai-slops`|Behavior-preserving cleanup of recent changes|
-|`refactor`|Refactors, extraction, simplification, restructuring, and modernization|
-|`debugging`|Failures, crashes, flaky tests, runtime behavior, and reverse-engineering evidence|
+|`refactor`|Contract-traced, scope-proportionate refactors and simplification; delegate only when independent work merits it|
+|`debugging`|Evidence-led diagnosis and before/after real-surface verification without replaying an already observed failure merely for ritual|
 |`frontend`|Web UI, UX, styling, layout, animation, accessibility, SEO, and frontend performance|
 |`visual-qa`|Rendered web, terminal, and paginated-surface verification|
 |`init-deep`|Hierarchical `AGENTS.md` generation or refresh; supports `--create-new` and `--max-depth=N`|

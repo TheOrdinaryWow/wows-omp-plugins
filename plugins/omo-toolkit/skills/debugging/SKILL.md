@@ -70,12 +70,12 @@ Each phase has exactly one reference. Read it as you enter the phase — not in 
 |---|---|---|
 | 0 | **Environment assessment** — know the runtime, ports, symbols, env vars, watchers before attaching | [references/methodology/00-setup.md](references/methodology/00-setup.md) |
 | 1 | **Journal setup** — single `.debug-journal.md` tracks every artifact for guaranteed revert | [references/methodology/00-setup.md](references/methodology/00-setup.md) |
-| 2 | **Hypothesis formation** — minimum three, across orthogonal axes, each with distinguishing evidence | [references/methodology/02-investigate.md](references/methodology/02-investigate.md) |
-| 3 | **Parallel investigation** — one `task` batch of hypothesis owners coordinated over IRC | [references/methodology/02-investigate.md](references/methodology/02-investigate.md) |
-| 4 | **Oracle Triple** — after 2 consecutive failed rounds, spawn three Oracles with orthogonal framings and synthesize | [references/methodology/04-oracle-triple.md](references/methodology/04-oracle-triple.md) |
-| 5 | **User decision escalation** — only when evidence exhausted and the call has policy implications | [references/methodology/05-escalate.md](references/methodology/05-escalate.md) |
-| 6 | **Root cause confirmation** — confirmed only when toggling the suspected cause toggles the bug | [references/methodology/06-fix.md](references/methodology/06-fix.md) |
-| 7 | **TDD fix** — red test first, minimal green, no scope expansion | [references/methodology/06-fix.md](references/methodology/06-fix.md) |
+| 2 | **Hypothesis formation** — compare plausible causes only where the mechanism is uncertain; a user-observed failure is already evidence | [references/methodology/02-investigate.md](references/methodology/02-investigate.md) |
+| 3 | **Investigation** — delegate independent evidence territories only when parallel work pays for coordination | [references/methodology/02-investigate.md](references/methodology/02-investigate.md) |
+| 4 | **Oracle Triple (optional)** — after inconclusive rounds on a genuinely open cause, obtain orthogonal framings | [references/methodology/04-oracle-triple.md](references/methodology/04-oracle-triple.md) |
+| 5 | **Decision escalation** — ask promptly for an unapproved consequential choice; delegated workers report to the parent | [references/methodology/05-escalate.md](references/methodology/05-escalate.md) |
+| 6 | **Root cause evidence** — connect observed state to the behavior; toggle the cause when safe and useful | [references/methodology/06-fix.md](references/methodology/06-fix.md) |
+| 7 | **Fix and regression** — prove before/after behavior and keep a test only if it catches a plausible consumer regression | [references/methodology/06-fix.md](references/methodology/06-fix.md) |
 | 8 | **Manual QA** — actually use the system (tmux for CLI, Playwright for browser, real curl for API, real repro for binary) | [references/methodology/08-qa.md](references/methodology/08-qa.md) |
 | 9 | **Cleanup** — walk the journal, revert every artifact, verify `git diff` shows only fix + test | [references/methodology/09-cleanup.md](references/methodology/09-cleanup.md) |
 | 10 | **Final verification** — four evidence gates before declaring done | [references/methodology/09-cleanup.md](references/methodology/09-cleanup.md) |
@@ -99,11 +99,11 @@ These are not phases — read them when the situation calls for them:
 <safety>
 1. **Runtime state is the only source of truth.** A hypothesis without an observed value is a guess. Do not fix guesses.
 2. **Every debug artifact is journaled before it is created.** Journal-then-modify, not modify-then-remember-maybe.
-3. **Never ship a fix without its reproduction.** The failing case captured BEFORE the fix, the same case passing after it, or the fix is unverified. Where the repository keeps tests for this behavior, that case is the regression test.
+3. **Never ship without before/after evidence.** A user-reported observed failure is ground truth; do not rerun it merely to reconfirm. Exercise the changed scenario after the fix. Keep a failing-before/passing-after regression test when it captures a plausible consumer-visible bug.
 4. **Never declare done on type-check/compile alone.** Types catch declaration bugs. Only running the actual user scenario catches the actual user bug.
-5. **Never ask the user a question that runtime evidence can already answer.** Escalation is for genuine ambiguity.
+5. **Never ask the user a question that runtime evidence can answer.** Unapproved consequential choices require user input; delegated workers escalate them to the parent.
 6. **Never silently swallow errors while debugging.** If the system swallows errors, that is often the bug itself. Make them loud temporarily; restore at cleanup.
-7. **Never `git commit` from inside this skill.** Commits belong to `/git-master` after the user confirms the fix.
+7. **Do not commit before the fix is verified.** Use `/git-master` for commits only when the user has authorized them (including a previously approved per-slice commit cadence); do not require a second confirmation for an already authorized commit.
 8. **Never attach without having read the runtime reference.** The gate rule.
 </safety>
 
