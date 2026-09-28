@@ -130,6 +130,26 @@ describe("legal agent extraction", () => {
     expect(parseLegalAgentNames(description)).toEqual(["scout", "security-reviewer"]);
   });
 
+  test("reads backticked bullet names only inside the available agents section", () => {
+    const bulletDescription = [
+      "# Available Agents",
+      "`m<N>` is a user-tagged model.",
+      "- `scout` (READ-ONLY; investigation only, no edits): Research",
+      "- `task`: Implement",
+      "- `scout`: Duplicate entry",
+      "# Other Section",
+      "- `audit-fixer`: Not a task agent",
+    ].join("\n");
+    expect(parseLegalAgentNames(bulletDescription)).toEqual(["scout", "task"]);
+    expect(parseLegalAgentNames("# Available Agents\n### task\n# Other Section\n### intruder")).toEqual(["task"]);
+  });
+
+  test("does not treat an unrecognized or empty section as disabled", () => {
+    expect(parseLegalAgentNames("# Available Agents\nUnrecognized listing format\n")).toBeUndefined();
+    expect(parseLegalAgentNames("# Available Agents\n# Other Section\nAgent spawning is currently disabled.")).toBeUndefined();
+    expect(parseLegalAgentNames("# Available Agents\n")).toBeUndefined();
+  });
+
   test("reports spawning-disabled sessions as an empty legal set", () => {
     expect(parseLegalAgentNames("# Available Agents\nAgent spawning is currently disabled.\n")).toEqual([]);
   });
@@ -139,16 +159,31 @@ describe("legal agent extraction", () => {
   });
 });
 
-describe("reserved audit agents", () => {
-  const candidates = [{ name: "task" }, { name: "audit-auditor" }, { name: "scout" }, { name: "audit-fixer" }];
+describe("routing authority boundaries", () => {
+  const candidates = [
+    { name: "task", readOnly: false },
+    { name: "audit-auditor", readOnly: true },
+    { name: "scout", readOnly: true },
+    { name: "audit-fixer", readOnly: false },
+    { name: "metis", readOnly: true },
+    { name: "momus", readOnly: true },
+    { name: "oracle", readOnly: true },
+    { name: "reviewer", readOnly: true },
+  ];
 
-  test("never offers audit agents as routing targets", () => {
-    expect(routableCandidates("task", candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout"]);
-    expect(routableCandidates(undefined, candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout"]);
+  test("never offers workflow-owned agents as destinations", () => {
+    expect(routableCandidates("task", candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout", "reviewer"]);
+    expect(routableCandidates(undefined, candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout", "reviewer"]);
   });
 
-  test("keeps a requested audit agent unrouted", () => {
-    expect(routableCandidates("audit-fixer", candidates)).toBeUndefined();
+  test("keeps workflow-owned and unknown explicit sources untouched, including effort", () => {
+    for (const name of ["audit-fixer", "audit-auditor", "metis", "momus", "oracle", "unknown-agent"]) {
+      expect(routableCandidates(name, candidates)).toBeUndefined();
+    }
+  });
+
+  test("restricts a read-only source to read-only destinations", () => {
+    expect(routableCandidates("scout", candidates)?.map((candidate) => candidate.name)).toEqual(["scout", "reviewer"]);
   });
 });
 

@@ -27,15 +27,20 @@ OMP's `before_subagent_spawn` hook can replace a child's model but not its
 agent type.
 
 The plugin cannot see the host's final spawn preflight, so it takes the legal
-candidate set from the live `task` tool's rendered agent list, which OMP has
-already filtered by the session's spawn policy and disabled agents. If that list
-cannot be read, the plugin sends no judgment and leaves the call alone; an
-unknown policy is never treated as unrestricted. The task tool stays
-authoritative and revalidates any name the plugin writes.
+candidate set from the live `task` tool's rendered agent list (both heading and
+backticked-bullet formats), which OMP has already filtered by the session's
+spawn policy and disabled agents. An absent or unrecognized list is unknown;
+an explicitly disabled list is empty. Neither permits a judgment. The task
+tool remains authoritative and revalidates any name the plugin writes.
 
-Agents named `audit-*` are left alone. The `audit-goal` plugin reserves them
-for its `/audit` loop, so a request for one is never rerouted and no other
-request is ever routed to one.
+Requests for `audit-*`, `metis`, `momus`, and `oracle` agents stay untouched,
+including effort; ordinary requests cannot be routed into these workflow-owned
+roles. If an explicit requested agent is not discoverable, its access cannot
+be established and the call stays untouched. A known read-only agent can only
+be replaced with another read-only agent, using OMP's agent-tool metadata to
+classify both. During an active `omo-prometheus` execution session, the approved
+plan owns all `task` agent and effort choices; judge-dispatch does not rewrite
+them. Once that workflow returns to idle/planning, ordinary routing resumes.
 
 ## Settings
 
@@ -68,9 +73,10 @@ never selects a level the model lacks.
 
 An effort judged at or above `minimumConfidence` replaces whatever effort the
 parent requested; a less confident answer leaves the call as it was. The effort
-is judged even when only one agent type is legal, and OMP applies it whether or
-not `task.enableEffort` shows the field to the parent. Requests for `audit-*`
-agents stay untouched.
+is judged even when only one eligible agent type is legal, and OMP applies it
+whether or not `task.enableEffort` shows the field to the parent. Protected
+workflow roles, unresolved explicit agents, empty legal sets, and active
+Prometheus execution remain untouched.
 
 ## Enabling the judge role
 

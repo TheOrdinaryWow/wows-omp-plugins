@@ -207,6 +207,7 @@ async function judgeRoute(
   signal.throwIfAborted();
   const candidates = routableCandidates(route.requestedAgent, allCandidates);
   if (!candidates) return undefined;
+  if (candidates.length === 0) return undefined;
   const routesAgent = candidates.length >= 2;
   if (!routesAgent && !config.judgeEffort) return undefined;
 
@@ -302,13 +303,24 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "task") return undefined;
     try {
+      // Prometheus owns agent and effort choices while executing its approved plan.
+      // Read the latest valid workflow state on this branch, not assignment wording.
+      const branch = ctx.sessionManager.getBranch();
+      for (let index = branch.length - 1; index >= 0; index--) {
+        const entry = branch[index];
+        if (entry?.type !== "custom" || entry.customType !== "wows-omp-omo-prometheus.state") continue;
+        const phase = (entry.data as { phase?: unknown } | undefined)?.phase;
+        if (phase !== "idle" && phase !== "planning" && phase !== "executing") continue;
+        if (phase === "executing") return undefined;
+        break;
+      }
       const config = await effectivePluginSettings(ctx.cwd);
       const settings = scopedSettings(ctx);
       const deadlineMs = routingDeadlineMs(await readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
       if (deadlineMs === undefined) return undefined;
       const taskTool = pi.getAllTools().find((tool) => tool.name === "task");
       const legalNames = taskTool ? parseLegalAgentNames(taskTool.description) : undefined;
-      if (!legalNames) return undefined;
+      if (!legalNames?.length) return undefined;
       return await withRoutingDeadline(deadlineMs, async (signal) => {
         const input = event.input as Record<string, unknown>;
         const routes = parseTaskInput(input);

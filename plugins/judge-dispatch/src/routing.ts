@@ -72,24 +72,30 @@ export function routingDeadlineMs(toolCallTimeoutMs: unknown): number | undefine
 }
 
 const AVAILABLE_AGENTS_HEADING = "# Available Agents";
-const AGENT_HEADING_PATTERN = /^###\s+([A-Za-z0-9_-]+)/;
+const AGENT_HEADING_PATTERN = /^###\s+([A-Za-z0-9_-]+)(?:\s|$)/;
+const AGENT_BULLET_PATTERN = /^-\s+`([A-Za-z0-9_-]+)`(?:\s|:|$)/;
 
 /**
  * Read the spawnable agent names out of the live `task` tool description. The
  * host renders that list after applying the session's spawn policy and
  * disabled-agent settings, so it is the only authoritative legal set a plugin
- * can observe from a `tool_call` hook. Returns `undefined` when the section is absent,
- * which callers MUST treat as "policy unknown" rather than "everything".
+ * can observe from a `tool_call` hook. An absent or unrecognized section is
+ * unknown; only an explicit disabled message means an empty legal set.
  */
 export function parseLegalAgentNames(taskDescription: string): string[] | undefined {
   const headingIndex = taskDescription.indexOf(AVAILABLE_AGENTS_HEADING);
   if (headingIndex < 0) return undefined;
   const names: string[] = [];
-  for (const line of taskDescription.slice(headingIndex + AVAILABLE_AGENTS_HEADING.length).split("\n")) {
-    const match = AGENT_HEADING_PATTERN.exec(line);
-    if (match?.[1]) names.push(match[1]);
+  const section = taskDescription.slice(headingIndex + AVAILABLE_AGENTS_HEADING.length);
+  let disabled = false;
+  for (const line of section.split("\n")) {
+    if (/^#{1,2}(?:\s|$)/.test(line)) break;
+    if (line.includes("Agent spawning is currently disabled.")) disabled = true;
+    const name = AGENT_HEADING_PATTERN.exec(line)?.[1] ?? AGENT_BULLET_PATTERN.exec(line)?.[1];
+    if (name && !names.includes(name)) names.push(name);
   }
-  return names;
+  if (names.length) return names;
+  return disabled ? [] : undefined;
 }
 
 function compactDescription(value: string): string {
@@ -204,16 +210,26 @@ export function serializeCandidate(candidate: RoutingCandidate): SerializedCandi
   };
 }
 
-/** The audit-goal plugin dispatches these agents under its own guard; routing must neither leave nor enter them. */
+/** Workflow-owned review roles retain their own agent and effort policy. */
 const RESERVED_AGENT_PREFIX = "audit-";
+const RESERVED_AGENT_NAMES: Record<string, true> = { metis: true, momus: true, oracle: true };
 
-/** Candidates routing may choose from, or undefined when the requested agent is reserved and must be kept. */
-export function routableCandidates<T extends { name: string }>(
+/** Candidates consistent with the requested authority, or undefined when access is unresolved. */
+export function routableCandidates<T extends { name: string; readOnly: boolean }>(
   requestedAgent: string | undefined,
   candidates: readonly T[],
 ): T[] | undefined {
-  if (requestedAgent?.startsWith(RESERVED_AGENT_PREFIX)) return undefined;
-  return candidates.filter((candidate) => !candidate.name.startsWith(RESERVED_AGENT_PREFIX));
+  if (requestedAgent && (requestedAgent.startsWith(RESERVED_AGENT_PREFIX) || Object.hasOwn(RESERVED_AGENT_NAMES, requestedAgent))) {
+    return undefined;
+  }
+  const requested = requestedAgent ? candidates.find((candidate) => candidate.name === requestedAgent) : undefined;
+  if (requestedAgent && !requested) return undefined;
+  return candidates.filter(
+    (candidate) =>
+      !candidate.name.startsWith(RESERVED_AGENT_PREFIX) &&
+      !Object.hasOwn(RESERVED_AGENT_NAMES, candidate.name) &&
+      (!requested?.readOnly || candidate.readOnly),
+  );
 }
 
 /** Accept only a legal, sufficiently confident answer from a native judgment transport. */

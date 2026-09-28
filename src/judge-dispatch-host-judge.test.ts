@@ -15,11 +15,15 @@ const HOST_KEY = ["host", "typesafe", "key"].join("-");
 interface SessionSpec {
   project: string;
   calls: number;
+  description?: string;
+  inputs?: Record<string, unknown>[];
+  branch?: unknown[];
 }
 
 interface ChildScenario {
   sessions: SessionSpec[];
   response: "success" | "unauthorized" | "network-error";
+  agentChoice?: string;
   hostKey?: string;
 }
 
@@ -57,12 +61,13 @@ function startTypeSafeServer(scenario: ChildScenario, requests: RecordedRequest[
       requests.push({ authorization: request.headers.get("authorization"), body });
       if (scenario.response === "unauthorized") return new Response("invalid api key", { status: 401 });
 
-      // Answer every question asked: the agent question picks the first non-scout option, others their last (highest) option.
+      // Controlled native answer; only offer the named choice when it is legal.
       const payload = JSON.parse(body) as { questions?: Record<string, { criteria?: Record<string, unknown> }> };
       const answers = Object.fromEntries(
         Object.entries(payload.questions ?? {}).map(([id, question]) => {
           const choices = Object.keys(question.criteria ?? {});
-          const choice = (id === "agent" ? choices.find((name) => name !== "scout") : choices.at(-1)) ?? "";
+          const choice =
+            (id === "agent" ? choices.find((name) => name === (scenario.agentChoice ?? "scout")) : choices.at(-1)) ?? choices[0] ?? "";
           return [
             id,
             {
@@ -118,7 +123,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         on(event: string, handler: TestHandler) {
           handlers.set(event, [...(handlers.get(event) ?? []), handler]);
         },
-        getAllTools: () => [{ name: "task", description: TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
+        getAllTools: () => [{ name: "task", description: session.description ?? TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
       } as unknown as ExtensionAPI;
 
       const context = {
@@ -130,6 +135,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         },
         sessionManager: {
           getSessionId: () => `host-judge-session-${sessionIndex}`,
+          getBranch: () => session.branch ?? [],
           getLeafId: () => `host-judge-leaf-${sessionIndex}`,
           appendModelUsage(entry: unknown) {
             report.usage.push(entry);
@@ -147,13 +153,14 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       registerJudgeDispatch(api);
 
       for (let call = 0; call < session.calls; call += 1) {
+        const input = session.inputs?.[call] ?? { task: "Implement the requested repository change", agent: "task" };
         report.results.push(
           await onlyHandler("tool_call")(
             {
               type: "tool_call",
               toolCallId: `host-judge-tool-${sessionIndex}-${call}`,
               toolName: "task",
-              input: { task: "Implement the requested repository change", agent: "scout" },
+              input,
             },
             context,
           ),
@@ -236,7 +243,7 @@ async function registerTests(): Promise<void> {
         });
 
         expect(report.requests.map((request) => request.authorization)).toEqual([`Bearer ${HOST_KEY}`]);
-        expect(report.sessions[0]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "task" } }]);
+        expect(report.sessions[0]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "scout" } }]);
         expect(report.sessions[0]?.usage).toHaveLength(1);
         expect(report.sessions[0]?.notifications).toEqual([]);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
@@ -257,8 +264,103 @@ async function registerTests(): Promise<void> {
         const askedQuestions = report.requests.map((request) => Object.keys(JSON.parse(request.body).questions ?? {}));
         expect(askedQuestions).toEqual([["agent"], ["agent", "effort"]]);
         expect(report.sessions[1]?.results).toEqual([
-          { input: { task: "Implement the requested repository change", agent: "task", effort: "hi" } },
+          { input: { task: "Implement the requested repository change", agent: "scout", effort: "hi" } },
         ]);
+      });
+    });
+
+    test("routes a bullet roster but excludes write-capable metadata from read-only requests", async () => {
+      await withProjects([{}, { judgeEffort: true }], async ([ordinary, readOnly]) => {
+        const description = [
+          "# Available Agents",
+          "- `task`: General-purpose agent",
+          "- `scout` (READ-ONLY; investigation only, no edits): Research",
+          "- `security-reviewer` (READ-ONLY; investigation only, no edits): Security research",
+          "# Other Section",
+          "- `oracle`: Not available in this task roster",
+        ].join("\n");
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: ordinary as string, calls: 1, description },
+            {
+              project: readOnly as string,
+              calls: 1,
+              description,
+              inputs: [{ task: "Investigate a security issue", agent: "scout" }],
+            },
+          ],
+          response: "success",
+          agentChoice: "security-reviewer",
+          hostKey: HOST_KEY,
+        });
+
+        expect(report.sessions[0]?.results).toEqual([
+          { input: { task: "Implement the requested repository change", agent: "security-reviewer" } },
+        ]);
+        expect(report.sessions[1]?.results).toEqual([{ input: { task: "Investigate a security issue", agent: "scout", effort: "hi" } }]);
+        const requests = report.requests.map(
+          (request) =>
+            JSON.parse(request.body) as {
+              state: { candidates: { name: string }[] };
+              questions: Record<string, unknown>;
+            },
+        );
+        expect(requests.map((request) => request.state.candidates.map((candidate) => candidate.name))).toEqual([
+          ["task", "scout", "security-reviewer"],
+          ["scout"],
+        ]);
+        expect(requests.map((request) => Object.keys(request.questions))).toEqual([["agent"], ["effort"]]);
+      });
+    });
+
+    test("unknown or disabled rosters, unresolved access, and reserved sources do not change agent or effort", async () => {
+      await withProjects([{ judgeEffort: true }], async ([project]) => {
+        const inputs = ["metis", "momus", "oracle", "audit-auditor", "unknown-agent"].map((agent) => ({
+          agent,
+          task: "Review this plan",
+          effort: "lo",
+        }));
+        const report = await runIsolatedScenario({
+          sessions: [{ project: project as string, calls: inputs.length, inputs }],
+          response: "success",
+          hostKey: HOST_KEY,
+        });
+        expect(report.requests).toEqual([]);
+        expect(report.sessions[0]?.results).toEqual(inputs.map(() => null));
+      });
+      await withProjects([{ judgeEffort: true }, { judgeEffort: true }], async ([unknown, disabled]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: unknown as string, calls: 1, description: "# Available Agents\nUnrecognized listing format" },
+            { project: disabled as string, calls: 1, description: "# Available Agents\nAgent spawning is currently disabled." },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+        });
+        expect(report.requests).toEqual([]);
+        expect(report.sessions.map((session) => session.results)).toEqual([[null], [null]]);
+      });
+    });
+
+    test("active Prometheus execution owns agent and effort; an idle state restores ordinary routing", async () => {
+      await withProjects([{ judgeEffort: true }, { judgeEffort: true }], async ([executing, idle]) => {
+        const state = (phase: string) => ({ type: "custom", customType: "wows-omp-omo-prometheus.state", data: { phase } });
+        const input = {
+          agent: "task",
+          task: 'Implement T1\nprometheus_assignment: {"planSha256":"approved","rows":{"T1":"attempt"}}',
+          effort: "lo",
+        };
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: executing as string, calls: 1, inputs: [input], branch: [state("planning"), state("executing")] },
+            { project: idle as string, calls: 1, inputs: [input], branch: [state("executing"), state("idle")] },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+        });
+        expect(report.requests).toHaveLength(1);
+        expect(report.sessions[0]?.results).toEqual([null]);
+        expect(report.sessions[1]?.results).toEqual([{ input: { ...input, agent: "scout", effort: "hi" } }]);
       });
     });
 
