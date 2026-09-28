@@ -44,7 +44,6 @@ export function planReferencesMatch(left: string | undefined, right: string | un
   return Boolean(left && right && canonicalPlanPath(left) === canonicalPlanPath(right));
 }
 
-/** Labels offered by the fixed two-choice opt-in question, if well formed. */
 function prometheusOptInLabels(input: unknown): string[] | undefined {
   const args = record(input);
   const questions = Array.isArray(args?.questions) ? args.questions : [];
@@ -57,7 +56,6 @@ function prometheusOptInLabels(input: unknown): string[] | undefined {
   return offered.every((label): label is string => typeof label === "string") && /prometheus/i.test(offered[1] ?? "") ? offered : undefined;
 }
 
-/** Whether an ask call is the fixed two-choice native Prometheus opt-in. */
 export function isPrometheusOptInQuestion(input: unknown): boolean {
   return prometheusOptInLabels(input) !== undefined;
 }
@@ -83,7 +81,6 @@ export function isPrometheusOptInConsent(input: unknown, details: unknown, isErr
   );
 }
 
-/** Canonical plan path carried by a successful native `write xd://propose` result. */
 export function proposedPlanPathFromToolResult(toolName: string, isError: boolean, details: unknown): string | undefined {
   if (toolName !== "write" || isError) return undefined;
   const xdev = record(record(details)?.xdev);
@@ -188,7 +185,6 @@ export interface NestedXdevToolCall {
   documentation: boolean;
 }
 
-/** Decode the inner call transported by `write xd://<tool>`. */
 export function nestedXdevToolCall(input: unknown): NestedXdevToolCall | undefined {
   const args = record(input);
   const path = stringField(args ?? {}, "path");
@@ -239,7 +235,7 @@ function hubBlockReason(input: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-function writeBlockReason(input: Record<string, unknown>): string {
+function writeBlockReason(input: Record<string, unknown>): string | undefined {
   const path = stringField(input, "path");
   const nested = nestedXdevToolCall(input);
   if (!nested) {
@@ -250,9 +246,9 @@ function writeBlockReason(input: Record<string, unknown>): string {
   if (SAFE_XDEV_TOOLS[nested.toolName] !== true) {
     return `\`xd://${nested.toolName}\` is not an approved orchestration or observation device`;
   }
-  if (nested.documentation) return "";
+  if (nested.documentation) return undefined;
   if (!nested.input) return `\`xd://${nested.toolName}\` requires a JSON object before it can be safety-classified`;
-  return executionBlockReason(nested.toolName, nested.input) ?? "";
+  return executionBlockReason(nested.toolName, nested.input);
 }
 
 /**
@@ -270,10 +266,8 @@ export function executionBlockReason(toolName: string, input: unknown): string |
       return lspBlockReason(args);
     case "hub":
       return hubBlockReason(args);
-    case "write": {
-      const reason = writeBlockReason(args);
-      return reason || undefined;
-    }
+    case "write":
+      return writeBlockReason(args);
     default:
       return `\`${toolName}\` is neither an orchestration tool nor a read-only inspection surface`;
   }

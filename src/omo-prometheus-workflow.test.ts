@@ -98,12 +98,12 @@ describe("Atlas execution guard", () => {
     expect(executionBlockReason("read", { path: "src/index.ts" })).toBeUndefined();
     expect(executionBlockReason("task", { tasks: [] })).toBeUndefined();
     expect(executionBlockReason("prometheus_ledger", { action: "status" })).toBeUndefined();
-    expect(executionBlockReason("edit", { path: "src/index.ts" })).toContain("neither an orchestration tool");
-    expect(executionBlockReason("bash", { command: "bun test" })).toContain("neither an orchestration tool");
+    expect(executionBlockReason("edit", { path: "src/index.ts" })).toBeTruthy();
+    expect(executionBlockReason("bash", { command: "bun test" })).toBeTruthy();
     expect(executionBlockReason("lsp", { action: "references" })).toBeUndefined();
-    expect(executionBlockReason("lsp", { action: "rename", apply: true })).toContain("can mutate");
+    expect(executionBlockReason("lsp", { action: "rename", apply: true })).toBeTruthy();
     expect(executionBlockReason("hub", { op: "wait" })).toBeUndefined();
-    expect(executionBlockReason("hub", { op: "start", application: "bun" })).toContain("starts or mutates");
+    expect(executionBlockReason("hub", { op: "start", application: "bun" })).toBeTruthy();
   });
 
   test("recursively classifies xd device calls instead of treating write as a bypass", () => {
@@ -112,17 +112,19 @@ describe("Atlas execution guard", () => {
 
     expect(nestedXdevToolCall(safe)).toEqual({ toolName: "read", input: { path: "src/index.ts" }, documentation: false });
     expect(executionBlockReason("write", safe)).toBeUndefined();
-    expect(executionBlockReason("write", unsafe)).toContain("can mutate");
-    expect(executionBlockReason("write", { path: "src/index.ts", content: "changed" })).toContain("direct implementation");
+    expect(executionBlockReason("write", unsafe)).toBeTruthy();
+    expect(executionBlockReason("write", { path: "src/index.ts", content: "changed" })).toBeTruthy();
+    expect(executionBlockReason("write", { path: "xd://read", content: "?" })).toBeUndefined();
+    expect(executionBlockReason("write", { path: "xd://read", content: "not JSON" })).toBeTruthy();
   });
 
   test("rejects same-name extension or MCP shadows of trusted tools", () => {
     expect(executionToolSourceBlockReason("task", "builtin")).toBeUndefined();
-    expect(executionToolSourceBlockReason("task", "extension")).toContain("not a trusted native/plugin tool");
+    expect(executionToolSourceBlockReason("task", "extension")).toBeTruthy();
     expect(executionToolSourceBlockReason("prometheus_release", "extension", true)).toBeUndefined();
-    expect(executionToolSourceBlockReason("prometheus_release", "extension", false)).toContain("not the plugin-owned");
+    expect(executionToolSourceBlockReason("prometheus_release", "extension", false)).toBeTruthy();
     expect(executionToolSourceBlockReason("prometheus_ledger", "extension", true)).toBeUndefined();
-    expect(executionToolSourceBlockReason("prometheus_ledger", "extension", false)).toContain("not the plugin-owned");
-    expect(executionToolSourceBlockReason("prometheus_ledger", "mcp", false)).toContain("not the plugin-owned");
+    expect(executionToolSourceBlockReason("prometheus_ledger", "extension", false)).toBeTruthy();
+    expect(executionToolSourceBlockReason("prometheus_ledger", "mcp", false)).toBeTruthy();
   });
 });

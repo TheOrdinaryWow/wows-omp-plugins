@@ -37,7 +37,6 @@ export function stripFrontmatter(raw: string): string {
   return rest.slice(closing.index + closing[0].length);
 }
 
-/** Read, strip, and cache one prompt asset. Throws when it cannot be used. */
 export async function loadPromptAsset(relativePath: string): Promise<string> {
   const cached = bodies.get(relativePath);
   if (cached !== undefined) return cached;
