@@ -31,7 +31,7 @@
       "name": "omo-prometheus",
       "source": "./omo-prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -51,7 +51,7 @@
       "name": "omo-ultrawork",
       "source": "./omo-ultrawork",
       "description": "Port of oh-my-openagent ultrawork mode, mass-ulw, hyperplan, and ulw-research for OMP",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
