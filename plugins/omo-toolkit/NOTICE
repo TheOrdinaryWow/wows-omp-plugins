@@ -1,0 +1,21 @@
+omo-toolkit plugin licensing and attribution
+
+This plugin is a modified OMP port of agent, skill, and documentation-server configuration material from oh-my-openagent, Copyright the oh-my-openagent contributors. It is an independent adaptation for OMP's `task`, IRC, eval, `todo`, `browser`, `lsp`, `local://`, skill, and MCP surfaces; it does not bundle the upstream runtime or runtime dependencies.
+
+Current upstream source used for this port:
+- Project: https://github.com/code-yeongyu/oh-my-openagent
+- Pinned revision: fe427efeed97e95f009dc6ca7fb17a3ac857f79f
+- Category agent sources: `packages/senpi-task/src/category/builtins.ts`, `packages/senpi-task/src/category/openai-categories.ts`, `packages/senpi-task/src/category/anthropic-categories.ts`, `packages/senpi-task/src/category/google-categories.ts`, and `packages/senpi-task/src/category/kimi-categories.ts`
+- Research and reviewer agent sources: `packages/senpi-task/src/agents/builtin/librarian.ts`, `packages/senpi-task/src/agents/builtin/code-reviewer.ts`, `packages/senpi-task/src/agents/builtin/qa-executor.ts`, and `packages/senpi-task/src/agents/builtin/gate-reviewer.ts`
+- MCP source: `packages/omo-senpi/src/components/builtin-mcps/index.ts`
+- Skill sources: `packages/shared-skills/skills/git-master/`, `packages/shared-skills/skills/review-work/`, `packages/shared-skills/skills/remove-ai-slops/`, `packages/shared-skills/skills/refactor/`, `packages/shared-skills/skills/debugging/`, `packages/shared-skills/skills/frontend/`, `packages/shared-skills/skills/visual-qa/`, and `packages/omo-senpi/skills/init-deep/SKILL.md`
+
+The category agent bodies also include the OMP bundled worker prompt from `@oh-my-pi/pi-coding-agent` `src/prompts/agents/task.md`, which is included unchanged as the common worker base.
+
+The modified/derived prompt assets in `agents/*.md` and `skills/**` are licensed under the Sustainable Use License 1.0; the complete terms are included in `LICENSE-SUL-1.0`. Those terms permit internal business use as well as personal or noncommercial use, and permit free-of-charge distribution for noncommercial purposes. They do not categorically prohibit all business use. Vendored scripts in `skills/debugging/references/scripts/dap.mjs`, `skills/frontend/scripts/perfection/lighthouse-audit.py`, and `skills/visual-qa/scripts/visual-qa.mjs` are upstream skill assets distributed under the same upstream terms.
+
+The design references in `skills/frontend/references/design/` are redistributed with the Apache License 2.0 notices and upstream attribution in `skills/frontend/ATTRIBUTION.md` and `skills/frontend/LICENSE-Apache-2.0.txt`. Only the design reference files present in the pinned checkout are included; unmaterialized upstream brand and UI/UX database files are not included.
+
+Original packaging and other original material authored for this OMP port, including `.omp-plugin/plugin.json`, `package.json`, `.mcp.json`, and the README, are licensed under the MIT License in `LICENSE-MIT`.
+
+The upstream notices and the prominent modified-port notices in each derived prompt must not be removed or obscured.
