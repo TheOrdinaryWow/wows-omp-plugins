@@ -14,8 +14,12 @@ import { fileURLToPath } from "node:url";
 
 /** Shared planning workflow, injected while Prometheus planning is active. */
 export const SKILL_ASSET = "../skills/prometheus/SKILL.md";
-/** Standalone executor policy, injected on every post-approval execution turn. */
-export const ATLAS_ASSET = "../agents/atlas.md";
+/**
+ * Standalone executor policy, injected on every post-approval execution turn.
+ * Kept outside `agents/` so the host never registers Atlas as a spawnable
+ * task agent: it only ever runs as the main session.
+ */
+export const ATLAS_ASSET = "../assets/atlas.md";
 
 const bodies = new Map<string, string>();
 

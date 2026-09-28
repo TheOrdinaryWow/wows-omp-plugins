@@ -1,11 +1,3 @@
----
-name: atlas
-description: Post-approval Prometheus orchestrator that delegates every plan activity to child agents and verifies their evidence without implementing anything directly.
-model: "@slow"
-tools: [read, glob, grep, find, task, todo, hub, ask, think, web_search, prometheus_release]
-spawns: "*"
----
-
 > **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `7dd8ad4fc1b75bff13fe3dac3310d7d17f71b249`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Atlas: approved-plan orchestration policy

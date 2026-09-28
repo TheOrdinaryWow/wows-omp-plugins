@@ -43,7 +43,7 @@ After approval, the main session becomes Atlas. The execution prompt explicitly 
 
 ## Models
 
-Metis, Oracle, Momus, and Atlas use OMP's `@slow` role alias. The alias resolves through the user's OMP model configuration; the plugin does not hard-code a provider or model name.
+Metis, Oracle, and Momus run as child agents on OMP's `@slow` role alias. The alias resolves through the user's OMP model configuration; the plugin does not hard-code a provider or model name. Atlas is not a child agent: it is the main session after approval, so it keeps whatever model that session already uses.
 
 ## Native state and compatibility
 
@@ -51,4 +51,4 @@ This plugin intentionally uses OMP-native `local://` plan artifacts and `xd://pr
 
 The embedded Prometheus, Metis, Oracle, Momus, and Atlas prompt assets are modified derivatives of OmO. `NOTICE` records the upstream repository, pinned source revision, earlier fork provenance, and modification notice.
 
-The extension code and original packaging are licensed under MIT (`LICENSE-MIT`). The derived prompt assets under `agents/` and `skills/prometheus/` remain under the upstream Sustainable Use License 1.0 (`LICENSE-SUL-1.0`), including its internal-business/personal/non-commercial use terms and free non-commercial distribution limitation.
+The extension code and original packaging are licensed under MIT (`LICENSE-MIT`). The derived prompt assets under `agents/`, `assets/`, and `skills/prometheus/` remain under the upstream Sustainable Use License 1.0 (`LICENSE-SUL-1.0`), including its internal-business/personal/non-commercial use terms and free non-commercial distribution limitation.

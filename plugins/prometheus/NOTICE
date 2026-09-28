@@ -9,7 +9,7 @@ Current upstream source used for this port:
 - Specialist sources: `packages/omo-opencode/src/agents/metis.ts`, `packages/omo-opencode/src/agents/momus.ts`, and `packages/omo-opencode/src/agents/oracle.ts`
 - Execution source: `packages/prompts-core/prompts/atlas/default.md`
 
-The modified/derived prompt assets in `agents/*.md` and `skills/prometheus/**` are licensed under the Sustainable Use License 1.0; the complete terms are included in `LICENSE-SUL-1.0`. Those terms permit internal business use as well as personal or noncommercial use, and permit free-of-charge distribution for noncommercial purposes. They do not categorically prohibit all business use.
+The modified/derived prompt assets in `agents/*.md`, `assets/*.md`, and `skills/prometheus/**` are licensed under the Sustainable Use License 1.0; the complete terms are included in `LICENSE-SUL-1.0`. Those terms permit internal business use as well as personal or noncommercial use, and permit free-of-charge distribution for noncommercial purposes. They do not categorically prohibit all business use.
 
 Original plugin code and other original material authored for this OMP port are licensed under the MIT License in `LICENSE-MIT`.
 
