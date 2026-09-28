@@ -42,9 +42,9 @@ import {
 
 const ACTIVATE_TOOL = "prometheus_activate";
 const RELEASE_TOOL = "prometheus_release";
-const STATE_ENTRY = "wows-omp-prometheus.state";
-const PLANNING_CONTEXT_TYPE = "wows-omp-prometheus.planning-context";
-const EXECUTION_CONTEXT_TYPE = "wows-omp-prometheus.execution-context";
+const STATE_ENTRY = "wows-omp-omo-prometheus.state";
+const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
+const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
 const BLOCK_NOTICE_BURST_MS = 5_000;
 const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
@@ -98,7 +98,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return;
     }
     pi.sendMessage({
-      customType: "wows-omp-prometheus.command-status",
+      customType: "wows-omp-omo-prometheus.command-status",
       content: message,
       display: true,
       attribution: "agent",

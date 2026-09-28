@@ -10,7 +10,7 @@ import {
   PROMETHEUS_OPT_IN_QUESTION_ID,
   parsePrometheusCommand,
   proposedPlanPathFromToolResult,
-} from "../plugins/prometheus/src/workflow.ts";
+} from "../plugins/omo-prometheus/src/workflow.ts";
 
 const optInInput = {
   questions: [

@@ -16,10 +16,14 @@ The two entry points share one workflow: `/prometheus` is the explicit entry, an
 
 ```bash
 omp plugin marketplace add TheOrdinaryWow/wows-omp-plugins
-omp plugin install prometheus@wows-omp-plugins
+omp plugin install omo-prometheus@wows-omp-plugins
 ```
 
 Restart OMP after installation so the extension and agents are loaded.
+
+## Migrating from `prometheus`
+
+Uninstall the retired package with `omp plugin uninstall prometheus@wows-omp-plugins`, then install `omo-prometheus@wows-omp-plugins`. Session state from the old plugin is not carried over; start a new Prometheus plan after migrating.
 
 ## Usage
 

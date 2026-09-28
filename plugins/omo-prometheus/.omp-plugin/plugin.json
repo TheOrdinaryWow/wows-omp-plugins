@@ -1,6 +1,6 @@
 {
-  "name": "prometheus",
-  "version": "0.2.1",
+  "name": "omo-prometheus",
+  "version": "0.1.0",
   "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
   "author": {
     "name": "TheOrdinaryWow"
