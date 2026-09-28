@@ -10,9 +10,6 @@ const pluginRoot = join(import.meta.dir, "../plugins/omo-toolkit");
 const agentDir = join(pluginRoot, "agents");
 const skillDir = join(pluginRoot, "skills");
 const CATEGORY_AGENTS: Record<string, true> = {
-  quick: true,
-  "unspecified-low": true,
-  "unspecified-high": true,
   "deep-low": true,
   "deep-high": true,
   ultrabrain: true,

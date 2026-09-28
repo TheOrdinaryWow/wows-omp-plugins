@@ -14,9 +14,6 @@ Category agents use the same worker base as OMP's bundled `task` agent, then add
 
 |Agent|Use for|Default model role|Thinking|
 |---|---|---|---|
-|`quick`|Trivial single-file changes, typo fixes, and simple modifications|`@smol`|`low`|
-|`unspecified-low`|Moderate work that fits no specialist agent|`@task`|`medium`|
-|`unspecified-high`|Substantial cross-module work that fits no specialist agent|`@task`|`high`|
 |`deep-low`|One deliverable whose decisions can be settled from the code and evidence; returns `ESCALATE: deep-high` when it cannot|`@task`|`medium`|
 |`deep-high`|Escalated work whose central decision cannot be settled from evidence alone|`@slow`|`xhigh`|
 |`ultrabrain`|Hard logic and architecture reasoning with clear goals|`@slow`|`max`|
@@ -42,7 +39,7 @@ task:
     ultrabrain: anthropic/claude-opus-5-5
 ```
 
-`omo-prometheus` and `omo-ultrawork` prompts, including Atlas, `hyperplan`, and `ulw-research`, refer to these agents by name. When an agent is absent from the `task` tool description, those prompts fall back to bundled OMP agents: `sonic` for `quick`, `task` for other category agents, `scout` for `librarian`, and `reviewer` for the three reviewer agents.
+`omo-prometheus` and `omo-ultrawork` prompts, including Atlas, `hyperplan`, and `ulw-research`, refer to these agents by name. When an agent is absent from the `task` tool description, those prompts fall back to bundled OMP agents: `task` for category agents, `scout` for `librarian`, and `reviewer` for the three reviewer agents.
 
 ## Skills
 

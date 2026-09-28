@@ -30,6 +30,6 @@ Keep the JSON fields (dimensions, diff ratio, hotspots; or width, overflow, bord
 
 ## Two independent passes
 
-In one `task` batch dispatch two `unspecified-high` reviewers with different charters (if `unspecified-high` is not listed in the task tool description, use `task`). Pass A checks design-system integrity, real implementation and functional states; pass B examines each captured page and source for composition, clipping, typography, contrast, responsive behavior and CJK issues. Include the complete enumerated set and evidence paths in both prompts. Reviewers do not edit product files. Each returns PASS/REVISE/FAIL and locates `[product]` versus `[evidence]` defects.
+In one `task` batch dispatch two `task` reviewers with `effort: "hi"` and different charters. Pass A checks design-system integrity, real implementation and functional states; pass B examines each captured page and source for composition, clipping, typography, contrast, responsive behavior and CJK issues. Include the complete enumerated set and evidence paths in both prompts. Reviewers do not edit product files. Each returns PASS/REVISE/FAIL and locates `[product]` versus `[evidence]` defects.
 
 Repair an evidence defect by fixing the capture and repeating the review; repair a product defect by changing the product, recapturing affected states, and repeating independent review. Final approval requires fresh complete captures, no blocking findings, and a direct observation of the actual surface. Report scenarios, exact invocations, artifacts, observed output, and unverified surfaces.
