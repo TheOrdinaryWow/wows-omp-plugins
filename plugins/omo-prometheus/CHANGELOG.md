@@ -9,6 +9,18 @@
 - Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.3.2...omo-prometheus@0.4.0) (2026-09-29)
+
+
+### Features
+
+* add shared Atlas execution and cross-session resume ([c2d64d2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c2d64d27c59519387779687599f2078df2aa6e3f))
+
+
+### Bug Fixes
+
+* restore approved plan reference when resuming a session ([7956033](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/7956033c8789230748ba9f6e392d39811ce7befe))
+
 ## [0.3.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.3.1...omo-prometheus@0.3.2) (2026-09-29)
 
 
