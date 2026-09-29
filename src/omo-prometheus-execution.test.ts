@@ -58,6 +58,11 @@ async function scenario(name: string, root: string): Promise<void> {
   const { EventBus } = await import("@oh-my-pi/pi-coding-agent/utils/event-bus");
   const { TASK_SUBAGENT_LIFECYCLE_CHANNEL } = await import("@oh-my-pi/pi-coding-agent/task/types");
   const { z } = await import("zod");
+  const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+  const { cfgCycleOrder } = await import("@oh-my-pi/pi-coding-agent/config/model-settings");
+  const { getKnownRoleIds } = await import("@oh-my-pi/pi-coding-agent/config/model-roles");
+  const settings = Settings.isolated();
+  const appliedRoles: Array<{ role: string; model: string }> = [];
   const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
   let artifacts = join(root, "artifacts");
   await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
@@ -94,6 +99,15 @@ async function scenario(name: string, root: string): Promise<void> {
     getBranch: () => entries,
   };
   const live = {
+    settings,
+    resolveRoleModelWithThinking: (role: string) => {
+      const selector = settings.getModelRole(role);
+      const [provider, id] = selector?.split("/") ?? [];
+      return { model: provider && id ? { provider, id } : undefined, explicitThinkingLevel: false, warning: undefined };
+    },
+    applyRoleModel: async (entry: { role: string; model: { provider: string; id: string } }) => {
+      appliedRoles.push({ role: entry.role, model: `${entry.model.provider}/${entry.model.id}` });
+    },
     sessionManager,
     getPlanModeState: () => ({ enabled: mode }),
     getPlanReferencePath: () => reference,
@@ -738,6 +752,25 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T3")).status, "open");
     return;
   }
+  if (name === "atlas-model-role") {
+    const cycle = () => cfgCycleOrder.get(settings);
+    assert(getKnownRoleIds(settings).includes("atlas"), "atlas is listed as a model role");
+    // The approved proposal exposed the atlas tier to the native approval slider.
+    assert.deepEqual(cycle(), ["atlas", "smol", "default", "slow"]);
+    await commands.get("atlas")?.("", ctx);
+    assert.deepEqual(cycle(), ["smol", "default", "slow"]);
+    assert.equal(settings.getProvenance(cfgCycleOrder), "default");
+    await commands.get("atlas")?.("integrity", ctx);
+    assert.deepEqual(appliedRoles, []);
+    assert.doesNotMatch(notices.at(-1) ?? "", /atlas model role/);
+    await commands.get("atlas")?.("", ctx);
+    settings.overrideModelRoles({ atlas: "test/atlas-model" });
+    await commands.get("atlas")?.("integrity", ctx);
+    assert.deepEqual(appliedRoles, [{ role: "atlas", model: "test/atlas-model" }]);
+    assert.match(notices.at(-1) ?? "", /Switched to the atlas model role \(test\/atlas-model\)/);
+    assert.deepEqual(cycle(), ["smol", "default", "slow"]);
+    return;
+  }
   if (name === "cross-session") {
     await finish("T1");
     const origin = (await row("T1")).receipt;
@@ -1173,6 +1206,7 @@ if (process.env[CHILD_ENV]) {
       "missing-proof",
       "cross-session",
       "exact-commands",
+      "atlas-model-role",
       "exit-live-child",
       "shutdown-live-child",
       "cancelled-live-child",

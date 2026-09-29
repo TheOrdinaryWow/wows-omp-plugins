@@ -59,7 +59,7 @@ Any argument while Atlas is active is an error, even the current plan name. Exit
 
 Session A can complete part of a plan, exit Atlas, and leave session B to resume it with `/atlas <name>`. Both must use the same host session directory and canonical workspace. Exiting is immediate and does not cancel children or claim completion. If native work is still running, its plan remains exclusively owned until final results or actual job settlement; another session cannot race those writers. Closing the host is not blocked. A provably dead local owner can be recovered; ambiguous or foreign-host ownership is refused.
 
-Some older hosts, including 18.2.11, report peer-message wake lifecycle events without a verifiable final wake-job handle. Atlas does not treat an `idle` or `completed` lifecycle signal as proof that native postprocessing finished. In that case the old plan remains owned until the originating host terminates; start a new session after closing that host to recover it safely.
+Some hosts report peer-message wake lifecycle events without a verifiable final wake-job handle. Atlas does not treat an `idle` or `completed` lifecycle signal as proof that native postprocessing finished. In that case the old plan remains owned until the originating host terminates; start a new session after closing that host to recover it safely.
 
 A cancelled native wake-job wrapper can finish before the underlying child and its postprocessing. That wrapper is not termination proof. Without a stronger final handle, Atlas keeps the old plan owned until the originating host terminates, rather than allowing a concurrent session to take over.
 
@@ -118,6 +118,8 @@ The resolver tries the requested name first, then these fallbacks in order (only
 |`sonic`, `scout`, `reviewer`, `security-reviewer`|`task`|
 |`task`|none|
 
+This table substitutes agents, not models. Each agent's own model-role chain (for example `writing` trying `@writer` before `@task`) is defined by the agent and documented in the [omo-toolkit README](../omo-toolkit/README.md#agents).
+
 If none in a chain are spawnable, the ledger shows `unavailable` and Atlas reports a blocker rather than dispatching an illegal agent. If the list cannot be parsed, the resolver leaves known requested names unchanged instead of guessing which specialists are installed.
 
 ## Execution ledger
@@ -167,11 +169,20 @@ A rejected gate reopens the affected T rows, their transitive dependents, and al
 
 ## Models
 
-Metis, Oracle, and Momus run as child agents on OMP's `@slow` role alias. The alias resolves through the user's OMP model configuration; the plugin does not hard-code a provider or model name. Atlas is not a child agent: it is the main session after approval, so it keeps whatever model that session already uses.
+Metis, Oracle, and Momus run as child agents on OMP's `@slow` role alias. The alias resolves through the user's OMP model configuration; the plugin does not hard-code a provider or model name.
+
+Atlas is not a child agent: it is the main session after approval. The plugin registers an `atlas` model role, listed in `/model` as **Atlas**, so it can be assigned like any other role; it is not added to the Ctrl+P quick-switch cycle. While a Prometheus proposal awaits native approval, `atlas` is temporarily placed first in `cycleOrder`, so the approval slider offers it next to `smol`, `default`, and `slow`. The slider still starts on `default`; move it to `atlas` to execute with that role. The runtime `cycleOrder` override is removed at the next input or agent turn, or when planning ends, restoring the configured value. Roles without an available model do not appear on the slider.
+
+`/atlas <plan>` switches the session to the `atlas` role when it is assigned and leaves the current model unchanged when it is not. If the assigned model cannot be resolved, Atlas still enters and reports that the current model was kept.
+
+```yaml
+modelRoles:
+  atlas: anthropic/claude-sonnet-5
+```
 
 ## Native state and compatibility
 
-OMP remains the authority for native `xd://propose` approval and autosave. Planning drafts and the proposal handoff marker use `local://`; approved execution uses the shared Atlas bundle. The plugin neither creates project-local `.omo` state nor replaces native child execution with another worker engine. The minimum supported host remains OMP 18.2.11.
+OMP remains the authority for native `xd://propose` approval and autosave. Planning drafts and the proposal handoff marker use `local://`; approved execution uses the shared Atlas bundle. The plugin neither creates project-local `.omo` state nor replaces native child execution with another worker engine. The minimum supported host is OMP 18.3.1.
 
 Shared execution requires file-backed sessions and a local filesystem supporting hard links, atomic rename, and file/directory synchronization. In-memory, remote-only, or unsupported storage fails closed. Sessions using different session directories do not discover each other's plans, and moving a host session does not automatically move its sibling `atlas/` directory.
 

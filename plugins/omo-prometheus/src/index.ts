@@ -11,6 +11,7 @@ import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
+import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { type AtlasPlan, AtlasStore } from "./atlas-store.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import {
@@ -562,7 +563,9 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const release = async (ctx: ExtensionContext, reason: string, expected: "planning" | "executing"): Promise<void> => {
-    if (!mainSession(ctx)) return;
+    const live = mainSession(ctx);
+    if (!live) return;
+    restoreApprovalTiers(live.settings);
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase !== expected) return;
     const proposalPath = expected === "planning" ? record.planFilePath : undefined;
@@ -660,7 +663,17 @@ export default function prometheus(pi: ExtensionAPI): void {
       persist(record);
       await bindPlan(ctx, record, store, plan, true);
       await syncTools(false, true, true);
-      commandNotice(ctx, `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. Bare /atlas exits.`);
+      let modelNotice = "";
+      try {
+        const model = await applyAtlasModel(live);
+        if (model) modelNotice = ` Switched to the atlas model role (${model}).`;
+      } catch (error) {
+        modelNotice = ` The atlas model role could not be applied (${errorMessage(error)}); the current model is kept.`;
+      }
+      commandNotice(
+        ctx,
+        `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. Bare /atlas exits.${modelNotice}`,
+      );
     } catch (error) {
       if (record?.activation !== activation && selector) return;
       if (record) {
@@ -825,6 +838,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   pi.on("input", async (event, ctx) => {
+    const live = mainSession(ctx);
+    if (live) restoreApprovalTiers(live.settings);
     const current = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (current && event.source !== "extension") current.stallCount = 0;
     const atlas = parseAtlasCommand(event.text);
@@ -842,7 +857,6 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (trimmed.startsWith("/") && current?.phase === "planning") current.proposalAwaitingApproval = false;
       if (trimmed.startsWith("/") && current?.phase === "planning") current.approvalCompactionPending = false;
       if (/^\/plan(?:[ \t]|$)/.test(trimmed)) {
-        const live = mainSession(ctx);
         const record = current ?? rehydrate(ctx);
         if (live?.getPlanModeState()?.enabled === true && record?.phase === "planning") {
           record.phase = "idle";
@@ -860,7 +874,6 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       return undefined;
     }
-    const live = mainSession(ctx);
     if (!live) {
       notify(ctx, "Prometheus requires the registered main session; this host/session cannot enter it.", "error");
       return { handled: true };
@@ -1206,6 +1219,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     const live = mainSession(ctx);
     if (!live) return undefined;
+    restoreApprovalTiers(live.settings);
     const sessionId = ctx.sessionManager.getSessionId();
     let record = records.get(sessionId) ?? rehydrate(ctx);
     const reference = live.getPlanReferencePath();
@@ -1507,6 +1521,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       pi.logger.warn("prometheus could not write the proposal marker", { error: errorMessage(error) });
     }
     persist(record);
+    // The native approval overlay opens after this hook and offers cycleOrder roles as execution tiers.
+    exposeAtlasApprovalTier(live.settings);
 
     const approvedInResult = event.content.some((part) => part.type === "text" && part.text.trimStart().startsWith("Plan approved at "));
     if (approvedInResult && live.getPlanModeState()?.enabled !== true && planReferencesMatch(live.getPlanReferencePath(), proposedPath)) {
@@ -1592,12 +1608,19 @@ export default function prometheus(pi: ExtensionAPI): void {
     await syncTools(false, executing, executing);
   };
 
+  const registerRole = (ctx: ExtensionContext): void => {
+    const live = mainSession(ctx);
+    if (live) registerAtlasModelRole(live.settings);
+  };
+
   pi.on("session_start", async (_event, ctx) => {
+    registerRole(ctx);
     await loadReviewLevel(ctx);
     await recoverSession(ctx);
   });
 
   pi.on("session_switch", async (event, ctx) => {
+    registerRole(ctx);
     await loadReviewLevel(ctx);
     await recoverSession(ctx, event.reason === "new", true);
   });
@@ -1611,6 +1634,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    const live = mainSession(ctx);
+    if (live) restoreApprovalTiers(live.settings);
     const sessionId = ctx.sessionManager.getSessionId();
     const record = records.get(sessionId);
     if (record) {
