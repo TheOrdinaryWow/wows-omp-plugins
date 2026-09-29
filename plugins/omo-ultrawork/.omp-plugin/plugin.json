@@ -1,6 +1,6 @@
 {
   "name": "omo-ultrawork",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Port of oh-my-openagent ultrawork mode, mass-ulw, hyperplan, and ulw-research for OMP",
   "author": {
     "name": "TheOrdinaryWow"
