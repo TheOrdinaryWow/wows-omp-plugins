@@ -8,9 +8,11 @@ import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugi
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
+import { type AtlasFilter, AtlasMenu, type AtlasMenuAction } from "./atlas-menu.ts";
 import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { type AtlasPlan, AtlasStore } from "./atlas-store.ts";
@@ -128,6 +130,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const childEvidence = new ChildEvidence();
   const stores = new Map<string, AtlasStore>();
   const ownerships = new Set<Ownership>();
+  let atlasCompletions: AutocompleteItem[] = [];
   let planReferences = new AtlasPlanReferences();
   const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
   let settlementTimer: NodeJS.Timeout | undefined;
@@ -345,6 +348,24 @@ export default function prometheus(pi: ExtensionAPI): void {
       stores.set(root, store);
     }
     return store;
+  };
+
+  const refreshAtlasCompletions = async (ctx: ExtensionContext): Promise<void> => {
+    try {
+      const cwd = await fs.realpath(ctx.cwd);
+      atlasCompletions = (await storeFor(ctx).details(cwd))
+        .filter((detail) => detail.unfinished)
+        .map(({ plan }) => ({ value: plan.name, label: plan.name, description: plan.id }));
+    } catch (error) {
+      atlasCompletions = [];
+      pi.logger.warn("Atlas plan completions are unavailable", { error: errorMessage(error) });
+    }
+  };
+
+  const atlasArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+    const needle = prefix.toLowerCase();
+    const matches = atlasCompletions.filter((item) => item.value.toLowerCase().startsWith(needle) || item.description?.startsWith(needle));
+    return matches.length ? matches : null;
   };
 
   const observeNativeJobs = (sessionId: string, live: AgentSession, parentAgentId: string): void => {
@@ -623,6 +644,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     await syncTools(false, false, false);
     if (proposalPath) await clearProposalMarker(ctx, proposalPath);
     await settleDetached();
+    await refreshAtlasCompletions(ctx);
     commandNotice(
       ctx,
       expected === "executing"
@@ -632,7 +654,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const atlasCommand = async (args: string, ctx: ExtensionContext): Promise<void> => {
-    const selector = args.trim();
+    let selector = args.trim();
     const live = mainSession(ctx);
     if (!live) {
       commandNotice(ctx, "Atlas requires the registered main session.", "error");
@@ -668,16 +690,72 @@ export default function prometheus(pi: ExtensionAPI): void {
     try {
       const store = storeFor(ctx);
       if (!selector) {
-        const plans = await store.list();
-        commandNotice(
-          ctx,
-          `Atlas is inactive. Use /atlas <plan-name-or-id> to enter an approved plan.\n${
-            plans.length
-              ? plans.map((plan) => `- ${plan.name} (${plan.id}) — ${plan.cwd}`).join("\n")
-              : "No shared approved plans are available."
-          }`,
-        );
-        return;
+        if (!ctx.hasUI) {
+          const plans = await store.list();
+          commandNotice(
+            ctx,
+            `Atlas is inactive. Use /atlas <plan-name-or-id> to enter an approved plan.\n${
+              plans.length
+                ? plans.map((plan) => `- ${plan.name} (${plan.id}) — ${plan.cwd}`).join("\n")
+                : "No shared approved plans are available."
+            }`,
+          );
+          return;
+        }
+        let filter: AtlasFilter = "unfinished";
+        let query = "";
+        while (true) {
+          const workspace = await fs.realpath(ctx.cwd);
+          const details = await store.details(workspace);
+          const action = await ctx.ui.custom<AtlasMenuAction>(
+            (tui, theme, _keys, done) => new AtlasMenu(details, filter, query, theme, tui, done),
+          );
+          filter = action.filter;
+          query = action.query;
+          if (action.kind === "cancel") break;
+          const target = details.find((detail) => detail.plan.id === action.planId);
+          if (!target) continue;
+          if (action.kind === "enter") {
+            selector = target.plan.id;
+            break;
+          }
+          try {
+            if (action.kind === "delete") {
+              if (
+                await ctx.ui.confirm(
+                  "Delete Atlas plan?",
+                  `Permanently remove ${target.plan.name} (${target.plan.id}) and all its evidence?`,
+                )
+              ) {
+                await store.delete(
+                  target.plan.id,
+                  () =>
+                    [...ownerships].some((ownership) => ownership.store === store && ownership.plan.id === target.plan.id) ||
+                    [...records.values()].some((record) => record.phase === "executing" && record.atlasPlanId === target.plan.id),
+                );
+              }
+            } else if (action.kind === "rename") {
+              const name = await ctx.ui.input("Rename Atlas plan", target.plan.name);
+              if (name !== undefined) await store.rename(target.plan.id, name);
+            }
+          } catch (error) {
+            commandNotice(ctx, `Atlas plan change refused: ${errorMessage(error)}`, "error");
+          }
+        }
+        await refreshAtlasCompletions(ctx);
+        if (!selector) return;
+        if (current?.phase === "planning" || live.getPlanModeState()?.enabled === true) {
+          commandNotice(
+            ctx,
+            "Atlas cannot enter during planning. Exit planning first; Atlas only executes plans with native approval.",
+            "error",
+          );
+          return;
+        }
+        record = recordFor(ctx.sessionManager.getSessionId());
+        record.phase = "executing";
+        record.activation = activation;
+        persist(record);
       }
       const plan = await store.find(selector);
       if (record?.phase !== "executing" || record.activation !== activation) throw new Error("Atlas entry changed during plan selection");
@@ -699,12 +777,14 @@ export default function prometheus(pi: ExtensionAPI): void {
         ctx,
         `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. Bare /atlas exits.${modelNotice}`,
       );
+      await refreshAtlasCompletions(ctx);
     } catch (error) {
       if (record?.activation !== activation && selector) return;
       if (record) {
         record.ledgerError = errorMessage(error);
         await syncTools(false, true, true);
       }
+      await refreshAtlasCompletions(ctx);
       commandNotice(ctx, record ? pauseMessage(record) : `Atlas entry refused: ${errorMessage(error)}`, "error");
     }
   };
@@ -953,7 +1033,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("atlas", {
-    description: "Enter a named approved plan; bare /atlas exits when active or lists plans when inactive",
+    description: "Enter an approved plan; bare /atlas opens plans when inactive or exits when active",
+    getArgumentCompletions: atlasArgumentCompletions,
     handler: atlasCommand,
   });
 
@@ -1645,12 +1726,14 @@ export default function prometheus(pi: ExtensionAPI): void {
     registerRole(ctx);
     await loadReviewLevel(ctx);
     await recoverSession(ctx);
+    await refreshAtlasCompletions(ctx);
   });
 
   pi.on("session_switch", async (event, ctx) => {
     registerRole(ctx);
     await loadReviewLevel(ctx);
     await recoverSession(ctx, event.reason === "new", true);
+    await refreshAtlasCompletions(ctx);
   });
 
   pi.on("session_branch", async (_event, ctx) => {

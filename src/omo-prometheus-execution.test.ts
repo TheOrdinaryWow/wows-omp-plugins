@@ -97,6 +97,9 @@ async function scenario(name: string, root: string): Promise<void> {
   let confirmations = 0;
   let sessionId = "integrity-session";
   const notices: string[] = [];
+  const menuRenders: string[] = [];
+  let menuKey = "\x1b";
+  const completions = new Map<string, (prefix: string) => Array<{ value: string; description?: string }> | null>();
   const commands = new Map<string, (args: string, context: ExtensionContext) => Promise<void>>();
   const nativeJobs: Array<{
     id: string;
@@ -160,6 +163,19 @@ async function scenario(name: string, root: string): Promise<void> {
         confirmations += 1;
         return true;
       },
+      custom: async (
+        factory: (
+          tui: unknown,
+          theme: unknown,
+          keys: unknown,
+          done: (result: unknown) => void,
+        ) => { render(width: number): readonly string[]; handleInput(key: string): void },
+      ) =>
+        await new Promise<unknown>((resolve) => {
+          const component = factory({ requestRender() {} }, { fg: (_color: string, value: string) => value }, {}, resolve);
+          menuRenders.push(component.render(120).join("\n"));
+          component.handleInput(menuKey);
+        }),
     },
   } as unknown as ExtensionContext;
   const install = (registerExtension: typeof register = register) => {
@@ -170,8 +186,15 @@ async function scenario(name: string, root: string): Promise<void> {
       zod: z,
       events: bus,
       logger: { warn() {} },
-      registerCommand: (name: string, spec: { handler: (args: string, context: ExtensionContext) => Promise<void> }) => {
+      registerCommand: (
+        name: string,
+        spec: {
+          handler: (args: string, context: ExtensionContext) => Promise<void>;
+          getArgumentCompletions?: (prefix: string) => Array<{ value: string; description?: string }> | null;
+        },
+      ) => {
         commands.set(name, spec.handler);
+        if (spec.getArgumentCompletions) completions.set(name, spec.getArgumentCompletions);
       },
       registerTool: (tool: RegisteredTool) => {
         tools.set(tool.name, tool);
@@ -564,6 +587,48 @@ async function scenario(name: string, root: string): Promise<void> {
     await finish("F3");
     await finish("F4");
   };
+
+  if (name === "atlas-autocomplete") {
+    await tasksDone();
+    await gatesDone();
+    await commands.get("atlas")?.("", ctx);
+    // Host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const store = new AtlasStore(sessionManager.getSessionDir());
+    const current = await store.create({
+      name: "Current work",
+      content: plan,
+      cwd: root,
+      sourcePlanPath: "local://current-plan.md",
+      sourceSessionId: "approved-origin",
+      proposedByToolCallId: "current-proposal",
+      availableAgents: ["task", "reviewer"],
+    });
+    const foreign = join(root, "other-workspace");
+    await mkdir(foreign);
+    await store.create({
+      name: "Foreign work",
+      content: plan,
+      cwd: foreign,
+      sourcePlanPath: "local://foreign-plan.md",
+      sourceSessionId: "approved-origin",
+      proposedByToolCallId: "foreign-proposal",
+      availableAgents: ["task", "reviewer"],
+    });
+    await commands.get("atlas")?.("", ctx);
+    const complete = completions.get("atlas");
+    assert(complete);
+    assert.deepEqual(complete("Current"), [{ value: "Current work", label: "Current work", description: current.id }]);
+    assert.deepEqual(complete(current.id.slice(0, 14)), [{ value: "Current work", label: "Current work", description: current.id }]);
+    assert.equal(complete("integrity"), null);
+    assert.equal(complete("Foreign"), null);
+    assert.match(menuRenders.at(-1) ?? "", /Current work/);
+    assert.doesNotMatch(menuRenders.at(-1) ?? "", /Foreign work/);
+    menuKey = " ";
+    await commands.get("atlas")?.("", ctx);
+    assert.equal(reference, `atlas://${current.id}/plan.md`);
+    return;
+  }
 
   if (name === "cycle") {
     refused(await call({ action: "status" }));
@@ -1083,7 +1148,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await commands.get("atlas")?.("", ctx);
     refused(await call({ action: "status" }));
     await commands.get("atlas")?.("", ctx);
-    assert.match(notices.at(-1) ?? "", /Atlas is inactive.*[\s\S]*integrity/);
+    assert.match(menuRenders.at(-1) ?? "", /integrity/);
     refused(await call({ action: "status" }));
     await commands.get("atlas")?.("missing-plan", ctx);
     assert.match(notices.at(-1) ?? "", /Atlas execution paused/);
@@ -1116,7 +1181,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await hook("input", { text: "/atlas integrity", source: "user" });
     assert.match(notices.at(-1) ?? "", /cannot enter during planning/);
     await commands.get("atlas")?.("", ctx);
-    assert.match(notices.at(-1) ?? "", /Atlas is inactive/);
+    assert.match(menuRenders.at(-1) ?? "", /All|Unfinished/);
     refused(await call({ action: "status" }));
     return;
   }
@@ -1434,6 +1499,7 @@ if (process.env[CHILD_ENV]) {
       "missing-proof",
       "cross-session",
       "exact-commands",
+      "atlas-autocomplete",
       "atlas-model-role",
       "plain-plan-approval",
       "exit-live-child",

@@ -6,12 +6,14 @@ import { hostname } from "node:os";
 import * as path from "node:path";
 
 import { validateGateOutput } from "./evidence.ts";
-import { type ChildReceipt, createLedger, type ExecutionLedger, invalidateRows, planDigest, restoreLedger } from "./ledger.ts";
+import { type ChildReceipt, createLedger, type ExecutionLedger, invalidateRows, isComplete, planDigest, restoreLedger } from "./ledger.ts";
 import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
 
 export interface AtlasPlan {
   id: string;
   name: string;
+  originalName: string;
+  invalidReason?: string;
   cwd: string;
   directory: string;
   planFilePath: string;
@@ -20,6 +22,16 @@ export interface AtlasPlan {
   sourcePlanPath: string;
   sourceSessionId: string;
   proposedByToolCallId: string;
+}
+
+export interface AtlasPlanDetail {
+  plan: AtlasPlan;
+  status: string;
+  done: number;
+  total: number;
+  rows: { id: string; title: string; status: string }[];
+  unfinished: boolean;
+  enterable: boolean;
 }
 
 interface Approval {
@@ -296,10 +308,29 @@ export class AtlasStore {
     )
       throw new Error("Atlas approval differs from its durable checkpoint");
     await directory(path.join(base, "evidence"));
+    let name = approval.name;
+    try {
+      const label = await jsonFile(path.join(base, "label.json"));
+      if (
+        label === null ||
+        typeof label !== "object" ||
+        Array.isArray(label) ||
+        !("version" in label) ||
+        label.version !== 1 ||
+        !("name" in label) ||
+        typeof label.name !== "string" ||
+        !validName(label.name)
+      )
+        throw new Error("Invalid Atlas display name");
+      name = label.name;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     return {
       plan: {
         id,
-        name: approval.name,
+        name,
+        originalName: approval.name,
         cwd: approval.cwd,
         directory: base,
         planFilePath,
@@ -392,7 +423,31 @@ export class AtlasStore {
     for (const entry of await fs.readdir(this.#root, { withFileTypes: true })) {
       if (!ID.test(entry.name)) continue;
       if (!entry.isDirectory()) throw new Error(`Invalid Atlas plan directory: ${entry.name}`);
-      plans.push((await this.#plan(entry.name)).plan);
+      try {
+        plans.push((await this.#plan(entry.name)).plan);
+      } catch (error) {
+        const base = path.join(this.#root, entry.name);
+        try {
+          await fs.lstat(base);
+        } catch (missing) {
+          if ((missing as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw missing;
+        }
+        plans.push({
+          id: entry.name,
+          name: entry.name,
+          originalName: entry.name,
+          cwd: "",
+          directory: base,
+          planFilePath: path.join(base, "plan.md"),
+          ledgerPath: path.join(base, "ledger.json"),
+          planSha256: "",
+          sourcePlanPath: "",
+          sourceSessionId: "",
+          proposedByToolCallId: "",
+          invalidReason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     return plans.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   }
@@ -401,9 +456,8 @@ export class AtlasStore {
     if (typeof selector !== "string" || (!validName(selector) && !ID.test(selector))) throw new Error("Invalid Atlas plan selector");
     if (ID.test(selector)) return (await this.#plan(selector)).plan;
     const plans = await this.list();
-    // Bundles are named after the proposal file without its `-plan.md` suffix; accept the file stem too.
     const stem = selector.replace(/-plan$/, "");
-    const matches = plans.filter((plan) => plan.name === selector || plan.name === stem);
+    const matches = plans.filter((plan) => [plan.name, plan.originalName].some((name) => name === selector || name === stem));
     if (!matches.length) {
       const available = [...new Set(plans.map((plan) => plan.name))].join(", ");
       throw new Error(
@@ -413,6 +467,142 @@ export class AtlasStore {
     if (matches.length > 1)
       throw new Error(`Ambiguous Atlas plan name ${selector}; select by id: ${matches.map((plan) => plan.id).join(", ")}`);
     return matches[0] as AtlasPlan;
+  }
+
+  async rename(planId: string, name: string): Promise<void> {
+    safeId(planId);
+    if (!validName(name)) throw new Error("Invalid Atlas plan name");
+    await withLedgerLock(path.join(this.#root, planId, "ledger.json"), async () => {
+      const { plan } = await this.#plan(planId);
+      await writeLedgerAtomic(path.join(plan.directory, "label.json"), { version: 1, name }, false);
+    });
+  }
+
+  async delete(planId: string, hasPendingWork: () => boolean = () => false): Promise<void> {
+    safeId(planId);
+    await withLedgerLock(path.join(this.#root, planId, "ledger.json"), async () => {
+      if (this.#held.has(planId)) throw new Error("This process holds Atlas plan ownership");
+      if (hasPendingWork()) throw new Error("Atlas plan has pending native execution work");
+      const base = path.join(this.#root, planId);
+      await directory(base);
+      await this.#assertNoLiveOwner(path.join(base, "ownership"));
+      const staged = path.join(this.#root, `.deleting-${randomUUID()}`);
+      // Check again after moving: another process may claim ownership between the first check and rename.
+      await fs.rename(base, staged);
+      try {
+        await this.#assertNoLiveOwner(path.join(staged, "ownership"));
+        if (this.#held.has(planId) || hasPendingWork()) throw new Error("Atlas plan has pending native execution work");
+      } catch (error) {
+        await fs.rename(staged, base);
+        throw error;
+      }
+      await syncDirectory(this.#root);
+      await fs.rm(staged, { recursive: true });
+      await syncDirectory(this.#root);
+    });
+  }
+
+  async details(workspace: string): Promise<AtlasPlanDetail[]> {
+    return await Promise.all(
+      (await this.list()).map(async (plan) => {
+        const mismatch = plan.cwd !== workspace;
+        if (plan.invalidReason)
+          return { plan, status: `Invalid: ${plan.invalidReason}`, done: 0, total: 0, rows: [], unfinished: false, enterable: false };
+        try {
+          const { approvalSha256 } = await this.#plan(plan.id);
+          const data = await jsonFile(plan.ledgerPath);
+          const ledger = restoreLedger(data, plan.planFilePath, await regularFile(plan.planFilePath), plan.planSha256);
+          if (data !== ledger) throw new Error("Atlas shared ledger must use receipt-bearing version two");
+          validateCheckpoint(await jsonFile(path.join(plan.directory, "checkpoint.json")), ledger, approvalSha256);
+          const rows = [...ledger.items, ...ledger.gates];
+          const done = rows.filter((row) => row.status === "done").length;
+          const ownerDir = path.join(plan.directory, "ownership");
+          const slots = await this.#ownershipSlots(ownerDir);
+          let inUse = false;
+          if (slots.length) {
+            const generation = slots.length - 1;
+            const claim = validateClaim(await jsonFile(path.join(ownerDir, `${generation}.json`)));
+            if (!(await this.#released(ownerDir, generation, claim))) {
+              try {
+                inUse = !(await deadOwner(claim));
+              } catch {
+                inUse = true;
+              }
+            }
+          }
+          const complete = isComplete(ledger);
+          const status = inUse
+            ? "In use by another session"
+            : complete
+              ? "Complete"
+              : rows.some((row) => row.status !== "open")
+                ? `In progress ${done}/${rows.length}`
+                : "Not started";
+          return {
+            plan,
+            status: `${status}${status.startsWith("In progress") ? "" : ` (${done}/${rows.length})`}${mismatch ? " · Different workspace" : ""}`,
+            done,
+            total: rows.length,
+            rows: rows.map(({ id, title, status }) => ({ id, title, status })),
+            unfinished: !mismatch && !complete,
+            enterable: !mismatch && !complete && !inUse,
+          };
+        } catch (error) {
+          return {
+            plan,
+            status: `Invalid: ${error instanceof Error ? error.message : String(error)}${mismatch ? " · Different workspace" : ""}`,
+            done: 0,
+            total: 0,
+            rows: [],
+            unfinished: false,
+            enterable: false,
+          };
+        }
+      }),
+    );
+  }
+
+  async #assertNoLiveOwner(ownerDir: string): Promise<void> {
+    await directory(ownerDir);
+    const slots = await this.#ownershipSlots(ownerDir);
+    if (!slots.length) return;
+    const generation = slots.length - 1;
+    const claim = validateClaim(await jsonFile(path.join(ownerDir, `${generation}.json`)));
+    if (!(await this.#released(ownerDir, generation, claim)) && !(await deadOwner(claim))) {
+      throw new Error("Atlas plan has a live execution owner");
+    }
+  }
+
+  async #ownershipSlots(ownerDir: string): Promise<number[]> {
+    const slots: number[] = [];
+    for (const entry of await fs.readdir(ownerDir)) {
+      if (entry.endsWith(".tmp") || /^\d+\.released\.json$/.test(entry)) continue;
+      if (!/^(0|[1-9]\d*)\.json$/.test(entry)) throw new Error("Malformed Atlas ownership history");
+      slots.push(Number(entry.slice(0, -5)));
+    }
+    slots.sort((a, b) => a - b);
+    if (slots.some((slot, index) => !Number.isSafeInteger(slot) || slot !== index))
+      throw new Error("Atlas ownership history has missing generations");
+    return slots;
+  }
+
+  async #released(ownerDir: string, generation: number, claim: Claim): Promise<boolean> {
+    try {
+      const marker = await jsonFile(path.join(ownerDir, `${generation}.released.json`));
+      if (
+        marker === null ||
+        typeof marker !== "object" ||
+        !("version" in marker) ||
+        marker.version !== 1 ||
+        !("token" in marker) ||
+        marker.token !== claim.token
+      )
+        throw new Error("Invalid Atlas ownership release");
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
   }
 
   async #ownershipDir(plan: AtlasPlan): Promise<string> {
@@ -426,33 +616,11 @@ export class AtlasStore {
   /** Immutable generations are an exclusive-create CAS; recovery never removes a competing claim. */
   async #claimSlot(plan: AtlasPlan, sessionId: string): Promise<{ generation: number; claim: Claim }> {
     const ownerDir = await this.#ownershipDir(plan);
-    const slots: number[] = [];
-    for (const entry of await fs.readdir(ownerDir)) {
-      if (entry.endsWith(".tmp") || /^\d+\.released\.json$/.test(entry)) continue;
-      if (!/^(0|[1-9]\d*)\.json$/.test(entry)) throw new Error("Malformed Atlas ownership history");
-      slots.push(Number(entry.slice(0, -5)));
-    }
-    slots.sort((a, b) => a - b);
-    if (slots.some((slot, index) => !Number.isSafeInteger(slot) || slot !== index)) {
-      throw new Error("Atlas ownership history has missing generations");
-    }
-    const generation = slots.length;
+    const generation = (await this.#ownershipSlots(ownerDir)).length;
     if (generation > 0) {
       const previous = validateClaim(await jsonFile(path.join(ownerDir, `${generation - 1}.json`)));
-      try {
-        const marker = await jsonFile(path.join(ownerDir, `${generation - 1}.released.json`));
-        if (
-          marker === null ||
-          typeof marker !== "object" ||
-          !("version" in marker) ||
-          marker.version !== 1 ||
-          !("token" in marker) ||
-          marker.token !== previous.token
-        )
-          throw new Error("Invalid Atlas ownership release");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        if (!(await deadOwner(previous))) throw new Error("Atlas plan has a live execution owner");
+      if (!(await this.#released(ownerDir, generation - 1, previous)) && !(await deadOwner(previous))) {
+        throw new Error("Atlas plan has a live execution owner");
       }
     }
     const claim: Claim = {

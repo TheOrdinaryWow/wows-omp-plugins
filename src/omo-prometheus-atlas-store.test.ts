@@ -144,6 +144,52 @@ function contender(root: string, planId: string, sessionId: string) {
 }
 
 describe("Atlas shared plan storage", () => {
+  test("rename preserves approval and checkpoint proof and both names remain selectors", async () => {
+    await fixture(async ({ store, plan }) => {
+      const approvalBefore = await fs.readFile(path.join(plan.directory, "approval.json"));
+      const checkpointBefore = await fs.readFile(path.join(plan.directory, "checkpoint.json"));
+      await store.rename(plan.id, "New display");
+      expect((await store.find("New display")).id).toBe(plan.id);
+      expect((await store.find("New display-plan")).id).toBe(plan.id);
+      expect((await store.find("Shared plan")).id).toBe(plan.id);
+      expect((await store.find("Shared plan-plan")).id).toBe(plan.id);
+      expect(await fs.readFile(path.join(plan.directory, "approval.json"))).toEqual(approvalBefore);
+      expect(await fs.readFile(path.join(plan.directory, "checkpoint.json"))).toEqual(checkpointBefore);
+      await store.acquire(plan.id, "session-a");
+      expect(await store.transaction(plan.id, "session-a", (ledger) => ledger.items[0]?.status)).toBe("open");
+      await store.release(plan.id, "session-a");
+      await expect(store.rename(plan.id, " invalid ")).rejects.toThrow("Invalid Atlas plan name");
+    });
+  });
+
+  test("delete refuses active or pending ownership then removes the entire released bundle", async () => {
+    await fixture(async ({ root, store, plan }) => {
+      await store.acquire(plan.id, "session-a");
+      const other = new AtlasStore(root);
+      await expect(other.delete(plan.id)).rejects.toThrow("live execution owner");
+      await expect(store.delete(plan.id)).rejects.toThrow("holds Atlas plan ownership");
+      expect((await store.list()).map((entry) => entry.id)).toContain(plan.id);
+      await store.release(plan.id, "session-a");
+      await expect(store.delete(plan.id, () => true)).rejects.toThrow("pending native");
+      await fs.writeFile(path.join(plan.directory, "evidence", "sample.md"), "evidence");
+      await store.delete(plan.id);
+      expect(await store.list()).toEqual([]);
+      await expect(fs.stat(plan.directory)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  test("list ignores deletion staging names while invalid plans remain discoverable", async () => {
+    await fixture(async ({ root, store, plan }) => {
+      await fs.mkdir(path.join(root, "atlas", `.deleting-${randomUUID()}`));
+      await fs.writeFile(plan.ledgerPath, "{invalid");
+      const [detail] = await store.details(root);
+      expect(detail?.plan.id).toBe(plan.id);
+      expect(detail?.status).toContain("Invalid:");
+      expect(detail?.enterable).toBe(false);
+      expect((await store.list()).map((entry) => entry.id)).toEqual([plan.id]);
+    });
+  });
+
   test("session B resumes copied receipts without source artifacts and only reopens unfinished attempts", async () => {
     await fixture(async (f) => {
       await f.store.acquire(f.plan.id, "session-a");

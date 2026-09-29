@@ -23,8 +23,8 @@ export async function withLedgerLock<T>(file: string, run: () => Promise<T>): Pr
 }
 
 /** A failed write never exposes a partial JSON document or destroys the previous ledger. */
-export async function writeLedgerAtomic(file: string, data: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
+export async function writeLedgerAtomic(file: string, data: unknown, createDirectory = true): Promise<void> {
+  if (createDirectory) await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     const handle = await fs.open(temporary, "wx", 0o600);

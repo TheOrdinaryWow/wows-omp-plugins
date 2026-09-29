@@ -50,12 +50,14 @@ Both approval choices hand off to Atlas. "Approve and execute" starts a fresh se
 ### Resume with Atlas
 
 ```text
-/atlas                  # while inactive: list approved shared plans
-/atlas <plan-name-or-id> # while inactive: enter or resume a plan
-/atlas                  # while active: exit without discarding progress
+/atlas                   # while inactive: open the interactive plan menu
+/atlas <plan-name-or-id> # while inactive: enter or resume a plan (name/ID completion available)
+/atlas                   # while active: exit without discarding progress
 ```
 
-Any argument while Atlas is active is an error, even the current plan name. Exit first; the same OMP session may then enter another plan. A name matches the plan's listed name or its proposal file name, so `checkout` and `checkout-plan` select the same plan; an unknown name lists the available ones. If several approved plans share a name, select the full ID shown by the list. Atlas cannot enter during planning or execute an unapproved plan. A failed entry remains paused until you exit with bare `/atlas`; it does not silently authorize ordinary implementation.
+The menu initially shows unfinished plans in the current workspace; Tab switches to All, including complete, invalid, and other-workspace plans. Type to fuzzy-search names, IDs, or status; Space and Enter enter the highlighted plan in Unfinished. In All, entering is refused. Backspace edits a nonempty search query or deletes the highlighted plan when the query is empty; Delete always deletes, Shift+N renames, and Esc closes. The menu shows each plan's progress and the highlighted plan's T/F rows. Deletion requires confirmation and permanently removes the bundle and evidence; a live owner or pending native work prevents it. Renaming changes only the display label, not the approved plan or its checkpoint. Without an interactive UI, bare `/atlas` still prints the plan list.
+
+Any argument while Atlas is active is an error, even the current plan name. Exit first; the same OMP session may then enter another plan. A name matches the display label, original approved name, or either `-plan` stem, so `checkout` and `checkout-plan` select the same plan; an unknown name lists the available ones. If several approved plans share a name, select the full ID shown by the list. Atlas cannot enter during planning or execute an unapproved plan. A failed entry remains paused until you exit with bare `/atlas`; it does not silently authorize ordinary implementation.
 
 Session A can complete part of a plan, exit Atlas, and leave session B to resume it with `/atlas <name>`. Both must use the same host session directory and canonical workspace. Exiting is immediate and does not cancel children or claim completion. If native work is still running, its plan remains exclusively owned until final results or actual job settlement; another session cannot race those writers. Closing the host is not blocked. A provably dead local owner can be recovered; ambiguous or foreign-host ownership is refused.
 
@@ -132,6 +134,7 @@ Native approval creates a plan bundle below `ctx.sessionManager.getSessionDir()/
 plan.md          exact approved plan
 approval.json    source approval, workspace, and plan identity
 ledger.json      task and gate progress
+label.json       optional display name, independent of immutable approval
 checkpoint.json independent attempt and receipt bindings
 evidence/        copied native outputs and origin receipts
 ownership/       exclusive execution ownership records
