@@ -119,6 +119,16 @@ describe("Atlas execution guard", () => {
     expect(executionBlockReason("write", { path: "xd://read", content: "not JSON" })).toBeTruthy();
   });
 
+  test("lets Atlas message and cancel children through native write coordination paths", () => {
+    expect(executionBlockReason("wait", {})).toBeUndefined();
+    expect(executionBlockReason("write", { path: "agent://0-AuthLoader", content: "Rebase onto T1 first." })).toBeUndefined();
+    expect(executionBlockReason("write", { path: "agent://all", content: "Pause edits to src/index.ts." })).toBeUndefined();
+    expect(executionBlockReason("write", { path: "proc://0-AuthLoader/kill" })).toBeUndefined();
+    expect(executionBlockReason("write", { path: "proc://dev-server", content: "q" })).toBeTruthy();
+    expect(executionBlockReason("write", { path: "proc://dev-server/mode", content: "persist" })).toBeTruthy();
+    expect(executionBlockReason("write", { path: "local://notes.md", content: "changed" })).toBeTruthy();
+  });
+
   test("rejects same-name extension or MCP shadows of trusted tools", () => {
     expect(executionToolSourceBlockReason("task", "builtin")).toBeUndefined();
     expect(executionToolSourceBlockReason("task", "extension")).toBeTruthy();

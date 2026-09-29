@@ -194,6 +194,7 @@ const ALLOWED_TOOLS: Record<string, true> = {
   task: true,
   think: true,
   todo: true,
+  wait: true,
   web_search: true,
 };
 
@@ -227,6 +228,9 @@ const SAFE_XDEV_TOOLS: Record<string, true> = {
   lsp: true,
   read: true,
 };
+
+/** `proc://<id>/kill` cancels a job or child; stdin and service-mode writes drive a process instead. */
+const PROC_CANCEL_PATH = /^proc:\/\/[^/?#]+\/kill\/?$/i;
 
 function stringField(input: Record<string, unknown>, key: string): string {
   const value = input[key];
@@ -291,9 +295,15 @@ function hubBlockReason(input: Record<string, unknown>): string | undefined {
 
 function writeBlockReason(input: Record<string, unknown>): string | undefined {
   const path = stringField(input, "path");
+  const lowerPath = path.toLowerCase();
+  // Peer messaging on hosts that replaced `hub send`; the host rejects JSON-path targets.
+  if (lowerPath.startsWith("agent://")) return undefined;
+  if (PROC_CANCEL_PATH.test(path)) return undefined;
+  if (lowerPath.startsWith("proc://"))
+    return "`proc://` stdin and service-mode writes drive a process; only `proc://<id>/kill` is coordination";
   const nested = nestedXdevToolCall(input);
   if (!nested) {
-    return path.toLowerCase().startsWith("xd://")
+    return lowerPath.startsWith("xd://")
       ? "the `xd://` target or its JSON payload is not a valid guarded device call"
       : "normal file/database/archive writes are direct implementation";
   }
