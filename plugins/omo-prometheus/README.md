@@ -44,24 +44,34 @@ After approval the main session becomes Atlas. For this plan, the execution prom
 
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session. To survive that switch, the plugin writes a marker to `local://prometheus/<slug>.proposal.json` when the plan is proposed, and OMP copies it into the new session along with the plan. Plans approved in ordinary Plan Mode have no marker, and the plugin leaves them alone.
 
-### Resuming with `/atlas`
+### Dispatching with `/atlas`
 
 ```text
-/atlas                   # while inactive: open the interactive plan menu
-/atlas <plan-name-or-id> # while inactive: enter or resume a plan (name/ID completion available)
+/atlas                   # while inactive: open Atlas Dispatch, the interactive plan menu
+/atlas <plan-name-or-id> # while inactive: enter a plan in this session and start executing (name/ID completion available)
 /atlas                   # while active: exit (asks first if the plan is unfinished)
 ```
 
-The menu opens on unfinished plans in the current workspace. Tab switches to All, which adds complete, invalid, and other-workspace plans; you can only enter plans from the Unfinished view. The menu shows each plan's progress and the highlighted plan's T/F rows.
+Plans come from Prometheus; Atlas Dispatch is where you hand one to Atlas. It opens on unfinished plans in the current workspace. Tab switches to All, which adds complete, invalid, and other-workspace plans; All is display-only, so start and resume work only from the Unfinished view. The menu shows each plan's progress and the highlighted plan's T/F rows.
 
 | Key | Action |
 | --- | ------ |
 | type | fuzzy-search names, IDs, or status |
-| Space, Enter | enter the highlighted plan |
+| Enter | start the highlighted plan and begin executing right away |
+| Space, Shift+I | open the fullscreen plan view |
+| Shift+R | resume the plan in a session that already executed it |
 | Backspace | edit the search, or delete the highlighted plan when the search is empty |
 | Delete | delete the highlighted plan |
 | Shift+N | rename (display label only; the approved plan is unchanged) |
 | Esc | close |
+
+A plan runs in one session at a time, so Enter and Shift+R refuse a plan that another live session holds.
+
+**Start (Enter).** In an empty session Atlas enters the plan here. Otherwise a prompt offers a new session, this session, or cancel. Atlas then sends the first execution message itself, the same way native plan approval starts work, so you do not need to type anything. Started plans can be started again in another session; shared progress and evidence carry over.
+
+**Resume (Shift+R).** Only plans that have started can be resumed. The plugin scans this project's session files for sessions that executed the plan. With one match it switches there; with several it lists them, most recently used first. The session comes back in Atlas mode but does not continue on its own; send a message when you are ready. Resume is refused during planning.
+
+**Plan view (Space, Shift+I).** A fullscreen view with the plan's progress, a row list, and the selected row's status, agent, dependencies, evidence summary, receipt, and acceptance criteria. Space shows the row's archived child output from `evidence/`. Up/Down select rows, PgUp/PgDn scroll, Enter and Shift+R start or resume as in the list, and Esc returns to the list.
 
 Deleting asks for confirmation and permanently removes the plan and its evidence. It is refused while a live session owns the plan or native work is pending. Without an interactive UI, bare `/atlas` prints the plan list.
 

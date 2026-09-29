@@ -12,10 +12,11 @@ import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
-import { type AtlasFilter, AtlasMenu, type AtlasMenuAction } from "./atlas-menu.ts";
+import { type AtlasFilter, AtlasMenu, type AtlasMenuAction, AtlasPlanView, type AtlasPlanViewAction, formatTime } from "./atlas-menu.ts";
 import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
-import { type AtlasPlan, AtlasStore } from "./atlas-store.ts";
+import { findPlanSessions } from "./atlas-sessions.ts";
+import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import {
   type ExecutionLedger,
@@ -56,6 +57,7 @@ const ACTIVATE_TOOL = "prometheus_activate";
 const RELEASE_TOOL = "atlas_release";
 const LEDGER_TOOL = "atlas_ledger";
 const STATE_ENTRY = "wows-omp-omo-prometheus.state";
+const ATLAS_START_TYPE = "wows-omp-omo-prometheus.atlas-start";
 const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
 const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
@@ -654,7 +656,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const atlasCommand = async (args: string, ctx: ExtensionContext): Promise<void> => {
-    let selector = args.trim();
+    const selector = args.trim();
     const live = mainSession(ctx);
     if (!live) {
       commandNotice(ctx, "Atlas requires the registered main session.", "error");
@@ -701,94 +703,60 @@ export default function prometheus(pi: ExtensionAPI): void {
       await release(ctx, "/atlas", "executing");
       return;
     }
-    if (selector && (current?.phase === "planning" || live.getPlanModeState()?.enabled === true)) {
+    if (selector) {
+      await enterPlan(ctx, selector, true);
+      return;
+    }
+    let store: AtlasStore;
+    try {
+      store = storeFor(ctx);
+    } catch (error) {
+      commandNotice(ctx, `Atlas entry refused: ${errorMessage(error)}`, "error");
+      return;
+    }
+    if (!ctx.hasUI) {
+      const plans = await store.list();
       commandNotice(
         ctx,
-        "Atlas cannot enter during planning. Exit planning first; Atlas only executes plans with native approval.",
-        "error",
+        `Atlas is inactive. Use /atlas <plan-name-or-id> to enter an approved plan.\n${
+          plans.length
+            ? plans.map((plan) => `- ${plan.name} (${plan.id}) — ${plan.cwd}`).join("\n")
+            : "No shared approved plans are available."
+        }`,
       );
       return;
     }
-    let record: SessionRecord | undefined;
-    const activation = {};
-    if (selector) {
-      record = recordFor(ctx.sessionManager.getSessionId());
-      record.phase = "executing";
-      record.activation = activation;
-      persist(record);
+    try {
+      await dispatchMenu(ctx, store);
+    } finally {
+      await refreshAtlasCompletions(ctx);
     }
+  };
+
+  const planningBlocks = (ctx: ExtensionContext): boolean => {
+    const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+    if (record?.phase !== "planning" && mainSession(ctx)?.getPlanModeState()?.enabled !== true) return false;
+    commandNotice(ctx, "Atlas cannot enter during planning. Exit planning first; Atlas only executes plans with native approval.", "error");
+    return true;
+  };
+
+  /** Binds the plan to the current session; `autoStart` then kicks off execution like native plan approval does. */
+  const enterPlan = async (ctx: ExtensionContext, selector: string, autoStart: boolean): Promise<void> => {
+    const live = mainSession(ctx);
+    if (!live) {
+      commandNotice(ctx, "Atlas requires the registered main session.", "error");
+      return;
+    }
+    if (planningBlocks(ctx)) return;
+    const activation = {};
+    const record = recordFor(ctx.sessionManager.getSessionId());
+    record.phase = "executing";
+    record.activation = activation;
+    persist(record);
     try {
       const store = storeFor(ctx);
-      if (!selector) {
-        if (!ctx.hasUI) {
-          const plans = await store.list();
-          commandNotice(
-            ctx,
-            `Atlas is inactive. Use /atlas <plan-name-or-id> to enter an approved plan.\n${
-              plans.length
-                ? plans.map((plan) => `- ${plan.name} (${plan.id}) — ${plan.cwd}`).join("\n")
-                : "No shared approved plans are available."
-            }`,
-          );
-          return;
-        }
-        let filter: AtlasFilter = "unfinished";
-        let query = "";
-        while (true) {
-          const workspace = await fs.realpath(ctx.cwd);
-          const details = await store.details(workspace);
-          const action = await ctx.ui.custom<AtlasMenuAction>(
-            (tui, theme, _keys, done) => new AtlasMenu(details, filter, query, theme, tui, done),
-          );
-          filter = action.filter;
-          query = action.query;
-          if (action.kind === "cancel") break;
-          const target = details.find((detail) => detail.plan.id === action.planId);
-          if (!target) continue;
-          if (action.kind === "enter") {
-            selector = target.plan.id;
-            break;
-          }
-          try {
-            if (action.kind === "delete") {
-              if (
-                await ctx.ui.confirm(
-                  "Delete Atlas plan?",
-                  `Permanently remove ${target.plan.name} (${target.plan.id}) and all its evidence?`,
-                )
-              ) {
-                await store.delete(
-                  target.plan.id,
-                  () =>
-                    [...ownerships].some((ownership) => ownership.store === store && ownership.plan.id === target.plan.id) ||
-                    [...records.values()].some((record) => record.phase === "executing" && record.atlasPlanId === target.plan.id),
-                );
-              }
-            } else if (action.kind === "rename") {
-              const name = await ctx.ui.input("Rename Atlas plan", target.plan.name);
-              if (name !== undefined) await store.rename(target.plan.id, name);
-            }
-          } catch (error) {
-            commandNotice(ctx, `Atlas plan change refused: ${errorMessage(error)}`, "error");
-          }
-        }
-        await refreshAtlasCompletions(ctx);
-        if (!selector) return;
-        if (current?.phase === "planning" || live.getPlanModeState()?.enabled === true) {
-          commandNotice(
-            ctx,
-            "Atlas cannot enter during planning. Exit planning first; Atlas only executes plans with native approval.",
-            "error",
-          );
-          return;
-        }
-        record = recordFor(ctx.sessionManager.getSessionId());
-        record.phase = "executing";
-        record.activation = activation;
-        persist(record);
-      }
       const plan = await store.find(selector);
-      if (record?.phase !== "executing" || record.activation !== activation) throw new Error("Atlas entry changed during plan selection");
+      if (record.phase !== "executing" || record.activation !== activation) throw new Error("Atlas entry changed during plan selection");
       record.atlasPlanId = plan.id;
       record.planSha256 = plan.planSha256;
       record.proposedByToolCallId = plan.proposedByToolCallId;
@@ -808,14 +776,151 @@ export default function prometheus(pi: ExtensionAPI): void {
         `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. Bare /atlas exits.${modelNotice}`,
       );
       await refreshAtlasCompletions(ctx);
-    } catch (error) {
-      if (record?.activation !== activation && selector) return;
-      if (record) {
-        record.ledgerError = errorMessage(error);
-        await syncTools(false, true, true);
+      if (autoStart) {
+        pi.sendMessage(
+          {
+            customType: ATLAS_START_TYPE,
+            content: `Execute the approved plan ${plan.name} (${plan.id}) now. Check \`${LEDGER_TOOL}\` status, then dispatch every ready row to its assigned agent.`,
+            display: true,
+          },
+          { triggerTurn: true, deliverAs: "followUp" },
+        );
       }
+    } catch (error) {
+      if (record.activation !== activation) return;
+      record.ledgerError = errorMessage(error);
+      await syncTools(false, true, true);
       await refreshAtlasCompletions(ctx);
-      commandNotice(ctx, record ? pauseMessage(record) : `Atlas entry refused: ${errorMessage(error)}`, "error");
+      commandNotice(ctx, pauseMessage(record), "error");
+    }
+  };
+
+  const isCommandContext = (ctx: ExtensionContext): ctx is ExtensionCommandContext =>
+    "newSession" in ctx && typeof ctx.newSession === "function" && "switchSession" in ctx && typeof ctx.switchSession === "function";
+
+  const hasConversation = (ctx: ExtensionContext): boolean =>
+    ctx.sessionManager
+      .getBranch()
+      .some((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"));
+
+  /** Returns false when the user backed out, so the dispatch menu reopens. */
+  const startPlan = async (ctx: ExtensionContext, target: AtlasPlanDetail): Promise<boolean> => {
+    if (hasConversation(ctx)) {
+      const fresh = "Start in a new session";
+      const here = "Start in this session";
+      const choice = await ctx.ui.select(`This session already has a conversation. Where should Atlas run ${target.plan.name}?`, [
+        ...(isCommandContext(ctx) ? [fresh] : []),
+        here,
+        "Cancel",
+      ]);
+      if (choice !== fresh && choice !== here) return false;
+      if (choice === fresh && isCommandContext(ctx) && (await ctx.newSession()).cancelled) {
+        commandNotice(ctx, "A new session could not be started; Atlas did not start.", "warning");
+        return true;
+      }
+    }
+    await enterPlan(ctx, target.plan.id, true);
+    return true;
+  };
+
+  /** Returns a refusal to show in the menu, or undefined once the plan is resumed (or the user backed out). */
+  const resumePlan = async (ctx: ExtensionContext, target: AtlasPlanDetail): Promise<string | undefined | false> => {
+    const live = mainSession(ctx);
+    if (!live) return "Atlas requires the registered main session";
+    const here = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+    if (here?.phase === "planning" || live.getPlanModeState()?.enabled === true)
+      return "Cannot resume during planning; exit planning first";
+    const sessionDir = ctx.sessionManager.getSessionDir();
+    const sessions = sessionDir ? await findPlanSessions(sessionDir, STATE_ENTRY, target.plan.id) : [];
+    if (!sessions.length) return `Cannot resume: no session in this project has executed ${target.plan.name}; press Enter to start it`;
+    const currentId = ctx.sessionManager.getSessionId();
+    let session = sessions[0];
+    if (sessions.length > 1) {
+      const labels = sessions.map(
+        (candidate) =>
+          `${formatTime(candidate.modified)}  ${candidate.title.slice(0, 60) || "Untitled session"}  ${candidate.id.slice(0, 8)}${candidate.id === currentId ? "  (this session)" : ""}`,
+      );
+      const choice = await ctx.ui.select(`Resume ${target.plan.name} in which session? Most recent first.`, labels);
+      if (choice === undefined) return false;
+      session = sessions[labels.indexOf(choice)];
+    }
+    if (!session) return false;
+    if (session.id !== currentId) {
+      if (!isCommandContext(ctx)) return "Cannot resume from here: switching sessions needs the /atlas command";
+      // The host keeps the plan reference across a switch; drop this idle session's stale one so the target can rebind.
+      live.setPlanReferencePath(DEFAULT_PLAN_REFERENCE);
+      if ((await ctx.switchSession(session.path)).cancelled) return "Session switch was cancelled";
+      const restored = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+      if (restored?.phase === "executing") {
+        if (restored.atlasPlanId !== target.plan.id) {
+          commandNotice(
+            ctx,
+            `This session is executing another Atlas plan (${restored.atlasPlanId ?? "unknown"}). Run /atlas to exit it first.`,
+            "error",
+          );
+        } else if (!restored.ledgerError) {
+          commandNotice(ctx, `Atlas resumed ${target.plan.name} in this session. Send a message to continue; bare /atlas exits.`);
+        }
+        return undefined;
+      }
+    }
+    await enterPlan(ctx, target.plan.id, false);
+    return undefined;
+  };
+
+  const dispatchMenu = async (ctx: ExtensionContext, store: AtlasStore): Promise<void> => {
+    let filter: AtlasFilter = "unfinished";
+    let query = "";
+    let selectedId: string | undefined;
+    let message: string | undefined;
+    while (true) {
+      const workspace = await fs.realpath(ctx.cwd);
+      const details = await store.details(workspace);
+      const options = { selectedId, message };
+      let action = await ctx.ui.custom<AtlasMenuAction>(
+        (tui, theme, _keys, done) => new AtlasMenu(details, filter, query, theme, tui, done, options),
+      );
+      filter = action.filter;
+      query = action.query;
+      selectedId = action.planId ?? selectedId;
+      message = undefined;
+      if (action.kind === "cancel") return;
+      const target = details.find((detail) => detail.plan.id === action.planId);
+      if (!target) continue;
+      if (action.kind === "inspect") {
+        const next = await ctx.ui.custom<AtlasPlanViewAction>(
+          (tui, theme, _keys, done) =>
+            new AtlasPlanView(target, action.filter === "all", theme, tui, (file) => fs.readFile(file, "utf8"), done),
+          { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
+        );
+        if (next === "back") continue;
+        action = { ...action, kind: next };
+      }
+      try {
+        if (action.kind === "start") {
+          if (await startPlan(ctx, target)) return;
+        } else if (action.kind === "resume") {
+          const refusal = await resumePlan(ctx, target);
+          if (refusal === undefined) return;
+          if (refusal) message = refusal;
+        } else if (action.kind === "delete") {
+          if (
+            await ctx.ui.confirm("Delete Atlas plan?", `Permanently remove ${target.plan.name} (${target.plan.id}) and all its evidence?`)
+          ) {
+            await store.delete(
+              target.plan.id,
+              () =>
+                [...ownerships].some((ownership) => ownership.store === store && ownership.plan.id === target.plan.id) ||
+                [...records.values()].some((record) => record.phase === "executing" && record.atlasPlanId === target.plan.id),
+            );
+          }
+        } else if (action.kind === "rename") {
+          const name = await ctx.ui.input("Rename Atlas plan", target.plan.name);
+          if (name !== undefined) await store.rename(target.plan.id, name);
+        }
+      } catch (error) {
+        message = `Atlas plan change refused: ${errorMessage(error)}`;
+      }
     }
   };
 
@@ -979,6 +1084,8 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (current && event.source !== "extension") current.stallCount = 0;
     const atlas = parseAtlasCommand(event.text);
     if (atlas) {
+      // The dispatch menu can open a new session or switch to one, which only the host command context allows.
+      if (!atlas.selector && event.source === "interactive" && current?.phase !== "executing") return undefined;
       await atlasCommand(atlas.selector, ctx);
       return { handled: true };
     }

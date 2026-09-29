@@ -6,7 +6,16 @@ import { hostname } from "node:os";
 import * as path from "node:path";
 
 import { validateGateOutput } from "./evidence.ts";
-import { type ChildReceipt, createLedger, type ExecutionLedger, invalidateRows, isComplete, planDigest, restoreLedger } from "./ledger.ts";
+import {
+  type ChildReceipt,
+  createLedger,
+  type ExecutionLedger,
+  type ItemStatus,
+  invalidateRows,
+  isComplete,
+  planDigest,
+  restoreLedger,
+} from "./ledger.ts";
 import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
 
 export interface AtlasPlan {
@@ -24,14 +33,32 @@ export interface AtlasPlan {
   proposedByToolCallId: string;
 }
 
+export interface AtlasRowDetail {
+  id: string;
+  title: string;
+  status: ItemStatus;
+  agent: string;
+  acceptance: string;
+  dependsOn: string[];
+  evidence?: string;
+  attempt?: string;
+  updatedAt: number;
+  receipt?: Pick<ChildReceipt, "receiptId" | "childAgentId" | "sessionId" | "capturedAt">;
+  /** Archived native child output backing a completed row. */
+  outputPath?: string;
+}
+
 export interface AtlasPlanDetail {
   plan: AtlasPlan;
   status: string;
   done: number;
   total: number;
-  rows: { id: string; title: string; status: string }[];
+  rows: AtlasRowDetail[];
   unfinished: boolean;
   enterable: boolean;
+  /** Some row moved or a session has held the plan before. */
+  started: boolean;
+  inUse: boolean;
 }
 
 interface Approval {
@@ -507,7 +534,17 @@ export class AtlasStore {
       (await this.list()).map(async (plan) => {
         const mismatch = plan.cwd !== workspace;
         if (plan.invalidReason)
-          return { plan, status: `Invalid: ${plan.invalidReason}`, done: 0, total: 0, rows: [], unfinished: false, enterable: false };
+          return {
+            plan,
+            status: `Invalid: ${plan.invalidReason}`,
+            done: 0,
+            total: 0,
+            rows: [],
+            unfinished: false,
+            enterable: false,
+            started: false,
+            inUse: false,
+          };
         try {
           const { approvalSha256 } = await this.#plan(plan.id);
           const data = await jsonFile(plan.ledgerPath);
@@ -531,11 +568,12 @@ export class AtlasStore {
             }
           }
           const complete = isComplete(ledger);
+          const started = slots.length > 0 || rows.some((row) => row.status !== "open");
           const status = inUse
             ? "In use by another session"
             : complete
               ? "Complete"
-              : rows.some((row) => row.status !== "open")
+              : started
                 ? `In progress ${done}/${rows.length}`
                 : "Not started";
           return {
@@ -543,9 +581,28 @@ export class AtlasStore {
             status: `${status}${status.startsWith("In progress") ? "" : ` (${done}/${rows.length})`}${mismatch ? " · Different workspace" : ""}`,
             done,
             total: rows.length,
-            rows: rows.map(({ id, title, status }) => ({ id, title, status })),
+            rows: rows.map((row) => ({
+              id: row.id,
+              title: row.title,
+              status: row.status,
+              agent: row.dispatchAgent ?? row.agent,
+              acceptance: row.acceptance,
+              dependsOn: row.dependsOn,
+              evidence: row.evidence,
+              attempt: row.attempt,
+              updatedAt: row.updatedAt,
+              receipt: row.receipt && {
+                receiptId: row.receipt.receiptId,
+                childAgentId: row.receipt.childAgentId,
+                sessionId: row.receipt.sessionId,
+                capturedAt: row.receipt.capturedAt,
+              },
+              outputPath: row.receipt && path.join(plan.directory, "evidence", `${row.receipt.receiptId}.md`),
+            })),
             unfinished: !mismatch && !complete,
             enterable: !mismatch && !complete && !inUse,
+            started,
+            inUse,
           };
         } catch (error) {
           return {
@@ -556,6 +613,8 @@ export class AtlasStore {
             rows: [],
             unfinished: false,
             enterable: false,
+            started: false,
+            inUse: false,
           };
         }
       }),

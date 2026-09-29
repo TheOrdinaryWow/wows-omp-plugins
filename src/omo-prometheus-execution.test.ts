@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,9 @@ async function scenario(name: string, root: string): Promise<void> {
   const notices: string[] = [];
   const menuRenders: string[] = [];
   let menuKey = "\x1b";
+  const selections: Array<{ title: string; options: string[] }> = [];
+  const sent: Array<{ message: { customType?: string; content?: unknown }; options: unknown }> = [];
+  const sessionFiles = new Map<string, { id: string; entries: unknown[] }>();
   const completions = new Map<string, (prefix: string) => Array<{ value: string; description?: string }> | null>();
   const commands = new Map<string, (args: string, context: ExtensionContext) => Promise<void>>();
   const nativeJobs: Array<{
@@ -156,10 +159,22 @@ async function scenario(name: string, root: string): Promise<void> {
       delivery: { queued: 0, delivering: false, pendingJobIds: [] },
     }),
   }) as AgentSession;
+  const switchTo = async (id: string, next: unknown[], reason: "new" | "resume") => {
+    sessionId = id;
+    entries.splice(0, entries.length, ...next);
+    await hook("session_switch", { reason });
+    return { cancelled: false };
+  };
   const ctx = {
     cwd: root,
     hasUI: true,
     sessionManager,
+    newSession: async () => await switchTo(`fresh-${sequence++}`, [], "new"),
+    switchSession: async (file: string) => {
+      const target = sessionFiles.get(file);
+      assert(target, `Unknown session file ${file}`);
+      return await switchTo(target.id, structuredClone(target.entries), "resume");
+    },
     getSystemPrompt: () => [],
     ui: {
       notify(message: string) {
@@ -169,6 +184,10 @@ async function scenario(name: string, root: string): Promise<void> {
         confirmations += 1;
         confirmTitles.push(title);
         return confirmAnswer;
+      },
+      select: async (title: string, options: string[]) => {
+        selections.push({ title, options });
+        return options[0];
       },
       custom: async (
         factory: (
@@ -222,7 +241,9 @@ async function scenario(name: string, root: string): Promise<void> {
           sourceInfo: { source: "extension", path: fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url)) },
         })),
       ],
-      sendMessage() {},
+      sendMessage(message: { customType?: string; content?: unknown }, options: unknown) {
+        sent.push({ message, options });
+      },
       sendUserMessage() {},
     } as unknown as ExtensionAPI;
     registerExtension(api);
@@ -634,9 +655,63 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(complete("Foreign"), null);
     assert.match(menuRenders.at(-1) ?? "", /Current work/);
     assert.doesNotMatch(menuRenders.at(-1) ?? "", /Foreign work/);
-    menuKey = " ";
+    menuKey = "\r";
     await commands.get("atlas")?.("", ctx);
     assert.equal(reference, `atlas://${current.id}/plan.md`);
+    return;
+  }
+
+  if (name === "atlas-dispatch") {
+    await commands.get("atlas")?.("", ctx);
+    refused(await call({ action: "status" }));
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const store = new AtlasStore(sessionManager.getSessionDir());
+    const work = await store.create({
+      name: "Dispatch work",
+      content: plan,
+      cwd: root,
+      sourcePlanPath: "local://dispatch-plan.md",
+      sourceSessionId: "approved-origin",
+      proposedByToolCallId: "dispatch-proposal",
+      availableAgents: ["task", "reviewer"],
+    });
+    const kickoffs = () => sent.filter(({ message }) => message.customType === "wows-omp-omo-prometheus.atlas-start");
+    // Enter in a session that already has a conversation asks where to run, then starts on its own.
+    entries.push({ type: "message", message: { role: "user", content: "earlier question" } });
+    menuKey = "\r";
+    await commands.get("atlas")?.("", ctx);
+    assert.deepEqual(selections.at(-1)?.options, ["Start in a new session", "Start in this session", "Cancel"]);
+    assert.match(sessionId, /^fresh-/);
+    assert.equal(reference, `atlas://${work.id}/plan.md`);
+    ok(await call({ action: "status" }));
+    assert.equal(kickoffs().length, 1);
+    assert.deepEqual(sent.at(-1)?.options, { triggerTurn: true, deliverAs: "followUp" });
+    const executedEntries = structuredClone(entries);
+    await commands.get("atlas")?.("", ctx);
+    refused(await call({ action: "status" }));
+
+    // Resume lists sessions that executed the plan, newest first, and returns there without a kickoff.
+    const sessionsDir = sessionManager.getSessionDir();
+    const writeSession = async (id: string, modified: number) => {
+      const file = join(sessionsDir, `${id}.jsonl`);
+      const lines = [{ type: "title", v: 1, title: `${id} title` }, { type: "session", version: 3, id, cwd: root }, ...executedEntries];
+      await writeFile(file, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+      await utimes(file, modified, modified);
+      sessionFiles.set(file, { id, entries: executedEntries });
+    };
+    await writeSession("older-worker", 1_000_000);
+    await writeSession("newer-worker", 2_000_000);
+    menuKey = "R";
+    await commands.get("atlas")?.("", ctx);
+    const choices = selections.at(-1)?.options ?? [];
+    assert.equal(choices.length, 2);
+    assert.match(choices[0] ?? "", /newer-worker title/);
+    assert.match(choices[1] ?? "", /older-worker title/);
+    assert.equal(sessionId, "newer-worker");
+    assert.equal(reference, `atlas://${work.id}/plan.md`);
+    ok(await call({ action: "status" }));
+    assert.equal(kickoffs().length, 1);
+    assert.match(notices.at(-1) ?? "", /Atlas resumed Dispatch work/);
     return;
   }
 
@@ -1519,6 +1594,7 @@ if (process.env[CHILD_ENV]) {
       "cross-session",
       "exact-commands",
       "atlas-autocomplete",
+      "atlas-dispatch",
       "atlas-model-role",
       "plain-plan-approval",
       "exit-live-child",
