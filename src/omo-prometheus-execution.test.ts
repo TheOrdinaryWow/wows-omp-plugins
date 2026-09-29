@@ -95,6 +95,8 @@ async function scenario(name: string, root: string): Promise<void> {
   let reference: string | undefined;
   let sequence = 0;
   let confirmations = 0;
+  let confirmAnswer = true as boolean;
+  const confirmTitles: string[] = [];
   let sessionId = "integrity-session";
   const notices: string[] = [];
   const menuRenders: string[] = [];
@@ -159,9 +161,10 @@ async function scenario(name: string, root: string): Promise<void> {
       notify(message: string) {
         notices.push(message);
       },
-      confirm: async () => {
+      confirm: async (title: string) => {
         confirmations += 1;
-        return true;
+        confirmTitles.push(title);
+        return confirmAnswer;
       },
       custom: async (
         factory: (
@@ -591,7 +594,10 @@ async function scenario(name: string, root: string): Promise<void> {
   if (name === "atlas-autocomplete") {
     await tasksDone();
     await gatesDone();
+    // A fully verified plan exits immediately, without the early-exit prompt.
     await commands.get("atlas")?.("", ctx);
+    assert.equal(confirmations, 0);
+    refused(await call({ action: "status" }));
     // Host-dependent storage stays inside the isolated child process.
     const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
     const store = new AtlasStore(sessionManager.getSessionDir());
@@ -1134,9 +1140,9 @@ async function scenario(name: string, root: string): Promise<void> {
     const approvedReference = reference;
     for (const selector of ["integrity", "missing-plan"]) {
       await commands.get("atlas")?.(selector, ctx);
-      assert.match(notices.at(-1) ?? "", /already active/);
+      assert.match(notices.at(-1) ?? "", /Switching plans is not allowed/);
       await hook("input", { text: `/atlas ${selector}`, source: "user" });
-      assert.match(notices.at(-1) ?? "", /already active/);
+      assert.match(notices.at(-1) ?? "", /Switching plans is not allowed/);
       assert.equal(reference, approvedReference);
     }
     await commands.get("prometheus")?.("", ctx);
@@ -1145,7 +1151,16 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match(notices.at(-1) ?? "", /Atlas is active/);
     ok(await call({ action: "status" }));
     assert.notEqual(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
+    // Leaving an unfinished plan asks first; declining keeps Atlas active and opens no menu.
+    confirmAnswer = false;
+    const rendersBefore = menuRenders.length;
     await commands.get("atlas")?.("", ctx);
+    assert.deepEqual(confirmTitles, ["Exit Atlas early?"]);
+    assert.equal(menuRenders.length, rendersBefore);
+    ok(await call({ action: "status" }));
+    confirmAnswer = true;
+    await commands.get("atlas")?.("", ctx);
+    assert.equal(menuRenders.length, rendersBefore);
     refused(await call({ action: "status" }));
     await commands.get("atlas")?.("", ctx);
     assert.match(menuRenders.at(-1) ?? "", /integrity/);

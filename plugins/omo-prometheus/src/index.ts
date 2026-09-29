@@ -662,13 +662,43 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const current = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (current?.phase === "executing") {
-      if (selector)
+      const activePlan = current.ownership?.plan.name ?? current.atlasPlanId ?? "the current plan";
+      if (selector) {
         commandNotice(
           ctx,
-          "Atlas is already active. Any /atlas argument is refused; run bare /atlas to exit before entering a plan.",
+          `Already in an Atlas session for ${activePlan}. Switching plans is not allowed; run bare /atlas to exit first, then enter ${selector}.`,
           "error",
         );
-      else await release(ctx, "/atlas", "executing");
+        return;
+      }
+      if (ctx.hasUI) {
+        // Exit must never wait on the ledger lock (an evidence capture may hold it), so this
+        // advisory count reads the last published ledger directly and authorizes nothing.
+        let remaining: number | undefined;
+        try {
+          const snapshot: unknown = JSON.parse(await fs.readFile(current.ledgerPath ?? "", "utf8"));
+          const rows =
+            snapshot && typeof snapshot === "object" && "items" in snapshot && "gates" in snapshot
+              ? [snapshot.items, snapshot.gates].flatMap((list) => (Array.isArray(list) ? list : []))
+              : [];
+          if (rows.length) remaining = rows.filter((row) => row?.status !== "done" || !row.receipt).length;
+        } catch {
+          remaining = undefined;
+        }
+        if (remaining !== 0) {
+          const confirmed = await ctx.ui.confirm(
+            "Exit Atlas early?",
+            remaining === undefined
+              ? `${activePlan} progress cannot be verified. Exit Atlas anyway? Shared progress is kept.`
+              : `${activePlan} still has ${remaining} unfinished item(s). Exit Atlas anyway? Shared progress is kept and you can resume later.`,
+          );
+          if (!confirmed) {
+            commandNotice(ctx, "Atlas exit cancelled; Atlas stays active.");
+            return;
+          }
+        }
+      }
+      await release(ctx, "/atlas", "executing");
       return;
     }
     if (selector && (current?.phase === "planning" || live.getPlanModeState()?.enabled === true)) {
