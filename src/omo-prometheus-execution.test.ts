@@ -80,6 +80,10 @@ async function scenario(name: string, root: string): Promise<void> {
   const appliedRoles: Array<{ role: string; model: string }> = [];
   const { InternalUrlRouter } = await import("@oh-my-pi/pi-coding-agent/internal-urls");
   const { loadOverallPlanReference } = await import("@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff");
+  const tuiModule = await import("@oh-my-pi/pi-tui");
+  await tuiModule.initTheme();
+  // `theme` is a live binding assigned by initTheme; read it afterwards, not at destructuring time.
+  const hostTheme = tuiModule.theme;
   const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
   let artifacts = join(root, "artifacts");
   await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
@@ -175,8 +179,8 @@ async function scenario(name: string, root: string): Promise<void> {
         ) => { render(width: number): readonly string[]; handleInput(key: string): void },
       ) =>
         await new Promise<unknown>((resolve) => {
-          const component = factory({ requestRender() {} }, { fg: (_color: string, value: string) => value }, {}, resolve);
-          menuRenders.push(component.render(120).join("\n"));
+          const component = factory({ requestRender() {} }, hostTheme, {}, resolve);
+          menuRenders.push(Bun.stripANSI(component.render(120).join("\n")));
           component.handleInput(menuKey);
         }),
     },

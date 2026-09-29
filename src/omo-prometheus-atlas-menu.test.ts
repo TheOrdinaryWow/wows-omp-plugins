@@ -1,9 +1,13 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
-import type { Theme, TUI } from "@oh-my-pi/pi-tui";
+import { initTheme, type Theme, type TUI, theme } from "@oh-my-pi/pi-tui";
 
 import { AtlasMenu, type AtlasMenuAction } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
+
+beforeAll(async () => {
+  await initTheme();
+});
 
 const plan: AtlasPlanDetail = {
   plan: {
@@ -32,9 +36,9 @@ const plan: AtlasPlanDetail = {
 
 function menu(): { component: AtlasMenu; actions: AtlasMenuAction[] } {
   const actions: AtlasMenuAction[] = [];
-  const theme = { fg: (_color: string, value: string) => value } as Theme;
+  const hostTheme: Theme = theme;
   const tui = { requestRender() {} } as TUI;
-  return { component: new AtlasMenu([plan], "unfinished", "", theme, tui, (action) => actions.push(action)), actions };
+  return { component: new AtlasMenu([plan], "unfinished", "", hostTheme, tui, (action) => actions.push(action)), actions };
 }
 
 test("Atlas menu Backspace searches then deletes only with an empty query", () => {
@@ -70,14 +74,13 @@ test("Atlas menu Space enters, Tab switches to display-only All, and Esc cancels
   second.component.handleInput("\r");
   second.component.handleInput(" ");
   expect(second.actions).toEqual([]);
-  expect(second.component.render(100).join("\n")).toContain("T1 Build");
+  expect(Bun.stripANSI(second.component.render(100).join("\n"))).toMatch(/T1\s+Build/);
   second.component.handleInput("\x1b");
   expect(second.actions).toMatchObject([{ kind: "cancel", filter: "all" }]);
 });
 
 test("Atlas menu refuses entering a plan that is not enterable instead of pausing the session", () => {
   const actions: AtlasMenuAction[] = [];
-  const theme = { fg: (_color: string, value: string) => value } as Theme;
   const tui = { requestRender() {} } as TUI;
   const component = new AtlasMenu(
     [{ ...plan, status: "In use by another session", enterable: false }],
