@@ -55,7 +55,7 @@ Both approval choices hand off to Atlas. "Approve and execute" starts a fresh se
 /atlas                  # while active: exit without discarding progress
 ```
 
-Any argument while Atlas is active is an error, even the current plan name. Exit first; the same OMP session may then enter another plan. Names must match exactly; if several approved plans share a name, select the full ID shown by the list. Atlas cannot enter during planning or execute an unapproved plan. A failed entry remains paused until you exit with bare `/atlas`; it does not silently authorize ordinary implementation.
+Any argument while Atlas is active is an error, even the current plan name. Exit first; the same OMP session may then enter another plan. A name matches the plan's listed name or its proposal file name, so `checkout` and `checkout-plan` select the same plan; an unknown name lists the available ones. If several approved plans share a name, select the full ID shown by the list. Atlas cannot enter during planning or execute an unapproved plan. A failed entry remains paused until you exit with bare `/atlas`; it does not silently authorize ordinary implementation.
 
 Session A can complete part of a plan, exit Atlas, and leave session B to resume it with `/atlas <name>`. Both must use the same host session directory and canonical workspace. Exiting is immediate and does not cancel children or claim completion. If native work is still running, its plan remains exclusively owned until final results or actual job settlement; another session cannot race those writers. Closing the host is not blocked. A provably dead local owner can be recovered; ambiguous or foreign-host ownership is refused.
 
