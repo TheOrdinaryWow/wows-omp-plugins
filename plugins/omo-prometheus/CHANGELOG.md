@@ -9,6 +9,20 @@
 - Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.7.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.6.0...omo-prometheus@0.7.0) (2026-09-29)
+
+
+### Features
+
+* **omo-prometheus:** frame the /atlas menu with native OMP panel chrome and aligned progress ([08391df](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/08391df63180fde929ccfd7c728920b566ceb468))
+* **omo-prometheus:** turn /atlas into Atlas Dispatch with auto-start, session resume and a fullscreen plan view ([39e63db](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/39e63db946caf292a8cd31d8a489fb380455c771))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** refuse /prometheus when OMP plan mode is disabled in settings ([49fd2b7](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/49fd2b77ad85a57ab52b94288d43de95e1ad102f))
+* **omo-prometheus:** render /atlas menu glyphs from the active OMP symbol preset ([293b46b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/293b46b7d20cff57ebf89fd28c994e0e4cfb29e4))
+
 ## [0.6.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.5.0...omo-prometheus@0.6.0) (2026-09-29)
 
 
