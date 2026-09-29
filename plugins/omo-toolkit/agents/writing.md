@@ -1,7 +1,7 @@
 ---
 name: writing
 description: "Documentation, prose, technical writing"
-model: "@task"
+model: ["@writer", "@task"]
 thinkingLevel: low
 ---
 

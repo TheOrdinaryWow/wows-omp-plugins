@@ -1,7 +1,7 @@
 ---
 name: librarian
 description: "Specialized codebase understanding agent for multi-repository analysis, searching remote codebases, retrieving official documentation, and finding implementation examples using the GitHub CLI and direct documentation retrieval. MUST BE USED when users ask to look up code in remote repositories, explain library internals, or find usage examples in open source."
-model: "@smol"
+model: ["@tiny", "@smol"]
 thinkingLevel: off
 tools: [read, glob, grep, find, web_search, bash]
 ---

@@ -18,17 +18,17 @@ Category agents use the same worker base as OMP's bundled `task` agent, then add
 |`deep-high`|Escalated reasoning and implementation after a material choice is authorized; otherwise returns options and recommendation to its parent|`@slow`|`xhigh`|
 |`ultrabrain`|Hard logic and architecture reasoning with clear goals|`@slow`|`max`|
 |`architect`|Read-only system design comparison and recommendation|`@slow`|`max`|
-|`visual-engineering`|UI/UX, styling, animation, frontend, and design-system work|`@designer`, then `@task`|`high`|
-|`artistry`|Creative, unconventional problem solving|`@task`|`high`|
-|`writing`|Documentation, prose, and technical writing|`@task`|`low`|
+|`visual-engineering`|UI/UX, styling, animation, frontend, and design-system work|`@designer`, then `@task`|`xhigh`|
+|`artistry`|Creative, unconventional problem solving|`@task`|`xhigh`|
+|`writing`|Documentation, prose, and technical writing|`@writer`, then `@task`|`low`|
 
 Research agent:
 
 |Agent|Use for|Default model role|
 |---|---|---|
-|`librarian`|Read-only open-source research with GitHub permalinks and official documentation; thinking off for speed|`@smol`|
+|`librarian`|Read-only open-source research with GitHub permalinks and official documentation; thinking off for speed|`@tiny`, then `@smol`|
 
-Model roles resolve through the user's OMP `modelRoles`. A list is tried in order: `visual-engineering` uses a custom `designer` role when it is configured to an available model and otherwise falls back to `@task`. Override one agent without editing plugin files through `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
+Model roles resolve through the user's OMP `modelRoles`, and a list is tried in order. `visual-engineering` and `writing` use the custom `designer` and `writer` roles when those are configured to an available model, and otherwise fall back to `@task`. `librarian` uses `@tiny`, which falls back to `@smol` when unset; it needs a tool-calling chat model, so if `tiny` points at an on-device `local/` title model, route `librarian` to `@smol` with an override. Override one agent without editing plugin files through `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
 
 ```yaml
 task:
