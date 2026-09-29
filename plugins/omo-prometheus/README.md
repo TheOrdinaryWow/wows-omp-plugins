@@ -8,9 +8,9 @@ It keeps OMP's native Plan Mode and approval flow, then adds the workflow that m
 - Prometheus asks only the questions that can change the plan, with an iterative clarification loop.
 - Configurable Momus and Oracle plan review checks blocking reference, executability, QA, and task-grammar gaps when enabled.
 - Oracle is available for architecture and high-risk decisions.
-- Atlas takes over after approval, delegates every plan task to child agents, tracks progress in a durable execution ledger, and runs four final verification gates before it may release.
+- Atlas takes over after approval, delegates every plan task to child agents, saves progress and verified evidence across sessions, and runs four final verification gates before declaring completion.
 
-The two entry points share one workflow: `/prometheus` is the explicit entry, and native `/plan` can ask whether a large or ambiguous request should switch to the same Prometheus workflow.
+`/prometheus` and opted-in native `/plan` share the planning workflow. `/atlas` separately controls execution and resumes approved plans in another session.
 
 ## Install
 
@@ -27,7 +27,7 @@ Uninstall the retired package with `omp plugin uninstall prometheus@wows-omp-plu
 
 ## Usage
 
-Toggle the enhanced workflow on or off, like native `/plan`:
+Start or leave Prometheus planning, like native `/plan`:
 
 ```text
 /prometheus
@@ -43,9 +43,25 @@ For ordinary native Plan Mode:
 
 The plugin leaves small, well-defined requests on the normal OMP path. For large, cross-cutting, or ambiguous goals, the planner uses `ask` to offer the Prometheus workflow: one question with header `Prometheus` whose second choice names Prometheus. Only that exact question counts as consent. If accepted, it activates the same shared workflow instead of switching to a second planner implementation.
 
-After approval, the main session becomes Atlas. The execution prompt explicitly overrides OMP's delegation preference for this approved Prometheus plan, and the extension also blocks direct implementation tools in the parent session. Use `task` to assign work to child agents. Running `/prometheus` during execution toggles Atlas off and is the emergency escape hatch for the current session.
+After approval, the main session becomes Atlas. The execution prompt overrides OMP's delegation preference for this approved plan, and the extension blocks direct implementation tools in the parent session. Use `task` to assign work to child agents. `/prometheus` never exits Atlas; use bare `/atlas` instead.
 
 Both approval choices hand off to Atlas. "Approve and execute" starts a fresh session: when the plan is proposed, the plugin writes a marker to `local://prometheus/<slug>.proposal.json`, which OMP copies into the new session together with the plan, so the handoff survives the session switch without any in-process state. A plan approved in ordinary Plan Mode has no marker and is left alone.
+
+### Resume with Atlas
+
+```text
+/atlas                  # while inactive: list approved shared plans
+/atlas <plan-name-or-id> # while inactive: enter or resume a plan
+/atlas                  # while active: exit without discarding progress
+```
+
+Any argument while Atlas is active is an error, even the current plan name. Exit first; the same OMP session may then enter another plan. Names must match exactly; if several approved plans share a name, select the full ID shown by the list. Atlas cannot enter during planning or execute an unapproved plan. A failed entry remains paused until you exit with bare `/atlas`; it does not silently authorize ordinary implementation.
+
+Session A can complete part of a plan, exit Atlas, and leave session B to resume it with `/atlas <name>`. Both must use the same host session directory and canonical workspace. Exiting is immediate and does not cancel children or claim completion. If native work is still running, its plan remains exclusively owned until final results or actual job settlement; another session cannot race those writers. Closing the host is not blocked. A provably dead local owner can be recovered; ambiguous or foreign-host ownership is refused.
+
+Some older hosts, including 18.2.11, report peer-message wake lifecycle events without a verifiable final wake-job handle. Atlas does not treat an `idle` or `completed` lifecycle signal as proof that native postprocessing finished. In that case the old plan remains owned until the originating host terminates; start a new session after closing that host to recover it safely.
+
+A cancelled native wake-job wrapper can finish before the underlying child and its postprocessing. That wrapper is not termination proof. Without a stronger final handle, Atlas keeps the old plan owned until the originating host terminates, rather than allowing a concurrent session to take over.
 
 ## Settings
 
@@ -106,20 +122,33 @@ If none in a chain are spawnable, the ledger shows `unavailable` and Atlas repor
 
 ## Execution ledger
 
-Execution creates `local://prometheus/<slug>-ledger.json` with a version-2 ledger: every T/F row retains its acceptance criteria, dependencies, status, requested and resolved agents, current attempt, evidence receipt, and the exact approved plan SHA-256. The complete dependency graph is validated first; cyclic plans cannot partially execute. Checked plan boxes do not count as receipts.
+Native approval creates a plan bundle below `ctx.sessionManager.getSessionDir()/atlas/<plan-name>--<id>/`. This is normally under `~/.omp/agent/sessions/<working-dir>/atlas/`, not inside the repository or a session's `local://` directory. The host API determines the root, including custom session directories.
+
+```text
+plan.md          exact approved plan
+approval.json    source approval, workspace, and plan identity
+ledger.json      task and gate progress
+checkpoint.json independent attempt and receipt bindings
+evidence/        copied native outputs and origin receipts
+ownership/       exclusive execution ownership records
+```
+
+The version-2 ledger retains each T/F row's acceptance criteria, dependencies, status, requested and resolved agents, attempt, evidence receipt, and exact plan SHA-256. The complete dependency graph is validated first; cyclic plans cannot partially execute. Checked plan boxes do not count as receipts. Use `atlas_ledger`:
 
 - `status` prints rows, acceptance criteria, dependencies, evidence and dispatchable tasks/gates.
-- `start` must run **before** spawning. It returns a fresh attempt and a standalone `prometheus_assignment: {"planSha256":"…","rows":{"T1":"…"}}` line to put in native `task.task` or unambiguous batch `context`. No new native tool argument is introduced. One implementation child can cover several independent started T rows only when the dispatch binds all their attempts; each F row requires its own child.
+- `start` must run **before** spawning. It returns a fresh attempt and a standalone `atlas_assignment: {"planSha256":"…","rows":{"T1":"…"}}` line to put in native `task.task` or unambiguous batch `context`. No new native tool argument is introduced. One implementation child can cover several independent started T rows only when the dispatch binds all their attempts; each F row requires its own child.
 - `done` requires `childAgentId` and inspected `evidence`. The extension correlates the native task call and completion lifecycle with the real direct-child identity, owned output, and final native task result or owner-scoped background-job success. The early child-completed event alone is insufficient: isolated-work capture or commit can still fail afterward. Foreign, running, failed, nonexistent, stale or unbound children cannot complete work. A filename or caller-written `agent://` string is not proof.
 - `block` requires a reason; `reopen` clears an old attempt. Both invalidate transitive descendants and dependent gates, including running attempts whose inputs became stale. Start blocked work only after reopening it.
 
-`prometheus_release` requires every row's valid receipt and then explicit user confirmation. Missing, corrupt, unavailable or mismatched ledgers pause dispatch and completion instead of downgrading to prompt-only execution. Missing artifacts are not silently rebuilt. Restore the exact approved artifacts, or use `/prometheus` to exit and obtain new native approval for a changed plan. An invalid ledger does not cause endless auto-continuation.
+`atlas_release` requires every row's valid receipt and explicit user confirmation. Missing, corrupt, unavailable or mismatched ledgers pause dispatch and completion instead of downgrading to prompt-only execution. Missing artifacts are not silently rebuilt. Restore the exact approved artifacts, or use `/atlas` to exit and obtain new native approval for a changed plan. An invalid ledger does not cause endless auto-continuation.
 
-**Auto-continuation.** When Atlas stops while ledger rows are unfinished, the plugin asks OMP to continue the session with a hidden `<prometheus-continuation>` message that carries the ledger summary. OMP caps chained continuations at eight per user turn. If two continuations in a row make no ledger progress, the plugin stops continuing and notifies you: run `/prometheus` to release, or send new instructions. Any message you send resets the stall count.
+**Auto-continuation.** When Atlas stops while ledger rows are unfinished, the plugin asks OMP to continue with a hidden `<atlas-continuation>` message containing the ledger summary. OMP caps chained continuations at eight per user turn. Two consecutive continuations without ledger progress stop the loop and notify you: run `/atlas` to exit, or send new instructions. Any user message resets the stall count.
 
-**Resume and persistence.** Workflow state stores the proposal-time plan hash and ledger path. Native completion receipts and the latest attempt checkpoints are independently recorded in session entries; artifact digests are rechecked on use. Verified completed rows survive restart without a populated live registry, but an empty registry cannot authorize a new completion. Missing historical proof, changed output, or unrecorded in-flight attempts reopen for fresh verification. Version-1 ledgers with the same approved bytes migrate with all rows open, never grandfathering status-only completion. Resume still re-resolves unfinished agents against the current roster. Read/validate/update operations serialize per ledger inside the host process and replace JSON files atomically; this is not a multi-process workflow engine, and concurrent independent hosts editing one session are unsupported.
+**Resume and persistence.** Session entries hold the shared plan pointer; the shared checkpoint and evidence are authoritative. Completed rows retain their original session, child, attempt, and receipt identity. Copied native outputs are rechecked against their digests, so verified progress survives deletion of the source session artifacts. `status` exposes the durable output paths for later review. Required findings and observed results belong in native output, not solely in links to session-local reports; arbitrary linked files are not copied.
 
-When reopening the same session resets OMP's plan reference to `local://PLAN.md`, Atlas restores the approved reference only after validating the saved plan, ledger, and proposal marker. A reference explicitly pointing to another plan still pauses execution. This recovery does not transfer the workflow to a new session.
+Missing or changed proof reopens the affected rows and their dependents. Interrupted attempts reopen for fresh work only after ownership can be acquired. Old session branches cannot roll shared progress back. On resume Atlas validates the shared approval, workspace, and ownership before restoring the host reference; an unrelated explicit host reference still pauses recovery. Atomic writes and independent checkpoints prevent a stale ledger from reviving invalidated completion.
+
+**Older plans.** Session-local execution ledgers are not migrated. Their artifacts remain untouched, but resuming one pauses with reapproval guidance. Exit with `/atlas`, obtain fresh native approval, and revalidate execution against a new shared plan. The old `prometheus_ledger` and `prometheus_release` tools are replaced by `atlas_ledger` and `atlas_release`, without aliases.
 
 ## Final gates
 
@@ -134,7 +163,7 @@ After every T row is done, Atlas dispatches F1–F3 to distinct fresh verificati
 
 Each gate's `start` result supplies its exact native `outputSchema`; dispatch with that schema and `schemaMode: "strict"`. The actual child output must be a JSON object containing `gateId`, `planSha256`, `attempt`, `verdict` (`PASS`, `FAIL`, `INCONCLUSIVE`), a nonempty `summary`, a nonempty `evidence` array, and `reviewedGates`. F1–F3 use an empty `reviewedGates` object; F4 must echo the supplied F1–F3 output digests after inspecting those reports. Only a matching structured `PASS` authorizes completion; prose containing a passing word is never parsed as a verdict. Native per-spawn schemas override agent-native prose formats, including Momus's planning-only `[OKAY]` format.
 
-A rejected gate reopens the affected T rows, their transitive dependents, and all final gates. Cancel stale running work and re-run fresh attempts in dependency order. Reopening only F1, F2 or F3 leaves the other independent reviews intact but always invalidates F4. Session attempt checkpoints prevent old receipts from becoming current again after a ledger rollback.
+A rejected gate reopens the affected T rows, their transitive dependents, and all final gates. Cancel stale running work and re-run fresh attempts in dependency order. Reopening only F1, F2 or F3 leaves the other independent reviews intact but always invalidates F4. Shared attempt checkpoints prevent old receipts from becoming current again after a ledger rollback.
 
 ## Models
 
@@ -142,7 +171,9 @@ Metis, Oracle, and Momus run as child agents on OMP's `@slow` role alias. The al
 
 ## Native state and compatibility
 
-This plugin intentionally uses OMP-native `local://` plan artifacts and `xd://propose` approval. It does not create or depend on OMO's `.omo/plans/` or `boulder.json` state: OMP remains the source of truth for plan approval and autosave, and the plugin's proposal marker and execution ledger live beside the plan in the session's `local://` artifacts.
+OMP remains the authority for native `xd://propose` approval and autosave. Planning drafts and the proposal handoff marker use `local://`; approved execution uses the shared Atlas bundle. The plugin neither creates project-local `.omo` state nor replaces native child execution with another worker engine. The minimum supported host remains OMP 18.2.11.
+
+Shared execution requires file-backed sessions and a local filesystem supporting hard links, atomic rename, and file/directory synchronization. In-memory, remote-only, or unsupported storage fails closed. Sessions using different session directories do not discover each other's plans, and moving a host session does not automatically move its sibling `atlas/` directory.
 
 The embedded Prometheus, Metis, Oracle, Momus, and Atlas prompt assets are modified derivatives of OmO. `NOTICE` records the upstream repository, pinned source revision, earlier fork provenance, and modification notice.
 

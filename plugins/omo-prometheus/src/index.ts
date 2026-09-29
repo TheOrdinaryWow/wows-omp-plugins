@@ -1,19 +1,4 @@
-/**
- * Prometheus: one planning workflow with two entry points.
- *
- * `/prometheus` toggles the workflow like the host's native `/plan`, and a native plan-mode
- * session can opt into the same workflow through an `ask`-based depth check
- * plus the `prometheus_activate` tool. Both paths land in one per-session state
- * machine and inject the same plugin-owned skill.
- *
- * After the host's own plan approval the session becomes Atlas: the Atlas
- * prompt and runtime guard force all implementation and verification work into
- * child agents while keeping the host's native plan artifact and handoff.
- *
- * State is tracked per session id and mirrored into session entries; proposal
- * markers and execution ledgers live in session-local artifacts that survive the
- * host's fresh-session approval handoff. No process-global handoff state is used.
- */
+/** Prometheus plans through native approval; Atlas executes shared approved plans. */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,20 +11,18 @@ import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
+import { type AtlasPlan, AtlasStore } from "./atlas-store.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import {
-  type ChildReceipt,
-  createLedger,
   type ExecutionLedger,
   invalidateRows,
   isComplete,
   planDigest,
   refreshDispatchAgents,
   renderLedgerSummary,
-  restoreLedger,
   startRow,
 } from "./ledger.ts";
-import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
+import { writeLedgerAtomic } from "./ledger-store.ts";
 import {
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
@@ -57,6 +40,7 @@ import {
   PLUGIN_OWNED_TOOLS,
   PROMETHEUS_DEEP_OPTION_INDEX,
   PROMETHEUS_OPT_IN_QUESTION_ID,
+  parseAtlasCommand,
   parsePrometheusCommand,
   planReferencesMatch,
   prometheusArtifactUrl,
@@ -65,11 +49,9 @@ import {
 } from "./workflow.ts";
 
 const ACTIVATE_TOOL = "prometheus_activate";
-const RELEASE_TOOL = "prometheus_release";
-const LEDGER_TOOL = "prometheus_ledger";
+const RELEASE_TOOL = "atlas_release";
+const LEDGER_TOOL = "atlas_ledger";
 const STATE_ENTRY = "wows-omp-omo-prometheus.state";
-const RECEIPT_ENTRY = "wows-omp-omo-prometheus.child-receipt";
-const ATTEMPTS_ENTRY = "wows-omp-omo-prometheus.execution-attempts";
 const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
 const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
@@ -88,6 +70,18 @@ function parseReviewLevel(value: unknown): ReviewLevel {
 
 type Phase = "idle" | "planning" | "executing";
 
+interface Ownership {
+  store: AtlasStore;
+  plan: AtlasPlan;
+  sessionId: string;
+  live: AgentSession;
+  parentAgentId: string;
+  ledgerId: string;
+  detached: boolean;
+  operations: number;
+  releasing?: Promise<void>;
+}
+
 interface SessionRecord {
   phase: Phase;
   /** Canonical path returned by the host's successful xd://propose dispatch. */
@@ -104,11 +98,16 @@ interface SessionRecord {
   pendingConsent?: { askToolCallId: string; modeEntryId: string };
   proposalAwaitingApproval?: boolean;
   approvalCompactionPending?: boolean;
-  /** Expected `local://` URL. A missing/corrupt ledger pauses, never disables, enforcement. */
+  /** In-memory, single-use proof that this native compact approval may reset the host reference. */
+  compactHandoffPending?: boolean;
+  /** Shared pointer only; approval, attempts and proof are owned by AtlasStore. */
+  atlasPlanId?: string;
+  sourceSessionId?: string;
   ledgerPath?: string;
   ledgerError?: string;
-  /** Set only by the native approval transition, never restored from session state. */
-  mayInitializeLedger?: boolean;
+  /** Never persisted: a pathname/session entry cannot grant execution ownership. */
+  ownership?: Ownership;
+  activation?: object;
   /** In-memory: newest ledger `updatedAt` seen by the last session_stop continuation. */
   lastContinuationLedgerStamp?: number;
   /** In-memory: consecutive session_stop continuations without ledger progress. */
@@ -125,7 +124,21 @@ export default function prometheus(pi: ExtensionAPI): void {
   const authorizedActivationCalls = new Map<string, string>();
   const reviewLevels = new Map<string, ReviewLevel>();
   const childEvidence = new ChildEvidence();
-  const evidenceSubscription = pi.events?.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (payload) => childEvidence.observe(payload));
+  const stores = new Map<string, AtlasStore>();
+  const ownerships = new Set<Ownership>();
+  const hostBindings = new WeakMap<AgentSession, { sessionId: string; planFilePath: string }>();
+  let settlementTimer: NodeJS.Timeout | undefined;
+  const evidenceSubscription = pi.events?.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (payload) => {
+    childEvidence.observe(payload);
+    // Wake turns reuse the original dispatch id; retain their exact jobs before history eviction.
+    for (const ownership of ownerships) {
+      try {
+        observeNativeJobs(ownership.sessionId, ownership.live, ownership.parentAgentId);
+      } catch (error) {
+        pi.logger.warn("Atlas could not observe native child reactivation", { error: errorMessage(error) });
+      }
+    }
+  });
 
   const loadReviewLevel = async (ctx: ExtensionContext): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
@@ -145,7 +158,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const commandNotice = (ctx: ExtensionCommandContext, message: string, type: "info" | "warning" | "error" = "info"): void => {
+  const commandNotice = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void => {
     if (ctx.hasUI) {
       notify(ctx, message, type);
       return;
@@ -192,12 +205,14 @@ export default function prometheus(pi: ExtensionAPI): void {
   const persist = (record: SessionRecord): void => {
     try {
       pi.appendEntry(STATE_ENTRY, {
-        version: 2,
+        version: 3,
         phase: record.phase,
         planningModeEntryId: record.planningModeEntryId,
         planFilePath: record.planFilePath,
         planSha256: record.planSha256,
         proposedByToolCallId: record.proposedByToolCallId,
+        atlasPlanId: record.atlasPlanId,
+        sourceSessionId: record.sourceSessionId,
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
         proposalAwaitingApproval: record.proposalAwaitingApproval === true,
@@ -220,6 +235,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       const data = entry.data as
         | {
             phase?: unknown;
+            atlasPlanId?: unknown;
+            sourceSessionId?: unknown;
             planFilePath?: unknown;
             planSha256?: unknown;
             planningModeEntryId?: unknown;
@@ -234,6 +251,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (data?.phase !== "idle" && data?.phase !== "planning" && data?.phase !== "executing") continue;
       restored = {
         phase: data.phase,
+        atlasPlanId: typeof data.atlasPlanId === "string" && data.atlasPlanId ? data.atlasPlanId : undefined,
+        sourceSessionId: typeof data.sourceSessionId === "string" && data.sourceSessionId ? data.sourceSessionId : undefined,
         planFilePath: typeof data.planFilePath === "string" && data.planFilePath.trim() ? data.planFilePath : undefined,
         planSha256: typeof data.planSha256 === "string" && /^[a-f0-9]{64}$/.test(data.planSha256) ? data.planSha256 : undefined,
         proposedByToolCallId:
@@ -282,7 +301,16 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const ledgerSummary = (ledger: ExecutionLedger): string => renderLedgerSummary(ledger, availableAgents());
+  const ledgerSummary = (ledger: ExecutionLedger): string => {
+    const proofs = [...ledger.items, ...ledger.gates].flatMap((row) =>
+      row.receipt && row.status === "done"
+        ? [
+            `- ${row.id}: ${path.join(path.dirname(ledger.planFilePath), "evidence", `${row.receipt.receiptId}.md`)} (origin session ${row.receipt.sessionId}, child ${row.receipt.childAgentId})`,
+          ]
+        : [],
+    );
+    return `${renderLedgerSummary(ledger, availableAgents())}${proofs.length ? `\n\nShared verified outputs:\n${proofs.join("\n")}` : ""}`;
+  };
 
   const localOptions = (ctx: ExtensionContext) => ({
     getArtifactsDir: () => ctx.sessionManager.getArtifactsDir(),
@@ -292,195 +320,128 @@ export default function prometheus(pi: ExtensionAPI): void {
   const clearProposalMarker = async (ctx: ExtensionContext, planFilePath: string | undefined): Promise<void> => {
     if (!planFilePath) return;
     try {
-      await fs.rm(resolveLocalUrlToPath(prometheusArtifactUrl(planFilePath, "proposal"), localOptions(ctx)), { force: true });
+      await fs.rm(resolveLocalUrlToPath(prometheusArtifactUrl(planFilePath), localOptions(ctx)), { force: true });
     } catch (error) {
       pi.logger.warn("prometheus could not remove the proposal marker", { error: errorMessage(error) });
     }
   };
 
   const pauseMessage = (record: SessionRecord): string =>
-    `Prometheus execution paused: ${record.ledgerError ?? "the approved execution ledger is unavailable"}. No new task dispatch or completion is permitted. Restore the exact approved plan/ledger, or run /prometheus to exit and obtain fresh native approval; do not use prompt-only execution.`;
+    `Atlas execution paused: ${record.ledgerError ?? "the shared approved execution ledger is unavailable"}. No new task dispatch or completion is permitted. Restore the exact shared proof, or run /atlas to exit and obtain fresh native approval. Existing artifacts are preserved; there is no prompt-only fallback.`;
 
-  const observeFinalJobs = (ctx: ExtensionContext): void => {
-    const live = mainSession(ctx);
-    if (typeof live?.getAsyncJobSnapshot === "function") {
-      childEvidence.observeAsyncJobs(ctx.sessionManager.getSessionId(), live.getAsyncJobSnapshot({ recentLimit: Number.MAX_SAFE_INTEGER }));
+  const storeFor = (ctx: ExtensionContext): AtlasStore => {
+    if (typeof ctx.sessionManager.getSessionDir !== "function" || !ctx.sessionManager.getArtifactsDir()) {
+      throw new Error("Atlas requires a file-backed session with a durable session directory");
     }
+    const sessionDir = ctx.sessionManager.getSessionDir();
+    if (!sessionDir) throw new Error("Atlas requires a durable session directory");
+    const root = path.resolve(sessionDir);
+    let store = stores.get(root);
+    if (!store) {
+      store = new AtlasStore(root);
+      stores.set(root, store);
+    }
+    return store;
   };
 
-  const receiptEntries = (ctx: ExtensionContext): ChildReceipt[] => {
-    const receipts: ChildReceipt[] = [];
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type !== "custom" || entry.customType !== RECEIPT_ENTRY || !entry.data || typeof entry.data !== "object") continue;
-      // Only the plugin writes this entry. Full equality with the ledger receipt is checked before use.
-      const receipt = entry.data as ChildReceipt;
-      if (typeof receipt.receiptId === "string" && typeof receipt.childAgentId === "string") receipts.push(receipt);
-    }
-    return receipts;
+  const observeNativeJobs = (sessionId: string, live: AgentSession, parentAgentId: string): void => {
+    if (typeof live.getAsyncJobSnapshot !== "function") return;
+    const manager = live.asyncJobManager;
+    const native =
+      typeof manager?.getAllJobs === "function"
+        ? {
+            ownerId: parentAgentId,
+            jobs: manager.getAllJobs({ ownerId: parentAgentId }),
+            onSettled: () => {
+              void settleDetached();
+            },
+          }
+        : undefined;
+    childEvidence.observeAsyncJobs(sessionId, live.getAsyncJobSnapshot({ recentLimit: Number.MAX_SAFE_INTEGER }), native);
   };
 
-  const currentAttempts = (ctx: ExtensionContext, ledgerId: string): Map<string, string | null> => {
-    let attempts = new Map<string, string | null>();
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type !== "custom" || entry.customType !== ATTEMPTS_ENTRY || !entry.data || typeof entry.data !== "object") continue;
-      if (!("ledgerId" in entry.data) || entry.data.ledgerId !== ledgerId) continue;
-      if (!("attempts" in entry.data) || !entry.data.attempts || typeof entry.data.attempts !== "object")
-        throw new Error("Invalid attempt checkpoint");
-      attempts = new Map();
-      for (const [id, attempt] of Object.entries(entry.data.attempts)) {
-        if (attempt !== null && typeof attempt !== "string") throw new Error("Invalid attempt checkpoint");
-        attempts.set(id, attempt);
+  const settleDetached = async (): Promise<void> => {
+    for (const ownership of ownerships) {
+      if (!ownership.detached || ownership.operations > 0) continue;
+      try {
+        observeNativeJobs(ownership.sessionId, ownership.live, ownership.parentAgentId);
+        if (childEvidence.hasPending(ownership.sessionId, ownership.ledgerId)) continue;
+        ownership.releasing ??= ownership.store.release(ownership.plan.id, ownership.sessionId);
+        await ownership.releasing;
+        ownerships.delete(ownership);
+      } catch (error) {
+        ownership.releasing = undefined;
+        pi.logger.warn("Atlas could not settle detached plan ownership", { error: errorMessage(error) });
       }
     }
-    return attempts;
+    if (![...ownerships].some((ownership) => ownership.detached) && settlementTimer) {
+      clearInterval(settlementTimer);
+      settlementTimer = undefined;
+    }
   };
 
-  const persistAttempts = (ledger: ExecutionLedger): void => {
-    pi.appendEntry(ATTEMPTS_ENTRY, {
-      ledgerId: ledger.ledgerId,
-      attempts: Object.fromEntries([...ledger.items, ...ledger.gates].map((row) => [row.id, row.attempt ?? null])),
-    });
+  const detach = (ownership: Ownership | undefined): void => {
+    if (!ownership) return;
+    ownership.detached = true;
+    // Exit is immediate. This timer only observes native terminal results and releases locks.
+    settlementTimer ??= setInterval(() => {
+      void settleDetached();
+    }, 250);
+    settlementTimer.unref?.();
+  };
+
+  const observeFinalJobs = (ctx: ExtensionContext): void => {
+    const parent = AgentRegistry.global()
+      .list()
+      .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
+    if (parent?.session) observeNativeJobs(ctx.sessionManager.getSessionId(), parent.session, parent.id);
+    void settleDetached();
   };
 
   const withExecutionLedger = async <T>(
     ctx: ExtensionContext,
     record: SessionRecord,
-    run: (ledger: ExecutionLedger) => T | Promise<T>,
-    save = false,
-    resume = false,
+    run: (ledger: ExecutionLedger, plan: AtlasPlan, store: AtlasStore) => T | Promise<T>,
   ): Promise<T> => {
+    const ownership = record.ownership;
+    if (ownership) ownership.operations += 1;
     try {
-      if (!record.ledgerPath || record.ledgerPath === "disabled" || !record.planFilePath || !ctx.sessionManager.getArtifactsDir()) {
-        throw new Error("missing execution ledger or durable approved-plan binding");
+      if (!record.atlasPlanId)
+        throw new Error(record.ledgerError ?? "Legacy session-local execution is not migrated; fresh native reapproval is required");
+      if (!ownership || ownership.detached || ownership.sessionId !== ctx.sessionManager.getSessionId()) {
+        throw new Error("shared plan execution ownership is unavailable");
       }
-      const live = mainSession(ctx);
-      const hostReference = live?.getPlanReferencePath();
-      const restoreHostReference =
-        resume && planReferencesMatch(hostReference, DEFAULT_PLAN_REFERENCE) && !planReferencesMatch(hostReference, record.planFilePath);
-      if (!live || (!planReferencesMatch(hostReference, record.planFilePath) && !restoreHostReference)) {
-        throw new Error("the host plan reference differs from the approved execution plan");
+      if (!planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), ownership.plan.planFilePath)) {
+        throw new Error("the host plan reference differs from the approved Atlas plan");
       }
-      const ledgerFile = resolveLocalUrlToPath(record.ledgerPath, localOptions(ctx));
-      if (record.ledgerPath !== prometheusArtifactUrl(record.planFilePath, "ledger")) throw new Error("unexpected execution ledger path");
-      return await withLedgerLock(ledgerFile, async () => {
-        if (record.phase !== "executing") throw new Error("execution is no longer active");
-        const data: unknown = JSON.parse(await fs.readFile(ledgerFile, "utf8"));
-        const content = await fs.readFile(resolveLocalUrlToPath(record.planFilePath as string, localOptions(ctx)), "utf8");
-        // Version-one ledgers already pinned the approved bytes, but had no trustworthy completion receipts.
-        if (
-          !record.planSha256 &&
-          data &&
-          typeof data === "object" &&
-          "version" in data &&
-          data.version === 1 &&
-          "planSha256" in data &&
-          data.planSha256 === planDigest(content)
-        ) {
-          record.planSha256 = data.planSha256 as string;
-          persist(record);
-        }
-        if (!record.planSha256) throw new Error("the exact approved plan hash is missing; fresh native approval is required");
-        const ledger = restoreLedger(data, record.planFilePath as string, content, record.planSha256);
-        if (restoreHostReference) {
-          const marker: unknown = JSON.parse(
-            await fs.readFile(
-              resolveLocalUrlToPath(prometheusArtifactUrl(record.planFilePath as string, "proposal"), localOptions(ctx)),
-              "utf8",
-            ),
-          );
-          if (!marker || typeof marker !== "object") throw new Error("malformed approved-plan marker");
-          const saved = marker as {
-            version?: unknown;
-            planFilePath?: unknown;
-            planSha256?: unknown;
-            proposedByToolCallId?: unknown;
-          };
-          if (
-            (saved.version !== 1 && saved.version !== 2) ||
-            typeof saved.planFilePath !== "string" ||
-            !planReferencesMatch(saved.planFilePath, record.planFilePath) ||
-            typeof record.proposedByToolCallId !== "string" ||
-            !record.proposedByToolCallId ||
-            typeof saved.proposedByToolCallId !== "string" ||
-            !saved.proposedByToolCallId ||
-            saved.proposedByToolCallId !== record.proposedByToolCallId ||
-            ((saved.version === 2 || saved.planSha256 !== undefined) && saved.planSha256 !== record.planSha256)
-          ) {
-            throw new Error("approved-plan marker does not match the persisted approval");
-          }
-        }
-        let changed = ledger !== data;
-        const receipts = receiptEntries(ctx);
-        const attempts = currentAttempts(ctx, ledger.ledgerId);
-        const artifactsDir = ctx.sessionManager.getArtifactsDir() as string;
-        for (const row of [...ledger.items, ...ledger.gates]) {
-          if (row.status === "in_progress" && (resume || attempts.get(row.id) !== row.attempt)) {
-            invalidateRows(ledger, row.id, "Unrecorded or invalidated attempt reopened; cancel old work and dispatch a fresh child.");
-            changed = true;
-          }
-          if (row.status !== "done") continue;
-          const receipt = row.receipt;
-          let valid =
-            receipt !== undefined &&
-            receipt !== null &&
-            typeof receipt === "object" &&
-            receipt.nativeFinal === true &&
-            receipt.ledgerId === ledger.ledgerId &&
-            receipt.planSha256 === ledger.planSha256 &&
-            receipt.rowId === row.id &&
-            receipt.attempt === row.attempt &&
-            attempts.get(row.id) === row.attempt &&
-            receipt.childAgentId === row.childAgentId &&
-            receipt.sessionId === ctx.sessionManager.getSessionId() &&
-            receipts.some((saved) => JSON.stringify(saved) === JSON.stringify(receipt));
-          if (valid && receipt) {
-            try {
-              const file = path.join(artifactsDir, `${receipt.childAgentId}.md`);
-              const child = AgentRegistry.global().get(receipt.childAgentId);
-              valid =
-                (await fs.lstat(file)).isFile() &&
-                planDigest(await fs.readFile(file, "utf8")) === receipt.outputSha256 &&
-                (!child ||
-                  (child.parentId === receipt.parentAgentId &&
-                    (child.status === "idle" || child.status === "parked") &&
-                    child.sessionFile !== null &&
-                    path.resolve(child.sessionFile) === path.resolve(artifactsDir, `${receipt.childAgentId}.jsonl`)));
-            } catch {
-              valid = false;
-            }
-          }
-          if (!valid) {
-            invalidateRows(ledger, row.id, "Historical child proof is missing or changed; a fresh child must revalidate this row.");
-            changed = true;
-          }
-        }
-        changed = refreshDispatchAgents(ledger, availableAgents()) || changed;
-        // Recovery invalidations must survive even when the requested mutation is refused.
-        if (changed) {
-          persistAttempts(ledger);
-          await writeLedgerAtomic(ledgerFile, ledger);
-        }
-        if (restoreHostReference) {
-          if (!planReferencesMatch(live.getPlanReferencePath(), DEFAULT_PLAN_REFERENCE)) {
-            throw new Error("the host plan reference changed during recovery");
-          }
-          live.setPlanReferencePath(record.planFilePath as string);
-          if (!planReferencesMatch(live.getPlanReferencePath(), record.planFilePath)) {
-            throw new Error("the approved execution plan reference could not be restored");
-          }
-        }
-        record.ledgerError = undefined;
-        const result = await run(ledger);
-        if (save) {
-          if (record.phase !== "executing") throw new Error("execution was released during the ledger update");
-          persistAttempts(ledger);
-          await writeLedgerAtomic(ledgerFile, ledger);
-        }
-        return result;
-      });
+      if ((await fs.realpath(ctx.cwd)) !== ownership.plan.cwd) throw new Error("the approved plan belongs to a different workspace");
+      return await ownership.store.transaction(
+        ownership.plan.id,
+        ownership.sessionId,
+        async (ledger, plan) => {
+          refreshDispatchAgents(ledger, availableAgents());
+          record.ledgerError = undefined;
+          return await run(ledger, plan, ownership.store);
+        },
+        {
+          assertActive: () => {
+            if (
+              record.phase !== "executing" ||
+              record.ownership !== ownership ||
+              ownership.detached ||
+              ctx.sessionManager.getSessionId() !== ownership.sessionId ||
+              !planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), ownership.plan.planFilePath)
+            )
+              throw new Error("Atlas attachment changed before ledger publication");
+          },
+        },
+      );
     } catch (error) {
-      record.ledgerError = errorMessage(error);
+      if (record.ownership === ownership) record.ledgerError = errorMessage(error);
       throw error;
+    } finally {
+      if (ownership) ownership.operations -= 1;
+      void settleDetached();
     }
   };
 
@@ -488,89 +449,143 @@ export default function prometheus(pi: ExtensionAPI): void {
     try {
       return await withExecutionLedger(ctx, record, (ledger) => ledger);
     } catch (error) {
-      pi.logger.warn("prometheus execution ledger is unavailable", { error: errorMessage(error) });
+      pi.logger.warn("Atlas shared execution ledger is unavailable", { error: errorMessage(error) });
       return undefined;
     }
   };
 
-  /** Only a newly approved execution may initialize a ledger. Resume never reconstructs a missing file. */
-  const ensureLedger = async (ctx: ExtensionContext, record: SessionRecord, planContent?: string): Promise<void> => {
-    const planFilePath = record.planFilePath;
-    if (record.ledgerPath || !planFilePath || !record.mayInitializeLedger) return;
-    record.mayInitializeLedger = false;
-    record.ledgerPath = prometheusArtifactUrl(planFilePath, "ledger");
-    persist(record);
+  const bindPlan = async (
+    ctx: ExtensionContext,
+    record: SessionRecord,
+    store: AtlasStore,
+    plan: AtlasPlan,
+    resume: boolean,
+    expectedReference?: string,
+  ): Promise<void> => {
+    const live = mainSession(ctx);
+    const activation = record.activation;
+    if (!live || typeof live.setPlanReferencePath !== "function")
+      throw new Error("this host cannot bind the approved Atlas plan reference");
+    if ((await fs.realpath(ctx.cwd)) !== plan.cwd) throw new Error("the approved plan belongs to a different workspace");
+    const sessionId = ctx.sessionManager.getSessionId();
+    await settleDetached();
+    let ownership = [...ownerships].find(
+      (candidate) => candidate.store === store && candidate.plan.id === plan.id && candidate.sessionId === sessionId,
+    );
+    if (ownership?.detached) throw new Error("this plan still has detached native work; wait for its final outcomes before entering again");
+    const newlyOwned = !ownership;
+    if (ownership) ownership.operations += 1;
+    let acquired = false;
     try {
-      if (!ctx.sessionManager.getArtifactsDir()) throw new Error("this session has no durable artifact directory");
-      const content = await fs.readFile(resolveLocalUrlToPath(planFilePath, localOptions(ctx)), "utf8");
-      if (
-        !record.planSha256 ||
-        planDigest(content) !== record.planSha256 ||
-        (planContent !== undefined && planDigest(planContent) !== record.planSha256)
-      ) {
-        throw new Error("the current or handed-off plan differs from the exact native proposal");
-      }
-      const file = resolveLocalUrlToPath(record.ledgerPath, localOptions(ctx));
-      await withLedgerLock(file, () => writeLedgerAtomic(file, createLedger(planFilePath, content, availableAgents())));
+      await store.acquire(plan.id, sessionId);
+      acquired = true;
+      if (record.phase !== "executing" || record.activation !== activation)
+        throw new Error("Atlas attachment changed during ownership acquisition");
+      const ledgerId = await store.transaction(
+        plan.id,
+        sessionId,
+        (ledger) => {
+          if (record.phase !== "executing" || record.activation !== activation)
+            throw new Error("Atlas attachment changed during plan validation");
+          refreshDispatchAgents(ledger, availableAgents());
+          return ledger.ledgerId;
+        },
+        { resume: resume && newlyOwned },
+      );
+      if (record.phase !== "executing" || record.activation !== activation)
+        throw new Error("Atlas attachment changed during plan validation");
+      const parent = AgentRegistry.global()
+        .list()
+        .find((candidate) => candidate.kind === "main" && candidate.session === live);
+      if (!parent) throw new Error("registered native parent identity is unavailable");
+      ownership ??= { store, plan, sessionId, live, parentAgentId: parent.id, ledgerId, detached: false, operations: 0 };
+      ownerships.add(ownership);
+      record.ownership = ownership;
+      if (expectedReference && !planReferencesMatch(live.getPlanReferencePath(), expectedReference))
+        throw new Error("the native approval handoff reference changed during validation");
+      live.setPlanReferencePath(plan.planFilePath);
+      if (!planReferencesMatch(live.getPlanReferencePath(), plan.planFilePath))
+        throw new Error("the host did not bind the approved Atlas plan");
+      hostBindings.set(live, { sessionId, planFilePath: plan.planFilePath });
+      record.atlasPlanId = plan.id;
+      record.planFilePath = plan.planFilePath;
+      record.planSha256 = plan.planSha256;
+      record.ledgerPath = plan.ledgerPath;
+      record.proposedByToolCallId = plan.proposedByToolCallId;
+      record.sourceSessionId = plan.sourceSessionId;
       record.ledgerError = undefined;
+      persist(record);
+    } catch (error) {
+      if (newlyOwned && acquired) {
+        if (ownership) ownerships.delete(ownership);
+        if (record.ownership === ownership) record.ownership = undefined;
+        await store.release(plan.id, sessionId);
+      } else if (ownership) {
+        detach(ownership);
+      }
+      throw error;
+    } finally {
+      if (!newlyOwned && ownership) ownership.operations -= 1;
+      void settleDetached();
+    }
+  };
+
+  const resumeLedger = async (ctx: ExtensionContext, record: SessionRecord | undefined, previousReference?: string): Promise<void> => {
+    if (record?.phase !== "executing") return;
+    record.activation = {};
+    try {
+      if (!record.atlasPlanId)
+        throw new Error("Legacy session-local progress is not migrated; fresh native reapproval is required. Run /atlas to exit");
+      const store = storeFor(ctx);
+      const plan = await store.find(record.atlasPlanId);
+      if (
+        record.planSha256 !== plan.planSha256 ||
+        record.proposedByToolCallId !== plan.proposedByToolCallId ||
+        record.sourceSessionId !== plan.sourceSessionId
+      ) {
+        throw new Error("the session pointer does not match the shared approval provenance");
+      }
+      const reference = mainSession(ctx)?.getPlanReferencePath();
+      if (
+        reference &&
+        !planReferencesMatch(reference, DEFAULT_PLAN_REFERENCE) &&
+        !planReferencesMatch(reference, plan.planFilePath) &&
+        !planReferencesMatch(reference, previousReference)
+      ) {
+        throw new Error("the host plan reference differs from the persisted approved Atlas plan");
+      }
+      await bindPlan(ctx, record, store, plan, true);
     } catch (error) {
       record.ledgerError = errorMessage(error);
       notify(ctx, pauseMessage(record), "error");
     }
   };
 
-  const resumeLedger = async (ctx: ExtensionContext, record: SessionRecord | undefined): Promise<void> => {
-    if (record?.phase !== "executing") return;
-    try {
-      await withExecutionLedger(ctx, record, () => undefined, false, true);
-    } catch {
-      notify(ctx, pauseMessage(record), "error");
-    }
-  };
-
-  const release = async (ctx: ExtensionContext, reason: string): Promise<void> => {
-    if (!mainSession(ctx)) {
-      notify(ctx, "Prometheus runs in the main session only.", "warning");
-      return;
-    }
+  const release = async (ctx: ExtensionContext, reason: string, expected: "planning" | "executing"): Promise<void> => {
+    if (!mainSession(ctx)) return;
+    const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+    if (record?.phase !== expected) return;
+    const proposalPath = expected === "planning" ? record.planFilePath : undefined;
+    const ownership = record.ownership;
     const episodeId = planModeEpisodeId(ctx);
     authorizedActivationCalls.clear();
-    const record =
-      records.get(ctx.sessionManager.getSessionId()) ??
-      rehydrate(ctx) ??
-      (episodeId ? recordFor(ctx.sessionManager.getSessionId()) : undefined);
-    if (!record) {
-      notify(ctx, "Prometheus is not active in this session.");
-      await syncTools(false, false, false);
-      return;
-    }
-    if (record.phase === "idle") {
-      record.pendingConsent = undefined;
-      record.proposalAwaitingApproval = false;
-      record.approvalCompactionPending = false;
-      record.offerPendingForModeEntryId = undefined;
-      record.suppressedForModeEntryId = episodeId;
-      if (episodeId) {
-        record.offeredForModeEntryId = episodeId;
-        persist(record);
-      }
-      await syncTools(false, false, false);
-      notify(ctx, episodeId ? "Prometheus opt-in is off for this native plan-mode session." : "Prometheus is not active in this session.");
-      return;
-    }
-    const wasExecuting = record.phase === "executing";
-    await clearProposalMarker(ctx, record.planFilePath);
+    // Invalidate in-flight publication synchronously, before any file or UI operation.
     record.phase = "idle";
+    record.ownership = undefined;
+    record.activation = undefined;
+    detach(ownership);
     record.planFilePath = undefined;
     record.planSha256 = undefined;
+    record.atlasPlanId = undefined;
+    record.sourceSessionId = undefined;
     record.ledgerError = undefined;
-    childEvidence.clearSession(ctx.sessionManager.getSessionId());
     record.proposedByToolCallId = undefined;
     record.offeredForModeEntryId = episodeId;
     record.suppressedForModeEntryId = episodeId;
     record.pendingConsent = undefined;
     record.proposalAwaitingApproval = false;
     record.approvalCompactionPending = false;
+    record.compactHandoffPending = false;
     record.planningModeEntryId = undefined;
     record.offerPendingForModeEntryId = undefined;
     record.ledgerPath = undefined;
@@ -578,12 +593,82 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.stallCount = 0;
     persist(record);
     await syncTools(false, false, false);
-    notify(
+    if (proposalPath) await clearProposalMarker(ctx, proposalPath);
+    await settleDetached();
+    commandNotice(
       ctx,
-      wasExecuting
-        ? `Prometheus: Atlas execution released (${reason}). Direct tools are available again in this session.`
-        : `Prometheus: planning workflow released (${reason}).`,
+      expected === "executing"
+        ? `Atlas exited (${reason}). Shared progress is preserved. Native children have not been cancelled; any unfinished native work retains its plan ownership until final outcomes.`
+        : `Prometheus planning exited (${reason}).`,
     );
+  };
+
+  const atlasCommand = async (args: string, ctx: ExtensionContext): Promise<void> => {
+    const selector = args.trim();
+    const live = mainSession(ctx);
+    if (!live) {
+      commandNotice(ctx, "Atlas requires the registered main session.", "error");
+      return;
+    }
+    const current = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+    if (current?.phase === "executing") {
+      if (selector)
+        commandNotice(
+          ctx,
+          "Atlas is already active. Any /atlas argument is refused; run bare /atlas to exit before entering a plan.",
+          "error",
+        );
+      else await release(ctx, "/atlas", "executing");
+      return;
+    }
+    if (selector && (current?.phase === "planning" || live.getPlanModeState()?.enabled === true)) {
+      commandNotice(
+        ctx,
+        "Atlas cannot enter during planning. Exit planning first; Atlas only executes plans with native approval.",
+        "error",
+      );
+      return;
+    }
+    let record: SessionRecord | undefined;
+    const activation = {};
+    if (selector) {
+      record = recordFor(ctx.sessionManager.getSessionId());
+      record.phase = "executing";
+      record.activation = activation;
+      persist(record);
+    }
+    try {
+      const store = storeFor(ctx);
+      if (!selector) {
+        const plans = await store.list();
+        commandNotice(
+          ctx,
+          `Atlas is inactive. Use /atlas <plan-name-or-id> to enter an approved plan.\n${
+            plans.length
+              ? plans.map((plan) => `- ${plan.name} (${plan.id}) — ${plan.cwd}`).join("\n")
+              : "No shared approved plans are available."
+          }`,
+        );
+        return;
+      }
+      const plan = await store.find(selector);
+      if (record?.phase !== "executing" || record.activation !== activation) throw new Error("Atlas entry changed during plan selection");
+      record.atlasPlanId = plan.id;
+      record.planSha256 = plan.planSha256;
+      record.proposedByToolCallId = plan.proposedByToolCallId;
+      record.sourceSessionId = plan.sourceSessionId;
+      persist(record);
+      await bindPlan(ctx, record, store, plan, true);
+      await syncTools(false, true, true);
+      commandNotice(ctx, `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. Bare /atlas exits.`);
+    } catch (error) {
+      if (record?.activation !== activation && selector) return;
+      if (record) {
+        record.ledgerError = errorMessage(error);
+        await syncTools(false, true, true);
+      }
+      commandNotice(ctx, record ? pauseMessage(record) : `Atlas entry refused: ${errorMessage(error)}`, "error");
+    }
   };
 
   const activate = async (ctx: ExtensionContext): Promise<boolean> => {
@@ -600,10 +685,16 @@ export default function prometheus(pi: ExtensionAPI): void {
       return false;
     }
     const record = recordFor(ctx.sessionManager.getSessionId());
+    if (record.phase === "executing") {
+      notify(ctx, "Atlas is active. Run /atlas to exit before entering Prometheus planning.", "error");
+      return false;
+    }
     if (record.phase !== "planning") {
       record.phase = "planning";
       record.planFilePath = undefined;
       record.planSha256 = undefined;
+      record.atlasPlanId = undefined;
+      record.sourceSessionId = undefined;
       record.ledgerError = undefined;
       record.proposedByToolCallId = undefined;
       record.offeredForModeEntryId = undefined;
@@ -611,6 +702,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.pendingConsent = undefined;
       record.proposalAwaitingApproval = false;
       record.approvalCompactionPending = false;
+      record.compactHandoffPending = false;
       record.offerPendingForModeEntryId = undefined;
       record.planningModeEntryId = planModeEpisodeId(ctx);
       record.ledgerPath = undefined;
@@ -633,7 +725,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const provenanceBlockReason = (toolName: string): string | undefined => {
     const provenance = toolProvenance(toolName);
     const trustedPrometheusTool =
-      PLUGIN_OWNED_TOOLS.has(toolName) && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
+      PLUGIN_OWNED_TOOLS[toolName] === true && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
     return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool);
   };
 
@@ -680,9 +772,12 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const enterExecution = (ctx: ExtensionContext, record: SessionRecord): void => {
+  const enterExecution = async (ctx: ExtensionContext, record: SessionRecord, inlinePlan?: string): Promise<void> => {
+    if (record.phase !== "planning") return;
+    const { planFilePath: sourcePlanPath, planSha256, sourceSessionId, proposedByToolCallId } = record;
     record.phase = "executing";
-    record.mayInitializeLedger = record.ledgerPath === undefined;
+    const activation = {};
+    record.activation = activation;
     record.pendingConsent = undefined;
     record.proposalAwaitingApproval = false;
     record.approvalCompactionPending = false;
@@ -692,12 +787,55 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.lastContinuationLedgerStamp = undefined;
     record.stallCount = 0;
     persist(record);
-    notify(ctx, EXECUTION_START_NOTICE);
+    try {
+      const live = mainSession(ctx);
+      if (!sourcePlanPath?.startsWith("local://") || !sourceSessionId || !proposedByToolCallId || !planSha256) {
+        throw new Error("Legacy or incomplete proposal provenance requires fresh native reapproval; existing artifacts are preserved");
+      }
+      if (!live || live.getPlanModeState()?.enabled === true || !planReferencesMatch(live.getPlanReferencePath(), sourcePlanPath)) {
+        throw new Error("the native approved plan reference is unavailable or changed");
+      }
+      const content = await fs.readFile(resolveLocalUrlToPath(sourcePlanPath, localOptions(ctx)), "utf8");
+      if (planDigest(content) !== planSha256 || (inlinePlan !== undefined && planDigest(inlinePlan) !== planSha256)) {
+        throw new Error("the approved plan differs from the exact native proposal");
+      }
+      if (record.phase !== "executing" || record.activation !== activation) throw new Error("Atlas exited before shared approval storage");
+      const store = storeFor(ctx);
+      const plan = await store.create({
+        name: path.posix.basename(sourcePlanPath).replace(/(?:-plan)?\.md$/, ""),
+        content,
+        cwd: await fs.realpath(ctx.cwd),
+        sourcePlanPath,
+        sourceSessionId,
+        proposedByToolCallId,
+        availableAgents: availableAgents(),
+      });
+      if (record.phase !== "executing" || record.activation !== activation)
+        throw new Error("Atlas exited while the approved plan was being stored");
+      record.atlasPlanId = plan.id;
+      persist(record);
+      await bindPlan(ctx, record, store, plan, false);
+      notify(ctx, `${EXECUTION_START_NOTICE} Plan: ${plan.name} (${plan.id}).`);
+    } catch (error) {
+      if (record.activation === activation) {
+        record.ledgerError = errorMessage(error);
+        notify(ctx, pauseMessage(record), "error");
+      }
+    }
   };
 
   pi.on("input", async (event, ctx) => {
-    const current = records.get(ctx.sessionManager.getSessionId());
+    const current = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (current && event.source !== "extension") current.stallCount = 0;
+    const atlas = parseAtlasCommand(event.text);
+    if (atlas) {
+      await atlasCommand(atlas.selector, ctx);
+      return { handled: true };
+    }
+    if (current?.phase === "executing" && /^\/(?:prometheus|plan)(?:[ \t]|$)/.test(event.text.trim())) {
+      notify(ctx, "Atlas is active. Run /atlas to exit before entering or changing planning mode.", "error");
+      return { handled: true };
+    }
     const command = parsePrometheusCommand(event.text);
     if (!command) {
       const trimmed = event.text.trim();
@@ -729,10 +867,9 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     const planModeActive = live.getPlanModeState()?.enabled === true;
-    if (record && record.phase !== "idle") {
-      const wasPlanning = record.phase === "planning";
-      await release(ctx, "/prometheus");
-      return wasPlanning && planModeActive ? { text: "/plan" } : { handled: true };
+    if (record?.phase === "planning") {
+      await release(ctx, "/prometheus", "planning");
+      return planModeActive ? { text: "/plan" } : { handled: true };
     }
     if (!(await activate(ctx))) return { handled: true };
     if (planModeActive) {
@@ -751,8 +888,12 @@ export default function prometheus(pi: ExtensionAPI): void {
       return;
     }
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
-    if (record && record.phase !== "idle") {
-      await release(ctx, "/prometheus");
+    if (record?.phase === "executing") {
+      commandNotice(ctx, "Atlas is active. /prometheus cannot release it; run /atlas to exit.", "error");
+      return;
+    }
+    if (record?.phase === "planning") {
+      await release(ctx, "/prometheus", "planning");
       return;
     }
     if (live.getPlanModeState()?.enabled !== true) {
@@ -769,8 +910,13 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   pi.registerCommand("prometheus", {
-    description: "Toggle Prometheus planning mode (Metis, Momus, Atlas)",
+    description: "Toggle Prometheus planning mode (Metis, Momus)",
     handler: commandHandler,
+  });
+
+  pi.registerCommand("atlas", {
+    description: "Enter a named approved plan; bare /atlas exits when active or lists plans when inactive",
+    handler: atlasCommand,
   });
 
   const z = pi.zod;
@@ -870,7 +1016,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.registerTool({
     name: RELEASE_TOOL,
     sourcePath: RUNTIME_SOURCE_PATH,
-    label: "Prometheus Release",
+    label: "Atlas Release",
     description:
       "After every delegated plan item and final gate has verified child evidence, request human confirmation to release Atlas. Refused while execution-ledger rows remain unfinished; never releases without confirmation.",
     parameters: releaseParameters,
@@ -882,11 +1028,12 @@ export default function prometheus(pi: ExtensionAPI): void {
       const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
       if (!live || record?.phase !== "executing") {
         return {
-          content: [{ type: "text" as const, text: "Prometheus Atlas execution is not active in this main session." }],
+          content: [{ type: "text" as const, text: "Atlas execution is not active in this main session." }],
           isError: true,
           details: {},
         };
       }
+      const ownership = record.ownership;
       const ledger = await readLedger(ctx, record);
       if (!ledger) return { content: [{ type: "text" as const, text: pauseMessage(record) }], isError: true, details: {} };
       if (!isComplete(ledger)) {
@@ -904,7 +1051,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       if (!ctx.hasUI) {
         return {
-          content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /prometheus." }],
+          content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /atlas." }],
           isError: true,
           details: {},
         };
@@ -912,7 +1059,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       let confirmed = false;
       try {
         confirmed = await ctx.ui.confirm(
-          "Release the Prometheus execution guard?",
+          "Exit Atlas execution?",
           `${params.reason.trim()}\n\nRelease restores direct implementation tools and ends Atlas delegation in this session.`,
         );
       } catch (error) {
@@ -926,11 +1073,16 @@ export default function prometheus(pi: ExtensionAPI): void {
         };
       }
       try {
-        return await withExecutionLedger(ctx, record, async (current) => {
+        if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
+        await withExecutionLedger(ctx, record, (current) => {
           if (!isComplete(current)) throw new Error("Completion evidence changed while awaiting confirmation; release refused");
-          await release(ctx, "human-confirmed completion release");
-          return { content: [{ type: "text" as const, text: "Prometheus execution guard released by the user." }], details: {} };
         });
+        if (record.ownership !== ownership) throw new Error("The Atlas attachment changed during confirmation");
+        await release(ctx, "human-confirmed completion release", "executing");
+        return {
+          content: [{ type: "text" as const, text: "Atlas exited by the user; shared evidence and progress are preserved." }],
+          details: {},
+        };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Release refused: ${errorMessage(error)}` }], isError: true, details: {} };
       }
@@ -940,9 +1092,9 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.registerTool({
     name: LEDGER_TOOL,
     sourcePath: RUNTIME_SOURCE_PATH,
-    label: "Prometheus Ledger",
+    label: "Atlas Ledger",
     description:
-      "Read or update the approved execution ledger. Start a row BEFORE task dispatch and copy its prometheus_assignment binding. Done requires the id of its real completed native child and inspected evidence. Gates require distinct fresh children with structured PASS output; F4 follows F1–F3. Reopen/block invalidates descendants and stale gate attempts.",
+      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. Gates require distinct fresh children with structured PASS output; F4 follows F1–F3. Reopen/block invalidates descendants and stale gate attempts.",
     parameters: ledgerParameters,
     defaultInactive: true,
     loadMode: "essential",
@@ -950,74 +1102,106 @@ export default function prometheus(pi: ExtensionAPI): void {
     execute: async (_toolCallId, params: LedgerParams, _signal, _onUpdate, ctx) => {
       const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
       const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
-      if (!mainSession(ctx) || record?.phase !== "executing") return fail("Prometheus Atlas execution is not active in this main session.");
+      if (!mainSession(ctx) || record?.phase !== "executing") return fail("Atlas execution is not active in this main session.");
+      const ownership = record.ownership;
       try {
-        return await withExecutionLedger(
-          ctx,
-          record,
-          async (ledger) => {
-            if (params.action === "status")
-              return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: { ledger } };
-            const id = params.id?.trim();
-            const item = [...ledger.items, ...ledger.gates].find((entry) => entry.id === id);
-            if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
-            const evidence = params.evidence?.trim();
-            let schema: Record<string, unknown> | undefined;
-            if (params.action === "start") {
-              startRow(ledger, item.id);
-              if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
-            } else if (params.action === "done") {
-              const childAgentId = params.childAgentId?.trim();
-              if (!evidence || !childAgentId) throw new Error(`Marking ${item.id} done requires inspected evidence and childAgentId`);
-              const parent = AgentRegistry.global()
-                .list()
-                .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
-              if (!parent) throw new Error("Registered parent identity is unavailable");
-              observeFinalJobs(ctx);
-              const receipt = await childEvidence.capture({
-                registry: AgentRegistry.global(),
-                parentAgentId: parent.id,
-                sessionId: ctx.sessionManager.getSessionId(),
-                artifactsDir: ctx.sessionManager.getArtifactsDir() as string,
-                ledger,
-                row: item,
-                childAgentId,
-                priorReceipts: receiptEntries(ctx),
-              });
-              // Persist the host-observed receipt independently before publishing completion in the ledger.
-              pi.appendEntry(RECEIPT_ENTRY, receipt);
-              item.receipt = receipt;
-              item.childAgentId = childAgentId;
-              item.evidence = `agent://${childAgentId}: ${evidence}`;
-              item.status = "done";
-              item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
-            } else {
-              if (params.action === "block" && !evidence) throw new Error("Blocking a row requires an explanation");
-              if ((params.action === "reopen" && item.status === "open") || (params.action === "block" && item.status === "blocked")) {
-                throw new Error(`${item.id} is already ${item.status}`);
-              }
-              invalidateRows(ledger, item.id, evidence);
-              if (params.action === "block") item.status = "blocked";
+        return await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
+          if (params.action === "status") return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: { ledger } };
+          const id = params.id?.trim();
+          const item = [...ledger.items, ...ledger.gates].find((entry) => entry.id === id);
+          if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
+          const evidence = params.evidence?.trim();
+          let schema: Record<string, unknown> | undefined;
+          if (params.action === "start") {
+            startRow(ledger, item.id);
+            if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
+          } else if (params.action === "done") {
+            const childAgentId = params.childAgentId?.trim();
+            if (!evidence || !childAgentId) throw new Error(`Marking ${item.id} done requires inspected evidence and childAgentId`);
+            const parent = AgentRegistry.global()
+              .list()
+              .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
+            if (!parent) throw new Error("Registered parent identity is unavailable");
+            observeFinalJobs(ctx);
+            const receipt = await childEvidence.capture({
+              registry: AgentRegistry.global(),
+              parentAgentId: parent.id,
+              sessionId: ctx.sessionManager.getSessionId(),
+              artifactsDir: ctx.sessionManager.getArtifactsDir() as string,
+              ledger,
+              row: item,
+              childAgentId,
+              priorReceipts: [...ledger.items, ...ledger.gates].flatMap((row) => (row.receipt ? [row.receipt] : [])),
+            });
+            if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during child evidence capture");
+            // Only authenticated final native results can publish shared immutable proof.
+            await store.saveReceipt(plan, receipt, path.join(ctx.sessionManager.getArtifactsDir() as string, `${childAgentId}.md`));
+            if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while child evidence was copied");
+            item.receipt = receipt;
+            item.childAgentId = childAgentId;
+            item.evidence = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
+            item.status = "done";
+            item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
+          } else {
+            if (params.action === "block" && !evidence) throw new Error("Blocking a row requires an explanation");
+            if ((params.action === "reopen" && item.status === "open") || (params.action === "block" && item.status === "blocked")) {
+              throw new Error(`${item.id} is already ${item.status}`);
             }
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}${schema ? `\nGate task outputSchema (use schemaMode strict): ${JSON.stringify(schema)}` : ""}`,
-                },
-              ],
-              details: { id: item.id, status: item.status, outputSchema: schema },
-            };
-          },
-          params.action !== "status",
-        );
+            invalidateRows(ledger, item.id, evidence);
+            if (params.action === "block") item.status = "blocked";
+          }
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}${schema ? `\nGate task outputSchema (use schemaMode strict): ${JSON.stringify(schema)}` : ""}`,
+              },
+            ],
+            details: { id: item.id, status: item.status, outputSchema: schema },
+          };
+        });
       } catch (error) {
         return fail(
-          `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid approved ledger; /prometheus remains the user exit.`,
+          `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid shared approved ledger; /atlas remains the user exit.`,
         );
       }
     },
   });
+
+  const recoverCompactHandoff = async (ctx: ExtensionContext, record: SessionRecord, prompt: string): Promise<void> => {
+    const live = mainSession(ctx);
+    const owned = record.phase === "executing" ? record.ownership : undefined;
+    if (
+      !record.compactHandoffPending ||
+      !live ||
+      !owned ||
+      owned.detached ||
+      live.getPlanModeState()?.enabled === true ||
+      !isApprovedPlanHandoff(prompt, owned.plan.sourcePlanPath, live.getPlanReferencePath())
+    )
+      return;
+    try {
+      const content = inlineApprovedPlan(prompt, owned.plan.sourcePlanPath);
+      if (content === undefined || planDigest(content) !== owned.plan.planSha256)
+        throw new Error("the compact approval handoff differs from the exact approved plan");
+      const approved = await owned.store.find(owned.plan.id);
+      if (
+        approved.planSha256 !== owned.plan.planSha256 ||
+        approved.sourcePlanPath !== owned.plan.sourcePlanPath ||
+        approved.sourceSessionId !== owned.plan.sourceSessionId ||
+        approved.proposedByToolCallId !== owned.plan.proposedByToolCallId ||
+        record.ownership !== owned
+      )
+        throw new Error("the compact approval handoff no longer matches the owned shared approval");
+      // Approve+compact may reset the shared binding before a normal prompt or a queued
+      // synthetic developer turn. Both paths revalidate this same single-use native transition.
+      await bindPlan(ctx, record, owned.store, approved, false, owned.plan.sourcePlanPath);
+      record.compactHandoffPending = false;
+    } catch (error) {
+      record.ledgerError = errorMessage(error);
+      notify(ctx, pauseMessage(record), "error");
+    }
+  };
 
   pi.on("before_agent_start", async (event, ctx) => {
     const live = mainSession(ctx);
@@ -1025,18 +1209,21 @@ export default function prometheus(pi: ExtensionAPI): void {
     const sessionId = ctx.sessionManager.getSessionId();
     let record = records.get(sessionId) ?? rehydrate(ctx);
     const reference = live.getPlanReferencePath();
+    if (record) await recoverCompactHandoff(ctx, record, event.prompt);
     if ((!record || record.phase === "idle") && reference && isApprovedPlanHandoff(event.prompt, reference, reference)) {
       try {
         const marker = JSON.parse(
-          await fs.readFile(resolveLocalUrlToPath(prometheusArtifactUrl(reference, "proposal"), localOptions(ctx)), "utf8"),
-        ) as { version?: unknown; planFilePath?: unknown; planSha256?: unknown; proposedByToolCallId?: unknown };
+          await fs.readFile(resolveLocalUrlToPath(prometheusArtifactUrl(reference), localOptions(ctx)), "utf8"),
+        ) as { version?: unknown; planFilePath?: unknown; planSha256?: unknown; proposedByToolCallId?: unknown; sourceSessionId?: unknown };
         // A present but invalid plugin marker must pause this handoff, not silently become ordinary execution.
         if (
-          (marker.version !== 1 && marker.version !== 2) ||
+          marker.version !== 3 ||
           typeof marker.planFilePath !== "string" ||
           !planReferencesMatch(marker.planFilePath, reference) ||
           typeof marker.proposedByToolCallId !== "string" ||
-          !marker.proposedByToolCallId
+          !marker.proposedByToolCallId ||
+          typeof marker.sourceSessionId !== "string" ||
+          !marker.sourceSessionId
         )
           throw new Error("Invalid Prometheus proposal marker");
         record = {
@@ -1044,6 +1231,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           planFilePath: reference,
           planSha256: typeof marker.planSha256 === "string" && /^[a-f0-9]{64}$/.test(marker.planSha256) ? marker.planSha256 : undefined,
           proposedByToolCallId: marker.proposedByToolCallId,
+          sourceSessionId: marker.sourceSessionId,
           lastBlockedAt: 0,
           stallCount: 0,
         };
@@ -1082,7 +1270,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.approvalCompactionPending === true &&
       planReferencesMatch(live.getPlanReferencePath(), record.planFilePath)
     ) {
-      enterExecution(ctx, record);
+      record.compactHandoffPending = true;
+      await enterExecution(ctx, record);
     }
     let injected: string | undefined;
     let wantActivate = false;
@@ -1092,7 +1281,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (planModeActive) {
         injected = await planningBlock(ctx);
       } else if (isApprovedPlanHandoff(event.prompt, record.planFilePath, live.getPlanReferencePath())) {
-        enterExecution(ctx, record);
+        await enterExecution(ctx, record, record.planFilePath ? inlineApprovedPlan(event.prompt, record.planFilePath) : undefined);
         executing = true;
       } else {
         await clearProposalMarker(ctx, record.planFilePath);
@@ -1119,13 +1308,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
 
     if (executing && record) {
-      if (record.ledgerPath === undefined) {
-        const inlinePlan =
-          record.planFilePath && isApprovedPlanHandoff(event.prompt, record.planFilePath, live.getPlanReferencePath())
-            ? inlineApprovedPlan(event.prompt, record.planFilePath)
-            : undefined;
-        await ensureLedger(ctx, record, inlinePlan);
-      }
       injected = await atlasBlock(ctx, record);
     }
 
@@ -1150,12 +1332,25 @@ export default function prometheus(pi: ExtensionAPI): void {
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (!record || (record.phase !== "planning" && record.phase !== "executing")) return undefined;
     if (record.phase === "planning" && live.getPlanModeState()?.enabled !== true) return undefined;
+    if (record.phase === "executing" && record.compactHandoffPending) {
+      for (const message of event.messages) {
+        if (message.role !== "developer" || message.attribution !== "agent" || message.synthetic !== true) continue;
+        const prompt =
+          typeof message.content === "string"
+            ? message.content
+            : message.content.length === 1 && message.content[0]?.type === "text"
+              ? message.content[0].text
+              : undefined;
+        if (prompt) await recoverCompactHandoff(ctx, record, prompt);
+        if (!record.compactHandoffPending) break;
+      }
+    }
 
     const planning = record.phase === "planning";
-    const policyHeading = planning ? "# Prometheus planning workflow (active)" : "# Prometheus execution (Atlas)";
+    const policyHeading = planning ? "# Prometheus planning workflow (active)" : "# Atlas execution (active)";
     const policyAlreadyInSystem = ctx.getSystemPrompt().some((part) => part.includes(policyHeading));
     const content = policyAlreadyInSystem
-      ? `${policyHeading}\n\nThe complete Prometheus policy is active in the system prompt; this message replaces conflicting native plan context.`
+      ? `${policyHeading}\n\nThe complete workflow policy is active in the system prompt; this message replaces conflicting native plan context.`
       : planning
         ? await planningBlock(ctx)
         : await atlasBlock(ctx, record);
@@ -1232,16 +1427,23 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!detail) detail = provenanceBlockReason(event.toolName);
     const nested = event.toolName === "write" ? nestedXdevToolCall(event.input) : undefined;
     if (!detail && nested) detail = provenanceBlockReason(nested.toolName);
-    if (!detail && (event.toolName === "task" || nested?.toolName === "task")) {
+    // Native xdev task dispatch is intercepted again at its inner task boundary.
+    if (!detail && event.toolName === "task") {
+      const originSessionId = ctx.sessionManager.getSessionId();
+      let remembered = false;
       try {
         if (!evidenceSubscription) throw new Error("native child lifecycle evidence is unavailable on this host");
         await withExecutionLedger(ctx, record, (ledger) => {
-          childEvidence.rememberDispatch(event.toolCallId, ctx.sessionManager.getSessionId(), ledger, nested?.input ?? event.input);
+          const artifactsDir = ctx.sessionManager.getArtifactsDir();
+          if (!artifactsDir) throw new Error("native task artifacts are unavailable");
+          childEvidence.rememberDispatch(event.toolCallId, originSessionId, ledger, event.input, artifactsDir);
+          remembered = true;
         });
       } catch (error) {
+        if (remembered) childEvidence.discardUnstartedDispatch(originSessionId, event.toolCallId);
         return {
           block: true,
-          reason: `Task dispatch refused: ${errorMessage(error)}. Use a valid ledger and its current start binding; /prometheus is the user exit.`,
+          reason: `Task dispatch refused: ${errorMessage(error)}. Use a valid shared ledger and its current start binding; /atlas is the user exit.`,
         };
       }
     }
@@ -1255,13 +1457,15 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("tool_result", async (event, ctx) => {
     const live = mainSession(ctx);
-    if (!live) return undefined;
     const sessionId = ctx.sessionManager.getSessionId();
+    if (event.toolName === "task" && provenanceBlockReason("task") === undefined) {
+      childEvidence.observeTaskResult(sessionId, event.toolCallId, event.details, event.isError);
+      observeFinalJobs(ctx);
+      await settleDetached();
+    }
+    if (!live) return undefined;
     const record = records.get(sessionId) ?? rehydrate(ctx) ?? recordFor(sessionId);
     observeFinalJobs(ctx);
-    if (event.toolName === "task" && record.phase === "executing" && provenanceBlockReason("task") === undefined) {
-      childEvidence.observeTaskResult(sessionId, event.toolCallId, event.details);
-    }
 
     if (event.toolName === "ask") {
       record.pendingConsent = undefined;
@@ -1283,18 +1487,20 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!proposedPath || provenanceBlockReason("write") !== undefined || record.phase !== "planning") return undefined;
     record.planFilePath = proposedPath;
     record.proposedByToolCallId = event.toolCallId;
+    record.sourceSessionId = sessionId;
     record.proposalAwaitingApproval = true;
     record.approvalCompactionPending = false;
     record.ledgerPath = undefined;
     record.planSha256 = undefined;
     try {
       record.planSha256 = planDigest(await fs.readFile(resolveLocalUrlToPath(proposedPath, localOptions(ctx)), "utf8"));
-      const markerFile = resolveLocalUrlToPath(prometheusArtifactUrl(proposedPath, "proposal"), localOptions(ctx));
+      const markerFile = resolveLocalUrlToPath(prometheusArtifactUrl(proposedPath), localOptions(ctx));
       await writeLedgerAtomic(markerFile, {
-        version: 2,
+        version: 3,
         planFilePath: proposedPath,
         planSha256: record.planSha256,
         proposedByToolCallId: event.toolCallId,
+        sourceSessionId: sessionId,
         createdAt: Date.now(),
       });
     } catch (error) {
@@ -1304,8 +1510,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
     const approvedInResult = event.content.some((part) => part.type === "text" && part.text.trimStart().startsWith("Plan approved at "));
     if (approvedInResult && live.getPlanModeState()?.enabled !== true && planReferencesMatch(live.getPlanReferencePath(), proposedPath)) {
-      enterExecution(ctx, record);
-      await ensureLedger(ctx, record);
+      await enterExecution(ctx, record);
       await syncTools(false, true, true);
     }
     return undefined;
@@ -1329,7 +1534,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.on("session_compact", async (_event, ctx) => {
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase === "planning" && record.approvalCompactionPending === true) {
-      enterExecution(ctx, record);
+      record.compactHandoffPending = true;
+      await enterExecution(ctx, record);
       await syncTools(false, true, true);
     }
   });
@@ -1349,58 +1555,74 @@ export default function prometheus(pi: ExtensionAPI): void {
     const stamp = Math.max(...[...ledger.items, ...ledger.gates].map((item) => item.updatedAt));
     record.stallCount = stamp === record.lastContinuationLedgerStamp ? record.stallCount + 1 : 0;
     if (record.stallCount >= 2) {
-      notify(ctx, "Prometheus: execution stalled; run /prometheus to release or send new instructions", "warning");
+      notify(ctx, "Atlas execution stalled; run /atlas to exit or send new instructions", "warning");
       return undefined;
     }
     record.lastContinuationLedgerStamp = stamp;
     return {
       continue: true,
-      additionalContext: `<prometheus-continuation>\n${ledgerSummary(ledger)}\nDispatch the next unblocked items with task; record progress with prometheus_ledger; call prometheus_release only when every T and F row is done.\n</prometheus-continuation>`,
+      additionalContext: `<atlas-continuation>\n${ledgerSummary(ledger)}\nDispatch the next unblocked items with task; record progress with atlas_ledger; call atlas_release only when every T and F row is done.\n</atlas-continuation>`,
     };
   });
 
-  pi.on("session_start", async (_event, ctx) => {
-    await loadReviewLevel(ctx);
-    const restored = rehydrate(ctx, true);
-    await resumeLedger(ctx, restored);
+  const recoverSession = async (ctx: ExtensionContext, fresh = false, switched = false): Promise<void> => {
+    authorizedActivationCalls.clear();
+    const sessionId = ctx.sessionManager.getSessionId();
+    const live = mainSession(ctx);
+    const knownBinding = live ? hostBindings.get(live) : undefined;
+    const previousReference =
+      switched && knownBinding?.sessionId !== sessionId && planReferencesMatch(live?.getPlanReferencePath(), knownBinding?.planFilePath)
+        ? knownBinding?.planFilePath
+        : undefined;
+    const previous = records.get(sessionId);
+    if (previous) {
+      previous.ownership = undefined;
+      previous.activation = undefined;
+    }
+    const restored = fresh ? undefined : rehydrate(ctx, true);
+    if (fresh) records.delete(sessionId);
+    for (const ownership of ownerships) {
+      if (ownership.sessionId !== sessionId || restored?.phase !== "executing" || restored.atlasPlanId !== ownership.plan.id) {
+        detach(ownership);
+      }
+    }
+    await settleDetached();
+    await resumeLedger(ctx, restored, previousReference);
     const executing = restored?.phase === "executing";
     await syncTools(false, executing, executing);
+  };
+
+  pi.on("session_start", async (_event, ctx) => {
+    await loadReviewLevel(ctx);
+    await recoverSession(ctx);
   });
 
   pi.on("session_switch", async (event, ctx) => {
-    authorizedActivationCalls.clear();
     await loadReviewLevel(ctx);
-    if (event.reason === "new") {
-      records.delete(ctx.sessionManager.getSessionId());
-      await syncTools(false, false, false);
-      return;
-    }
-    const restored = rehydrate(ctx, true);
-    await resumeLedger(ctx, restored);
-    const executing = restored?.phase === "executing";
-    await syncTools(false, executing, executing);
+    await recoverSession(ctx, event.reason === "new", true);
   });
 
   pi.on("session_branch", async (_event, ctx) => {
-    authorizedActivationCalls.clear();
-    const restored = rehydrate(ctx, true);
-    await resumeLedger(ctx, restored);
-    const executing = restored?.phase === "executing";
-    await syncTools(false, executing, executing);
+    await recoverSession(ctx);
   });
 
   pi.on("session_tree", async (_event, ctx) => {
-    authorizedActivationCalls.clear();
-    const restored = rehydrate(ctx, true);
-    await resumeLedger(ctx, restored);
-    const executing = restored?.phase === "executing";
-    await syncTools(false, executing, executing);
+    await recoverSession(ctx);
   });
 
-  pi.on("session_shutdown", (_event, ctx) => {
-    records.delete(ctx.sessionManager.getSessionId());
-    childEvidence.clearSession(ctx.sessionManager.getSessionId());
-    reviewLevels.delete(ctx.sessionManager.getSessionId());
+  pi.on("session_shutdown", async (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const record = records.get(sessionId);
+    if (record) {
+      record.phase = "idle";
+      record.ownership = undefined;
+      record.activation = undefined;
+    }
+    for (const ownership of ownerships) if (ownership.sessionId === sessionId) detach(ownership);
+    // Keep observations and locks for still-live native work; process death is recovered by AtlasStore.
+    await settleDetached();
+    records.delete(sessionId);
+    reviewLevels.delete(sessionId);
     authorizedActivationCalls.clear();
   });
 }

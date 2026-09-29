@@ -7,7 +7,7 @@
  * decision can be exercised in isolation.
  */
 
-/** Slash command that toggles the Prometheus workflow, like the host's `/plan`. */
+/** Slash command that toggles Prometheus planning, like the host's `/plan`. */
 export const PROMETHEUS_COMMANDS: Record<string, true> = { prometheus: true };
 
 /** A `/prometheus` invocation; `prompt` is the optional first planning turn when toggling on. */
@@ -21,6 +21,12 @@ export function parsePrometheusCommand(text: string): PrometheusCommand | undefi
   const name = match?.[1];
   if (!name || PROMETHEUS_COMMANDS[name] !== true) return undefined;
   return { prompt: (match[2] ?? "").trim() };
+}
+
+/** Atlas has no implicit selector: a bare inactive command only lists plans. */
+export function parseAtlasCommand(text: string): { selector: string } | undefined {
+  const match = /^\/atlas(?:[ \t]+([\s\S]*))?$/.exec(text.trim());
+  return match ? { selector: (match[1] ?? "").trim() } : undefined;
 }
 
 export const PROMETHEUS_OPT_IN_QUESTION_ID = "prometheus-workflow-opt-in";
@@ -164,12 +170,12 @@ export function isApprovedPlanHandoff(
   return text.includes(`Full plan inlined below; durable copy at \`${proposed}\``);
 }
 
-/** Session-local Prometheus artifact for a plan: the approval-handoff marker or the execution ledger. */
-export function prometheusArtifactUrl(planFilePath: string, kind: "proposal" | "ledger"): string {
+/** Session-local planning approval-handoff marker. Execution belongs to AtlasStore. */
+export function prometheusArtifactUrl(planFilePath: string): string {
   const slug = canonicalPlanPath(planFilePath)
     .replace(/^local:\/\//, "")
     .replace(/-plan\.md$/, "");
-  return kind === "proposal" ? `local://prometheus/${slug}.proposal.json` : `local://prometheus/${slug}-ledger.json`;
+  return `local://prometheus/${slug}.proposal.json`;
 }
 
 /** Plan body inlined by the host's approved-plan handoff prompt, byte-for-byte between the plan tags. */
@@ -181,7 +187,7 @@ export function inlineApprovedPlan(prompt: string, planFilePath: string): string
 }
 
 /** Plugin-owned tools that are trusted only when registered by this runtime file. */
-export const PLUGIN_OWNED_TOOLS = new Set(["prometheus_release", "prometheus_ledger"]);
+export const PLUGIN_OWNED_TOOLS: Record<string, true> = { atlas_release: true, atlas_ledger: true };
 
 /** Parent-session orchestration and observation surfaces retained by Atlas. */
 const ALLOWED_TOOLS: Record<string, true> = {
@@ -189,8 +195,8 @@ const ALLOWED_TOOLS: Record<string, true> = {
   find: true,
   glob: true,
   grep: true,
-  prometheus_release: true,
-  prometheus_ledger: true,
+  atlas_release: true,
+  atlas_ledger: true,
   task: true,
   think: true,
   todo: true,
@@ -343,7 +349,7 @@ export function executionToolSourceBlockReason(
   source: string | undefined,
   trustedPrometheusTool = false,
 ): string | undefined {
-  if (PLUGIN_OWNED_TOOLS.has(toolName)) {
+  if (PLUGIN_OWNED_TOOLS[toolName] === true) {
     return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
   }
   if (source === "builtin") return undefined;
@@ -353,18 +359,18 @@ export function executionToolSourceBlockReason(
 /** Model-facing explanation returned with a blocked tool call. */
 export function blockedToolMessage(toolName: string, detail: string): string {
   return [
-    `Prometheus execution guard: this main session is Atlas, so \`${toolName}\` is blocked here — ${detail}.`,
+    `Atlas execution guard: this main session is Atlas, so \`${toolName}\` is blocked here — ${detail}.`,
     "Delegate implementation, tests, QA, documentation, cleanup, and final verification to child agents with `task`; the parent only orchestrates, tracks `todo`, collects results, and observes.",
     "This overrides implementation preferences such as `task.eager`. A disabled `task` tool or denied spawn is a capability blocker: report it and do not implement in the parent.",
-    "This is an extension interception policy, not an operating-system sandbox. The user can release it with `/prometheus`.",
+    "This is an extension interception policy, not an operating-system sandbox. The user can exit with `/atlas`.",
   ].join("\n");
 }
 
 export const BLOCKED_TOOL_NOTICE =
-  "Prometheus: Atlas cannot implement directly. Delegate every plan task to children; if spawning is disabled, report the capability block. Release only with /prometheus or a confirmed release request.";
+  "Atlas cannot implement directly. Delegate every plan task to children; if spawning is disabled, report the capability block. Exit with /atlas or a confirmed atlas_release request.";
 
 export const EXECUTION_START_NOTICE =
-  "Prometheus: native plan approval verified — Atlas execution is active. All implementation and verification is delegated; release only with /prometheus or a confirmed release request.";
+  "Native plan approval verified — Atlas execution is active. Implementation and verification is delegated; /atlas exits the mode while preserving shared progress.";
 
 export const PLANNING_PREAMBLE = [
   "# Prometheus planning workflow (active)",
@@ -374,12 +380,12 @@ export const PLANNING_PREAMBLE = [
 ].join("\n");
 
 export const EXECUTION_PREAMBLE = [
-  "# Prometheus execution (Atlas)",
+  "# Atlas execution (active)",
   "",
   "A Prometheus plan was approved through the host's native approval flow. This main session is Atlas, the orchestrator of that exact approved plan.",
   "Every plan task — implementation, tests, QA, documentation, cleanup, and final verification — MUST be executed by child agents spawned with `task`. Atlas delegates, tracks `todo`, collects and inspects child evidence, and uses observation/coordination tools only.",
   "This overrides `task.eager` and every preference that would permit parent implementation. It does not override capability policy: if `task` is disabled or spawning is denied, report the blocker and never downgrade to parent implementation.",
-  "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly releases it. Once every plan item has child-produced proof, call `prometheus_release` exactly once with a concise evidence summary; only human confirmation releases the guard. `/prometheus` is the user's direct escape hatch.",
+  "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly exits. Once every plan item has child-produced proof, call `atlas_release` exactly once with a concise evidence summary; human confirmation exits the mode. Bare `/atlas` is the user's immediate exit and preserves shared progress. Exit does not cancel native children; their plan ownership remains until final outcomes. `/prometheus` controls planning only.",
 ].join("\n");
 
 export const OPT_IN_ADDENDUM = [

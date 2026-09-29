@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -59,11 +59,12 @@ async function scenario(name: string, root: string): Promise<void> {
   const { TASK_SUBAGENT_LIFECYCLE_CHANNEL } = await import("@oh-my-pi/pi-coding-agent/task/types");
   const { z } = await import("zod");
   const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
-  const artifacts = join(root, "artifacts");
+  let artifacts = join(root, "artifacts");
   await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
-  const planFile = join(artifacts, "local", "integrity-plan.md");
-  const ledgerFile = join(artifacts, "local", "prometheus", "integrity-ledger.json");
-  const proposalFile = join(artifacts, "local", "prometheus", "integrity.proposal.json");
+  await mkdir(join(root, "sessions"));
+  const sourcePlanFile = join(artifacts, "local", "integrity-plan.md");
+  let planFile = sourcePlanFile;
+  let ledgerFile = "";
   const entries: unknown[] = [{ type: "mode_change", id: "plan-mode", mode: "plan" }];
   let hooks = new Map<string, Hook>();
   let tools = new Map<string, RegisteredTool>();
@@ -72,9 +73,23 @@ async function scenario(name: string, root: string): Promise<void> {
   let reference: string | undefined;
   let sequence = 0;
   let confirmations = 0;
-  const nativeJobs: Array<{ id: string; agentId: string; type: "task"; status: string; startTime: number; label: string }> = [];
+  let sessionId = "integrity-session";
+  const notices: string[] = [];
+  const commands = new Map<string, (args: string, context: ExtensionContext) => Promise<void>>();
+  const nativeJobs: Array<{
+    id: string;
+    agentId: string;
+    type: "task";
+    status: string;
+    startTime: number;
+    label: string;
+    ownerId?: string;
+    promise?: Promise<void>;
+  }> = [];
+  let settleNativeJob: (() => void) | undefined;
   const sessionManager = {
-    getSessionId: () => "integrity-session",
+    getSessionId: () => sessionId,
+    getSessionDir: () => join(root, "sessions"),
     getArtifactsDir: () => artifacts,
     getBranch: () => entries,
   };
@@ -85,6 +100,7 @@ async function scenario(name: string, root: string): Promise<void> {
     setPlanReferencePath: (path: string) => {
       reference = path;
     },
+    asyncJobManager: { getAllJobs: ({ ownerId }: { ownerId: string }) => nativeJobs.filter((job) => job.ownerId === ownerId) },
     getAsyncJobSnapshot: () => ({
       running: nativeJobs.filter((job) => job.status === "running"),
       recent: nativeJobs.filter((job) => job.status !== "running"),
@@ -97,14 +113,15 @@ async function scenario(name: string, root: string): Promise<void> {
     sessionManager,
     getSystemPrompt: () => [],
     ui: {
-      notify() {},
+      notify(message: string) {
+        notices.push(message);
+      },
       confirm: async () => {
         confirmations += 1;
         return true;
       },
     },
   } as unknown as ExtensionContext;
-  let command: ((args: string, context: ExtensionContext) => Promise<void>) | undefined;
   const install = () => {
     hooks = new Map();
     tools = new Map();
@@ -113,8 +130,8 @@ async function scenario(name: string, root: string): Promise<void> {
       zod: z,
       events: bus,
       logger: { warn() {} },
-      registerCommand: (_name: string, spec: { handler: typeof command }) => {
-        command = spec.handler;
+      registerCommand: (name: string, spec: { handler: (args: string, context: ExtensionContext) => Promise<void> }) => {
+        commands.set(name, spec.handler);
       },
       registerTool: (tool: RegisteredTool) => {
         tools.set(tool.name, tool);
@@ -125,7 +142,7 @@ async function scenario(name: string, root: string): Promise<void> {
       appendEntry: (customType: string, data: unknown) => {
         entries.push({ type: "custom", customType, data });
       },
-      getActiveTools: () => ["task", "read", "write", "prometheus_ledger", "prometheus_release"],
+      getActiveTools: () => ["task", "read", "write", "atlas_ledger", "atlas_release"],
       setActiveTools: async () => {},
       getAllTools: () => [
         { name: "task", description: "# Available Agents\n### task\nworker\n### reviewer\nreview", sourceInfo: { source: "builtin" } },
@@ -149,7 +166,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(handler, `Missing ${event} hook`);
     return handler({ type: event, ...data }, ctx);
   };
-  const call = async (params: Record<string, unknown>, toolName = "prometheus_ledger") => {
+  const call = async (params: Record<string, unknown>, toolName = "atlas_ledger") => {
     const tool = tools.get(toolName);
     assert(tool, `Missing ${toolName}`);
     return tool.execute(`ledger-${sequence++}`, params, undefined, undefined, ctx);
@@ -167,9 +184,8 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(item);
     return item;
   };
-  await writeFile(planFile, name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : plan);
-  assert(command);
-  await command("", ctx);
+  await writeFile(sourcePlanFile, name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : plan);
+  await commands.get("prometheus")?.("", ctx);
   mode = false;
   reference = "local://integrity-plan.md";
   await hook("tool_result", {
@@ -177,8 +193,27 @@ async function scenario(name: string, root: string): Promise<void> {
     toolCallId: "proposal",
     isError: false,
     details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: reference, planExists: true } } },
-    content: [{ type: "text", text: "Plan approved at local://integrity-plan.md" }],
+    content: [
+      {
+        type: "text",
+        text:
+          name === "fresh-handoff" || name.startsWith("compact-")
+            ? "Plan proposal submitted"
+            : "Plan approved at local://integrity-plan.md",
+      },
+    ],
   });
+  if (name !== "cycle" && name !== "fresh-handoff" && !name.startsWith("compact-")) assert(reference?.startsWith("/"), notices.join("\n"));
+  if (reference?.startsWith("/")) {
+    planFile = reference;
+    ledgerFile = join(dirname(planFile), "ledger.json");
+  }
+  const approvalFile = () => join(dirname(planFile), "approval.json");
+  const reload = async () => {
+    await hook("session_shutdown");
+    install();
+    await hook("session_start");
+  };
 
   const prepare = async (id: string): Promise<PreparedAssignment> => {
     const result = await call({ action: "start", id });
@@ -188,7 +223,7 @@ async function scenario(name: string, root: string): Promise<void> {
     const toolCallId = `dispatch-${sequence++}`;
     const input = {
       agent: item.dispatchAgent,
-      task: `review_kind: compliance\nprometheus_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { [id]: item.attempt } })}\nPerform ${item.title}; acceptance: ${item.acceptance}`,
+      task: `review_kind: compliance\natlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { [id]: item.attempt } })}\nPerform ${item.title}; acceptance: ${item.acceptance}`,
       solutionSpace: "Known scoped assignment",
       ...(result.details?.outputSchema ? { outputSchema: result.details.outputSchema, schemaMode: "strict" } : {}),
     };
@@ -237,7 +272,7 @@ async function scenario(name: string, root: string): Promise<void> {
       session: null,
       sessionFile,
       status: options.status ?? "idle",
-      createdAt: options.createdAt ?? (prepared.item.startedAt ?? 0) + 1,
+      createdAt: options.createdAt ?? prepared.item.startedAt ?? 0,
       history: { outputPath: join(artifacts, `${childAgentId}.md`) },
     });
     if (options.observe !== false)
@@ -257,6 +292,26 @@ async function scenario(name: string, root: string): Promise<void> {
         status: options.asyncStatus,
         startTime: Date.now(),
         label: childAgentId,
+        ...(name === "cancelled-live-child"
+          ? {
+              ownerId: "Main",
+              promise: new Promise<void>((resolve) => {
+                settleNativeJob = resolve;
+              }),
+            }
+          : {}),
+      });
+      await hook("tool_result", {
+        toolName: "task",
+        toolCallId: prepared.toolCallId,
+        input: prepared.input,
+        isError: false,
+        details: {
+          results: [],
+          async: { state: "running", jobId: `job-${childAgentId}`, type: "task" },
+          progress: [{ id: childAgentId, index: 0 }],
+        },
+        content: [{ type: "text", text: "Native task scheduled" }],
       });
     } else if (options.finalResult !== false) {
       await hook("tool_result", {
@@ -303,15 +358,59 @@ async function scenario(name: string, root: string): Promise<void> {
       prompt: `Plan approved.\nFull plan inlined below; durable copy at \`${reference}\`\n<plan path="${reference}">\n${plan}\n</plan>`,
       systemPrompt: [],
     });
+    assert(reference?.startsWith("/"), notices.join("\n"));
+    planFile = reference;
+    ledgerFile = join(dirname(planFile), "ledger.json");
     ok(await call({ action: "status" }));
     await finish("T1");
+    return;
+  }
+  if (name.startsWith("compact-")) {
+    const sourceReference = reference;
+    await hook("session_before_compact");
+    await hook("session_compact");
+    assert(reference?.startsWith("/"), notices.join("\n"));
+    planFile = reference;
+    ledgerFile = join(dirname(planFile), "ledger.json");
+    const originalLedgerId = (await ledger()).ledgerId;
+    // The host restores its source local:// reference after the session_compact callback.
+    reference = name.endsWith("reference-mismatch") ? "local://unrelated-plan.md" : sourceReference;
+    const inline = name.endsWith("inline-mismatch") ? `${plan}\nAltered acceptance` : plan;
+    const prompt = `Plan approved.\nFull plan inlined below; durable copy at \`${reference}\`\n<plan path="${reference}">\n${inline}\n</plan>`;
+    const queued = name.startsWith("compact-queued");
+    const message = {
+      role: name.endsWith("user-role") ? "user" : "developer",
+      content: [{ type: "text", text: prompt }],
+      attribution: name.endsWith("user-attribution") ? "user" : "agent",
+      synthetic: true,
+      timestamp: Date.now(),
+    };
+    if (queued) await hook("context", { messages: [message] });
+    else await hook("before_agent_start", { prompt, systemPrompt: [] });
+    if (name === "compact-handoff" || name === "compact-queued-handoff") {
+      ok(await call({ action: "status" }));
+      ok(await call({ action: "start", id: "T1" }));
+      assert.equal(reference, planFile);
+      if (queued) {
+        reference = sourceReference;
+        await hook("context", { messages: [message] });
+        refused(await call({ action: "status" }));
+        assert.equal(reference, sourceReference, "consumed native compact handoff must not authorize a later reference overwrite");
+      }
+    } else {
+      refused(await call({ action: "status" }));
+      assert.notEqual(reference, planFile);
+    }
+    assert.equal((await ledger()).ledgerId, originalLedgerId);
+    // Loading host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    assert.equal((await new AtlasStore(sessionManager.getSessionDir()).list()).length, 1);
     return;
   }
   if (name === "resume-missing-ledger") {
     await rm(ledgerFile);
     reference = "local://PLAN.md";
-    install();
-    await hook("session_start");
+    await reload();
     assert.equal(reference, "local://PLAN.md");
     await hook("before_agent_start", { prompt: "Continue", systemPrompt: [] });
     refused(await call({ action: "status" }));
@@ -321,27 +420,25 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "resume-reference-mismatch") {
     reference = "local://other-plan.md";
-    install();
-    await hook("session_start");
+    await reload();
     assert.equal(reference, "local://other-plan.md");
     refused(await call({ action: "status" }));
     return;
   }
   if (name === "resume-invalid-approval") {
-    const marker = JSON.parse(await readFile(proposalFile, "utf8")) as Record<string, unknown>;
-    marker.planFilePath = "local://other-plan.md";
-    await writeFile(proposalFile, JSON.stringify(marker));
+    const marker = JSON.parse(await readFile(approvalFile(), "utf8")) as Record<string, unknown>;
+    marker.planSha256 = "0".repeat(64);
+    await writeFile(approvalFile(), JSON.stringify(marker));
     reference = "local://PLAN.md";
-    install();
-    await hook("session_start");
+    await reload();
     assert.equal(reference, "local://PLAN.md");
     refused(await call({ action: "status" }));
     return;
   }
   if (name === "resume-missing-provenance") {
-    const marker = JSON.parse(await readFile(proposalFile, "utf8")) as Record<string, unknown>;
+    const marker = JSON.parse(await readFile(approvalFile(), "utf8")) as Record<string, unknown>;
     delete marker.proposedByToolCallId;
-    await writeFile(proposalFile, JSON.stringify(marker));
+    await writeFile(approvalFile(), JSON.stringify(marker));
     const checkpoint = entries.findLast(
       (entry) =>
         entry !== null && typeof entry === "object" && "customType" in entry && entry.customType === "wows-omp-omo-prometheus.state",
@@ -351,8 +448,7 @@ async function scenario(name: string, root: string): Promise<void> {
     delete data.proposedByToolCallId;
     entries.push({ type: "custom", customType: "wows-omp-omo-prometheus.state", data });
     reference = "local://PLAN.md";
-    install();
-    await hook("session_start");
+    await reload();
     assert.equal(reference, "local://PLAN.md");
     refused(await call({ action: "status" }));
     return;
@@ -376,11 +472,11 @@ async function scenario(name: string, root: string): Promise<void> {
     const toolCallId = "multi-row-dispatch";
     const input = {
       agent: "task",
-      task: `prometheus_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { T1: first.attempt, T3: third.attempt } })}\nImplement both independent criteria.`,
+      task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { T1: first.attempt, T3: third.attempt } })}\nImplement both independent criteria.`,
     };
     assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
     await publish({ item: first, current, toolCallId, input }, "Combined", {
-      createdAt: Math.max(first.startedAt ?? 0, third.startedAt ?? 0) + 1,
+      createdAt: Math.max(first.startedAt ?? 0, third.startedAt ?? 0),
     });
     ok(await done("T1", "Combined"));
     ok(await done("T3", "Combined"));
@@ -397,14 +493,14 @@ async function scenario(name: string, root: string): Promise<void> {
       if (mutation === "corrupt") await writeFile(ledgerFile, "{broken");
       if (mutation === "missing") await rm(ledgerFile);
       refused(await call({ action: "status" }));
-      refused(await call({ reason: "claim complete" }, "prometheus_release"));
+      refused(await call({ reason: "claim complete" }, "atlas_release"));
       assert.notEqual(await hook("tool_call", { toolName: "task", toolCallId: "blocked", input: { task: "implement" } }), undefined);
       assert.equal(await hook("session_stop"), undefined);
       assert.equal(confirmations, 0);
       await writeFile(planFile, plan);
       await writeFile(ledgerFile, original);
     }
-    await hook("input", { text: "/prometheus", source: "user" });
+    await hook("input", { text: "/atlas", source: "user" });
     assert.equal(
       await hook("tool_call", { toolName: "task", toolCallId: "outside", input: { agent: "task", task: "ordinary work" } }),
       undefined,
@@ -439,17 +535,21 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
   if (name === "final-native-outcome") {
-    const prepared = await prepare("T1");
+    let prepared = await prepare("T1");
     await publish(prepared, "EarlyCompletion", { finalResult: false });
     refused(await done("T1", "EarlyCompletion"));
     await publish(prepared, "CaptureFailed", { finalError: "Isolated patch capture failed after subprocess completion" });
     refused(await done("T1", "CaptureFailed"));
+    ok(await call({ action: "reopen", id: "T1" }));
+    prepared = await prepare("T1");
     await publish(prepared, "PendingCapture", { asyncStatus: "running" });
     refused(await done("T1", "PendingCapture"));
     const pending = nativeJobs.find((job) => job.agentId === "PendingCapture");
     assert(pending);
     pending.status = "failed";
     refused(await done("T1", "PendingCapture"));
+    ok(await call({ action: "reopen", id: "T1" }));
+    prepared = await prepare("T1");
     await publish(prepared, "SuccessfulCapture", { asyncStatus: "completed" });
     await hook("context", { messages: [] });
     nativeJobs.length = 0;
@@ -458,6 +558,455 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T2")).status, "open");
     return;
   }
+  if (name === "wake-ownership" || name === "wake-native-success" || name === "wake-native-failure" || name === "wake-missing-lifecycle") {
+    const prepared = await prepare("T1");
+    await publish(prepared, "WokenChild", {
+      asyncStatus: "completed",
+      nativeStatus: name === "wake-missing-lifecycle" ? "started" : "completed",
+    });
+    if (name === "wake-ownership") ok(await done("T1", "WokenChild"));
+    assert.equal(
+      await hook("tool_call", {
+        toolName: "write",
+        toolCallId: "wake-message",
+        input: { path: "agent://WokenChild", content: "Inspect this follow-up" },
+      }),
+      undefined,
+    );
+    await publish(prepared, "WokenChild", { status: "running", nativeStatus: "started", finalResult: false });
+    // Native wake jobs are registered on yield, later than the original task's returnedAt.
+    // Until a wake job exists, the new lifecycle generation itself retains writer ownership.
+    if (name === "wake-ownership") await commands.get("atlas")?.("", ctx);
+    // Loading host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const rival = new AtlasStore(sessionManager.getSessionDir());
+    const shared = await rival.find("integrity");
+    if (name === "wake-ownership") await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+    let settleWake!: () => void;
+    const wakeJob = {
+      id: "job-WokenChild-2",
+      agentId: "WokenChild",
+      type: "task" as const,
+      ownerId: "Main",
+      startTime: Date.now(),
+      label: "IRC follow-up",
+      status: "running",
+      promise: new Promise<void>((resolve) => {
+        settleWake = resolve;
+      }),
+    };
+    nativeJobs.push(wakeJob);
+    await publish(prepared, "WokenChild", { nativeStatus: "completed", finalResult: false, content: "New output from the wake turn" });
+    // An old synchronous final result and an old completed native job cannot authorize overwritten output.
+    await hook("tool_result", {
+      toolName: "task",
+      toolCallId: prepared.toolCallId,
+      isError: false,
+      details: { results: [{ id: "WokenChild", index: 0, exitCode: 0, aborted: false }] },
+      content: [],
+    });
+    if (name !== "wake-ownership") refused(await done("T1", "WokenChild"));
+    else await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+    wakeJob.status = name === "wake-native-success" || name === "wake-missing-lifecycle" ? "completed" : "failed";
+    await hook("context", { messages: [] });
+    // Even a terminal-looking wake job row does not settle its retained native promise.
+    if (name !== "wake-ownership") refused(await done("T1", "WokenChild"));
+    else await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+    settleWake();
+    await hook("tool_result", { toolName: "task", toolCallId: "unrelated", isError: false, details: {}, content: [] });
+    if (name === "wake-native-success" || name === "wake-missing-lifecycle") {
+      ok(await done("T1", "WokenChild"));
+      const receipt = (await row("T1")).receipt;
+      assert(receipt);
+      assert.equal(await readFile(join(dirname(planFile), "evidence", `${receipt.receiptId}.md`), "utf8"), "New output from the wake turn");
+    } else if (name === "wake-native-failure") refused(await done("T1", "WokenChild"));
+    if (name !== "wake-ownership") await commands.get("atlas")?.("", ctx);
+    await rival.acquire(shared.id, "rival");
+    await rival.release(shared.id, "rival");
+    return;
+  }
+  if (name === "wake-wrapper-cancel" || name === "wake-wrapper-direct-abort") {
+    const prepared = await prepare("T1");
+    await publish(prepared, "AbortableWake", { asyncStatus: "completed" });
+    await publish(prepared, "AbortableWake", { status: "running", nativeStatus: "started", finalResult: false });
+    // These real host modules load only inside the isolated child process.
+    const { AsyncJobManager } = await import("@oh-my-pi/pi-coding-agent/async");
+    const { untilAborted } = await import("@oh-my-pi/pi-utils");
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const manager = new AsyncJobManager({ onJobComplete() {} });
+    Object.defineProperty(live, "asyncJobManager", { value: manager, configurable: true });
+    let resolveOutcome!: (text: string) => void;
+    let underlyingFinished = false;
+    const outcome = new Promise<string>((resolve) => {
+      resolveOutcome = resolve;
+    }).then((text) => {
+      underlyingFinished = true;
+      return text;
+    });
+    const id = manager.register("task", "AbortableWake", ({ signal }) => untilAborted(signal, outcome), {
+      id: "AbortableWake-revived",
+      agentId: "AbortableWake",
+      ownerId: "Main",
+    });
+    const job = manager.getJob(id);
+    assert(job);
+    nativeJobs.push({
+      id: job.id,
+      agentId: "AbortableWake",
+      type: "task",
+      startTime: job.startTime,
+      label: job.label,
+      get status() {
+        return job.status;
+      },
+    });
+    try {
+      await hook("context", { messages: [] });
+      if (name === "wake-wrapper-cancel") assert(manager.cancel(id, { ownerId: "Main" }));
+      else job.abortController.abort();
+      await job.promise;
+      assert.equal(job.status, name === "wake-wrapper-cancel" ? "cancelled" : "failed");
+      assert.equal(underlyingFinished, false, "native abort wrapper must settle while underlying wake is still pending");
+      await publish(prepared, "AbortableWake", { nativeStatus: "completed", finalResult: false, content: "Unsettled wake output" });
+      refused(await done("T1", "AbortableWake"));
+      await commands.get("atlas")?.("", ctx);
+      const rival = new AtlasStore(sessionManager.getSessionDir());
+      const shared = await rival.find("integrity");
+      await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+      resolveOutcome("The unwrapped wake finally completed");
+      await outcome;
+      assert.equal(underlyingFinished, true);
+      await hook("tool_result", { toolName: "task", toolCallId: "unrelated", isError: false, details: {}, content: [] });
+      // The plugin has only the cancelled wrapper; lifecycle and caller knowledge of the
+      // unwrapped promise are not a native final handle and cannot release its lock.
+      await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+    } finally {
+      resolveOutcome("Cleanup");
+      await outcome;
+      await manager.dispose({ timeoutMs: 100 });
+    }
+    return;
+  }
+  if (name === "mixed-schedule-failure" || name === "mixed-inline-failure") {
+    ok(await call({ action: "start", id: "T1" }));
+    ok(await call({ action: "start", id: "T3" }));
+    const current = await ledger();
+    const first = await row("T1");
+    const third = await row("T3");
+    const toolCallId = "mixed-dispatch";
+    const input = {
+      context: "Independent native task members",
+      tasks: [first, third].map((item) => ({
+        agent: item.dispatchAgent,
+        task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { [item.id]: item.attempt } })}\nExecute ${item.id}`,
+      })),
+    };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
+    await publish({ item: first, current, toolCallId, input }, "RunningSibling", { asyncStatus: "running" });
+    if (name === "mixed-inline-failure")
+      bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+        id: "FailedMember",
+        index: 1,
+        status: "failed",
+        sessionFile: join(artifacts, "FailedMember.jsonl"),
+        parentToolCallId: toolCallId,
+      });
+    const details = {
+      results: [],
+      async: { state: "running", type: "task", jobId: "job-RunningSibling" },
+      progress: [
+        { id: "RunningSibling", index: 0, status: "running" },
+        { id: "FailedMember", index: 1, status: name === "mixed-inline-failure" ? "aborted" : "failed" },
+      ],
+    };
+    await hook("tool_result", { toolName: "task", toolCallId, input, isError: false, details, content: [] });
+    refused(await done("T3", "FailedMember"));
+    await commands.get("atlas")?.("", ctx);
+    // Loading host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const rival = new AtlasStore(sessionManager.getSessionDir());
+    const shared = await rival.find("integrity");
+    await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+    const sibling = nativeJobs.find((job) => job.agentId === "RunningSibling");
+    assert(sibling);
+    sibling.status = "completed";
+    await hook("tool_result", { toolName: "task", toolCallId, input, isError: false, details, content: [] });
+    await rival.acquire(shared.id, "rival");
+    await rival.release(shared.id, "rival");
+    await commands.get("atlas")?.("integrity", ctx);
+    ok(await call({ action: "status" }));
+    assert.equal((await row("T3")).status, "open");
+    return;
+  }
+  if (name === "cross-session") {
+    await finish("T1");
+    const origin = (await row("T1")).receipt;
+    assert(origin);
+    ok(await call({ action: "start", id: "T3" }));
+    const originalArtifacts = artifacts;
+    await hook("input", { text: "/atlas", source: "user" });
+    await hook("session_shutdown");
+    sessionId = "successor-session";
+    artifacts = join(root, "successor-artifacts");
+    await mkdir(artifacts, { recursive: true });
+    await rm(originalArtifacts, { recursive: true, force: true });
+    entries.length = 0;
+    reference = "local://PLAN.md";
+    AgentRegistry.resetGlobalForTests();
+    main();
+    install();
+    await hook("session_start");
+    await commands.get("atlas")?.("integrity", ctx);
+    const status = await call({ action: "status" });
+    ok(status);
+    assert.equal(reference, planFile);
+    assert.deepEqual((await row("T1")).receipt, origin);
+    assert.equal((await row("T3")).status, "open");
+    assert(status.content.some((part) => part.text?.includes(join(dirname(planFile), "evidence", `${origin.receiptId}.md`))));
+    await finish("T2");
+    await finish("T3");
+    const gate = await prepare("F1");
+    // Native child ids can repeat across sessions; origin session is part of freshness.
+    await publish(gate, origin.childAgentId);
+    ok(await done("F1", origin.childAgentId));
+    await finish("F2");
+    await finish("F3");
+    await finish("F4");
+    ok(await call({ reason: "shared verification complete" }, "atlas_release"));
+    return;
+  }
+  if (name === "switch-reference") {
+    await finish("T1");
+    const firstEntries = entries.slice();
+    const firstReference = reference;
+    sessionId = "second-session";
+    entries.length = 0;
+    await hook("session_switch", { reason: "new" });
+    // The host can retain the previous reference on the same AgentSession object.
+    assert.equal(reference, firstReference);
+    // Loading host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const second = await new AtlasStore(sessionManager.getSessionDir()).create({
+      name: "second",
+      content: plan,
+      cwd: root,
+      sourcePlanPath: "local://second-plan.md",
+      sourceSessionId: "approved-origin",
+      proposedByToolCallId: "second-native",
+      availableAgents: ["task", "reviewer"],
+    });
+    await commands.get("atlas")?.("second", ctx);
+    assert.equal(reference, second.planFilePath);
+    const secondEntries = entries.slice();
+    sessionId = "integrity-session";
+    entries.splice(0, entries.length, ...firstEntries);
+    await hook("session_switch", { reason: "resume" });
+    ok(await call({ action: "status" }));
+    assert.equal(reference, firstReference);
+    assert.equal((await row("T1")).status, "done");
+    sessionId = "second-session";
+    entries.splice(0, entries.length, ...secondEntries);
+    reference = "local://explicit-unrelated-plan.md";
+    await hook("session_switch", { reason: "resume" });
+    refused(await call({ action: "status" }));
+    assert.equal(reference, "local://explicit-unrelated-plan.md");
+    return;
+  }
+  if (name === "exact-commands") {
+    assert(!tools.has("prometheus_ledger") && !tools.has("prometheus_release"));
+    const approvedReference = reference;
+    for (const selector of ["integrity", "missing-plan"]) {
+      await commands.get("atlas")?.(selector, ctx);
+      assert.match(notices.at(-1) ?? "", /already active/);
+      await hook("input", { text: `/atlas ${selector}`, source: "user" });
+      assert.match(notices.at(-1) ?? "", /already active/);
+      assert.equal(reference, approvedReference);
+    }
+    await commands.get("prometheus")?.("", ctx);
+    assert.match(notices.at(-1) ?? "", /cannot release/);
+    await hook("input", { text: "/prometheus", source: "user" });
+    assert.match(notices.at(-1) ?? "", /Atlas is active/);
+    ok(await call({ action: "status" }));
+    assert.notEqual(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
+    await commands.get("atlas")?.("", ctx);
+    refused(await call({ action: "status" }));
+    await commands.get("atlas")?.("", ctx);
+    assert.match(notices.at(-1) ?? "", /Atlas is inactive.*[\s\S]*integrity/);
+    refused(await call({ action: "status" }));
+    await commands.get("atlas")?.("missing-plan", ctx);
+    assert.match(notices.at(-1) ?? "", /Atlas execution paused/);
+    assert.notEqual(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
+    await commands.get("atlas")?.("", ctx);
+    assert.equal(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
+    // Loading host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const other = await new AtlasStore(sessionManager.getSessionDir()).create({
+      name: "second",
+      content: plan,
+      cwd: root,
+      sourcePlanPath: "local://second-plan.md",
+      sourceSessionId: "approved-origin",
+      proposedByToolCallId: "native-second",
+      availableAgents: ["task", "reviewer"],
+    });
+    await commands.get("atlas")?.("second", ctx);
+    ok(await call({ action: "status" }));
+    assert.equal(reference, other.planFilePath);
+    await commands.get("atlas")?.("", ctx);
+    await hook("input", { text: "/atlas integrity", source: "user" });
+    assert.equal(reference, approvedReference);
+    ok(await call({ action: "status" }));
+    await commands.get("atlas")?.("", ctx);
+    mode = true;
+    await commands.get("prometheus")?.("", ctx);
+    await commands.get("atlas")?.("integrity", ctx);
+    assert.match(notices.at(-1) ?? "", /cannot enter during planning/);
+    await hook("input", { text: "/atlas integrity", source: "user" });
+    assert.match(notices.at(-1) ?? "", /cannot enter during planning/);
+    await commands.get("atlas")?.("", ctx);
+    assert.match(notices.at(-1) ?? "", /Atlas is inactive/);
+    refused(await call({ action: "status" }));
+    return;
+  }
+  if (name === "exit-live-child" || name === "shutdown-live-child" || name === "cancelled-live-child") {
+    const prepared = await prepare("T1");
+    await publish(prepared, "PendingChild", { asyncStatus: "running" });
+    const originalAttempt = prepared.item.attempt;
+    await hook("session_tree");
+    assert.equal((await row("T1")).attempt, originalAttempt);
+    assert.equal((await row("T1")).status, "in_progress");
+    // Loading host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const rival = new AtlasStore(sessionManager.getSessionDir());
+    const shared = await rival.find("integrity");
+    if (name === "shutdown-live-child") await hook("session_shutdown");
+    else await commands.get("atlas")?.("", ctx);
+    if (name === "exit-live-child")
+      assert.equal(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
+    await assert.rejects(rival.acquire(shared.id, "session-b"), /live execution owner/);
+    if (name === "exit-live-child") {
+      await commands.get("atlas")?.("integrity", ctx);
+      refused(await call({ action: "status" }));
+      assert.equal((await row("T1")).attempt, originalAttempt);
+      await commands.get("atlas")?.("", ctx);
+      const other = await rival.create({
+        name: "unrelated",
+        content: plan,
+        cwd: root,
+        sourcePlanPath: "local://unrelated-plan.md",
+        sourceSessionId: "origin",
+        proposedByToolCallId: "other-proposal",
+        availableAgents: ["task", "reviewer"],
+      });
+      await commands.get("atlas")?.("unrelated", ctx);
+      assert.equal(reference, other.planFilePath);
+      ok(await call({ action: "status" }));
+      await commands.get("atlas")?.("", ctx);
+    }
+    const job = nativeJobs.find((job) => job.agentId === "PendingChild");
+    assert(job);
+    if (name === "cancelled-live-child") {
+      job.status = "cancelled";
+      await hook("context", { messages: [] });
+      await assert.rejects(rival.acquire(shared.id, "session-b"), /live execution owner/);
+      nativeJobs.length = 0; // The exact observed promise must survive native history eviction.
+      assert(settleNativeJob);
+      settleNativeJob();
+    } else job.status = "failed";
+    await hook("tool_result", {
+      toolName: "task",
+      toolCallId: prepared.toolCallId,
+      isError: false,
+      details: { async: { state: "failed", type: "task", jobId: job.id }, results: [] },
+      content: [],
+    });
+    await rival.acquire(shared.id, "session-b");
+    await rival.release(shared.id, "session-b");
+    if (name === "shutdown-live-child") await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("integrity", ctx);
+    ok(await call({ action: "status" }));
+    assert.equal((await row("T1")).status, "open");
+    return;
+  }
+  if (name === "exit-during-capture") {
+    const prepared = await prepare("T1");
+    await publish(prepared, "FinishingChild");
+    // This test intercepts the module instance loaded by the isolated extension above.
+    const { ChildEvidence } = await import("../plugins/omo-prometheus/src/evidence.ts");
+    const original = ChildEvidence.prototype.capture;
+    let entered!: () => void;
+    let continueCapture!: () => void;
+    const captured = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      continueCapture = resolve;
+    });
+    ChildEvidence.prototype.capture = async function (options) {
+      const receipt = await original.call(this, options);
+      entered();
+      await resume;
+      return receipt;
+    };
+    try {
+      const pending = done("T1", "FinishingChild");
+      await captured;
+      await commands.get("atlas")?.("", ctx);
+      continueCapture();
+      refused(await pending);
+      assert.equal((await row("T1")).status, "in_progress");
+      await commands.get("atlas")?.("integrity", ctx);
+      ok(await call({ action: "status" }));
+      assert.equal((await row("T1")).status, "open");
+    } finally {
+      continueCapture();
+      ChildEvidence.prototype.capture = original;
+    }
+    return;
+  }
+  if (name === "legacy-pauses") {
+    const oldLedger = join(artifacts, "local", "prometheus", "integrity-ledger.json");
+    const oldMarker = join(artifacts, "local", "prometheus", "integrity.proposal.json");
+    const progress = await readFile(ledgerFile, "utf8");
+    const proposal = await readFile(oldMarker, "utf8");
+    await writeFile(oldLedger, progress);
+    await hook("session_shutdown");
+    entries.length = 0;
+    entries.push({
+      type: "custom",
+      customType: "wows-omp-omo-prometheus.state",
+      data: {
+        version: 2,
+        phase: "executing",
+        planFilePath: "local://integrity-plan.md",
+        ledgerPath: "local://prometheus/integrity-ledger.json",
+        planSha256: (await ledger()).planSha256,
+        proposedByToolCallId: "old-proposal",
+      },
+    });
+    reference = "local://integrity-plan.md";
+    install();
+    await hook("session_start");
+    refused(await call({ action: "status" }));
+    assert.match(notices.join("\n"), /fresh native reapproval/);
+    await commands.get("atlas")?.("", ctx);
+    assert.equal(await readFile(oldLedger, "utf8"), progress);
+    assert.equal(await readFile(oldMarker, "utf8"), proposal);
+    assert.equal(await readFile(sourcePlanFile, "utf8"), plan);
+    return;
+  }
+  if (name === "workspace-mismatch") {
+    await commands.get("atlas")?.("", ctx);
+    const otherCwd = join(root, "different-worktree");
+    await mkdir(otherCwd);
+    const foreignContext = { ...ctx, cwd: otherCwd } as ExtensionContext;
+    await commands.get("atlas")?.("integrity", foreignContext);
+    assert.match(notices.at(-1) ?? "", /different workspace/);
+    refused(await call({ action: "status" }));
+    await commands.get("atlas")?.("", foreignContext);
+    return;
+  }
+
   await tasksDone();
   if (name === "untrusted-children") {
     const review = await prepare("F1");
@@ -512,7 +1061,21 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(current.items[0]?.status, "open");
     assert.equal(current.items[1]?.status, "open");
     assert(current.gates.every((item) => item.status === "open" && item.receipt === undefined));
-    refused(await call({ reason: "stale success" }, "prometheus_release"));
+    refused(await call({ reason: "stale success" }, "atlas_release"));
+    return;
+  }
+  if (name === "branch-keeps-progress") {
+    const snapshot = entries.slice();
+    await finish("F1");
+    const receipt = (await row("F1")).receipt;
+    entries.splice(0, entries.length, ...snapshot);
+    await hook("session_tree");
+    ok(await call({ action: "status" }));
+    assert.deepEqual((await row("F1")).receipt, receipt);
+    assert.equal((await row("F1")).status, "done");
+    await writeFile(join(artifacts, `${receipt?.childAgentId}.md`), "Changed old local output");
+    ok(await call({ action: "status" }));
+    assert.equal((await row("F1")).status, "done");
     return;
   }
   await gatesDone();
@@ -520,8 +1083,7 @@ async function scenario(name: string, root: string): Promise<void> {
     const completed = await readFile(ledgerFile, "utf8");
     ok(await call({ action: "reopen", id: "T1" }));
     await writeFile(ledgerFile, completed);
-    install();
-    await hook("session_start");
+    await reload();
     const current = await ledger();
     assert.equal(current.items[0]?.status, "open");
     assert.equal(current.items[1]?.status, "open");
@@ -531,7 +1093,8 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "changed-output") {
     const original = await row("T1");
-    await writeFile(join(artifacts, `${original.childAgentId}.md`), "Different unverified output");
+    assert(original.receipt);
+    await writeFile(join(dirname(planFile), "evidence", `${original.receipt.receiptId}.md`), "Different unverified output");
     ok(await call({ action: "status" }));
     assert.equal((await row("T1")).status, "open");
     assert.equal((await row("T2")).status, "open");
@@ -541,12 +1104,11 @@ async function scenario(name: string, root: string): Promise<void> {
   if (name === "resume") {
     AgentRegistry.resetGlobalForTests();
     main();
-    install();
-    await hook("session_start");
+    await reload();
     const status = await call({ action: "status" });
     ok(status);
     assert(status.details?.ledger?.gates.every((item) => item.status === "done"));
-    ok(await call({ reason: "verified completion" }, "prometheus_release"));
+    ok(await call({ reason: "verified completion" }, "atlas_release"));
     assert.equal(confirmations, 1);
     return;
   }
@@ -554,13 +1116,12 @@ async function scenario(name: string, root: string): Promise<void> {
     reference = "local://PLAN.md";
     AgentRegistry.resetGlobalForTests();
     main();
-    install();
-    await hook("session_start");
-    assert.equal(reference, "local://integrity-plan.md");
+    await reload();
+    assert.equal(reference, planFile);
     const status = await call({ action: "status" });
     ok(status);
     assert(status.details?.ledger?.gates.every((item) => item.status === "done"));
-    ok(await call({ reason: "verified completion" }, "prometheus_release"));
+    ok(await call({ reason: "verified completion" }, "atlas_release"));
     assert.equal(confirmations, 1);
     return;
   }
@@ -570,8 +1131,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await writeFile(ledgerFile, JSON.stringify(current));
     AgentRegistry.resetGlobalForTests();
     main();
-    install();
-    await hook("session_start");
+    await reload();
     const reopened = await ledger();
     assert.equal(reopened.items[0]?.status, "open");
     assert.equal(reopened.items[1]?.status, "open");
@@ -611,6 +1171,32 @@ if (process.env[CHILD_ENV]) {
       "resume",
       "resume-default-reference",
       "missing-proof",
+      "cross-session",
+      "exact-commands",
+      "exit-live-child",
+      "shutdown-live-child",
+      "cancelled-live-child",
+      "exit-during-capture",
+      "legacy-pauses",
+      "workspace-mismatch",
+      "branch-keeps-progress",
+      "switch-reference",
+      "wake-ownership",
+      "wake-native-success",
+      "wake-native-failure",
+      "wake-missing-lifecycle",
+      "wake-wrapper-cancel",
+      "wake-wrapper-direct-abort",
+      "mixed-schedule-failure",
+      "mixed-inline-failure",
+      "compact-handoff",
+      "compact-inline-mismatch",
+      "compact-reference-mismatch",
+      "compact-queued-handoff",
+      "compact-queued-inline-mismatch",
+      "compact-queued-reference-mismatch",
+      "compact-queued-user-role",
+      "compact-queued-user-attribution",
     ]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "prometheus-execution-"));

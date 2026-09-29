@@ -342,12 +342,12 @@ async function registerTests(): Promise<void> {
       });
     });
 
-    test("active Prometheus execution owns agent and effort; an idle state restores ordinary routing", async () => {
+    test("active Atlas execution owns agent and effort; an idle state restores ordinary routing", async () => {
       await withProjects([{ judgeEffort: true }, { judgeEffort: true }], async ([executing, idle]) => {
         const state = (phase: string) => ({ type: "custom", customType: "wows-omp-omo-prometheus.state", data: { phase } });
         const input = {
           agent: "task",
-          task: 'Implement T1\nprometheus_assignment: {"planSha256":"approved","rows":{"T1":"attempt"}}',
+          task: 'Implement T1\natlas_assignment: {"planSha256":"approved","rows":{"T1":"attempt"}}',
           effort: "lo",
         };
         const report = await runIsolatedScenario({

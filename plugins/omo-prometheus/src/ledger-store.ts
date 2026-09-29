@@ -27,8 +27,20 @@ export async function writeLedgerAtomic(file: string, data: unknown): Promise<vo
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
-    await fs.writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    const handle = await fs.open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(data, null, 2)}\n`);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await fs.rename(temporary, file);
+    const parent = await fs.open(path.dirname(file), "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
   } finally {
     await fs.rm(temporary, { force: true });
   }

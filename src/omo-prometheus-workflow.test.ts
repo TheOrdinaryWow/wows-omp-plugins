@@ -8,6 +8,7 @@ import {
   isPrometheusOptInQuestion,
   nestedXdevToolCall,
   PROMETHEUS_OPT_IN_QUESTION_ID,
+  parseAtlasCommand,
   parsePrometheusCommand,
   proposedPlanPathFromToolResult,
   taskSpawnBlockReason,
@@ -33,6 +34,15 @@ describe("Prometheus command parsing", () => {
     expect(parsePrometheusCommand("/prometheus")).toEqual({ prompt: "" });
     expect(parsePrometheusCommand("/prometheus ship it")).toEqual({ prompt: "ship it" });
     expect(parsePrometheusCommand("/prometheusx")).toBeUndefined();
+  });
+
+  test("parses only exact Atlas commands and preserves explicit selectors", () => {
+    expect(parseAtlasCommand("/atlas")).toEqual({ selector: "" });
+    expect(parseAtlasCommand(" /atlas integrity ")).toEqual({ selector: "integrity" });
+    expect(parseAtlasCommand("/atlas integrity--id")).toEqual({ selector: "integrity--id" });
+    expect(parseAtlasCommand("/atlasx")).toBeUndefined();
+    expect(parseAtlasCommand("/Atlas")).toBeUndefined();
+    expect(parsePrometheusCommand("/atlas integrity")).toBeUndefined();
   });
 });
 
@@ -98,7 +108,10 @@ describe("Atlas execution guard", () => {
   test("permits observation and child coordination but blocks parent implementation", () => {
     expect(executionBlockReason("read", { path: "src/index.ts" })).toBeUndefined();
     expect(executionBlockReason("task", { tasks: [] })).toBeUndefined();
-    expect(executionBlockReason("prometheus_ledger", { action: "status" })).toBeUndefined();
+    expect(executionBlockReason("atlas_ledger", { action: "status" })).toBeUndefined();
+    expect(executionBlockReason("atlas_release", { reason: "verified" })).toBeUndefined();
+    expect(executionBlockReason("prometheus_ledger", { action: "status" })).toBeTruthy();
+    expect(executionBlockReason("prometheus_release", { reason: "verified" })).toBeTruthy();
     expect(executionBlockReason("edit", { path: "src/index.ts" })).toBeTruthy();
     expect(executionBlockReason("bash", { command: "bun test" })).toBeTruthy();
     expect(executionBlockReason("lsp", { action: "references" })).toBeUndefined();
@@ -132,11 +145,11 @@ describe("Atlas execution guard", () => {
   test("rejects same-name extension or MCP shadows of trusted tools", () => {
     expect(executionToolSourceBlockReason("task", "builtin")).toBeUndefined();
     expect(executionToolSourceBlockReason("task", "extension")).toBeTruthy();
-    expect(executionToolSourceBlockReason("prometheus_release", "extension", true)).toBeUndefined();
-    expect(executionToolSourceBlockReason("prometheus_release", "extension", false)).toBeTruthy();
-    expect(executionToolSourceBlockReason("prometheus_ledger", "extension", true)).toBeUndefined();
-    expect(executionToolSourceBlockReason("prometheus_ledger", "extension", false)).toBeTruthy();
-    expect(executionToolSourceBlockReason("prometheus_ledger", "mcp", false)).toBeTruthy();
+    expect(executionToolSourceBlockReason("atlas_release", "extension", true)).toBeUndefined();
+    expect(executionToolSourceBlockReason("atlas_release", "extension", false)).toBeTruthy();
+    expect(executionToolSourceBlockReason("atlas_ledger", "extension", true)).toBeUndefined();
+    expect(executionToolSourceBlockReason("atlas_ledger", "extension", false)).toBeTruthy();
+    expect(executionToolSourceBlockReason("atlas_ledger", "mcp", false)).toBeTruthy();
   });
 });
 

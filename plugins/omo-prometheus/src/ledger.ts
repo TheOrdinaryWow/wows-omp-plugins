@@ -31,7 +31,7 @@ export interface ExecutionLedger {
   createdAt: number;
 }
 
-/** Produced only after a native completed-child result has been inspected. Mirrored in session entries. */
+/** Authenticated native final success, archived with its original session identity in shared evidence. */
 export interface ChildReceipt {
   receiptId: string;
   ledgerId: string;
@@ -248,7 +248,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     );
     if (item.status === "in_progress") {
       lines.push(
-        `Assignment for ${item.id}: prometheus_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, rows: { [item.id]: item.attempt } })}`,
+        `Assignment for ${item.id}: atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, rows: { [item.id]: item.attempt } })}`,
       );
     }
   }
