@@ -7,6 +7,13 @@
 - Make category workers escalate unapproved material choices to their parent and keep refactor delegation proportional to independent work.
 - Align debugging and Git guidance with observed evidence, user-owned decisions, and previously authorized commit cadence.
 
+## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.2.0...omo-toolkit@0.3.0) (2026-09-29)
+
+
+### Features
+
+* **omo-toolkit:** route librarian through tiny, writing through a writer role, and raise creative lanes to xhigh ([7ef81ff](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/7ef81ff4ba130fa7d1a4024659620a020788d908))
+
 ## [0.2.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.1.2...omo-toolkit@0.2.0) (2026-09-29)
 
 
