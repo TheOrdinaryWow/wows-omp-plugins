@@ -3,5 +3,5 @@
   "plugins/judge-dispatch": "0.2.1",
   "plugins/omo-prometheus": "0.4.0",
   "plugins/omo-ultrawork": "0.3.0",
-  "plugins/omo-toolkit": "0.1.2"
+  "plugins/omo-toolkit": "0.2.0"
 }
