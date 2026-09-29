@@ -18,7 +18,7 @@ Category agents use the same worker base as OMP's bundled `task` agent, then add
 |`deep-high`|Escalated reasoning and implementation after a material choice is authorized; otherwise returns options and recommendation to its parent|`@slow`|`xhigh`|
 |`ultrabrain`|Hard logic and architecture reasoning with clear goals|`@slow`|`max`|
 |`architect`|Read-only system design comparison and recommendation|`@slow`|`max`|
-|`visual-engineering`|UI/UX, styling, animation, frontend, and design-system work|`@task`|`high`|
+|`visual-engineering`|UI/UX, styling, animation, frontend, and design-system work|`@designer`, then `@task`|`high`|
 |`artistry`|Creative, unconventional problem solving|`@task`|`high`|
 |`writing`|Documentation, prose, and technical writing|`@task`|`low`|
 
@@ -28,7 +28,7 @@ Research agent:
 |---|---|---|
 |`librarian`|Read-only open-source research with GitHub permalinks and official documentation; thinking off for speed|`@smol`|
 
-Model roles resolve through the user's OMP `modelRoles`. Override one agent without editing plugin files through `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
+Model roles resolve through the user's OMP `modelRoles`. A list is tried in order: `visual-engineering` uses a custom `designer` role when it is configured to an available model and otherwise falls back to `@task`. Override one agent without editing plugin files through `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
 
 ```yaml
 task:

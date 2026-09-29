@@ -1,7 +1,7 @@
 ---
 name: visual-engineering
 description: "Visual design, UI/UX, frontend, styling, animation, and design systems"
-model: "@task"
+model: ["@designer", "@task"]
 thinkingLevel: high
 ---
 
