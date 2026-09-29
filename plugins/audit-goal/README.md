@@ -10,7 +10,7 @@ carries an audit protocol, a persisted evidence ledger, and two reserved agents.
 omp plugin install audit-goal@wows-omp-plugins
 ```
 
-Requires OMP 18.2.11 or newer. Restart the session after installing. Goal mode
+Requires OMP 18.3.1 or newer. Restart the session after installing. Goal mode
 must be enabled (`goal.enabled`, the default).
 
 ## Usage

@@ -39,7 +39,7 @@ src/                           repo tooling and tests; never shipped to users
 
 - `.github/workflows/ci.yml` runs lint, the catalog check, type check, and tests
   on every push and PR. Types and tests run twice: against the omp version in
-  `bun.lock` and against 18.2.11, the oldest host the plugins support. Raise
+  `bun.lock` and against 18.3.1, the oldest host the plugins support. Raise
   that matrix entry only together with the documented floor.
 - `.github/workflows/release.yml` runs release-please on `main`. Versions come
   from Conventional Commits scoped by path: a `feat`/`fix` touching
@@ -138,11 +138,11 @@ It derives its legal agent set from the live `task` tool description and reads
 its settings on every call from `ctx.cwd` (never `process.cwd()`), because plugin
 settings are project-scoped and several sessions can share one process.
 
-Its runtime floor is omp 18.2.11, older than the dev dependency it compiles
+Its runtime floor is omp 18.3.1, older than the dev dependency it compiles
 against. Host APIs that changed shape since then go through feature detection,
 as `src/host-settings.ts` does for `Settings.get` versus the setting registry.
-Before relying on a new host API, type-check a throwaway copy against 18.2.11
-(`bun add -d @oh-my-pi/pi-coding-agent@18.2.11`) and keep a fallback.
+Before relying on a new host API, type-check a throwaway copy against 18.3.1
+(`bun add -d @oh-my-pi/pi-coding-agent@18.3.1`) and keep a fallback.
 
 Judging goes through OMP's `judge` role (`resolveJudge`); the plugin keeps no
 credentials or provider settings of its own. It judges only when the chain's
