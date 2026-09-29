@@ -180,6 +180,10 @@ dev marketplace. Facts behind this design, verified on omp 18.3.5:
   appear once the plugin has left this repo — an invalid `imports` key, a stray
   runtime dependency — are invisible from here. That is how the `#/*` breakage
   above was found.
+- That cached copy can disappear while the project link and lock entry
+  remain; a forced reinstall then fails with "Runtime package name ...
+  conflicts with installed package". `dev:plugins` removes such a dead link
+  and its `.omp/plugins/omp-plugins.lock.json` entry before installing.
 - `omp plugin link` is not a substitute: it registers an npm-style plugin at
   user scope, overriding the release install everywhere.
 

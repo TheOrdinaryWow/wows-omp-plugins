@@ -11,7 +11,7 @@
  *   bun run dev:plugins omo-prometheus   only the named plugins
  *   bun run dev:plugins --remove     uninstall them and drop the dev marketplace
  */
-import { cp, rm } from "node:fs/promises";
+import { cp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { $ } from "bun";
 
@@ -19,6 +19,47 @@ import { REPO_ROOT, readCatalog } from "@/catalog.ts";
 
 const DEV_MARKETPLACE = "wows-omp-plugins-dev";
 const DEV_ROOT = path.join(REPO_ROOT, ".omp", "dev-marketplace");
+const PROJECT_PLUGINS = path.join(REPO_ROOT, ".omp", "plugins");
+
+/**
+ * omp refuses to reinstall ("Runtime package name ... conflicts with installed package") when the
+ * project link still points at a cached copy that has since been deleted. Drop that dead link and its
+ * lock entry so the forced install below can recreate both.
+ */
+async function dropDanglingInstall(name: string): Promise<void> {
+  const manifest: unknown = JSON.parse(await readFile(path.join(REPO_ROOT, "plugins", name, "package.json"), "utf8"));
+  if (!manifest || typeof manifest !== "object" || !("name" in manifest) || typeof manifest.name !== "string") return;
+  const packageName = manifest.name;
+  const link = path.join(PROJECT_PLUGINS, "node_modules", packageName);
+  let target: string;
+  try {
+    target = path.resolve(path.dirname(link), await readlink(link));
+  } catch {
+    return;
+  }
+  if (
+    await stat(target).then(
+      () => true,
+      () => false,
+    )
+  )
+    return;
+  await rm(link, { force: true });
+  const lockFile = path.join(PROJECT_PLUGINS, "omp-plugins.lock.json");
+  const lock: unknown = JSON.parse(await readFile(lockFile, "utf8").catch(() => "null"));
+  if (
+    lock &&
+    typeof lock === "object" &&
+    "plugins" in lock &&
+    lock.plugins &&
+    typeof lock.plugins === "object" &&
+    packageName in lock.plugins
+  ) {
+    Reflect.deleteProperty(lock.plugins, packageName);
+    await writeFile(lockFile, `${JSON.stringify(lock, null, 2)}\n`);
+  }
+  console.log(`Removed stale ${name} install; its cached copy ${target} no longer exists.`);
+}
 
 const args = process.argv.slice(2);
 const remove = args.includes("--remove");
@@ -56,6 +97,7 @@ if (registered) await $`omp plugin marketplace update ${DEV_MARKETPLACE}`.cwd(RE
 else await $`omp plugin marketplace add ${DEV_ROOT}`.cwd(REPO_ROOT);
 
 for (const name of targets) {
+  await dropDanglingInstall(name);
   await $`omp plugin install --force --scope project ${`${name}@${DEV_MARKETPLACE}`}`.cwd(REPO_ROOT);
 }
 console.log("Restart OMP sessions in this repo to load the updated plugins.");
