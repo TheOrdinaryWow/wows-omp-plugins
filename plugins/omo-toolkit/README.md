@@ -1,34 +1,31 @@
 # omo-toolkit
 
-Content-only OMP plugin with oh-my-openagent-style category agents, research support, workflow skills, and documentation MCP servers.
+Category agents, a research agent, workflow skills, and two documentation MCP servers, adapted from oh-my-openagent for OMP.
 
 ```bash
 omp plugin install omo-toolkit@wows-omp-plugins
 ```
 
-The plugin ships no extension code. OMP discovers its `agents/`, `skills/`, and `.mcp.json` from the installed plugin directory.
+The plugin has no extension code. OMP picks up its `agents/`, `skills/`, and `.mcp.json` from the installed plugin directory.
 
 ## Agents
 
-Category agents use the same worker base as OMP's bundled `task` agent, then add upstream category guidance.
+Category agents start from the same worker prompt as OMP's bundled `task` agent and add oh-my-openagent's category guidance on top.
 
 |Agent|Use for|Default model role|Thinking|
 |---|---|---|---|
-|`deep-low`|One deliverable whose routine decisions follow evidence; sends unresolved consequential choices to its parent as `ESCALATE: deep-high`|`@task`|`medium`|
-|`deep-high`|Escalated reasoning and implementation after a material choice is authorized; otherwise returns options and recommendation to its parent|`@slow`|`xhigh`|
+|`deep-low`|One deliverable whose routine decisions follow from evidence; hands consequential open choices back to its parent as `ESCALATE: deep-high`|`@task`|`medium`|
+|`deep-high`|Escalated reasoning and implementation once a material choice is authorized; otherwise returns options and a recommendation|`@slow`|`xhigh`|
 |`ultrabrain`|Hard logic and architecture reasoning with clear goals|`@slow`|`max`|
 |`architect`|Read-only system design comparison and recommendation|`@slow`|`max`|
 |`visual-engineering`|UI/UX, styling, animation, frontend, and design-system work|`@designer`, then `@task`|`xhigh`|
 |`artistry`|Creative, unconventional problem solving|`@task`|`xhigh`|
 |`writing`|Documentation, prose, and technical writing|`@writer`, then `@task`|`low`|
+|`librarian`|Read-only open-source research with GitHub permalinks and official docs|`@tiny`, then `@smol`|`off`|
 
-Research agent:
+Model roles come from your OMP `modelRoles`, and a list is tried in order. `designer` and `writer` are custom roles; when they are not set to an available model, those agents use `@task`. `librarian` uses `@tiny` and falls back to `@smol` when `tiny` is unset. It needs a chat model that can call tools, so if `tiny` points at an on-device `local/` title model, override `librarian` to `@smol`.
 
-|Agent|Use for|Default model role|
-|---|---|---|
-|`librarian`|Read-only open-source research with GitHub permalinks and official documentation; thinking off for speed|`@tiny`, then `@smol`|
-
-Model roles resolve through the user's OMP `modelRoles`, and a list is tried in order. `visual-engineering` and `writing` use the custom `designer` and `writer` roles when those are configured to an available model, and otherwise fall back to `@task`. `librarian` uses `@tiny`, which falls back to `@smol` when unset; it needs a tool-calling chat model, so if `tiny` points at an on-device `local/` title model, route `librarian` to `@smol` with an override. Override one agent without editing plugin files through `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
+To change one agent's model without editing plugin files, set `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
 
 ```yaml
 task:
@@ -36,32 +33,32 @@ task:
     ultrabrain: anthropic/claude-opus-5-5
 ```
 
-`omo-prometheus` and `omo-ultrawork` use these category agents when available, falling back to `task` otherwise; `librarian` falls back to `scout` and then `task`. Workers do not silently decide unapproved user-owned trade-offs or ask the user directly; their parent handles the decision. Final code-quality, real-surface QA, and evidence gates use fresh `deep-high` or `deep-low` children (fallback `task`) whose assignments carry the complete verification contracts.
+`omo-prometheus` and `omo-ultrawork` use these agents when they are installed and fall back to `task` otherwise (`librarian` falls back to `scout`, then `task`). Workers never settle trade-offs the user has not approved and never ask the user directly; they leave those decisions to their parent. Final code-quality, real-surface QA, and evidence gates run on fresh `deep-high` or `deep-low` children (fallback `task`) whose assignments include the full verification requirements.
 
 ## Skills
 
-|Skill|Triggers|
+|Skill|Use for|
 |---|---|
-|`git-master`|Authorized Git commits, rebases, branch-history rewrites, and Git history investigation; approved commit cadence needs no second confirmation|
-|`review-work`|Post-implementation real-surface QA and one independent gate review|
-|`remove-ai-slops`|Behavior-preserving cleanup of recent changes|
-|`refactor`|Contract-traced, scope-proportionate refactors and simplification; delegate only when independent work merits it|
-|`debugging`|Evidence-led diagnosis and before/after real-surface verification without replaying an already observed failure merely for ritual|
+|`git-master`|Authorized commits, rebases, history rewrites, and history investigation; an approved commit cadence needs no second confirmation|
+|`review-work`|Real-surface QA after implementation, plus one independent gate review|
+|`remove-ai-slops`|Cleaning up recent changes without changing behavior|
+|`refactor`|Refactors and simplification traced to their contracts and sized to the change; delegates only when the independent work justifies it|
+|`debugging`|Diagnosis from evidence, with before/after checks on the real surface; does not replay an already observed failure just for ritual|
 |`frontend`|Web UI, UX, styling, layout, animation, accessibility, SEO, and frontend performance|
-|`visual-qa`|Rendered web, terminal, and paginated-surface verification|
-|`init-deep`|Hierarchical `AGENTS.md` generation or refresh; supports `--create-new` and `--max-depth=N`|
+|`visual-qa`|Checking rendered web pages, terminal output, and paginated documents|
+|`init-deep`|Generating or refreshing hierarchical `AGENTS.md` files; supports `--create-new` and `--max-depth=N`|
 
-Invoke a skill directly with `/skill:<name>`. Models can read skill files through `skill://<name>`. Bundled helper scripts use `node`, `bun`, `python3`, or `uv` as documented by the skill that runs them.
+Run a skill with `/skill:<name>`; models read it through `skill://<name>`. Helper scripts run with `node`, `bun`, `python3`, or `uv`, as each skill documents.
 
 ## MCP servers
 
-`.mcp.json` registers two HTTP MCP servers, exposed by OMP as `omo-toolkit:context7` and `omo-toolkit:grep_app`:
+`.mcp.json` registers two HTTP MCP servers, which OMP exposes as `omo-toolkit:context7` and `omo-toolkit:grep_app`:
 
-- `context7`: `https://mcp.context7.com/mcp`. Set `CONTEXT7_API_KEY` to use keyed access; when it is unset, the header expands to an empty value for anonymous access.
-- `grep_app`: `https://mcp.grep.app`, anonymous public code search.
+- `context7` (`https://mcp.context7.com/mcp`): set `CONTEXT7_API_KEY` for keyed access. Without it, the header is empty and access is anonymous.
+- `grep_app` (`https://mcp.grep.app`): anonymous public code search.
 
-OMP connects both servers at startup. Disable either one in OMP's MCP settings if you do not want it.
+OMP connects both at startup. Disable either in OMP's MCP settings if you don't want it.
 
 ## License
 
-Original packaging is MIT. Ported agents and skills are Sustainable Use License 1.0 derivatives of oh-my-openagent revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. Frontend design references retain the Apache License 2.0 attribution in `skills/frontend/`. See `NOTICE`, `LICENSE-MIT`, and `LICENSE-SUL-1.0`.
+Original packaging is MIT. The ported agents and skills are Sustainable Use License 1.0 derivatives of oh-my-openagent revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. The frontend design references keep their Apache License 2.0 attribution in `skills/frontend/`. See `NOTICE`, `LICENSE-MIT`, and `LICENSE-SUL-1.0`.

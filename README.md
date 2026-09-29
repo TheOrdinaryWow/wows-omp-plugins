@@ -1,6 +1,6 @@
 # wows-omp-plugins
 
-A personal [omp](https://omp.sh) marketplace.
+A personal [omp](https://omp.sh) plugin marketplace.
 
 ## Usage
 
@@ -10,14 +10,14 @@ omp plugin discover wows-omp-plugins
 omp plugin install <name>@wows-omp-plugins
 ```
 
-Inside a session, the same operations are available as `/marketplace add`,
-`/marketplace discover`, and `/marketplace install`.
+In a session, use `/marketplace add`, `/marketplace discover`, and
+`/marketplace install` instead.
 
-Installs are user-scoped by default. Add `--scope project` to limit a plugin to
-the current project. After installing, run `/reload-plugins` to pick up skills
-and slash commands; restart the session for new tools, hooks, or extensions.
+Plugins install for the current user unless you pass `--scope project`. After
+installing, run `/reload-plugins` to load new skills and slash commands. New
+tools, hooks, and extensions need a session restart.
 
-To update later:
+To update:
 
 ```bash
 omp plugin marketplace update wows-omp-plugins
@@ -26,15 +26,13 @@ omp plugin upgrade <name>@wows-omp-plugins
 
 ## Plugins
 
-Each plugin has its own README covering installation, settings, and behavior.
-
 | Plugin | Description | Documentation |
 | ------ | ----------- | ------------- |
-| `audit-goal` | Runs `/audit`: a goal-driven loop of independent audits and fixes with a round ledger | [Documentation](plugins/audit-goal/README.md) |
-| `judge-dispatch` | Routes subagent types through OMP judge-role judgments | [Documentation](plugins/judge-dispatch/README.md) |
-| `omo-prometheus` | Ports oh-my-openagent Prometheus planning and Atlas orchestration to OMP | [Documentation](plugins/omo-prometheus/README.md) |
-| `omo-ultrawork` | Ports ultrawork mode, mass-ulw, hyperplan, and ulw-research to OMP | [Documentation](plugins/omo-ultrawork/README.md) |
-| `omo-toolkit` | Ports category and research agents, skills, and documentation MCPs to OMP | [Documentation](plugins/omo-toolkit/README.md) |
+| `audit-goal` | `/audit`: repeated independent audits and fixes, with a round ledger | [README](plugins/audit-goal/README.md) |
+| `judge-dispatch` | Lets OMP's judge role pick the subagent type for `task` calls | [README](plugins/judge-dispatch/README.md) |
+| `omo-prometheus` | oh-my-openagent's Prometheus planning and Atlas execution, ported to OMP | [README](plugins/omo-prometheus/README.md) |
+| `omo-ultrawork` | Ultrawork mode, mass-ulw, `/hyperplan`, and `/ulw-research` | [README](plugins/omo-ultrawork/README.md) |
+| `omo-toolkit` | Category and research agents, skills, and documentation MCP servers | [README](plugins/omo-toolkit/README.md) |
 
 ## Repository layout
 
@@ -44,9 +42,8 @@ plugins/<name>/                one directory per plugin, with its own README
 src/                           repo tooling and tests
 ```
 
-Marketplace installation copies a plugin directory to the user's machine and
-installs nothing else, so each plugin is self-contained, dependency-free, and
-carries its own documentation.
+Installing a plugin copies its directory and nothing else, so every plugin is
+self-contained and has no runtime dependencies.
 
 ## Development
 
@@ -58,12 +55,11 @@ bun run check-types    # tsc
 bun run check-catalog  # catalog vs. plugins/ drift check
 ```
 
-See [AGENTS.md](AGENTS.md) for the plugin authoring rules, the constraints
-marketplace installation imposes, and how to test a plugin locally before
-publishing.
+[AGENTS.md](AGENTS.md) covers plugin authoring rules, installation constraints,
+and local testing.
 
 ## License
 
-Repository-original code and content are MIT unless a plugin says otherwise.
-The three `omo-*` plugins carry modified OmO prompt assets under Sustainable
-Use License 1.0; see their linked README files and license notes.
+Code and content written for this repository are MIT unless a plugin says
+otherwise. The three `omo-*` plugins include modified OmO prompt assets under
+the Sustainable Use License 1.0; see each plugin's README and license files.

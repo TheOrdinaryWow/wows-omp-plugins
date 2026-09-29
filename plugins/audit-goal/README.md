@@ -1,8 +1,9 @@
 # audit-goal
 
-Adds `/audit <audit-target>`: an OMP goal that loops independent audits and
-fixes until a recorded audit-process conclusion or explicit stop. The goal
-carries an audit protocol, a persisted evidence ledger, and two reserved agents.
+Adds `/audit <audit-target>`, an OMP goal that runs rounds of independent audits
+and fixes until the audit reaches a recorded conclusion or you stop it. Each
+round is written to a persisted evidence ledger, and the loop uses two reserved
+agents.
 
 ## Install
 
@@ -10,8 +11,8 @@ carries an audit protocol, a persisted evidence ledger, and two reserved agents.
 omp plugin install audit-goal@wows-omp-plugins
 ```
 
-Requires OMP 18.3.1 or newer. Restart the session after installing. Goal mode
-must be enabled (`goal.enabled`, the default).
+Requires OMP 18.3.1 or newer and goal mode (`goal.enabled`, on by default).
+Restart the session after installing.
 
 ## Usage
 
@@ -20,42 +21,40 @@ must be enabled (`goal.enabled`, the default).
 /audit the checkout service refactor on this branch
 ```
 
-The target is free text: a plan, a task, or any goal you want verified. The
-command refuses to start while plan mode or vibe mode is active, while another
-goal is unfinished, or while an audit is already running in the session.
+The target is free text: a plan, a task, or anything else you want verified.
+`/audit` will not start during plan mode or vibe mode, while another goal is
+unfinished, or while an audit is already running in the session.
 
-Once started, the audit is an ordinary OMP goal. `/goal` shows, pauses,
-resumes, or drops it; user-issued `/goal drop` stops the audit. Model-issued
-`goal({op:"complete"})`, including nested device invocation, is refused until
+A running audit is an ordinary OMP goal, so `/goal` shows, pauses, resumes, or
+drops it, and `/goal drop` stops it at any time. The model cannot complete the
+goal (`goal({op:"complete"})`, including through a nested device call) until
 `audit_round` has recorded a valid conclusion. The footer shows the round
-count, limit, intensity, and any pending conclusion.
+count, the limit, the intensity, and any pending conclusion.
 
-Each round the main agent:
+In each round the main agent:
 
-1. splits the codebase into audit domains by its own structure (for example
-   server, worker, database) and dispatches read-only `audit-auditor`
-   subagents;
-2. verifies every returned finding against the source and rejects false ones;
-3. dispatches `audit-fixer` subagents in lanes that never share files;
+1. splits the codebase into audit domains (for example server, worker,
+   database) and sends read-only `audit-auditor` subagents into them;
+2. checks every reported finding against the source and rejects false ones;
+3. sends `audit-fixer` subagents to fix the rest, in lanes that never share
+   files;
 4. runs the project's full checks, confirms a clean tree, and records the round.
 
-Findings are graded Critical, Major, Minor, or Picky. The grading is the same at
-every intensity.
+Findings are graded Critical, Major, Minor, or Picky at every intensity.
 
 ## Settings
 
-The installed package name used by `omp plugin config` is
-`wows-omp-plugin-audit-goal`:
+Package name for `omp plugin config`: `wows-omp-plugin-audit-goal`.
 
 | Setting | Type | Default | Meaning |
 | ------- | ---- | ------- | ------- |
-| `intensity` | `relaxed` \| `standard` \| `strict` | `standard` | Audit depth, which severities get fixed, and the exit gate |
+| `intensity` | `relaxed` \| `standard` \| `strict` | `standard` | Audit depth, which severities get fixed, and when the audit may converge |
 | `maxRounds` | number or empty | empty | Round limit per `/audit`; empty means unlimited |
 | `maxParallelLanes` | number or empty | empty | Audit/fix subagents running at once; empty means no plugin limit |
 
-`maxParallelLanes` never exceeds OMP's own `task.maxConcurrency`: a setting of
-10 with a host limit of 3 runs 3 lanes. The plugin refuses any `task` call that
-would push running audit subagents over the limit.
+`maxParallelLanes` is capped by OMP's `task.maxConcurrency`: with a setting of
+10 and a host limit of 3, three lanes run. The plugin rejects any `task` call
+that would exceed the limit.
 
 ### Intensity
 
@@ -65,60 +64,59 @@ would push running audit subagents over the limit.
 | Fixed | Critical, Major | Critical, Major, Minor | every level |
 | Converges after | one round with no Critical or Major | two consecutive rounds with no Critical or Major | two consecutive rounds with no Critical, Major, or Minor |
 
-Long audit loops can feed themselves: each round's fixes add mechanisms,
-and the next round audits those mechanisms. `/audit` records the git `HEAD`
-at start and tracks loop-induced findings separately. A self-feeding signal
-calls for simplifying or reverting mechanisms; it is not an automatic exit.
+### How an audit ends
 
-`audit_round({op:"record", ...})` persists each round's auditor model set, actual
-coverage and checks, verified finding IDs with source evidence, provenance,
-open/resolved status, cited repairs of earlier open findings, and reasons for
-rejected claims. Severity counts describe new discoveries, not unresolved
-issues; the ledger separately lists **remaining open findings** and counts.
-At the configured intensity, an exit gate yields `threshold-ready`. The agent
-must record `threshold-convergence` with a reason and round observations before
-reporting and completing the goal. This is a discovery gate, not proof of
-semantic bug absence or acceptance of the audited artifact. Earlier confirmed
-Critical/Major findings remain open until a recorded repair closes them.
+Every round records the auditor models, the coverage and checks actually run,
+verified findings with source evidence, which findings are open or resolved,
+repairs of earlier findings, and why rejected claims were rejected. Severity
+counts cover new findings only; the ledger lists remaining open findings
+separately.
 
-With unlimited rounds, the orchestrator can record distinct
-`capability-saturation` convergence when at least three comparable rounds by
-the same auditor model set with varied axes establish, with cited observations,
-why another pass has limited expected discovery value. This includes the former optional
-20–30-round low-benefit exit; it is now an explicit, reasoned outcome. Open
-Critical/Major findings remain open. Saturation is never accepted repair or
-artifact acceptance; counts or a self-feeding flag alone are insufficient.
+The audit can end in three ways:
 
-### Round limit
+- Threshold convergence. Once the intensity's exit gate is met, the agent
+  records `threshold-convergence` with its reasoning, reports, and completes the
+  goal. The gate only says the audit stopped finding problems. It does not
+  prove the code is bug-free, and earlier Critical or Major findings stay open
+  until a recorded repair closes them.
+- Capability saturation. With unlimited rounds, the agent may record
+  `capability-saturation` after at least three comparable rounds by the same
+  auditor models, over varied axes, show with cited observations that another
+  round is unlikely to find more. Open Critical and Major findings stay open.
+  Finding counts or a self-feeding signal alone do not justify saturation.
+- Stop. When a finite round limit runs out before convergence, the agent says
+  the audit is not finished and asks whether to add rounds, remove the limit, or
+  stop. Stopping records `stop` with the reason and the remaining findings.
+  Cancelling that question leaves the choice pending and blocks model
+  completion. Headless sessions record a separate noninteractive stop.
 
-OMP's `/goal budget` is a token budget; rounds are counted by this plugin. When
-the finite limit runs out before threshold convergence, the agent reports that
-the audit is **not** finished and asks whether to continue. You can add rounds,
-remove the limit, or explicitly stop. Stopping records `stop`, with its reason
-and remaining findings, not convergence. Canceling the choice leaves the cap
-pending and prevents model completion; headless sessions record a distinct
-noninteractive cap stop. You can directly use `/goal drop` at any time.
+`/goal budget` limits tokens, not rounds; this plugin counts rounds itself.
+
+Long loops can feed themselves: fixes add new mechanisms, and the next round
+audits those. `/audit` records the git `HEAD` at start and tracks
+loop-induced findings separately. When that happens, the agent should
+simplify or revert the added mechanisms; it does not end the audit by itself.
+
+No outcome accepts the audited work. Recorded results always carry
+`artifactAccepted: false`; acceptance is up to you and your project's own
+process.
 
 ## Reserved agents
 
-`audit-auditor` (read-only) and `audit-fixer` appear in the `task` agent list of
-every session, because OMP cannot hide plugin agents. The plugin refuses to
+`audit-auditor` (read-only) and `audit-fixer` show up in every session's `task`
+agent list, because OMP cannot hide plugin agents. The plugin refuses to
 dispatch them outside a running `/audit` loop, from subagents, or through
-`eval` `agent()`. Both are blocking: the main agent waits for each batch.
+`eval` `agent()`. Both block: the main agent waits for each batch.
 `judge-dispatch` from this marketplace never routes to or away from them.
 
 ## Behavior notes
 
-- The protocol is injected as a hidden message when the audit starts and again
-  after every compaction, together with the round ledger.
-- The plugin activates the `goal` and `audit_round` tools for the loop and
-  deactivates the ones it added when the goal completes or is dropped.
-- A malformed latest ledger entry blocks model goal completion and reserved
-  agent dispatch; it never silently restores an older successful snapshot.
-  The user can use `/goal drop` directly and start a new audit.
-- Recorded threshold, saturation, and stop outcomes always report
-  `artifactAccepted: false`. Only the user and the audited project's separate
-  acceptance process can accept the artifact; the plugin never infers that
-  unobserved defects are absent.
+- The protocol and the round ledger are injected as a hidden message when the
+  audit starts and again after every compaction.
+- The plugin enables the `goal` and `audit_round` tools for the loop and
+  disables the ones it enabled when the goal completes or is dropped.
+- If the latest ledger entry is malformed, the model cannot complete the goal
+  or dispatch reserved agents, and the plugin does not fall back to an older
+  snapshot. Use `/goal drop` and start a new audit.
 - Commit conventions and project rules come from the audited project's own
-  context files; the plugin hardcodes none.
+  context files.
