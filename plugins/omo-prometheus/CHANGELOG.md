@@ -9,6 +9,20 @@
 - Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.6.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.5.0...omo-prometheus@0.6.0) (2026-09-29)
+
+
+### Features
+
+* **omo-prometheus:** add an interactive /atlas plan menu with search, rename and delete ([0d190bc](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0d190bc4fcb80a98e5f0308ae2e4e13e1e568876))
+* **omo-prometheus:** confirm early Atlas exit and refuse plan switching while active ([7aa47e4](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/7aa47e45a47fb04b67c46af5f420f51233ebc8e3))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** hand off approved Atlas plans through a scoped URL ([8ee69b5](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/8ee69b565cd36b1eff4eaf0037521ff8673c32d5))
+* **omo-prometheus:** keep the atlas tier out of Ctrl+P while approval shows it ([a63bad9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/a63bad94120d5238939f2090f9d58e7cca0fd63e))
+
 ## [0.5.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.4.0...omo-prometheus@0.5.0) (2026-09-29)
 
 
