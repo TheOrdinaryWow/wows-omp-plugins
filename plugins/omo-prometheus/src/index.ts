@@ -11,6 +11,7 @@ import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
+import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { type AtlasPlan, AtlasStore } from "./atlas-store.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
@@ -127,7 +128,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   const childEvidence = new ChildEvidence();
   const stores = new Map<string, AtlasStore>();
   const ownerships = new Set<Ownership>();
-  const hostBindings = new WeakMap<AgentSession, { sessionId: string; planFilePath: string }>();
+  let planReferences = new AtlasPlanReferences();
+  const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
   let settlementTimer: NodeJS.Timeout | undefined;
   const evidenceSubscription = pi.events?.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (payload) => {
     childEvidence.observe(payload);
@@ -369,6 +371,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (childEvidence.hasPending(ownership.sessionId, ownership.ledgerId)) continue;
         ownership.releasing ??= ownership.store.release(ownership.plan.id, ownership.sessionId);
         await ownership.releasing;
+        planReferences.unbind(ownership.sessionId, ownership.plan.id);
         ownerships.delete(ownership);
       } catch (error) {
         ownership.releasing = undefined;
@@ -412,7 +415,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (!ownership || ownership.detached || ownership.sessionId !== ctx.sessionManager.getSessionId()) {
         throw new Error("shared plan execution ownership is unavailable");
       }
-      if (!planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), ownership.plan.planFilePath)) {
+      if (!planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), atlasPlanUrl(ownership.plan.id))) {
         throw new Error("the host plan reference differs from the approved Atlas plan");
       }
       if ((await fs.realpath(ctx.cwd)) !== ownership.plan.cwd) throw new Error("the approved plan belongs to a different workspace");
@@ -431,7 +434,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               record.ownership !== ownership ||
               ownership.detached ||
               ctx.sessionManager.getSessionId() !== ownership.sessionId ||
-              !planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), ownership.plan.planFilePath)
+              !planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), atlasPlanUrl(ownership.plan.id))
             )
               throw new Error("Atlas attachment changed before ledger publication");
           },
@@ -501,13 +504,19 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (!parent) throw new Error("registered native parent identity is unavailable");
       ownership ??= { store, plan, sessionId, live, parentAgentId: parent.id, ledgerId, detached: false, operations: 0 };
       ownerships.add(ownership);
+      if (newlyOwned) ownership.operations += 1;
       record.ownership = ownership;
       if (expectedReference && !planReferencesMatch(live.getPlanReferencePath(), expectedReference))
         throw new Error("the native approval handoff reference changed during validation");
-      live.setPlanReferencePath(plan.planFilePath);
-      if (!planReferencesMatch(live.getPlanReferencePath(), plan.planFilePath))
-        throw new Error("the host did not bind the approved Atlas plan");
-      hostBindings.set(live, { sessionId, planFilePath: plan.planFilePath });
+      planReferences = AtlasPlanReferences.current(planReferences);
+      await planReferences.bind(sessionId, plan);
+      if (record.phase !== "executing" || record.activation !== activation)
+        throw new Error("Atlas attachment changed during plan reference binding");
+      const previousReference = live.getPlanReferencePath();
+      const planUrl = atlasPlanUrl(plan.id);
+      live.setPlanReferencePath(planUrl);
+      if (!planReferencesMatch(live.getPlanReferencePath(), planUrl)) throw new Error("the host did not bind the approved Atlas plan");
+      hostBindings.set(live, { sessionId, planUrl, previousReference });
       record.atlasPlanId = plan.id;
       record.planFilePath = plan.planFilePath;
       record.planSha256 = plan.planSha256;
@@ -517,16 +526,23 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.ledgerError = undefined;
       persist(record);
     } catch (error) {
+      const binding = hostBindings.get(live);
+      if (binding?.sessionId === sessionId && binding.planUrl === atlasPlanUrl(plan.id)) {
+        if (planReferencesMatch(live.getPlanReferencePath(), binding.planUrl))
+          live.setPlanReferencePath(binding.previousReference?.startsWith("local://") ? binding.previousReference : DEFAULT_PLAN_REFERENCE);
+        hostBindings.delete(live);
+      }
       if (newlyOwned && acquired) {
         if (ownership) ownerships.delete(ownership);
         if (record.ownership === ownership) record.ownership = undefined;
+        planReferences.unbind(sessionId, plan.id);
         await store.release(plan.id, sessionId);
       } else if (ownership) {
         detach(ownership);
       }
       throw error;
     } finally {
-      if (!newlyOwned && ownership) ownership.operations -= 1;
+      if (ownership) ownership.operations -= 1;
       void settleDetached();
     }
   };
@@ -550,6 +566,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (
         reference &&
         !planReferencesMatch(reference, DEFAULT_PLAN_REFERENCE) &&
+        !planReferencesMatch(reference, atlasPlanUrl(plan.id)) &&
         !planReferencesMatch(reference, plan.planFilePath) &&
         !planReferencesMatch(reference, previousReference)
       ) {
@@ -569,6 +586,14 @@ export default function prometheus(pi: ExtensionAPI): void {
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase !== expected) return;
     const proposalPath = expected === "planning" ? record.planFilePath : undefined;
+    const binding = hostBindings.get(live);
+    if (
+      expected === "executing" &&
+      binding?.sessionId === ctx.sessionManager.getSessionId() &&
+      planReferencesMatch(live.getPlanReferencePath(), binding.planUrl)
+    ) {
+      live.setPlanReferencePath(binding.previousReference?.startsWith("local://") ? binding.previousReference : DEFAULT_PLAN_REFERENCE);
+    }
     const ownership = record.ownership;
     const episodeId = planModeEpisodeId(ctx);
     authorizedActivationCalls.clear();
@@ -1587,8 +1612,8 @@ export default function prometheus(pi: ExtensionAPI): void {
     const live = mainSession(ctx);
     const knownBinding = live ? hostBindings.get(live) : undefined;
     const previousReference =
-      switched && knownBinding?.sessionId !== sessionId && planReferencesMatch(live?.getPlanReferencePath(), knownBinding?.planFilePath)
-        ? knownBinding?.planFilePath
+      switched && knownBinding?.sessionId !== sessionId && planReferencesMatch(live?.getPlanReferencePath(), knownBinding?.planUrl)
+        ? knownBinding?.planUrl
         : undefined;
     const previous = records.get(sessionId);
     if (previous) {
@@ -1604,6 +1629,9 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     await settleDetached();
     await resumeLedger(ctx, restored, previousReference);
+    if (live && knownBinding && !restored?.ownership && planReferencesMatch(live.getPlanReferencePath(), knownBinding.planUrl)) {
+      live.setPlanReferencePath(DEFAULT_PLAN_REFERENCE);
+    }
     const executing = restored?.phase === "executing";
     await syncTools(false, executing, executing);
   };
@@ -1646,6 +1674,12 @@ export default function prometheus(pi: ExtensionAPI): void {
     for (const ownership of ownerships) if (ownership.sessionId === sessionId) detach(ownership);
     // Keep observations and locks for still-live native work; process death is recovered by AtlasStore.
     await settleDetached();
+    if (live) {
+      const binding = hostBindings.get(live);
+      if (binding?.sessionId === sessionId && planReferencesMatch(live.getPlanReferencePath(), binding.planUrl)) {
+        live.setPlanReferencePath(DEFAULT_PLAN_REFERENCE);
+      }
+    }
     records.delete(sessionId);
     reviewLevels.delete(sessionId);
     authorizedActivationCalls.clear();

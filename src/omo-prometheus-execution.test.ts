@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { prompt as hostPrompt } from "@oh-my-pi/pi-utils";
 
 import type { ExecutionLedger, LedgerItem } from "../plugins/omo-prometheus/src/ledger.ts";
@@ -77,6 +78,8 @@ async function scenario(name: string, root: string): Promise<void> {
   const { getKnownRoleIds } = await import("@oh-my-pi/pi-coding-agent/config/model-roles");
   const settings = Settings.isolated();
   const appliedRoles: Array<{ role: string; model: string }> = [];
+  const { InternalUrlRouter } = await import("@oh-my-pi/pi-coding-agent/internal-urls");
+  const { loadOverallPlanReference } = await import("@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff");
   const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
   let artifacts = join(root, "artifacts");
   await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
@@ -112,6 +115,7 @@ async function scenario(name: string, root: string): Promise<void> {
     getArtifactsDir: () => artifacts,
     getBranch: () => entries,
   };
+  const localProtocolOptions = { getSessionId: () => sessionId, getArtifactsDir: () => artifacts };
   const cycledOrders: string[][] = [];
   // Ctrl+P reaches AgentSession.cycleRoleModels, a prototype method the plugin may shadow.
   const sessionPrototype = {
@@ -158,7 +162,7 @@ async function scenario(name: string, root: string): Promise<void> {
       },
     },
   } as unknown as ExtensionContext;
-  const install = () => {
+  const install = (registerExtension: typeof register = register) => {
     hooks = new Map();
     tools = new Map();
     bus = new EventBus();
@@ -191,7 +195,7 @@ async function scenario(name: string, root: string): Promise<void> {
       sendMessage() {},
       sendUserMessage() {},
     } as unknown as ExtensionAPI;
-    register(api);
+    registerExtension(api);
   };
   const main = () => AgentRegistry.global().register({ id: "Main", kind: "main", displayName: "Main", session: live });
   AgentRegistry.resetGlobalForTests();
@@ -232,6 +236,7 @@ async function scenario(name: string, root: string): Promise<void> {
     });
     assert.deepEqual(cfgCycleOrder.get(settings), ["smol", "default", "slow"]);
     assert.equal(settings.getProvenance(cfgCycleOrder), "default");
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
     return;
   }
   await writeFile(sourcePlanFile, name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : plan);
@@ -253,9 +258,10 @@ async function scenario(name: string, root: string): Promise<void> {
       },
     ],
   });
-  if (name !== "cycle" && name !== "fresh-handoff" && !name.startsWith("compact-")) assert(reference?.startsWith("/"), notices.join("\n"));
-  if (reference?.startsWith("/")) {
-    planFile = reference;
+  if (name !== "cycle" && name !== "fresh-handoff" && !name.startsWith("compact-"))
+    assert(reference?.startsWith("atlas://"), notices.join("\n"));
+  if (reference?.startsWith("atlas://")) {
+    planFile = join(sessionManager.getSessionDir(), "atlas", reference.slice("atlas://".length, -"/plan.md".length), "plan.md");
     ledgerFile = join(dirname(planFile), "ledger.json");
   }
   const approvalFile = () => join(dirname(planFile), "approval.json");
@@ -264,6 +270,170 @@ async function scenario(name: string, root: string): Promise<void> {
     install();
     await hook("session_start");
   };
+  if (name === "url-boundaries") {
+    const approvedUrl = reference as string;
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas")?.spec.write, undefined);
+    assert.deepEqual(InternalUrlRouter.instance().writeTier(approvedUrl, "replacement", undefined), {
+      tier: "write",
+      policy: "deny",
+      reason: "atlas:// URLs are read-only",
+    });
+    await assert.rejects(
+      InternalUrlRouter.instance().requireLocal(approvedUrl, "load plan from", {
+        localProtocolOptions,
+        sessionId: "foreign-session",
+      }),
+      /unavailable/,
+    );
+    assert.deepEqual(await loadOverallPlanReference(approvedUrl, localProtocolOptions), { path: approvedUrl, content: plan });
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const approved = await new AtlasStore(sessionManager.getSessionDir()).find("integrity");
+    const { AtlasPlanReferences } = await import("../plugins/omo-prometheus/src/atlas-plan-url.ts");
+    const handler = InternalUrlRouter.instance().getHandler("atlas") as InstanceType<typeof AtlasPlanReferences>;
+    const pending = handler.bind("pending-session", approved);
+    handler.unbind(sessionId, approved.id);
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas"), handler);
+    await pending;
+    assert.deepEqual(await loadOverallPlanReference(approvedUrl, { getSessionId: () => "pending-session" }), {
+      path: approvedUrl,
+      content: plan,
+    });
+    await handler.bind(sessionId, approved);
+    handler.unbind("pending-session", approved.id);
+    assert.equal(
+      await InternalUrlRouter.instance().requireLocal(approvedUrl, "load plan from", {
+        sessionId: "native-child-session",
+        localProtocolOptions,
+        session: { localProtocolOptions } as ToolSession,
+      }),
+      planFile,
+    );
+    await assert.rejects(
+      InternalUrlRouter.instance().requireLocal(approvedUrl, "load plan from", {
+        sessionId: "native-child-session",
+        localProtocolOptions,
+      }),
+      /unavailable/,
+    );
+    await assert.rejects(loadOverallPlanReference(approvedUrl, { getSessionId: () => "foreign-session" }), /unavailable/);
+    await assert.rejects(InternalUrlRouter.instance().requireLocal(approvedUrl, "load plan from"), /unavailable/);
+    for (const invalid of [approvedUrl.replace("/plan.md", "/ledger.json"), `${approvedUrl}?x=1`, `${approvedUrl}/../plan.md`]) {
+      await assert.rejects(loadOverallPlanReference(invalid, localProtocolOptions));
+    }
+    const bundleDir = dirname(planFile);
+    const movedBundle = `${bundleDir}-moved`;
+    await rename(bundleDir, movedBundle);
+    await symlink(movedBundle, bundleDir, "dir");
+    try {
+      await assert.rejects(loadOverallPlanReference(approvedUrl, localProtocolOptions), /backing changed/);
+    } finally {
+      await rm(bundleDir);
+      await rename(movedBundle, bundleDir);
+    }
+    await writeFile(planFile, `${plan}\nChanged`);
+    await assert.rejects(loadOverallPlanReference(approvedUrl, localProtocolOptions), /content changed/);
+    await writeFile(planFile, plan);
+    await commands.get("atlas")?.("", ctx);
+    assert.equal(reference, "local://integrity-plan.md");
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
+    await assert.rejects(loadOverallPlanReference(approvedUrl, localProtocolOptions));
+    await commands.get("atlas")?.("integrity", ctx);
+    assert.deepEqual(await loadOverallPlanReference(approvedUrl, localProtocolOptions), { path: approvedUrl, content: plan });
+    reference = "local://explicit-user-plan.md";
+    await commands.get("atlas")?.("", ctx);
+    assert.equal(reference, "local://explicit-user-plan.md");
+    const foreignHandler = {
+      scheme: "atlas",
+      spec: { backing: "virtual" as const, selectors: "none" as const, immutable: true },
+      resolve: async () => ({ url: approvedUrl, content: "", contentType: "text/plain" as const }),
+    };
+    InternalUrlRouter.instance().register(foreignHandler);
+    await commands.get("atlas")?.("integrity", ctx);
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas"), foreignHandler);
+    assert.equal(reference, "local://explicit-user-plan.md");
+    refused(await call({ action: "status" }));
+    await commands.get("atlas")?.("", ctx);
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas"), foreignHandler);
+    InternalUrlRouter.instance().unregister("atlas");
+    return;
+  }
+  if (name === "exit-during-url-binding") {
+    await commands.get("atlas")?.("", ctx);
+    const { AtlasPlanReferences } = await import("../plugins/omo-prometheus/src/atlas-plan-url.ts");
+    const original = AtlasPlanReferences.prototype.bind;
+    let entered!: () => void;
+    let continueBind!: () => void;
+    const atBind = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const resumeBind = new Promise<void>((resolve) => {
+      continueBind = resolve;
+    });
+    AtlasPlanReferences.prototype.bind = async function (session, approved) {
+      entered();
+      await resumeBind;
+      return original.call(this, session, approved);
+    };
+    try {
+      const entering = commands.get("atlas")?.("integrity", ctx);
+      await atBind;
+      await commands.get("atlas")?.("", ctx);
+      continueBind();
+      await entering;
+      assert.equal(reference, "local://integrity-plan.md");
+      assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
+      refused(await call({ action: "status" }));
+    } finally {
+      continueBind();
+      AtlasPlanReferences.prototype.bind = original;
+    }
+    return;
+  }
+  if (name === "parallel-url-bindings") {
+    const firstUrl = reference as string;
+    const firstSession = sessionId;
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const second = await new AtlasStore(sessionManager.getSessionDir()).create({
+      name: "parallel",
+      content: plan,
+      cwd: root,
+      sourcePlanPath: "local://parallel-plan.md",
+      sourceSessionId: "approved-origin",
+      proposedByToolCallId: "parallel-proposal",
+      availableAgents: ["task", "reviewer"],
+    });
+    sessionId = "parallel-session";
+    entries.length = 0;
+    reference = "local://PLAN.md";
+    const { loadLegacyPiModule } = await import("@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat");
+    const loaded = (await loadLegacyPiModule(fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url)))) as {
+      default: typeof register;
+    };
+    assert.notEqual(loaded.default, register, "the host reload must use a distinct extension module identity");
+    install(loaded.default); // Native loads use distinct module identities, but share the host's router.
+    await hook("session_start");
+    await commands.get("atlas")?.("parallel", ctx);
+    const secondUrl = reference as string;
+    assert.equal(secondUrl, `atlas://${second.id}/plan.md`);
+    assert.deepEqual(await loadOverallPlanReference(secondUrl, localProtocolOptions), { path: secondUrl, content: plan });
+    await assert.rejects(loadOverallPlanReference(firstUrl, localProtocolOptions), /unavailable/);
+    await commands.get("atlas")?.("", ctx);
+    assert(InternalUrlRouter.instance().getHandler("atlas"), "the first Atlas session still owns its URL");
+    assert.deepEqual(await loadOverallPlanReference(firstUrl, { getSessionId: () => firstSession }), {
+      path: firstUrl,
+      content: plan,
+    });
+    await assert.rejects(loadOverallPlanReference(secondUrl, localProtocolOptions), /unavailable/);
+    return;
+  }
+  if (name === "resume-absolute-reference") {
+    reference = planFile;
+    await reload();
+    assert(reference?.startsWith("atlas://"));
+    assert.deepEqual(await loadOverallPlanReference(reference, localProtocolOptions), { path: reference, content: plan });
+    ok(await call({ action: "status" }));
+    return;
+  }
 
   const prepare = async (id: string): Promise<PreparedAssignment> => {
     const result = await call({ action: "start", id });
@@ -408,8 +578,8 @@ async function scenario(name: string, root: string): Promise<void> {
       prompt: approvedHandoff(reference, plan),
       systemPrompt: [],
     });
-    assert(reference?.startsWith("/"), notices.join("\n"));
-    planFile = reference;
+    assert(reference?.startsWith("atlas://"), notices.join("\n"));
+    planFile = join(sessionManager.getSessionDir(), "atlas", reference.slice("atlas://".length, -"/plan.md".length), "plan.md");
     ledgerFile = join(dirname(planFile), "ledger.json");
     ok(await call({ action: "status" }));
     await finish("T1");
@@ -419,8 +589,9 @@ async function scenario(name: string, root: string): Promise<void> {
     const sourceReference = reference;
     await hook("session_before_compact");
     await hook("session_compact");
-    assert(reference?.startsWith("/"), notices.join("\n"));
-    planFile = reference;
+    const boundUrl = reference;
+    assert(reference?.startsWith("atlas://"), notices.join("\n"));
+    planFile = join(sessionManager.getSessionDir(), "atlas", reference.slice("atlas://".length, -"/plan.md".length), "plan.md");
     ledgerFile = join(dirname(planFile), "ledger.json");
     const originalLedgerId = (await ledger()).ledgerId;
     // The host restores its source local:// reference after the session_compact callback.
@@ -440,7 +611,7 @@ async function scenario(name: string, root: string): Promise<void> {
     if (name === "compact-handoff" || name === "compact-queued-handoff") {
       ok(await call({ action: "status" }));
       ok(await call({ action: "start", id: "T1" }));
-      assert.equal(reference, planFile);
+      assert.equal(reference, boundUrl);
       if (queued) {
         reference = sourceReference;
         await hook("context", { messages: [message] });
@@ -449,7 +620,7 @@ async function scenario(name: string, root: string): Promise<void> {
       }
     } else {
       refused(await call({ action: "status" }));
-      assert.notEqual(reference, planFile);
+      assert.notEqual(reference, boundUrl);
     }
     assert.equal((await ledger()).ledgerId, originalLedgerId);
     // Loading host-dependent storage stays inside the isolated child process.
@@ -812,6 +983,7 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
   if (name === "cross-session") {
+    const approvedUrl = reference;
     await finish("T1");
     const origin = (await row("T1")).receipt;
     assert(origin);
@@ -836,7 +1008,8 @@ async function scenario(name: string, root: string): Promise<void> {
     await commands.get("atlas")?.("integrity-plan", ctx);
     const status = await call({ action: "status" });
     ok(status);
-    assert.equal(reference, planFile);
+    assert.equal(reference, approvedUrl);
+    assert.deepEqual(await loadOverallPlanReference(reference as string, localProtocolOptions), { path: reference, content: plan });
     assert.deepEqual((await row("T1")).receipt, origin);
     assert.equal((await row("T3")).status, "open");
     assert(status.content.some((part) => part.text?.includes(join(dirname(planFile), "evidence", `${origin.receiptId}.md`))));
@@ -850,6 +1023,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await finish("F3");
     await finish("F4");
     ok(await call({ reason: "shared verification complete" }, "atlas_release"));
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
     return;
   }
   if (name === "switch-reference") {
@@ -860,7 +1034,8 @@ async function scenario(name: string, root: string): Promise<void> {
     entries.length = 0;
     await hook("session_switch", { reason: "new" });
     // The host can retain the previous reference on the same AgentSession object.
-    assert.equal(reference, firstReference);
+    assert.equal(reference, "local://PLAN.md");
+    await assert.rejects(loadOverallPlanReference(firstReference as string, localProtocolOptions));
     // Loading host-dependent storage stays inside the isolated child process.
     const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
     const second = await new AtlasStore(sessionManager.getSessionDir()).create({
@@ -873,7 +1048,7 @@ async function scenario(name: string, root: string): Promise<void> {
       availableAgents: ["task", "reviewer"],
     });
     await commands.get("atlas")?.("second", ctx);
-    assert.equal(reference, second.planFilePath);
+    assert.equal(reference, `atlas://${second.id}/plan.md`);
     const secondEntries = entries.slice();
     sessionId = "integrity-session";
     entries.splice(0, entries.length, ...firstEntries);
@@ -928,7 +1103,7 @@ async function scenario(name: string, root: string): Promise<void> {
     });
     await commands.get("atlas")?.("second", ctx);
     ok(await call({ action: "status" }));
-    assert.equal(reference, other.planFilePath);
+    assert.equal(reference, `atlas://${other.id}/plan.md`);
     await commands.get("atlas")?.("", ctx);
     await hook("input", { text: "/atlas integrity", source: "user" });
     assert.equal(reference, approvedReference);
@@ -958,6 +1133,10 @@ async function scenario(name: string, root: string): Promise<void> {
     const shared = await rival.find("integrity");
     if (name === "shutdown-live-child") await hook("session_shutdown");
     else await commands.get("atlas")?.("", ctx);
+    assert.deepEqual(await loadOverallPlanReference(`atlas://${shared.id}/plan.md`, localProtocolOptions), {
+      path: `atlas://${shared.id}/plan.md`,
+      content: plan,
+    });
     if (name === "exit-live-child")
       assert.equal(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
     await assert.rejects(rival.acquire(shared.id, "session-b"), /live execution owner/);
@@ -976,7 +1155,7 @@ async function scenario(name: string, root: string): Promise<void> {
         availableAgents: ["task", "reviewer"],
       });
       await commands.get("atlas")?.("unrelated", ctx);
-      assert.equal(reference, other.planFilePath);
+      assert.equal(reference, `atlas://${other.id}/plan.md`);
       ok(await call({ action: "status" }));
       await commands.get("atlas")?.("", ctx);
     }
@@ -998,6 +1177,7 @@ async function scenario(name: string, root: string): Promise<void> {
       content: [],
     });
     await rival.acquire(shared.id, "session-b");
+    assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
     await rival.release(shared.id, "session-b");
     if (name === "shutdown-live-child") await commands.get("atlas")?.("", ctx);
     await commands.get("atlas")?.("integrity", ctx);
@@ -1194,7 +1374,7 @@ async function scenario(name: string, root: string): Promise<void> {
     AgentRegistry.resetGlobalForTests();
     main();
     await reload();
-    assert.equal(reference, planFile);
+    assert.equal(reference, `atlas://${basename(dirname(planFile))}/plan.md`);
     const status = await call({ action: "status" });
     ok(status);
     assert(status.details?.ledger?.gates.every((item) => item.status === "done"));
@@ -1232,6 +1412,10 @@ if (process.env[CHILD_ENV]) {
     for (const name of [
       "cycle",
       "fresh-handoff",
+      "url-boundaries",
+      "parallel-url-bindings",
+      "exit-during-url-binding",
+      "resume-absolute-reference",
       "resume-missing-ledger",
       "rollback",
       "changed-output",
