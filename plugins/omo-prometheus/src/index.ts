@@ -565,7 +565,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const release = async (ctx: ExtensionContext, reason: string, expected: "planning" | "executing"): Promise<void> => {
     const live = mainSession(ctx);
     if (!live) return;
-    restoreApprovalTiers(live.settings);
+    restoreApprovalTiers(live);
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase !== expected) return;
     const proposalPath = expected === "planning" ? record.planFilePath : undefined;
@@ -839,7 +839,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("input", async (event, ctx) => {
     const live = mainSession(ctx);
-    if (live) restoreApprovalTiers(live.settings);
+    if (live) restoreApprovalTiers(live);
     const current = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (current && event.source !== "extension") current.stallCount = 0;
     const atlas = parseAtlasCommand(event.text);
@@ -1219,7 +1219,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     const live = mainSession(ctx);
     if (!live) return undefined;
-    restoreApprovalTiers(live.settings);
+    restoreApprovalTiers(live);
     const sessionId = ctx.sessionManager.getSessionId();
     let record = records.get(sessionId) ?? rehydrate(ctx);
     const reference = live.getPlanReferencePath();
@@ -1522,7 +1522,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     persist(record);
     // The native approval overlay opens after this hook and offers cycleOrder roles as execution tiers.
-    exposeAtlasApprovalTier(live.settings);
+    exposeAtlasApprovalTier(live);
 
     const approvedInResult = event.content.some((part) => part.type === "text" && part.text.trimStart().startsWith("Plan approved at "));
     if (approvedInResult && live.getPlanModeState()?.enabled !== true && planReferencesMatch(live.getPlanReferencePath(), proposedPath)) {
@@ -1635,7 +1635,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     const live = mainSession(ctx);
-    if (live) restoreApprovalTiers(live.settings);
+    if (live) restoreApprovalTiers(live);
     const sessionId = ctx.sessionManager.getSessionId();
     const record = records.get(sessionId);
     if (record) {

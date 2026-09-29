@@ -112,7 +112,15 @@ async function scenario(name: string, root: string): Promise<void> {
     getArtifactsDir: () => artifacts,
     getBranch: () => entries,
   };
-  const live = {
+  const cycledOrders: string[][] = [];
+  // Ctrl+P reaches AgentSession.cycleRoleModels, a prototype method the plugin may shadow.
+  const sessionPrototype = {
+    cycleRoleModels: async (roleOrder: readonly string[]) => {
+      cycledOrders.push([...roleOrder]);
+      return undefined;
+    },
+  };
+  const live = Object.assign(Object.create(sessionPrototype), {
     settings,
     resolveRoleModelWithThinking: (role: string) => {
       const selector = settings.getModelRole(role);
@@ -134,7 +142,7 @@ async function scenario(name: string, root: string): Promise<void> {
       recent: nativeJobs.filter((job) => job.status !== "running"),
       delivery: { queued: 0, delivering: false, pendingJobIds: [] },
     }),
-  } as unknown as AgentSession;
+  }) as AgentSession;
   const ctx = {
     cwd: root,
     hasUI: true,
@@ -212,6 +220,20 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(item);
     return item;
   };
+  if (name === "plain-plan-approval") {
+    // Ordinary Plan Mode proposals never expose the atlas tier.
+    reference = "local://integrity-plan.md";
+    await hook("tool_result", {
+      toolName: "write",
+      toolCallId: "plain-proposal",
+      isError: false,
+      details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: reference, planExists: true } } },
+      content: [{ type: "text", text: "Plan proposal submitted" }],
+    });
+    assert.deepEqual(cfgCycleOrder.get(settings), ["smol", "default", "slow"]);
+    assert.equal(settings.getProvenance(cfgCycleOrder), "default");
+    return;
+  }
   await writeFile(sourcePlanFile, name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : plan);
   await commands.get("prometheus")?.("", ctx);
   mode = false;
@@ -771,8 +793,12 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(getKnownRoleIds(settings).includes("atlas"), "atlas is listed as a model role");
     // The approved proposal exposed the atlas tier to the native approval slider.
     assert.deepEqual(cycle(), ["atlas", "smol", "default", "slow"]);
+    // Ctrl+P keeps cycling only the user's roles while the approval tier is exposed.
+    await live.cycleRoleModels(cycle(), "forward");
+    assert.deepEqual(cycledOrders, [["smol", "default", "slow"]]);
     await commands.get("atlas")?.("", ctx);
     assert.deepEqual(cycle(), ["smol", "default", "slow"]);
+    assert(!Object.hasOwn(live, "cycleRoleModels"), "Ctrl+P returns to the host implementation");
     assert.equal(settings.getProvenance(cfgCycleOrder), "default");
     await commands.get("atlas")?.("integrity", ctx);
     assert.deepEqual(appliedRoles, []);
@@ -1225,6 +1251,7 @@ if (process.env[CHILD_ENV]) {
       "cross-session",
       "exact-commands",
       "atlas-model-role",
+      "plain-plan-approval",
       "exit-live-child",
       "shutdown-live-child",
       "cancelled-live-child",

@@ -13,24 +13,35 @@ export function registerAtlasModelRole(settings: Settings): void {
 }
 
 /**
- * Native plan approval offers the roles in `cycleOrder` as execution tiers. The atlas role joins that
- * order only while a Prometheus proposal awaits approval; `null` records that no runtime override existed.
+ * Native plan approval offers the roles in `cycleOrder` as execution tiers, and Ctrl+P cycles the same
+ * order. The atlas role joins that order only while a Prometheus proposal awaits approval, and Ctrl+P
+ * skips it meanwhile; `null` records that no runtime override existed.
  */
-const exposedCycles = new WeakMap<Settings, readonly string[] | null>();
+const exposedCycles = new WeakMap<AgentSession, readonly string[] | null>();
 
-export function exposeAtlasApprovalTier(settings: Settings): void {
-  if (exposedCycles.has(settings)) return;
+export function exposeAtlasApprovalTier(session: AgentSession): void {
+  if (exposedCycles.has(session)) return;
+  const { settings } = session;
   const order = cfgCycleOrder.get(settings);
-  exposedCycles.set(settings, settings.getProvenance(cfgCycleOrder) === "runtime" ? [...order] : null);
+  exposedCycles.set(session, settings.getProvenance(cfgCycleOrder) === "runtime" ? [...order] : null);
   cfgCycleOrder.override(settings, [ATLAS_MODEL_ROLE, ...order.filter((role) => role !== ATLAS_MODEL_ROLE)]);
+  const cycleRoleModels = session.cycleRoleModels;
+  // An own property shadows the prototype method until restoreApprovalTiers deletes it.
+  session.cycleRoleModels = (roleOrder, direction) =>
+    cycleRoleModels.call(
+      session,
+      roleOrder.filter((role) => role !== ATLAS_MODEL_ROLE),
+      direction,
+    );
 }
 
-export function restoreApprovalTiers(settings: Settings): void {
-  const previous = exposedCycles.get(settings);
+export function restoreApprovalTiers(session: AgentSession): void {
+  const previous = exposedCycles.get(session);
   if (previous === undefined) return;
-  exposedCycles.delete(settings);
-  if (previous === null) cfgCycleOrder.clearOverride(settings);
-  else cfgCycleOrder.override(settings, [...previous]);
+  exposedCycles.delete(session);
+  delete (session as Partial<Pick<AgentSession, "cycleRoleModels">>).cycleRoleModels;
+  if (previous === null) cfgCycleOrder.clearOverride(session.settings);
+  else cfgCycleOrder.override(session.settings, [...previous]);
 }
 
 /** Switches the session to the configured atlas role; returns undefined when the role is unassigned. */
