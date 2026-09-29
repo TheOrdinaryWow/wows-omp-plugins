@@ -403,14 +403,14 @@ async function scenario(name: string, root: string): Promise<void> {
     await writeFile(planFile, `${plan}\nChanged`);
     await assert.rejects(loadOverallPlanReference(approvedUrl, localProtocolOptions), /content changed/);
     await writeFile(planFile, plan);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert.equal(reference, "local://integrity-plan.md");
     assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
     await assert.rejects(loadOverallPlanReference(approvedUrl, localProtocolOptions));
     await commands.get("atlas")?.("integrity", ctx);
     assert.deepEqual(await loadOverallPlanReference(approvedUrl, localProtocolOptions), { path: approvedUrl, content: plan });
     reference = "local://explicit-user-plan.md";
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert.equal(reference, "local://explicit-user-plan.md");
     const foreignHandler = {
       scheme: "atlas",
@@ -422,13 +422,13 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(InternalUrlRouter.instance().getHandler("atlas"), foreignHandler);
     assert.equal(reference, "local://explicit-user-plan.md");
     refused(await call({ action: "status" }));
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert.equal(InternalUrlRouter.instance().getHandler("atlas"), foreignHandler);
     InternalUrlRouter.instance().unregister("atlas");
     return;
   }
   if (name === "exit-during-url-binding") {
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     const { AtlasPlanReferences } = await import("../plugins/omo-prometheus/src/atlas-plan-url.ts");
     const original = AtlasPlanReferences.prototype.bind;
     let entered!: () => void;
@@ -447,7 +447,7 @@ async function scenario(name: string, root: string): Promise<void> {
     try {
       const entering = commands.get("atlas")?.("integrity", ctx);
       await atBind;
-      await commands.get("atlas")?.("", ctx);
+      await commands.get("atlas")?.("exit", ctx);
       continueBind();
       await entering;
       assert.equal(reference, "local://integrity-plan.md");
@@ -487,7 +487,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(secondUrl, `atlas://${second.id}/plan.md`);
     assert.deepEqual(await loadOverallPlanReference(secondUrl, localProtocolOptions), { path: secondUrl, content: plan });
     await assert.rejects(loadOverallPlanReference(firstUrl, localProtocolOptions), /unavailable/);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert(InternalUrlRouter.instance().getHandler("atlas"), "the first Atlas session still owns its URL");
     assert.deepEqual(await loadOverallPlanReference(firstUrl, { getSessionId: () => firstSession }), {
       path: firstUrl,
@@ -639,7 +639,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await tasksDone();
     await gatesDone();
     // A fully verified plan exits immediately, without the early-exit prompt.
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert.equal(confirmations, 0);
     refused(await call({ action: "status" }));
     // Host-dependent storage stays inside the isolated child process.
@@ -681,7 +681,7 @@ async function scenario(name: string, root: string): Promise<void> {
   }
 
   if (name === "atlas-dispatch") {
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     refused(await call({ action: "status" }));
     const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
     const store = new AtlasStore(sessionManager.getSessionDir());
@@ -706,7 +706,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(kickoffs().length, 1);
     assert.deepEqual(sent.at(-1)?.options, { triggerTurn: true, deliverAs: "followUp" });
     const executedEntries = structuredClone(entries);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     refused(await call({ action: "status" }));
 
     // Resume lists sessions that executed the plan, newest first, and returns there without a kickoff.
@@ -890,7 +890,7 @@ async function scenario(name: string, root: string): Promise<void> {
       await writeFile(planFile, plan);
       await writeFile(ledgerFile, original);
     }
-    await hook("input", { text: "/atlas", source: "user" });
+    await hook("input", { text: "/atlas exit", source: "user" });
     assert.equal(
       await hook("tool_call", { toolName: "task", toolCallId: "outside", input: { agent: "task", task: "ordinary work" } }),
       undefined,
@@ -966,7 +966,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await publish(prepared, "WokenChild", { status: "running", nativeStatus: "started", finalResult: false });
     // Native wake jobs are registered on yield, later than the original task's returnedAt.
     // Until a wake job exists, the new lifecycle generation itself retains writer ownership.
-    if (name === "wake-ownership") await commands.get("atlas")?.("", ctx);
+    if (name === "wake-ownership") await commands.get("atlas")?.("exit", ctx);
     // Loading host-dependent storage stays inside the isolated child process.
     const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
     const rival = new AtlasStore(sessionManager.getSessionDir());
@@ -1010,7 +1010,7 @@ async function scenario(name: string, root: string): Promise<void> {
       assert(receipt);
       assert.equal(await readFile(join(dirname(planFile), "evidence", `${receipt.receiptId}.md`), "utf8"), "New output from the wake turn");
     } else if (name === "wake-native-failure") refused(await done("T1", "WokenChild"));
-    if (name !== "wake-ownership") await commands.get("atlas")?.("", ctx);
+    if (name !== "wake-ownership") await commands.get("atlas")?.("exit", ctx);
     await rival.acquire(shared.id, "rival");
     await rival.release(shared.id, "rival");
     return;
@@ -1059,7 +1059,7 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal(underlyingFinished, false, "native abort wrapper must settle while underlying wake is still pending");
       await publish(prepared, "AbortableWake", { nativeStatus: "completed", finalResult: false, content: "Unsettled wake output" });
       refused(await done("T1", "AbortableWake"));
-      await commands.get("atlas")?.("", ctx);
+      await commands.get("atlas")?.("exit", ctx);
       const rival = new AtlasStore(sessionManager.getSessionDir());
       const shared = await rival.find("integrity");
       await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
@@ -1111,7 +1111,7 @@ async function scenario(name: string, root: string): Promise<void> {
     };
     await hook("tool_result", { toolName: "task", toolCallId, input, isError: false, details, content: [] });
     refused(await done("T3", "FailedMember"));
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     // Loading host-dependent storage stays inside the isolated child process.
     const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
     const rival = new AtlasStore(sessionManager.getSessionDir());
@@ -1136,14 +1136,14 @@ async function scenario(name: string, root: string): Promise<void> {
     // Ctrl+P keeps cycling only the user's roles while the approval tier is exposed.
     await live.cycleRoleModels(cycle(), "forward");
     assert.deepEqual(cycledOrders, [["smol", "default", "slow"]]);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert.deepEqual(cycle(), ["smol", "default", "slow"]);
     assert(!Object.hasOwn(live, "cycleRoleModels"), "Ctrl+P returns to the host implementation");
     assert.equal(settings.getProvenance(cfgCycleOrder), "default");
     await commands.get("atlas")?.("integrity", ctx);
     assert.deepEqual(appliedRoles, []);
     assert.doesNotMatch(notices.at(-1) ?? "", /atlas model role/);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     settings.overrideModelRoles({ atlas: "test/atlas-model" });
     await commands.get("atlas")?.("integrity", ctx);
     assert.deepEqual(appliedRoles, [{ role: "atlas", model: "test/atlas-model" }]);
@@ -1158,7 +1158,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(origin);
     ok(await call({ action: "start", id: "T3" }));
     const originalArtifacts = artifacts;
-    await hook("input", { text: "/atlas", source: "user" });
+    await hook("input", { text: "/atlas exit", source: "user" });
     await hook("session_shutdown");
     sessionId = "successor-session";
     artifacts = join(root, "successor-artifacts");
@@ -1172,7 +1172,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await hook("session_start");
     await commands.get("atlas")?.("missing-plan", ctx);
     assert.match(notices.at(-1) ?? "", /No approved Atlas plan named missing-plan; available: integrity/);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     // The proposal file name, including its `-plan` suffix, selects the same bundle.
     await commands.get("atlas")?.("integrity-plan", ctx);
     const status = await call({ action: "status" });
@@ -1249,24 +1249,36 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match(notices.at(-1) ?? "", /Atlas is active/);
     ok(await call({ action: "status" }));
     assert.notEqual(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
-    // Leaving an unfinished plan asks first; declining keeps Atlas active and opens no menu.
+    // While active, bare /atlas opens only the running plan's read-only view; Esc closes it and Atlas stays.
     confirmAnswer = false;
     const rendersBefore = menuRenders.length;
+    menuKey = "\x1b";
     await commands.get("atlas")?.("", ctx);
+    assert.equal(menuRenders.length, rendersBefore + 1);
+    const activeView = menuRenders.at(-1) ?? "";
+    assert.match(activeView, /Active in this session/);
+    assert.match(activeView, /exit Atlas/);
+    assert.doesNotMatch(activeView, /\bstart\b|resume|rename|delete/);
+    ok(await call({ action: "status" }));
+    await commands.get("atlas")?.("exit", ctx);
     assert.deepEqual(confirmTitles, ["Exit Atlas early?"]);
-    assert.equal(menuRenders.length, rendersBefore);
     ok(await call({ action: "status" }));
     confirmAnswer = true;
+    // Shift+X in the view exits the same way /atlas exit does.
+    menuKey = "X";
     await commands.get("atlas")?.("", ctx);
-    assert.equal(menuRenders.length, rendersBefore);
+    assert.deepEqual(confirmTitles, ["Exit Atlas early?", "Exit Atlas early?"]);
     refused(await call({ action: "status" }));
+    await commands.get("atlas")?.("exit", ctx);
+    assert.match(notices.at(-1) ?? "", /not active/);
+    menuKey = "\x1b";
     await commands.get("atlas")?.("", ctx);
     assert.match(menuRenders.at(-1) ?? "", /integrity/);
     refused(await call({ action: "status" }));
     await commands.get("atlas")?.("missing-plan", ctx);
     assert.match(notices.at(-1) ?? "", /Atlas execution paused/);
     assert.notEqual(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert.equal(await hook("tool_call", { toolName: "edit", input: { path: "implementation.ts" } }), undefined);
     // Loading host-dependent storage stays inside the isolated child process.
     const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
@@ -1282,11 +1294,11 @@ async function scenario(name: string, root: string): Promise<void> {
     await commands.get("atlas")?.("second", ctx);
     ok(await call({ action: "status" }));
     assert.equal(reference, `atlas://${other.id}/plan.md`);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     await hook("input", { text: "/atlas integrity", source: "user" });
     assert.equal(reference, approvedReference);
     ok(await call({ action: "status" }));
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     mode = true;
     await commands.get("prometheus")?.("", ctx);
     await commands.get("atlas")?.("integrity", ctx);
@@ -1310,7 +1322,7 @@ async function scenario(name: string, root: string): Promise<void> {
     const rival = new AtlasStore(sessionManager.getSessionDir());
     const shared = await rival.find("integrity");
     if (name === "shutdown-live-child") await hook("session_shutdown");
-    else await commands.get("atlas")?.("", ctx);
+    else await commands.get("atlas")?.("exit", ctx);
     assert.deepEqual(await loadOverallPlanReference(`atlas://${shared.id}/plan.md`, localProtocolOptions), {
       path: `atlas://${shared.id}/plan.md`,
       content: plan,
@@ -1322,7 +1334,7 @@ async function scenario(name: string, root: string): Promise<void> {
       await commands.get("atlas")?.("integrity", ctx);
       refused(await call({ action: "status" }));
       assert.equal((await row("T1")).attempt, originalAttempt);
-      await commands.get("atlas")?.("", ctx);
+      await commands.get("atlas")?.("exit", ctx);
       const other = await rival.create({
         name: "unrelated",
         content: plan,
@@ -1335,7 +1347,7 @@ async function scenario(name: string, root: string): Promise<void> {
       await commands.get("atlas")?.("unrelated", ctx);
       assert.equal(reference, `atlas://${other.id}/plan.md`);
       ok(await call({ action: "status" }));
-      await commands.get("atlas")?.("", ctx);
+      await commands.get("atlas")?.("exit", ctx);
     }
     const job = nativeJobs.find((job) => job.agentId === "PendingChild");
     assert(job);
@@ -1357,7 +1369,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await rival.acquire(shared.id, "session-b");
     assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
     await rival.release(shared.id, "session-b");
-    if (name === "shutdown-live-child") await commands.get("atlas")?.("", ctx);
+    if (name === "shutdown-live-child") await commands.get("atlas")?.("exit", ctx);
     await commands.get("atlas")?.("integrity", ctx);
     ok(await call({ action: "status" }));
     assert.equal((await row("T1")).status, "open");
@@ -1386,7 +1398,7 @@ async function scenario(name: string, root: string): Promise<void> {
     try {
       const pending = done("T1", "FinishingChild");
       await captured;
-      await commands.get("atlas")?.("", ctx);
+      await commands.get("atlas")?.("exit", ctx);
       continueCapture();
       refused(await pending);
       assert.equal((await row("T1")).status, "in_progress");
@@ -1424,14 +1436,14 @@ async function scenario(name: string, root: string): Promise<void> {
     await hook("session_start");
     refused(await call({ action: "status" }));
     assert.match(notices.join("\n"), /fresh native reapproval/);
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     assert.equal(await readFile(oldLedger, "utf8"), progress);
     assert.equal(await readFile(oldMarker, "utf8"), proposal);
     assert.equal(await readFile(sourcePlanFile, "utf8"), plan);
     return;
   }
   if (name === "workspace-mismatch") {
-    await commands.get("atlas")?.("", ctx);
+    await commands.get("atlas")?.("exit", ctx);
     const otherCwd = join(root, "different-worktree");
     await mkdir(otherCwd);
     const foreignContext = { ...ctx, cwd: otherCwd } as ExtensionContext;

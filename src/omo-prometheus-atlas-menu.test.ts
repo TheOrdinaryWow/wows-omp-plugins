@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 
 import { initTheme, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
 
+import type { AtlasPlanViewMode } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import { AtlasMenu, type AtlasMenuAction, AtlasPlanView, type AtlasPlanViewAction } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
 
@@ -56,12 +57,15 @@ function menu(detail = plan): { component: AtlasMenu; actions: AtlasMenuAction[]
   return { component: new AtlasMenu([detail], "unfinished", "", theme, tui, (action) => actions.push(action)), actions };
 }
 
-function view(detail = plan, displayOnly = false): { component: AtlasPlanView; actions: AtlasPlanViewAction[]; reads: string[] } {
+function view(
+  detail = plan,
+  mode: AtlasPlanViewMode = "dispatch",
+): { component: AtlasPlanView; actions: AtlasPlanViewAction[]; reads: string[] } {
   const actions: AtlasPlanViewAction[] = [];
   const reads: string[] = [];
   const component = new AtlasPlanView(
     detail,
-    displayOnly,
+    mode,
     theme,
     tui,
     async (file) => {
@@ -175,8 +179,22 @@ test("Atlas plan view dispatches like the list and Esc returns", () => {
   expect(unstarted.actions).toEqual([]);
   expect(text(unstarted.component.render(100))).toMatch(/not started yet/);
 
-  const readOnly = view(plan, true);
+  const readOnly = view(plan, "display");
   readOnly.component.handleInput("\r");
   readOnly.component.handleInput("R");
   expect(readOnly.actions).toEqual([]);
+});
+
+test("Atlas plan view for the running plan only reads and exits", () => {
+  const active = view(plan, "active");
+  const screen = text(active.component.render(100));
+  expect(screen).toMatch(/Active in this session/);
+  expect(screen).not.toMatch(/\bstart\b|resume/);
+  active.component.handleInput("\r");
+  active.component.handleInput("R");
+  active.component.handleInput("N");
+  expect(active.actions).toEqual([]);
+  active.component.handleInput("X");
+  active.component.handleInput("\x1b");
+  expect(active.actions).toEqual(["exit", "back"]);
 });

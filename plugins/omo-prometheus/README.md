@@ -42,7 +42,7 @@ In ordinary `/plan` mode, small and well-defined requests stay on the normal OMP
 
 ### Execution
 
-After approval the main session becomes Atlas. For this plan, the execution prompt overrides OMP's delegation preference, and the extension blocks direct implementation tools in the parent session, so all work goes to child agents through `task`. `/prometheus` does not exit Atlas; use bare `/atlas`.
+After approval the main session becomes Atlas. For this plan, the execution prompt overrides OMP's delegation preference, and the extension blocks direct implementation tools in the parent session, so all work goes to child agents through `task`. `/prometheus` does not exit Atlas; use `/atlas exit`.
 
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session. To survive that switch, the plugin writes a marker to `local://prometheus/<slug>.proposal.json` when the plan is proposed, and OMP copies it into the new session along with the plan. Plans approved in ordinary Plan Mode have no marker, and the plugin leaves them alone.
 
@@ -51,7 +51,8 @@ Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execu
 ```text
 /atlas                   # while inactive: open Atlas Dispatch, the interactive plan menu
 /atlas <plan-name-or-id> # while inactive: enter a plan in this session and start executing (name/ID completion available)
-/atlas                   # while active: exit (asks first if the plan is unfinished)
+/atlas                   # while active: open the running plan's view (read-only)
+/atlas exit              # while active: exit (asks first if the plan is unfinished)
 ```
 
 Plans come from Prometheus; Atlas Dispatch is where you hand one to Atlas. It opens on unfinished plans in the current workspace. Tab switches to All, which adds complete, invalid, and other-workspace plans; All is display-only, so start and resume work only from the Unfinished view. The menu shows each plan's progress and the highlighted plan's T/F rows.
@@ -79,7 +80,7 @@ Deleting asks for confirmation and permanently removes the plan and its evidence
 
 A plan can be selected by its display label, its original name, or either name without the `-plan` suffix, so `checkout` and `checkout-plan` match the same plan. If several plans share a name, use the full ID from the list.
 
-While Atlas is active, `/atlas` never opens the menu or switches plans. Bare `/atlas` exits, asking first if rows are unfinished or progress cannot be verified. `/atlas` with any argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you exit with bare `/atlas`; it never falls back to unrestricted implementation.
+While Atlas is active, `/atlas` never opens the menu or switches plans. Bare `/atlas` opens the running plan's fullscreen view. It is read-only: rows, evidence, child output, and scrolling work as above, but start, resume, delete, and rename are gone. Shift+X there exits Atlas, the same as `/atlas exit`, and Esc closes the view. Without an interactive UI, bare `/atlas` only says which plan is running. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`; it never falls back to unrestricted implementation.
 
 Session A can finish part of a plan and exit, and session B can pick it up with `/atlas <name>`, as long as both use the same host session directory and workspace. Exiting is immediate: it neither cancels children nor marks anything complete, and it does not block closing the host. While native child work is still running, the plan stays owned by its session until that work reports a final result, so no other session can write to it at the same time. A session that owns a plan and has provably died can be recovered; unclear ownership, or ownership by another host, is refused.
 

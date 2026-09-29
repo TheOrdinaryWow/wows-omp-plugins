@@ -13,7 +13,15 @@ import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
-import { type AtlasFilter, AtlasMenu, type AtlasMenuAction, AtlasPlanView, type AtlasPlanViewAction, formatTime } from "./atlas-menu.ts";
+import {
+  type AtlasFilter,
+  AtlasMenu,
+  type AtlasMenuAction,
+  AtlasPlanView,
+  type AtlasPlanViewAction,
+  type AtlasPlanViewMode,
+  formatTime,
+} from "./atlas-menu.ts";
 import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { findPlanSessions } from "./atlas-sessions.ts";
@@ -341,7 +349,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const pauseMessage = (record: SessionRecord): string =>
-    `Atlas execution paused: ${record.ledgerError ?? "the shared approved execution ledger is unavailable"}. No new task dispatch or completion is permitted. Restore the exact shared proof, or run /atlas to exit and obtain fresh native approval. Existing artifacts are preserved; there is no prompt-only fallback.`;
+    `Atlas execution paused: ${record.ledgerError ?? "the shared approved execution ledger is unavailable"}. No new task dispatch or completion is permitted. Restore the exact shared proof, or run /atlas exit and obtain fresh native approval. Existing artifacts are preserved; there is no prompt-only fallback.`;
 
   const storeFor = (ctx: ExtensionContext): AtlasStore => {
     if (typeof ctx.sessionManager.getSessionDir !== "function" || !ctx.sessionManager.getArtifactsDir()) {
@@ -581,7 +589,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.activation = {};
     try {
       if (!record.atlasPlanId)
-        throw new Error("Legacy session-local progress is not migrated; fresh native reapproval is required. Run /atlas to exit");
+        throw new Error("Legacy session-local progress is not migrated; fresh native reapproval is required. Run /atlas exit");
       const store = storeFor(ctx);
       const plan = await store.find(record.atlasPlanId);
       if (
@@ -670,43 +678,28 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const current = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (current?.phase === "executing") {
+      if (selector === "exit") {
+        await exitAtlas(ctx, current);
+        return;
+      }
       const activePlan = current.ownership?.plan.name ?? current.atlasPlanId ?? "the current plan";
       if (selector) {
         commandNotice(
           ctx,
-          `Already in an Atlas session for ${activePlan}. Switching plans is not allowed; run bare /atlas to exit first, then enter ${selector}.`,
+          `Already in an Atlas session for ${activePlan}. Switching plans is not allowed; run /atlas exit first, then enter ${selector}.`,
           "error",
         );
         return;
       }
-      if (ctx.hasUI) {
-        // Exit must never wait on the ledger lock (an evidence capture may hold it), so this
-        // advisory count reads the last published ledger directly and authorizes nothing.
-        let remaining: number | undefined;
-        try {
-          const snapshot: unknown = JSON.parse(await fs.readFile(current.ledgerPath ?? "", "utf8"));
-          const rows =
-            snapshot && typeof snapshot === "object" && "items" in snapshot && "gates" in snapshot
-              ? [snapshot.items, snapshot.gates].flatMap((list) => (Array.isArray(list) ? list : []))
-              : [];
-          if (rows.length) remaining = rows.filter((row) => row?.status !== "done" || !row.receipt).length;
-        } catch {
-          remaining = undefined;
-        }
-        if (remaining !== 0) {
-          const confirmed = await ctx.ui.confirm(
-            "Exit Atlas early?",
-            remaining === undefined
-              ? `${activePlan} progress cannot be verified. Exit Atlas anyway? Shared progress is kept.`
-              : `${activePlan} still has ${remaining} unfinished item(s). Exit Atlas anyway? Shared progress is kept and you can resume later.`,
-          );
-          if (!confirmed) {
-            commandNotice(ctx, "Atlas exit cancelled; Atlas stays active.");
-            return;
-          }
-        }
+      if (!ctx.hasUI) {
+        commandNotice(ctx, `Atlas is executing ${activePlan}. Run /atlas exit to leave it.`);
+        return;
       }
-      await release(ctx, "/atlas", "executing");
+      await showActivePlan(ctx, current);
+      return;
+    }
+    if (selector === "exit") {
+      commandNotice(ctx, "Atlas is not active; there is nothing to exit.");
       return;
     }
     if (selector) {
@@ -737,6 +730,65 @@ export default function prometheus(pi: ExtensionAPI): void {
     } finally {
       await refreshAtlasCompletions(ctx);
     }
+  };
+
+  const openPlanView = async (ctx: ExtensionContext, detail: AtlasPlanDetail, mode: AtlasPlanViewMode): Promise<AtlasPlanViewAction> =>
+    await ctx.ui.custom<AtlasPlanViewAction>(
+      (tui, theme, _keys, done) => new AtlasPlanView(detail, mode, theme, tui, (file) => fs.readFile(file, "utf8"), done),
+      { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
+    );
+
+  /** Exits right away when every row is done; otherwise asks first. Shared progress is always kept. */
+  const exitAtlas = async (ctx: ExtensionContext, record: SessionRecord): Promise<void> => {
+    const activePlan = record.ownership?.plan.name ?? record.atlasPlanId ?? "the current plan";
+    if (ctx.hasUI) {
+      // Exit must never wait on the ledger lock (an evidence capture may hold it), so this
+      // advisory count reads the last published ledger directly and authorizes nothing.
+      let remaining: number | undefined;
+      try {
+        const snapshot: unknown = JSON.parse(await fs.readFile(record.ledgerPath ?? "", "utf8"));
+        const rows =
+          snapshot && typeof snapshot === "object" && "items" in snapshot && "gates" in snapshot
+            ? [snapshot.items, snapshot.gates].flatMap((list) => (Array.isArray(list) ? list : []))
+            : [];
+        if (rows.length) remaining = rows.filter((row) => row?.status !== "done" || !row.receipt).length;
+      } catch {
+        remaining = undefined;
+      }
+      if (remaining !== 0) {
+        const confirmed = await ctx.ui.confirm(
+          "Exit Atlas early?",
+          remaining === undefined
+            ? `${activePlan} progress cannot be verified. Exit Atlas anyway? Shared progress is kept.`
+            : `${activePlan} still has ${remaining} unfinished item(s). Exit Atlas anyway? Shared progress is kept and you can resume later.`,
+        );
+        if (!confirmed) {
+          commandNotice(ctx, "Atlas exit cancelled; Atlas stays active.");
+          return;
+        }
+      }
+    }
+    await release(ctx, "/atlas", "executing");
+  };
+
+  /** Read-only view of the plan this session executes; the only action it offers is exit. */
+  const showActivePlan = async (ctx: ExtensionContext, record: SessionRecord): Promise<void> => {
+    let detail: AtlasPlanDetail | undefined;
+    try {
+      detail = (await storeFor(ctx).details(await fs.realpath(ctx.cwd))).find((item) => item.plan.id === record.atlasPlanId);
+    } catch (error) {
+      commandNotice(ctx, `Atlas plan details are unavailable: ${errorMessage(error)}. Run /atlas exit to leave Atlas.`, "error");
+      return;
+    }
+    if (!detail) {
+      commandNotice(
+        ctx,
+        `Atlas plan ${record.atlasPlanId ?? "(unknown)"} is not in the shared store. Run /atlas exit to leave Atlas.`,
+        "error",
+      );
+      return;
+    }
+    if ((await openPlanView(ctx, detail, "active")) === "exit") await exitAtlas(ctx, record);
   };
 
   const planningBlocks = (ctx: ExtensionContext): boolean => {
@@ -779,7 +831,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       commandNotice(
         ctx,
-        `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. Bare /atlas exits.${modelNotice}`,
+        `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. /atlas shows the plan; /atlas exit leaves Atlas.${modelNotice}`,
       );
       await refreshAtlasCompletions(ctx);
       if (autoStart) {
@@ -861,11 +913,11 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (restored.atlasPlanId !== target.plan.id) {
           commandNotice(
             ctx,
-            `This session is executing another Atlas plan (${restored.atlasPlanId ?? "unknown"}). Run /atlas to exit it first.`,
+            `This session is executing another Atlas plan (${restored.atlasPlanId ?? "unknown"}). Run /atlas exit first.`,
             "error",
           );
         } else if (!restored.ledgerError) {
-          commandNotice(ctx, `Atlas resumed ${target.plan.name} in this session. Send a message to continue; bare /atlas exits.`);
+          commandNotice(ctx, `Atlas resumed ${target.plan.name} in this session. Send a message to continue; /atlas exit leaves Atlas.`);
         }
         return undefined;
       }
@@ -894,12 +946,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       const target = details.find((detail) => detail.plan.id === action.planId);
       if (!target) continue;
       if (action.kind === "inspect") {
-        const next = await ctx.ui.custom<AtlasPlanViewAction>(
-          (tui, theme, _keys, done) =>
-            new AtlasPlanView(target, action.filter === "all", theme, tui, (file) => fs.readFile(file, "utf8"), done),
-          { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
-        );
-        if (next === "back") continue;
+        const next = await openPlanView(ctx, target, action.filter === "all" ? "display" : "dispatch");
+        if (next === "back" || next === "exit") continue;
         action = { ...action, kind: next };
       }
       try {
@@ -945,7 +993,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const record = recordFor(ctx.sessionManager.getSessionId());
     if (record.phase === "executing") {
-      notify(ctx, "Atlas is active. Run /atlas to exit before entering Prometheus planning.", "error");
+      notify(ctx, "Atlas is active. Run /atlas exit before entering Prometheus planning.", "error");
       return false;
     }
     if (record.phase !== "planning") {
@@ -1096,7 +1144,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return { handled: true };
     }
     if (current?.phase === "executing" && /^\/(?:prometheus|plan)(?:[ \t]|$)/.test(event.text.trim())) {
-      notify(ctx, "Atlas is active. Run /atlas to exit before entering or changing planning mode.", "error");
+      notify(ctx, "Atlas is active. Run /atlas exit before entering or changing planning mode.", "error");
       return { handled: true };
     }
     const command = parsePrometheusCommand(event.text);
@@ -1154,7 +1202,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase === "executing") {
-      commandNotice(ctx, "Atlas is active. /prometheus cannot release it; run /atlas to exit.", "error");
+      commandNotice(ctx, "Atlas is active. /prometheus cannot release it; run /atlas exit.", "error");
       return;
     }
     if (record?.phase === "planning") {
@@ -1184,7 +1232,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("atlas", {
-    description: "Enter an approved plan; bare /atlas opens plans when inactive or exits when active",
+    description: "Open Atlas Dispatch, enter an approved plan, or view the running plan; /atlas exit leaves Atlas",
     getArgumentCompletions: atlasArgumentCompletions,
     handler: atlasCommand,
   });
@@ -1321,7 +1369,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       if (!ctx.hasUI) {
         return {
-          content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /atlas." }],
+          content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /atlas exit." }],
           isError: true,
           details: {},
         };
@@ -1432,7 +1480,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         });
       } catch (error) {
         return fail(
-          `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid shared approved ledger; /atlas remains the user exit.`,
+          `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid shared approved ledger; /atlas exit remains the user exit.`,
         );
       }
     },
@@ -1714,7 +1762,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (remembered) childEvidence.discardUnstartedDispatch(originSessionId, event.toolCallId);
         return {
           block: true,
-          reason: `Task dispatch refused: ${errorMessage(error)}. Use a valid shared ledger and its current start binding; /atlas is the user exit.`,
+          reason: `Task dispatch refused: ${errorMessage(error)}. Use a valid shared ledger and its current start binding; /atlas exit is the user exit.`,
         };
       }
     }
@@ -1828,7 +1876,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const stamp = Math.max(...[...ledger.items, ...ledger.gates].map((item) => item.updatedAt));
     record.stallCount = stamp === record.lastContinuationLedgerStamp ? record.stallCount + 1 : 0;
     if (record.stallCount >= 2) {
-      notify(ctx, "Atlas execution stalled; run /atlas to exit or send new instructions", "warning");
+      notify(ctx, "Atlas execution stalled; run /atlas exit or send new instructions", "warning");
       return undefined;
     }
     record.lastContinuationLedgerStamp = stamp;

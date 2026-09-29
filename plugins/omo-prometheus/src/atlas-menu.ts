@@ -35,7 +35,9 @@ export type AtlasMenuAction = {
   filter: AtlasFilter;
   query: string;
 };
-export type AtlasPlanViewAction = AtlasDispatch | "back";
+export type AtlasPlanViewAction = AtlasDispatch | "exit" | "back";
+/** `dispatch` can start/resume, `display` explains why it cannot, `active` is the running plan: read-only plus exit. */
+export type AtlasPlanViewMode = "dispatch" | "display" | "active";
 
 const TITLE = "Atlas Dispatch";
 const FILTERS: AtlasFilter[] = ["unfinished", "all"];
@@ -284,7 +286,7 @@ export class AtlasPlanView implements Component {
 
   constructor(
     readonly detail: AtlasPlanDetail,
-    readonly displayOnly: boolean,
+    readonly mode: AtlasPlanViewMode,
     readonly theme: Theme,
     readonly tui: TUI,
     readonly readOutput: (file: string) => Promise<string>,
@@ -326,7 +328,7 @@ export class AtlasPlanView implements Component {
   }
 
   #dispatch(kind: AtlasDispatch): void {
-    const blocked = dispatchBlock(this.detail, kind, this.displayOnly);
+    const blocked = dispatchBlock(this.detail, kind, this.mode === "display");
     if (blocked) {
       this.#message = blocked;
       return;
@@ -344,7 +346,9 @@ export class AtlasPlanView implements Component {
     else if (matchesKey(key, "pageDown")) this.#scroll += Math.max(1, this.#bodyRows - 2);
     else if (matchesKey(key, "pageUp")) this.#scroll = Math.max(0, this.#scroll - Math.max(1, this.#bodyRows - 2));
     else if (matchesKey(key, "space") || key === " " || matchesKey(key, "right")) this.#toggleOutput();
-    else if (matchesKey(key, "enter")) this.#dispatch("start");
+    else if (this.mode === "active") {
+      if (key === "X" || matchesKey(key, "shift+x")) this.done("exit");
+    } else if (matchesKey(key, "enter")) this.#dispatch("start");
     else if (key === "R" || matchesKey(key, "shift+r")) this.#dispatch("resume");
     this.tui.requestRender();
   }
@@ -422,8 +426,9 @@ export class AtlasPlanView implements Component {
         this.theme.fg("dim", `${editorKey("tui.select.up")}/${editorKey("tui.select.down")}`) + this.theme.fg("muted", " row"),
         rawKeyHint("space", "child output"),
         rawKeyHint("pageDown", "scroll"),
-        rawKeyHint("enter", "start"),
-        rawKeyHint("shift+r", "resume"),
+        ...(this.mode === "active"
+          ? [rawKeyHint("shift+x", "exit Atlas")]
+          : [rawKeyHint("enter", "start"), rawKeyHint("shift+r", "resume")]),
         rawKeyHint("escape", "back"),
       ],
       inner,
@@ -434,9 +439,11 @@ export class AtlasPlanView implements Component {
       .filter(([, count]) => count > 0)
       .map(([status, count]) => `${rowMark(t, status)} ${count} ${ROW_STATUS[status]?.toLowerCase()}`)
       .join("  ");
-    const summary = `${t.fg(statusColor(this.detail), shortStatus(this.detail))}  ${progressBar(t, this.detail.done, this.detail.total)} ${counts}    ${tally}`;
+    const status =
+      this.mode === "active" ? t.fg("accent", "Active in this session") : t.fg(statusColor(this.detail), shortStatus(this.detail));
+    const summary = `${status}  ${progressBar(t, this.detail.done, this.detail.total)} ${counts}    ${tally}`;
     const origin = t.fg("dim", `${this.detail.plan.id}  ${this.detail.plan.cwd || "Workspace unavailable"}`);
-    const notice = this.#message || (this.displayOnly ? "Display only; start or resume from the Unfinished filter" : "");
+    const notice = this.#message || (this.mode === "display" ? "Display only; start or resume from the Unfinished filter" : "");
     const header = [summary, origin, ...(notice ? [t.fg("warning", notice)] : [])];
 
     this.#bodyRows = Math.max(3, height - 2 - header.length - 2 - hints.length);
