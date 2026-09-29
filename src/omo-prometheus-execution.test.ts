@@ -63,6 +63,7 @@ async function scenario(name: string, root: string): Promise<void> {
   await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
   const planFile = join(artifacts, "local", "integrity-plan.md");
   const ledgerFile = join(artifacts, "local", "prometheus", "integrity-ledger.json");
+  const proposalFile = join(artifacts, "local", "prometheus", "integrity.proposal.json");
   const entries: unknown[] = [{ type: "mode_change", id: "plan-mode", mode: "plan" }];
   let hooks = new Map<string, Hook>();
   let tools = new Map<string, RegisteredTool>();
@@ -81,6 +82,9 @@ async function scenario(name: string, root: string): Promise<void> {
     sessionManager,
     getPlanModeState: () => ({ enabled: mode }),
     getPlanReferencePath: () => reference,
+    setPlanReferencePath: (path: string) => {
+      reference = path;
+    },
     getAsyncJobSnapshot: () => ({
       running: nativeJobs.filter((job) => job.status === "running"),
       recent: nativeJobs.filter((job) => job.status !== "running"),
@@ -305,12 +309,52 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "resume-missing-ledger") {
     await rm(ledgerFile);
+    reference = "local://PLAN.md";
     install();
     await hook("session_start");
+    assert.equal(reference, "local://PLAN.md");
     await hook("before_agent_start", { prompt: "Continue", systemPrompt: [] });
     refused(await call({ action: "status" }));
     await assert.rejects(readFile(ledgerFile), { code: "ENOENT" });
     assert.equal(await hook("session_stop"), undefined);
+    return;
+  }
+  if (name === "resume-reference-mismatch") {
+    reference = "local://other-plan.md";
+    install();
+    await hook("session_start");
+    assert.equal(reference, "local://other-plan.md");
+    refused(await call({ action: "status" }));
+    return;
+  }
+  if (name === "resume-invalid-approval") {
+    const marker = JSON.parse(await readFile(proposalFile, "utf8")) as Record<string, unknown>;
+    marker.planFilePath = "local://other-plan.md";
+    await writeFile(proposalFile, JSON.stringify(marker));
+    reference = "local://PLAN.md";
+    install();
+    await hook("session_start");
+    assert.equal(reference, "local://PLAN.md");
+    refused(await call({ action: "status" }));
+    return;
+  }
+  if (name === "resume-missing-provenance") {
+    const marker = JSON.parse(await readFile(proposalFile, "utf8")) as Record<string, unknown>;
+    delete marker.proposedByToolCallId;
+    await writeFile(proposalFile, JSON.stringify(marker));
+    const checkpoint = entries.findLast(
+      (entry) =>
+        entry !== null && typeof entry === "object" && "customType" in entry && entry.customType === "wows-omp-omo-prometheus.state",
+    );
+    assert(checkpoint && typeof checkpoint === "object" && "data" in checkpoint && checkpoint.data && typeof checkpoint.data === "object");
+    const data: Record<string, unknown> = { ...checkpoint.data };
+    delete data.proposedByToolCallId;
+    entries.push({ type: "custom", customType: "wows-omp-omo-prometheus.state", data });
+    reference = "local://PLAN.md";
+    install();
+    await hook("session_start");
+    assert.equal(reference, "local://PLAN.md");
+    refused(await call({ action: "status" }));
     return;
   }
   if (name === "concurrent") {
@@ -506,6 +550,20 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(confirmations, 1);
     return;
   }
+  if (name === "resume-default-reference") {
+    reference = "local://PLAN.md";
+    AgentRegistry.resetGlobalForTests();
+    main();
+    install();
+    await hook("session_start");
+    assert.equal(reference, "local://integrity-plan.md");
+    const status = await call({ action: "status" });
+    ok(status);
+    assert(status.details?.ledger?.gates.every((item) => item.status === "done"));
+    ok(await call({ reason: "verified completion" }, "prometheus_release"));
+    assert.equal(confirmations, 1);
+    return;
+  }
   if (name === "missing-proof") {
     const current = await ledger();
     if (current.items[0]) delete current.items[0].receipt;
@@ -542,12 +600,16 @@ if (process.env[CHILD_ENV]) {
       "changed-output",
       "concurrent",
       "multi-row",
+      "resume-reference-mismatch",
+      "resume-invalid-approval",
+      "resume-missing-provenance",
       "invalid-ledger",
       "ordering",
       "untrusted-children",
       "final-native-outcome",
       "reopen-running",
       "resume",
+      "resume-default-reference",
       "missing-proof",
     ]) {
       test(name, async () => {

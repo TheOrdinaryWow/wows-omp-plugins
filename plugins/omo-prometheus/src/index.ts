@@ -75,6 +75,7 @@ const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
 const BLOCK_NOTICE_BURST_MS = 5_000;
 const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
+const DEFAULT_PLAN_REFERENCE = "local://PLAN.md";
 const PACKAGE_NAME = "wows-omp-plugin-omo-prometheus";
 
 type ReviewLevel = "off" | "ask" | "standard" | "high-accuracy";
@@ -352,7 +353,11 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (!record.ledgerPath || record.ledgerPath === "disabled" || !record.planFilePath || !ctx.sessionManager.getArtifactsDir()) {
         throw new Error("missing execution ledger or durable approved-plan binding");
       }
-      if (!planReferencesMatch(mainSession(ctx)?.getPlanReferencePath(), record.planFilePath)) {
+      const live = mainSession(ctx);
+      const hostReference = live?.getPlanReferencePath();
+      const restoreHostReference =
+        resume && planReferencesMatch(hostReference, DEFAULT_PLAN_REFERENCE) && !planReferencesMatch(hostReference, record.planFilePath);
+      if (!live || (!planReferencesMatch(hostReference, record.planFilePath) && !restoreHostReference)) {
         throw new Error("the host plan reference differs from the approved execution plan");
       }
       const ledgerFile = resolveLocalUrlToPath(record.ledgerPath, localOptions(ctx));
@@ -376,6 +381,34 @@ export default function prometheus(pi: ExtensionAPI): void {
         }
         if (!record.planSha256) throw new Error("the exact approved plan hash is missing; fresh native approval is required");
         const ledger = restoreLedger(data, record.planFilePath as string, content, record.planSha256);
+        if (restoreHostReference) {
+          const marker: unknown = JSON.parse(
+            await fs.readFile(
+              resolveLocalUrlToPath(prometheusArtifactUrl(record.planFilePath as string, "proposal"), localOptions(ctx)),
+              "utf8",
+            ),
+          );
+          if (!marker || typeof marker !== "object") throw new Error("malformed approved-plan marker");
+          const saved = marker as {
+            version?: unknown;
+            planFilePath?: unknown;
+            planSha256?: unknown;
+            proposedByToolCallId?: unknown;
+          };
+          if (
+            (saved.version !== 1 && saved.version !== 2) ||
+            typeof saved.planFilePath !== "string" ||
+            !planReferencesMatch(saved.planFilePath, record.planFilePath) ||
+            typeof record.proposedByToolCallId !== "string" ||
+            !record.proposedByToolCallId ||
+            typeof saved.proposedByToolCallId !== "string" ||
+            !saved.proposedByToolCallId ||
+            saved.proposedByToolCallId !== record.proposedByToolCallId ||
+            ((saved.version === 2 || saved.planSha256 !== undefined) && saved.planSha256 !== record.planSha256)
+          ) {
+            throw new Error("approved-plan marker does not match the persisted approval");
+          }
+        }
         let changed = ledger !== data;
         const receipts = receiptEntries(ctx);
         const attempts = currentAttempts(ctx, ledger.ledgerId);
@@ -426,6 +459,15 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (changed) {
           persistAttempts(ledger);
           await writeLedgerAtomic(ledgerFile, ledger);
+        }
+        if (restoreHostReference) {
+          if (!planReferencesMatch(live.getPlanReferencePath(), DEFAULT_PLAN_REFERENCE)) {
+            throw new Error("the host plan reference changed during recovery");
+          }
+          live.setPlanReferencePath(record.planFilePath as string);
+          if (!planReferencesMatch(live.getPlanReferencePath(), record.planFilePath)) {
+            throw new Error("the approved execution plan reference could not be restored");
+          }
         }
         record.ledgerError = undefined;
         const result = await run(ledger);

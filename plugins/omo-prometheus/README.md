@@ -119,6 +119,8 @@ Execution creates `local://prometheus/<slug>-ledger.json` with a version-2 ledge
 
 **Resume and persistence.** Workflow state stores the proposal-time plan hash and ledger path. Native completion receipts and the latest attempt checkpoints are independently recorded in session entries; artifact digests are rechecked on use. Verified completed rows survive restart without a populated live registry, but an empty registry cannot authorize a new completion. Missing historical proof, changed output, or unrecorded in-flight attempts reopen for fresh verification. Version-1 ledgers with the same approved bytes migrate with all rows open, never grandfathering status-only completion. Resume still re-resolves unfinished agents against the current roster. Read/validate/update operations serialize per ledger inside the host process and replace JSON files atomically; this is not a multi-process workflow engine, and concurrent independent hosts editing one session are unsupported.
 
+When reopening the same session resets OMP's plan reference to `local://PLAN.md`, Atlas restores the approved reference only after validating the saved plan, ledger, and proposal marker. A reference explicitly pointing to another plan still pauses execution. This recovery does not transfer the workflow to a new session.
+
 ## Final gates
 
 After every T row is done, Atlas dispatches F1–F3 to distinct fresh verification children. F4 is dispatched only after all three have passed and consumes their actual reports. None may be an implementation child or a previously consumed verifier. Each uses its resolved `dispatchAgent` (requested names and usual first fallback below):
