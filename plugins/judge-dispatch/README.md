@@ -2,7 +2,8 @@
 
 Lets OMP's `judge` model role decide which subagent type a `task` call spawns,
 instead of leaving that choice to the parent agent. With `judgeEffort` on, it
-also picks the thinking effort. OMP still validates every spawn.
+also picks the thinking effort; with `modelBudget` on, it also picks the
+child's model from its configured chain. OMP still validates every spawn.
 
 ## Install
 
@@ -48,6 +49,7 @@ omp plugin config list wows-omp-plugin-judge-dispatch
 omp plugin config set wows-omp-plugin-judge-dispatch minimumConfidence 0.8
 omp plugin config set wows-omp-plugin-judge-dispatch includeSharedContext false
 omp plugin config set wows-omp-plugin-judge-dispatch judgeEffort true
+omp plugin config set wows-omp-plugin-judge-dispatch modelBudget balanced
 ```
 
 | Setting | Type | Default | Effect |
@@ -55,22 +57,57 @@ omp plugin config set wows-omp-plugin-judge-dispatch judgeEffort true
 | `minimumConfidence` | number from 0 to 1 | `0.70` | Minimum judge confidence needed to replace the requested type. |
 | `includeSharedContext` | boolean | `true` | Sends the task call's shared `context` along with the routing request. |
 | `judgeEffort` | boolean | `false` | Also lets the judge set each `task` call's thinking effort; see [Thinking effort](#thinking-effort). |
+| `modelBudget` | `off`, `minimum`, `balanced`, `max` | `off` | Picks each spawn's model by task difficulty, intelligence, and price; see [Model budget](#model-budget). |
 
 User settings merge with project overrides. The plugin reads them on every
 `task` call, so changes apply without a restart.
 
 ## Thinking effort
 
-With `judgeEffort` on, the judge also picks the `task` call's `effort` (`lo`,
-`med`, or `hi`) based on how open-ended the assignment is. OMP maps it to the
-lowest, middle, or highest thinking level the child's model supports, capped at
+With `judgeEffort` on, the judge classifies how open-ended the assignment is
+(`routine`, `standard`, or `demanding`) and the plugin sets the `task` call's
+`effort` to `lo`, `med`, or `hi` accordingly. OMP maps it to the lowest,
+middle, or highest thinking level the child's model supports, capped at
 `task.maxEffort`, so the result is always a level the model has.
 
-An effort judged at or above `minimumConfidence` replaces the parent's choice;
-a less confident answer leaves it alone. Effort is judged even when only one
-agent type is eligible, and OMP applies it whether or not `task.enableEffort`
-shows the field to the parent. The exclusions in
+A difficulty judged at or above `minimumConfidence` replaces the parent's
+effort; a less confident answer leaves it alone. Difficulty is judged even when
+only one agent type is eligible, and OMP applies the effort whether or not
+`task.enableEffort` shows the field to the parent. The exclusions in
 [What gets routed](#what-gets-routed) apply to effort too.
+
+## Model budget
+
+With `modelBudget` on, the same difficulty judgment also picks the child's
+model. The candidates are the spawning agent's model selectors: its
+`task.agentModelOverrides` entry or frontmatter `model` list, or, for a single
+selector, that selector plus the `retry.fallbackChains` entry for its role.
+
+Each candidate is resolved through OMP's model registry, which carries the
+model's price (from models.dev) and an intelligence score from OMP's live model
+catalog. The registry matches custom and proxy provider ids to the scored
+catalog entry, so the plugin keeps no model data of its own. A candidate that
+is unavailable (no credentials) or has no score is skipped; if the first
+selector has no score, the spawn keeps its configured model.
+
+| Budget | Choice |
+| ------ | ------ |
+| `max` | The highest-scoring candidate, even when it is not first in the chain. |
+| `balanced` | The cheapest candidate scoring at least 80% / 90% / 100% of the best candidate, for routine / standard / demanding work. |
+| `minimum` | The cheapest candidate scoring at least 70% / 80% / 95% of the best candidate. |
+
+Price is blended 3:1 input to output. Because eligibility is relative to the
+best candidate, a weak model kept only as a last-resort fallback is never
+picked to save money. The chosen model moves to the front of the spawn's
+selectors; the rest stay behind it as fallbacks, and OMP shows the routing note
+next to the resolved model.
+
+OMP's `before_subagent_spawn` event carries no assignment, so the plugin links
+the judgment to the spawn through the task item's `name`. When the parent gave
+no name, the plugin writes one (`<agent>-<8 hex>`). If two pending calls share
+a name, neither is changed. Subagents from `eval.agent()` and `workpool()` keep
+their models, and the exclusions in [What gets routed](#what-gets-routed)
+apply here too.
 
 ## Enabling the judge role
 
@@ -108,4 +145,6 @@ confidence, an illegal choice, rejected credentials, network errors) keeps the
 original route, and nothing is blocked. Routing gives up after eight seconds
 and always finishes at least one second before the session's tool-call handler
 timeout; if there is no time left, it skips routing. A rewrite changes only
-`agent`, plus `effort` when `judgeEffort` is on.
+`agent`, plus `effort` when `judgeEffort` is on and `name` when `modelBudget`
+needs one. Budget model selection happens at spawn time; any failure there
+keeps the configured model.

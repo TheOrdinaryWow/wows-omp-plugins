@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import {
   acceptRoutingDecision,
+  chooseBudgetModel,
+  PendingSpawnRoutes,
   parseLegalAgentNames,
   parseTaskInput,
   rewriteTaskRoutes,
@@ -47,6 +49,19 @@ describe("task input routing", () => {
     const { effort: _, ...withoutEffort } = input;
     expect(rewriteTaskRoutes(withoutEffort, routes, [{ effort: "med" }])).toEqual({ ...withoutEffort, effort: "med" });
     expect(input.effort).toBe("lo");
+  });
+
+  test("a budget spawn name fills a missing name but never replaces the caller's", () => {
+    const unnamed = { agent: "task", task: "Rename a helper" };
+    const unnamedRoutes = parseTaskInput(unnamed);
+    if (!unnamedRoutes) throw new Error("expected valid flat task input");
+    expect(rewriteTaskRoutes(unnamed, unnamedRoutes, [{ name: "task-1a2b3c4d" }])).toEqual({ ...unnamed, name: "task-1a2b3c4d" });
+
+    const named = { ...unnamed, name: "Rename" };
+    const namedRoutes = parseTaskInput(named);
+    if (!namedRoutes) throw new Error("expected valid flat task input");
+    expect(namedRoutes[0]?.name).toBe("Rename");
+    expect(rewriteTaskRoutes(named, namedRoutes, [{ name: "task-1a2b3c4d" }])).toBe(named);
   });
 
   test("rewrites batch items independently without changing shared context or sibling fields", () => {
@@ -200,5 +215,64 @@ describe("routing decision acceptance", () => {
     expect(acceptRoutingDecision({ kind: "online", choice: "scout", confidence: 1 }, candidates, 0.7)).toBeUndefined();
     expect(acceptRoutingDecision({ kind: "local", choice: "scout", confidence: 1 }, candidates, 0.7)).toBeUndefined();
     expect(acceptRoutingDecision({ kind: "native", choice: "missing", confidence: 1 }, candidates, 0.7)).toBeUndefined();
+  });
+});
+
+describe("budget model choice", () => {
+  // Mirrors a chain whose last entries exist only as last-resort fallbacks.
+  const chain = [
+    { pattern: "primary", intelligence: 100, blendedPrice: 10 },
+    { pattern: "second", intelligence: 80, blendedPrice: 4 },
+    { pattern: "third", intelligence: 75, blendedPrice: 3 },
+    { pattern: "last-resort", intelligence: 20, blendedPrice: 0.1 },
+  ];
+
+  test("never trades down to a weak last-resort fallback", () => {
+    expect(chooseBudgetModel(chain, "routine", "minimum")?.pattern).toBe("third");
+    expect(chooseBudgetModel(chain, "standard", "minimum")?.pattern).toBe("second");
+    expect(chooseBudgetModel(chain, "routine", "balanced")?.pattern).toBe("second");
+  });
+
+  test("demanding work stays on the strongest model unless the budget is minimum", () => {
+    expect(chooseBudgetModel(chain, "demanding", "balanced")?.pattern).toBe("primary");
+    expect(chooseBudgetModel(chain, "demanding", "minimum")?.pattern).toBe("primary");
+    const nearPeer = [...chain, { pattern: "near-peer", intelligence: 96, blendedPrice: 5 }];
+    expect(chooseBudgetModel(nearPeer, "demanding", "minimum")?.pattern).toBe("near-peer");
+    expect(chooseBudgetModel(nearPeer, "demanding", "balanced")?.pattern).toBe("primary");
+  });
+
+  test("max picks the strongest candidate even when it is not first, preferring the cheaper on a tie", () => {
+    const reordered = [chain[1], { pattern: "best", intelligence: 100, blendedPrice: 12 }, chain[0]].filter(
+      (option) => option !== undefined,
+    );
+    expect(chooseBudgetModel(reordered, "routine", "max")?.pattern).toBe("primary");
+    expect(
+      chooseBudgetModel(
+        [chain[1], chain[2]].filter((option) => option !== undefined),
+        "routine",
+        "max",
+      )?.pattern,
+    ).toBe("second");
+  });
+});
+
+describe("pending spawn routes", () => {
+  test("matches the host's prefixed and collision-suffixed spawn keys once", () => {
+    const pending = new PendingSpawnRoutes();
+    pending.add("Audit", { agent: "task", difficulty: "routine" });
+    pending.add("Docs", { difficulty: "standard" });
+    expect(pending.take("parent.Audit-2", "task")).toEqual({ agent: "task", difficulty: "routine" });
+    expect(pending.take("Audit", "task")).toBeUndefined();
+    expect(pending.take("Docs", "scout")).toEqual({ difficulty: "standard" });
+  });
+
+  test("an agent mismatch or a name claimed twice changes nothing", () => {
+    const pending = new PendingSpawnRoutes();
+    pending.add("Audit", { agent: "task", difficulty: "routine" });
+    expect(pending.take("Audit", "scout")).toBeUndefined();
+    pending.add("Plan", { agent: "task", difficulty: "routine" });
+    pending.add("Plan", { agent: "task", difficulty: "demanding" });
+    expect(pending.take("Plan", "task")).toBeUndefined();
+    expect(pending.take("Plan-2", "task")).toBeUndefined();
   });
 });

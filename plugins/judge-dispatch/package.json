@@ -30,6 +30,17 @@
         "type": "boolean",
         "default": false,
         "description": "Also let the judge set each task call's thinking effort (lo/med/hi), replacing the requested one"
+      },
+      "modelBudget": {
+        "type": "enum",
+        "values": [
+          "off",
+          "minimum",
+          "balanced",
+          "max"
+        ],
+        "default": "off",
+        "description": "Pick each task spawn's model from its configured chain by judged difficulty, catalog intelligence score, and price"
       }
     }
   }

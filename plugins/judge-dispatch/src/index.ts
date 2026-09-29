@@ -15,8 +15,14 @@ import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi
 import { readHostSetting } from "#src/host-settings.ts";
 import {
   acceptRoutingDecision,
+  blendedPrice,
+  chooseBudgetModel,
+  DIFFICULTY_EFFORT,
   type JudgeDispatchSettings,
+  MODEL_BUDGETS,
+  type ModelBudget,
   type ParsedTaskRoute,
+  PendingSpawnRoutes,
   parseLegalAgentNames,
   parseTaskInput,
   type RouteChoice,
@@ -24,10 +30,11 @@ import {
   rewriteTaskRoutes,
   routableCandidates,
   routingDeadlineMs,
+  type ScoredModelOption,
   type SerializedCandidate,
   serializeCandidate,
-  TASK_EFFORTS,
-  type TaskEffort,
+  TASK_DIFFICULTIES,
+  type TaskDifficulty,
 } from "#src/routing.ts";
 
 const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
@@ -35,6 +42,7 @@ const DEFAULT_SETTINGS: JudgeDispatchSettings = {
   minimumConfidence: 0.7,
   includeSharedContext: true,
   judgeEffort: false,
+  modelBudget: "off",
 };
 
 function errorMessage(error: unknown): string {
@@ -73,10 +81,16 @@ function parseSettings(raw: Record<string, unknown>): JudgeDispatchSettings {
     throw new Error(`invalid judgeEffort ${JSON.stringify(judgeEffort)}`);
   }
 
+  const modelBudget = raw.modelBudget ?? DEFAULT_SETTINGS.modelBudget;
+  if (!MODEL_BUDGETS.includes(modelBudget as ModelBudget)) {
+    throw new Error(`invalid modelBudget ${JSON.stringify(modelBudget)}`);
+  }
+
   return {
     minimumConfidence,
     includeSharedContext,
     judgeEffort,
+    modelBudget: modelBudget as ModelBudget,
   };
 }
 
@@ -186,16 +200,21 @@ function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
   });
 }
 
-const EFFORT_QUESTION: ChoiceQuestion<TaskEffort> = {
+const DIFFICULTY_QUESTION: ChoiceQuestion<TaskDifficulty> = {
   type: "choice",
   instructions:
-    "Choose how much thinking effort the subagent needs for this assignment, judged by how open-ended the problem is rather than by how much work it involves.",
+    "Classify how demanding this assignment is for the subagent, judged by how open-ended the problem is rather than by how much work it involves.",
   criteria: {
-    lo: "Mechanical or fully specified work: the fix or steps are given and little reasoning is needed.",
-    med: "Ordinary multi-step work whose approach is mostly settled but still needs some reasoning.",
-    hi: "Open-ended, ambiguous, or logic-heavy work where causes or designs remain open.",
+    routine: "Mechanical or fully specified work: the fix or steps are given and little reasoning is needed.",
+    standard: "Ordinary multi-step work whose approach is mostly settled but still needs some reasoning.",
+    demanding: "Open-ended, ambiguous, or logic-heavy work where causes or designs remain open.",
   },
 };
+
+interface JudgedRoute {
+  agent?: string;
+  difficulty?: TaskDifficulty;
+}
 
 async function judgeRoute(
   route: ParsedTaskRoute,
@@ -203,13 +222,14 @@ async function judgeRoute(
   config: JudgeDispatchSettings,
   judge: ChainJudge,
   signal: AbortSignal,
-): Promise<RouteChoice | undefined | typeof JUDGE_UNAVAILABLE> {
+): Promise<JudgedRoute | undefined | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
   const candidates = routableCandidates(route.requestedAgent, allCandidates);
   if (!candidates) return undefined;
   if (candidates.length === 0) return undefined;
   const routesAgent = candidates.length >= 2;
-  if (!routesAgent && !config.judgeEffort) return undefined;
+  const judgesDifficulty = config.judgeEffort || config.modelBudget !== "off";
+  if (!routesAgent && !judgesDifficulty) return undefined;
 
   const serialized = candidates.map(serializeCandidate);
   const candidateNames = serialized.map((candidate) => candidate.name);
@@ -228,7 +248,7 @@ async function judgeRoute(
       criteria: Object.fromEntries(serialized.map((candidate) => [candidate.name, candidateCriterion(candidate)])),
     };
   }
-  if (config.judgeEffort) questions.effort = EFFORT_QUESTION;
+  if (judgesDifficulty) questions.difficulty = DIFFICULTY_QUESTION;
 
   // A chat-model judge cannot reproduce a native judge's calibrated confidence, so
   // the chain's first usable candidate must be native; anything else is never called.
@@ -246,8 +266,8 @@ async function judgeRoute(
           );
         };
         const agent = routesAgent ? accept("agent", candidateNames) : undefined;
-        const effort = config.judgeEffort ? accept("effort", TASK_EFFORTS) : undefined;
-        return { ...(agent ? { agent } : {}), ...(effort ? { effort } : {}) };
+        const difficulty = judgesDifficulty ? accept("difficulty", TASK_DIFFICULTIES) : undefined;
+        return { ...(agent ? { agent } : {}), ...(difficulty ? { difficulty } : {}) };
       },
       { signal },
     );
@@ -270,15 +290,53 @@ async function judgeRouteFailOpen(
   route: ParsedTaskRoute,
   candidates: readonly RoutingCandidate[],
   signal: AbortSignal,
-): Promise<RouteChoice | undefined> {
+): Promise<JudgedRoute | undefined> {
   try {
-    const choice = await judgeRoute(route, candidates, session.config, session.judge, signal);
-    if (choice !== JUDGE_UNAVAILABLE) return choice;
+    const judged = await judgeRoute(route, candidates, session.config, session.judge, signal);
+    if (judged !== JUDGE_UNAVAILABLE) return judged;
     session.notifyUnavailable(session.ctx);
   } catch {
     session.pi.logger.warn("judge-dispatch judgment failed; preserving the original route");
   }
   return undefined;
+}
+
+/** Turn a judgment into the task-call rewrite, recording the budget decision its spawn hook will look up. */
+function routeChoice(
+  route: ParsedTaskRoute,
+  judged: JudgedRoute | undefined,
+  config: JudgeDispatchSettings,
+  pending: PendingSpawnRoutes,
+): RouteChoice | undefined {
+  if (!judged) return undefined;
+  const choice: RouteChoice = {
+    ...(judged.agent ? { agent: judged.agent } : {}),
+    ...(config.judgeEffort && judged.difficulty ? { effort: DIFFICULTY_EFFORT[judged.difficulty] } : {}),
+  };
+  if (config.modelBudget !== "off" && judged.difficulty) {
+    const agent = judged.agent ?? route.requestedAgent;
+    const name = route.name ?? `${agent ?? "task"}-${crypto.randomUUID().slice(0, 8)}`;
+    if (!route.name) choice.name = name;
+    pending.add(name, { ...(agent ? { agent } : {}), difficulty: judged.difficulty });
+  }
+  return choice;
+}
+
+/** Registry models behind the spawn's configured selectors, keeping only available ones with a catalog score and price. */
+function scoredSpawnOptions(patterns: readonly string[], settings: Settings, ctx: ExtensionContext): ScoredModelOption[] | undefined {
+  const available = new Set(ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`));
+  const options: ScoredModelOption[] = [];
+  for (const [position, pattern] of patterns.entries()) {
+    const model = resolveModelOverride([pattern], ctx.modelRegistry, settings).model;
+    const scored = model && available.has(`${model.provider}/${model.id}`) && model.int != null && Number.isFinite(model.int);
+    // Without the first choice's score there is no reference for what a fallback gives up.
+    if (!scored) {
+      if (position === 0) return undefined;
+      continue;
+    }
+    options.push({ pattern, intelligence: model.int as number, blendedPrice: blendedPrice(model.cost) });
+  }
+  return options;
 }
 
 /** Warn once per session that routing is idle until the host's judge role reaches a native judgment model. */
@@ -300,6 +358,16 @@ function unavailableNotifier(pi: ExtensionAPI): (ctx: ExtensionContext) => void 
 
 export default function judgeDispatch(pi: ExtensionAPI): void {
   const notifyUnavailable = unavailableNotifier(pi);
+  const pendingBySession = new WeakMap<object, PendingSpawnRoutes>();
+  const pendingFor = (ctx: ExtensionContext): PendingSpawnRoutes => {
+    let pending = pendingBySession.get(ctx.sessionManager);
+    if (!pending) {
+      pending = new PendingSpawnRoutes();
+      pendingBySession.set(ctx.sessionManager, pending);
+    }
+    return pending;
+  };
+
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "task") return undefined;
     try {
@@ -327,12 +395,37 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         if (!routes) return undefined;
         const candidates = await discoverCandidates(ctx, settings, legalNames);
         const session = { pi, ctx, config, judge: sessionJudge(ctx, settings), notifyUnavailable };
-        const choices = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
+        const judged = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
+        const pending = pendingFor(ctx);
+        const choices = routes.map((route, index) => routeChoice(route, judged[index], config, pending));
         const rewritten = rewriteTaskRoutes(input, routes, choices);
         return rewritten === input ? undefined : { input: rewritten };
       });
     } catch (error) {
       pi.logger.warn("judge-dispatch task interception failed open", { error: errorMessage(error) });
+      return undefined;
+    }
+  });
+
+  pi.on("before_subagent_spawn", async (event, ctx) => {
+    if (event.invocationKind !== "task" || !event.spawnKey) return undefined;
+    try {
+      const route = pendingFor(ctx).take(event.spawnKey, event.agent);
+      if (!route) return undefined;
+      const { modelBudget } = await effectivePluginSettings(ctx.cwd);
+      if (modelBudget === "off") return undefined;
+      const settings = scopedSettings(ctx);
+      const chains = (await readHostSetting(settings, "retry.fallbackChains")) as Record<string, unknown>;
+      const patterns = [...new Set([...event.patterns, ...fallbackChain(event.patterns, event.modelRole, chains)])];
+      const options = scoredSpawnOptions(patterns, settings, ctx);
+      const chosen = options && chooseBudgetModel(options, route.difficulty, modelBudget);
+      if (!chosen || chosen.pattern === event.patterns[0]) return undefined;
+      return {
+        model: [chosen.pattern, ...event.patterns.filter((pattern) => pattern !== chosen.pattern)],
+        note: `judge-dispatch ${modelBudget} budget, ${route.difficulty} task: intelligence ${chosen.intelligence}, $${chosen.blendedPrice.toFixed(2)}/M blended`,
+      };
+    } catch (error) {
+      pi.logger.warn("judge-dispatch budget model selection failed open", { error: errorMessage(error) });
       return undefined;
     }
   });

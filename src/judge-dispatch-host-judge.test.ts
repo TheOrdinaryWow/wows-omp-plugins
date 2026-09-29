@@ -262,7 +262,7 @@ async function registerTests(): Promise<void> {
         });
 
         const askedQuestions = report.requests.map((request) => Object.keys(JSON.parse(request.body).questions ?? {}));
-        expect(askedQuestions).toEqual([["agent"], ["agent", "effort"]]);
+        expect(askedQuestions).toEqual([["agent"], ["agent", "difficulty"]]);
         expect(report.sessions[1]?.results).toEqual([
           { input: { task: "Implement the requested repository change", agent: "scout", effort: "hi" } },
         ]);
@@ -309,7 +309,7 @@ async function registerTests(): Promise<void> {
           ["task", "scout", "security-reviewer"],
           ["scout"],
         ]);
-        expect(requests.map((request) => Object.keys(request.questions))).toEqual([["agent"], ["effort"]]);
+        expect(requests.map((request) => Object.keys(request.questions))).toEqual([["agent"], ["difficulty"]]);
       });
     });
 
