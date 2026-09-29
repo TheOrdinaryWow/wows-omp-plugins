@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
+import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
@@ -62,6 +63,8 @@ const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
 const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
 const BLOCK_NOTICE_BURST_MS = 5_000;
+const PLAN_MODE_DISABLED =
+  "Prometheus needs OMP plan mode, which is turned off in settings. Enable plan mode (plan.enabled), then run /prometheus again.";
 const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_PLAN_REFERENCE = "local://PLAN.md";
 const PACKAGE_NAME = "wows-omp-plugin-omo-prometheus";
@@ -178,6 +181,9 @@ export default function prometheus(pi: ExtensionAPI): void {
       attribution: "agent",
     });
   };
+
+  /** Prometheus plans inside native plan mode; with plan.enabled off the host refuses /plan and xd://propose never exists. */
+  const planModeDisabled = (live: AgentSession): boolean => !cfgPlanEnabled.get(live.settings);
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
     try {
@@ -1126,6 +1132,10 @@ export default function prometheus(pi: ExtensionAPI): void {
       await release(ctx, "/prometheus", "planning");
       return planModeActive ? { text: "/plan" } : { handled: true };
     }
+    if (planModeDisabled(live)) {
+      notify(ctx, PLAN_MODE_DISABLED, "error");
+      return { handled: true };
+    }
     if (!(await activate(ctx))) return { handled: true };
     if (planModeActive) {
       notify(ctx, "Prometheus planning is active in this native plan-mode session.");
@@ -1149,6 +1159,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     if (record?.phase === "planning") {
       await release(ctx, "/prometheus", "planning");
+      return;
+    }
+    if (planModeDisabled(live)) {
+      commandNotice(ctx, PLAN_MODE_DISABLED, "error");
       return;
     }
     if (live.getPlanModeState()?.enabled !== true) {

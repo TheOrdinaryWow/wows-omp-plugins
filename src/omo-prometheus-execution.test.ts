@@ -275,6 +275,25 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(item);
     return item;
   };
+  if (name === "plan-mode-disabled") {
+    // With plan.enabled off the host refuses /plan, so Prometheus must refuse instead of claiming it started.
+    const { cfgPlanEnabled } = await import("@oh-my-pi/pi-coding-agent/plan-mode/settings");
+    cfgPlanEnabled.override(settings, false);
+    mode = false;
+    const stateEntries = () =>
+      entries.filter(
+        (entry) =>
+          typeof entry === "object" && entry !== null && "customType" in entry && entry.customType === "wows-omp-omo-prometheus.state",
+      );
+    assert.deepEqual(await hook("input", { text: "/prometheus draft the rollout", source: "user" }), { handled: true });
+    assert.match(notices.at(-1) ?? "", /plan mode.*turned off/);
+    await commands.get("prometheus")?.("draft the rollout", ctx);
+    assert.match(notices.at(-1) ?? "", /plan mode.*turned off/);
+    assert.deepEqual(stateEntries(), []);
+    cfgPlanEnabled.override(settings, true);
+    assert.deepEqual(await hook("input", { text: "/prometheus draft the rollout", source: "user" }), { text: "/plan draft the rollout" });
+    return;
+  }
   if (name === "plain-plan-approval") {
     // Ordinary Plan Mode proposals never expose the atlas tier.
     reference = "local://integrity-plan.md";
@@ -1597,6 +1616,7 @@ if (process.env[CHILD_ENV]) {
       "atlas-dispatch",
       "atlas-model-role",
       "plain-plan-approval",
+      "plan-mode-disabled",
       "exit-live-child",
       "shutdown-live-child",
       "cancelled-live-child",

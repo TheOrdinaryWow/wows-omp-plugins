@@ -34,6 +34,8 @@ Run `omp plugin uninstall prometheus@wows-omp-plugins`, then install `omo-promet
 
 This enters OMP's native Plan Mode, or upgrades a Plan Mode session that is already active. Describe the request in your next message, or inline as `/prometheus <request>`. Running `/prometheus` again while planning leaves both Prometheus and Plan Mode.
 
+Prometheus requires Plan Mode to be enabled in OMP settings (`plan.enabled`, on by default). When it is off, `/prometheus` refuses with an error and changes nothing; turn Plan Mode on and run it again. Atlas and `/atlas` do not depend on this setting.
+
 The plan is written to a `local://` session artifact and submitted through `xd://propose`. If OMP plan autosave is on, the approved copy is also saved under `.omp/plans/`.
 
 In ordinary `/plan` mode, small and well-defined requests stay on the normal OMP path. For large, cross-cutting, or ambiguous goals, the planner offers Prometheus through `ask`: one question with the header `Prometheus`, whose second option names Prometheus. Only that exact question counts as consent. Accepting it switches to the same shared workflow.
