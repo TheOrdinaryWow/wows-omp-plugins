@@ -7,6 +7,8 @@
  * decision can be exercised in isolation.
  */
 
+import { prompt } from "@oh-my-pi/pi-utils";
+
 /** Slash command that toggles Prometheus planning, like the host's `/plan`. */
 export const PROMETHEUS_COMMANDS: Record<string, true> = { prometheus: true };
 
@@ -178,12 +180,13 @@ export function prometheusArtifactUrl(planFilePath: string): string {
   return `local://prometheus/${slug}.proposal.json`;
 }
 
-/** Plan body inlined by the host's approved-plan handoff prompt, byte-for-byte between the plan tags. */
-export function inlineApprovedPlan(prompt: string, planFilePath: string): string | undefined {
-  const open = `<plan path="${canonicalPlanPath(planFilePath)}">\n`;
-  const start = prompt.indexOf(open);
-  const end = prompt.lastIndexOf("\n</plan>");
-  return start >= 0 && end >= start + open.length ? prompt.slice(start + open.length, end) : undefined;
+/**
+ * Whether the host's approved-plan handoff inlines `content`. The host renders the plan
+ * through its prompt formatter, which trims line ends, collapses blank runs, and drops the
+ * blank line before `</plan>`, so the exact plan bytes are compared in that rendered form.
+ */
+export function inlinesApprovedPlan(handoff: string, planFilePath: string, content: string): boolean {
+  return handoff.includes(prompt.format(`<plan path="${canonicalPlanPath(planFilePath)}">\n${content}\n</plan>`));
 }
 
 /** Plugin-owned tools that are trusted only when registered by this runtime file. */

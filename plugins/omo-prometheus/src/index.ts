@@ -31,7 +31,7 @@ import {
   EXECUTION_START_NOTICE,
   executionBlockReason,
   executionToolSourceBlockReason,
-  inlineApprovedPlan,
+  inlinesApprovedPlan,
   isApprovedPlanHandoff,
   isPrometheusOptInConsent,
   isPrometheusOptInQuestion,
@@ -785,7 +785,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const enterExecution = async (ctx: ExtensionContext, record: SessionRecord, inlinePlan?: string): Promise<void> => {
+  const enterExecution = async (ctx: ExtensionContext, record: SessionRecord, handoff?: string): Promise<void> => {
     if (record.phase !== "planning") return;
     const { planFilePath: sourcePlanPath, planSha256, sourceSessionId, proposedByToolCallId } = record;
     record.phase = "executing";
@@ -809,7 +809,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         throw new Error("the native approved plan reference is unavailable or changed");
       }
       const content = await fs.readFile(resolveLocalUrlToPath(sourcePlanPath, localOptions(ctx)), "utf8");
-      if (planDigest(content) !== planSha256 || (inlinePlan !== undefined && planDigest(inlinePlan) !== planSha256)) {
+      if (planDigest(content) !== planSha256 || (handoff !== undefined && !inlinesApprovedPlan(handoff, sourcePlanPath, content))) {
         throw new Error("the approved plan differs from the exact native proposal");
       }
       if (record.phase !== "executing" || record.activation !== activation) throw new Error("Atlas exited before shared approval storage");
@@ -1194,8 +1194,8 @@ export default function prometheus(pi: ExtensionAPI): void {
     )
       return;
     try {
-      const content = inlineApprovedPlan(prompt, owned.plan.sourcePlanPath);
-      if (content === undefined || planDigest(content) !== owned.plan.planSha256)
+      const approvedContent = await fs.readFile(owned.plan.planFilePath, "utf8");
+      if (planDigest(approvedContent) !== owned.plan.planSha256 || !inlinesApprovedPlan(prompt, owned.plan.sourcePlanPath, approvedContent))
         throw new Error("the compact approval handoff differs from the exact approved plan");
       const approved = await owned.store.find(owned.plan.id);
       if (
@@ -1295,7 +1295,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (planModeActive) {
         injected = await planningBlock(ctx);
       } else if (isApprovedPlanHandoff(event.prompt, record.planFilePath, live.getPlanReferencePath())) {
-        await enterExecution(ctx, record, record.planFilePath ? inlineApprovedPlan(event.prompt, record.planFilePath) : undefined);
+        await enterExecution(ctx, record, event.prompt);
         executing = true;
       } else {
         await clearProposalMarker(ctx, record.planFilePath);

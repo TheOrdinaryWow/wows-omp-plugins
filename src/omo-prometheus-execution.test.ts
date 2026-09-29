@@ -5,12 +5,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { prompt as hostPrompt } from "@oh-my-pi/pi-utils";
 
 import type { ExecutionLedger, LedgerItem } from "../plugins/omo-prometheus/src/ledger.ts";
 
 const CHILD_ENV = "PROMETHEUS_EXECUTION_SCENARIO";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const plan = `# Execution integrity
+// Padded table cells and trailing spaces are rewritten by the host prompt formatter in the approval handoff.
+const plan = `# Execution integrity  
+
+| Area     | Owner |
+|----------|-------|
+| runtime  | T1    |
+
 
 ## Tasks
 - [ ] T1. Implement the prerequisite
@@ -32,6 +39,13 @@ const plan = `# Execution integrity
 - [ ] F3. Real-surface QA
 - [ ] F4. Success-criteria fidelity
 `;
+// The host bundles this template without exporting it; render it exactly as the approval handoff does.
+const planModeApprovedPrompt = await readFile(
+  join(dirname(fileURLToPath(import.meta.resolve("@oh-my-pi/pi-coding-agent"))), "prompts/system/plan-mode-approved.md"),
+  "utf8",
+);
+const approvedHandoff = (planFilePath: string | undefined, planContent: string) =>
+  hostPrompt.render(planModeApprovedPrompt, { planFilePath, planContent, contextPreserved: false });
 
 interface Result {
   isError?: boolean;
@@ -369,7 +383,7 @@ async function scenario(name: string, root: string): Promise<void> {
     entries.length = 0;
     install();
     await hook("before_agent_start", {
-      prompt: `Plan approved.\nFull plan inlined below; durable copy at \`${reference}\`\n<plan path="${reference}">\n${plan}\n</plan>`,
+      prompt: approvedHandoff(reference, plan),
       systemPrompt: [],
     });
     assert(reference?.startsWith("/"), notices.join("\n"));
@@ -390,7 +404,7 @@ async function scenario(name: string, root: string): Promise<void> {
     // The host restores its source local:// reference after the session_compact callback.
     reference = name.endsWith("reference-mismatch") ? "local://unrelated-plan.md" : sourceReference;
     const inline = name.endsWith("inline-mismatch") ? `${plan}\nAltered acceptance` : plan;
-    const prompt = `Plan approved.\nFull plan inlined below; durable copy at \`${reference}\`\n<plan path="${reference}">\n${inline}\n</plan>`;
+    const prompt = approvedHandoff(reference, inline);
     const queued = name.startsWith("compact-queued");
     const message = {
       role: name.endsWith("user-role") ? "user" : "developer",
@@ -789,7 +803,11 @@ async function scenario(name: string, root: string): Promise<void> {
     main();
     install();
     await hook("session_start");
-    await commands.get("atlas")?.("integrity", ctx);
+    await commands.get("atlas")?.("missing-plan", ctx);
+    assert.match(notices.at(-1) ?? "", /No approved Atlas plan named missing-plan; available: integrity/);
+    await commands.get("atlas")?.("", ctx);
+    // The proposal file name, including its `-plan` suffix, selects the same bundle.
+    await commands.get("atlas")?.("integrity-plan", ctx);
     const status = await call({ action: "status" });
     ok(status);
     assert.equal(reference, planFile);

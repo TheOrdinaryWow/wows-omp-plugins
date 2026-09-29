@@ -400,8 +400,16 @@ export class AtlasStore {
   async find(selector: string): Promise<AtlasPlan> {
     if (typeof selector !== "string" || (!validName(selector) && !ID.test(selector))) throw new Error("Invalid Atlas plan selector");
     if (ID.test(selector)) return (await this.#plan(selector)).plan;
-    const matches = (await this.list()).filter((plan) => plan.name === selector);
-    if (!matches.length) throw new Error(`No approved Atlas plan named ${selector}`);
+    const plans = await this.list();
+    // Bundles are named after the proposal file without its `-plan.md` suffix; accept the file stem too.
+    const stem = selector.replace(/-plan$/, "");
+    const matches = plans.filter((plan) => plan.name === selector || plan.name === stem);
+    if (!matches.length) {
+      const available = [...new Set(plans.map((plan) => plan.name))].join(", ");
+      throw new Error(
+        `No approved Atlas plan named ${selector}; ${available ? `available: ${available}` : "no approved Atlas plans exist"}`,
+      );
+    }
     if (matches.length > 1)
       throw new Error(`Ambiguous Atlas plan name ${selector}; select by id: ${matches.map((plan) => plan.id).join(", ")}`);
     return matches[0] as AtlasPlan;
