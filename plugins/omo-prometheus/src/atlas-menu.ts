@@ -41,7 +41,7 @@ export class AtlasMenu extends OverlayPanel {
     this.#filter = filter;
     this.#list = new SelectList(this.#items(), LIST_ROWS, getSelectListTheme(), {
       search: "always",
-      emptyText: "No plans in this view — press Tab for All",
+      emptyText: "No plans in this view; press Tab for All",
       noMatchText: "No plans match the search",
       renderItem: (context) => [this.#renderPlanRow(context)],
       statusText: ({ query, visibleCount, totalCount }) =>
@@ -72,9 +72,12 @@ export class AtlasMenu extends OverlayPanel {
   }
 
   #bar(done: number, total: number): string {
-    if (!total) return this.theme.fg("dim", "─".repeat(BAR_WIDTH));
+    const { filled: full, empty } = this.theme.progress;
+    if (!total) return this.theme.fg("dim", empty.repeat(BAR_WIDTH));
     const filled = Math.round((done / total) * BAR_WIDTH);
-    return this.theme.fg(done === total ? "success" : "accent", "━".repeat(filled)) + this.theme.fg("dim", "─".repeat(BAR_WIDTH - filled));
+    return (
+      this.theme.fg(done === total ? "success" : "accent", full.repeat(filled)) + this.theme.fg("dim", empty.repeat(BAR_WIDTH - filled))
+    );
   }
 
   #statusColor(detail: AtlasPlanDetail): "success" | "warning" | "error" | "muted" {
@@ -89,7 +92,7 @@ export class AtlasMenu extends OverlayPanel {
     const detail = this.#details.get(item.value);
     const cursor = selected ? this.theme.fg("accent", `${this.theme.nav.cursor} `) : "  ";
     if (!detail) return cursor + item.label;
-    const counts = detail.total ? `${detail.done}/${detail.total}` : "—";
+    const counts = detail.total ? `${detail.done}/${detail.total}` : this.theme.format.dash;
     const status = detail.status.replace(/\s*\(\d+\/\d+\)/, "").replace(/^In progress \d+\/\d+/, "In progress");
     const tail = `  ${this.#bar(detail.done, detail.total)} ${counts.padStart(5)}  ${this.theme.fg(this.#statusColor(detail), status)}`;
     const nameWidth = Math.max(8, width - 2 - visibleWidth(tail));
@@ -114,7 +117,7 @@ export class AtlasMenu extends OverlayPanel {
     const note = this.#message
       ? this.theme.fg("warning", this.#message)
       : this.#filter === "all"
-        ? this.theme.fg("dim", "Display only — Tab back to Unfinished to enter")
+        ? this.theme.fg("dim", "Display only; press Tab for Unfinished to enter")
         : "";
     this.#header.setLines(["", `${tabs}  ${note}`, ""]);
 
@@ -128,7 +131,7 @@ export class AtlasMenu extends OverlayPanel {
         lines.push(this.theme.fg(this.#statusColor(detail), detail.status));
       lines.push("");
       const idWidth = Math.max(0, ...detail.rows.map((row) => row.id.length));
-      // Theme status glyphs differ in cell width (✔ is 1, ⏳ is 2); pad them to one column width.
+      // Preset status glyphs differ in cell width (unicode ✔ vs ⏳, ascii [ok] vs [*]); pad to one column.
       const marks = detail.rows.map((row) => this.#rowMark(row.status));
       const markWidth = Math.max(1, ...marks.map((mark) => visibleWidth(mark)));
       detail.rows.slice(0, DETAIL_ROWS).forEach((row, index) => {
@@ -136,7 +139,7 @@ export class AtlasMenu extends OverlayPanel {
         lines.push(`${mark}${padding(markWidth - visibleWidth(mark))} ${this.theme.fg("muted", row.id.padEnd(idWidth))}  ${row.title}`);
       });
       const hidden = detail.rows.length - DETAIL_ROWS;
-      if (hidden > 0) lines.push(this.theme.fg("dim", `… ${hidden} more ${hidden === 1 ? "row" : "rows"}`));
+      if (hidden > 0) lines.push(this.theme.fg("dim", `+${hidden} more ${hidden === 1 ? "row" : "rows"}`));
     } else {
       lines.push(this.theme.fg("dim", "No plan selected"));
     }
@@ -146,7 +149,7 @@ export class AtlasMenu extends OverlayPanel {
       [
         rawKeyHint("space", "enter"),
         rawKeyHint("delete", "delete"),
-        `${this.theme.fg("dim", "⇧N")}${this.theme.fg("muted", " rename")}`,
+        rawKeyHint("shift+n", "rename"),
         rawKeyHint("tab", "filter"),
         rawKeyHint("escape", "close"),
       ].join("   "),
