@@ -219,14 +219,20 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
+  /**
+   * The host appends another `plan` mode_change without leaving plan mode when it restores a resumed session
+   * or retargets the plan file at approval, so an episode starts at the first `plan` entry after a non-plan one.
+   */
   const planModeEpisodeId = (ctx: ExtensionContext): string | undefined => {
     const branch = ctx.sessionManager.getBranch();
+    let episodeId: string | undefined;
     for (let index = branch.length - 1; index >= 0; index--) {
       const entry = branch[index];
       if (entry?.type !== "mode_change") continue;
-      return entry.mode === "plan" ? entry.id : undefined;
+      if (entry.mode !== "plan") break;
+      episodeId = entry.id;
     }
-    return undefined;
+    return episodeId;
   };
 
   const recordFor = (sessionId: string): SessionRecord => {

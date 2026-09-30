@@ -321,6 +321,26 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   await writeFile(sourcePlanFile, name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : plan);
   await commands.get("prometheus")?.("", ctx);
+  if (name === "plan-mode-restored" || name === "plan-mode-reentered") {
+    await hook("before_agent_start", { prompt: "draft the plan", systemPrompt: [] });
+    // A resumed session restores plan mode by appending another `plan` entry; only an exit between them starts a new episode.
+    if (name === "plan-mode-reentered") entries.push({ type: "mode_change", id: "plan-exit", mode: "none" });
+    entries.push({ type: "mode_change", id: "plan-mode-again", mode: "plan" });
+    await hook("session_shutdown");
+    install();
+    await hook("session_start");
+    await hook("before_agent_start", { prompt: "Continue", systemPrompt: [] });
+    await hook("tool_result", {
+      toolName: "write",
+      toolCallId: "proposal",
+      isError: false,
+      details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://integrity-plan.md", planExists: true } } },
+      content: [{ type: "text", text: "Plan proposal submitted" }],
+    });
+    // The atlas approval tier appears only for a Prometheus proposal.
+    assert.equal(cfgCycleOrder.get(settings)[0] === "atlas", name === "plan-mode-restored");
+    return;
+  }
   mode = false;
   reference = "local://integrity-plan.md";
   await hook("tool_result", {
@@ -1744,6 +1764,8 @@ if (process.env[CHILD_ENV]) {
       "compact-queued-user-role",
       "compact-queued-user-attribution",
       "compact-after-save-and-quit",
+      "plan-mode-restored",
+      "plan-mode-reentered",
     ]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "prometheus-execution-"));
