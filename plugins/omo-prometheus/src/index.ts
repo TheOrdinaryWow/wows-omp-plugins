@@ -250,8 +250,6 @@ export default function prometheus(pi: ExtensionAPI): void {
         sourceSessionId: record.sourceSessionId,
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
-        proposalAwaitingApproval: record.proposalAwaitingApproval === true,
-        approvalCompactionPending: record.approvalCompactionPending === true,
         ledgerPath: record.ledgerPath,
       });
     } catch (error) {
@@ -278,8 +276,6 @@ export default function prometheus(pi: ExtensionAPI): void {
             proposedByToolCallId?: unknown;
             offeredForModeEntryId?: unknown;
             suppressedForModeEntryId?: unknown;
-            proposalAwaitingApproval?: unknown;
-            approvalCompactionPending?: unknown;
             ledgerPath?: unknown;
           }
         | undefined;
@@ -296,8 +292,10 @@ export default function prometheus(pi: ExtensionAPI): void {
           typeof data.offeredForModeEntryId === "string" && data.offeredForModeEntryId ? data.offeredForModeEntryId : undefined,
         suppressedForModeEntryId:
           typeof data.suppressedForModeEntryId === "string" && data.suppressedForModeEntryId ? data.suppressedForModeEntryId : undefined,
-        proposalAwaitingApproval: typeof data.proposalAwaitingApproval === "boolean" ? data.proposalAwaitingApproval : false,
-        approvalCompactionPending: typeof data.approvalCompactionPending === "boolean" ? data.approvalCompactionPending : false,
+        // The approval window lives only between one proposal and its overlay choice in this process. Older
+        // entries persisted it; a reload, resume or branch must never revive it (e.g. after native "Save and quit").
+        proposalAwaitingApproval: false,
+        approvalCompactionPending: false,
         ledgerPath: typeof data.ledgerPath === "string" && data.ledgerPath ? data.ledgerPath : undefined,
         stallCount: 0,
         lastBlockedAt: 0,

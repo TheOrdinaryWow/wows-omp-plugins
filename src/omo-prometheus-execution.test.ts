@@ -759,6 +759,21 @@ async function scenario(name: string, root: string): Promise<void> {
     await finish("T1");
     return;
   }
+  if (name === "compact-after-save-and-quit") {
+    // Native "Save and quit" exits plan mode without approval and opens a new session; the proposal stays in the old one.
+    const savedEntries = structuredClone(entries);
+    const savedSessionId = sessionId;
+    await switchTo("fresh-after-save", [], "new");
+    await switchTo(savedSessionId, savedEntries, "resume");
+    // Pre-prompt auto-compaction in the resumed session is not a plan approval.
+    await hook("session_before_compact");
+    await hook("session_compact");
+    assert.equal(reference, "local://integrity-plan.md");
+    refused(await call({ action: "status" }));
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    assert.equal((await new AtlasStore(sessionManager.getSessionDir()).list()).length, 0);
+    return;
+  }
   if (name.startsWith("compact-")) {
     const sourceReference = reference;
     await hook("session_before_compact");
@@ -1728,6 +1743,7 @@ if (process.env[CHILD_ENV]) {
       "compact-queued-reference-mismatch",
       "compact-queued-user-role",
       "compact-queued-user-attribution",
+      "compact-after-save-and-quit",
     ]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "prometheus-execution-"));
