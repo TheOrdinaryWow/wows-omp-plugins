@@ -16,7 +16,7 @@
       "indicator": {
         "type": "boolean",
         "default": true,
-        "description": "Show a working message while judging and a transcript line when a route changes (never sent to the model)"
+        "description": "Show a working message while judging and a status line for every routed task call (never sent to the model)"
       },
       "minimumConfidence": {
         "type": "number",

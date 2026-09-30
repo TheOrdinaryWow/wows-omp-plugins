@@ -69,21 +69,28 @@ While the judge runs, the working message reads `judge-dispatch: routing N
 tasks…`, and the default message returns once judging finishes, fails, or
 times out.
 
-When the judge changes a call's agent or effort, one dim line is added to the
-conversation, for example:
+Each routed `task` call then prints one dim status line right away, the same
+kind of line Ctrl+O prints, for example:
 
 ```text
-judge-dispatch  #1 explore → task (0.87) ; #2 task · effort med → hi (0.92)
+judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · effort med → hi (0.92)
 ```
 
-Each changed item shows the requested and routed values with the judge's
-confidence; a batch call produces a single line, and unchanged calls produce
-none. The line appears at the next step boundary, so a long synchronous task
-shows it after the task returns. It is for you only: the plugin removes it from
-the context sent to the model. Model changes from `modelBudget` already appear
-as OMP's note next to the child's model and are not repeated.
+Every item appears with the judge's confidence, whether its agent changed or
+was kept. An item kept without a usable judgment names the reason instead:
+`judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no
+confident choice`, or `workflow-owned or unknown agent`. A call that is not
+judged at all, because routing failed, timed out, or the host leaves no time to
+judge, still gets a line starting `kept the requested agent:`. Calls made while
+Prometheus executes an approved plan are not routed and print nothing.
 
-Set `indicator` to `false` to hide both.
+The line is for you only: it is never sent to the model and is not saved in the
+session, so it does not reappear after `/resume`. OMP folds status lines that
+arrive back to back into one, so several `task` calls in the same turn can leave
+only the last line visible. Model changes from `modelBudget` already appear as
+OMP's note next to the child's model and are not repeated.
+
+Set `indicator` to `false` to hide both the working message and the status line.
 
 ## Thinking effort
 

@@ -36,12 +36,11 @@ interface RecordedRequest {
 interface SessionReport {
   results: unknown[];
   warnings: unknown[];
-  notifications: unknown[];
+  notifications: { message: unknown; level?: unknown }[];
   usage: unknown[];
   /** Working-message calls in order; a restore (`undefined`) arrives as `null`. */
   working: unknown[];
-  records: { message: { customType?: string; content?: unknown; display?: boolean }; options?: unknown }[];
-  /** Custom message types that remain after the plugin's `context` hook, given every record plus one ordinary message. */
+  /** Custom message types that remain after the plugin's `context` hook, given a legacy route record plus one ordinary message. */
   modelView: unknown[];
 }
 
@@ -117,7 +116,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       const settings = await Settings.loadIsolated({ cwd: session.project, agentDir });
       const registry = new ModelRegistry(await discoverAuthStorage(agentDir), join(agentDir, "models.yml"), { settings });
       const handlers = new Map<string, TestHandler[]>();
-      const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [], working: [], records: [], modelView: [] };
+      const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [], working: [], modelView: [] };
 
       const api = {
         logger: {
@@ -130,9 +129,6 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         },
         getAllTools: () => [{ name: "task", description: session.description ?? TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
         registerMessageRenderer() {},
-        sendMessage(message: SessionReport["records"][number]["message"], options?: unknown) {
-          report.records.push({ message, options });
-        },
       } as unknown as ExtensionAPI;
 
       const context = {
@@ -183,7 +179,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
           type: "context",
           messages: [
             { role: "custom", customType: "other-plugin.note", content: "kept" },
-            ...report.records.map(({ message }) => ({ role: "custom", ...message })),
+            { role: "custom", customType: "wows-omp-judge-dispatch.route", content: "judge-dispatch  task → scout (0.99)" },
           ],
         },
         context,
@@ -268,12 +264,12 @@ async function registerTests(): Promise<void> {
         expect(report.requests.map((request) => request.authorization)).toEqual([`Bearer ${HOST_KEY}`]);
         expect(report.sessions[0]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "scout" } }]);
         expect(report.sessions[0]?.usage).toHaveLength(1);
-        expect(report.sessions[0]?.notifications).toEqual([]);
+        expect(report.sessions[0]?.notifications).toEqual([{ message: "judge-dispatch  task → scout (0.99)", level: "info" }]);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
       });
     });
 
-    test("shows routing activity, records only changed routes, and keeps the record from the model", async () => {
+    test("shows a status line for every routed call and keeps legacy route records from the model", async () => {
       await withProjects([{ judgeEffort: true }, { judgeEffort: true, indicator: false }], async ([shown, hidden]) => {
         const report = await runIsolatedScenario({
           sessions: [
@@ -288,21 +284,14 @@ async function registerTests(): Promise<void> {
 
         expect(visible?.results).toEqual([rewritten]);
         expect(visible?.working).toEqual(["judge-dispatch: routing 1 task…", null]);
-        expect(visible?.records).toEqual([
-          {
-            message: {
-              customType: "wows-omp-judge-dispatch.route",
-              content: "judge-dispatch  task → scout (0.99) · effort default → hi (0.99)",
-              display: true,
-            },
-            options: { deliverAs: "aside" },
-          },
+        expect(visible?.notifications).toEqual([
+          { message: "judge-dispatch  task → scout (0.99) · effort default → hi (0.99)", level: "info" },
         ]);
         expect(visible?.modelView).toEqual(["other-plugin.note"]);
 
         expect(silent?.results).toEqual([rewritten]);
         expect(silent?.working).toEqual([]);
-        expect(silent?.records).toEqual([]);
+        expect(silent?.notifications).toEqual([]);
       });
 
       await withProjects([{}], async ([project]) => {
@@ -314,7 +303,7 @@ async function registerTests(): Promise<void> {
         });
         expect(report.sessions[0]?.results).toEqual([null]);
         expect(report.sessions[0]?.working).toEqual(["judge-dispatch: routing 1 task…", null]);
-        expect(report.sessions[0]?.records).toEqual([]);
+        expect(report.sessions[0]?.notifications).toEqual([{ message: "judge-dispatch  task kept (0.99)", level: "info" }]);
       });
     });
 
@@ -446,8 +435,11 @@ async function registerTests(): Promise<void> {
         for (const session of report.sessions) {
           expect(session.results).toEqual([null, null]);
           expect(session.usage).toHaveLength(0);
-          expect(session.notifications).toHaveLength(1);
-          expect(session.notifications[0]).toMatchObject({ level: "warning" });
+          expect(session.notifications.filter((notice) => notice.level === "warning")).toHaveLength(1);
+          expect(session.notifications.filter((notice) => notice.level === "info")).toEqual([
+            { message: "judge-dispatch  task kept (judge unavailable)", level: "info" },
+            { message: "judge-dispatch  task kept (judge unavailable)", level: "info" },
+          ]);
         }
       });
     });
@@ -462,7 +454,7 @@ async function registerTests(): Promise<void> {
 
         expect(report.requests).toHaveLength(1);
         expect(report.sessions[0]?.results).toEqual([null]);
-        expect(report.sessions[0]?.notifications).toEqual([]);
+        expect(report.sessions[0]?.notifications).toEqual([{ message: "judge-dispatch  task kept (judge failed)", level: "info" }]);
         expect(report.sessions[0]?.warnings.length).toBeGreaterThan(0);
         expect(report.requests[0]?.body).not.toContain(HOST_KEY);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
@@ -478,9 +470,8 @@ async function registerTests(): Promise<void> {
         });
 
         expect(report.sessions[0]?.results).toEqual([null]);
-        expect(report.sessions[0]?.notifications).toEqual([]);
+        expect(report.sessions[0]?.notifications).toEqual([{ message: "judge-dispatch  task kept (judge failed)", level: "info" }]);
         expect(report.sessions[0]?.working).toEqual(["judge-dispatch: routing 1 task…", null]);
-        expect(report.sessions[0]?.records).toEqual([]);
         expect(report.sessions[0]?.warnings.length).toBeGreaterThan(0);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
       });

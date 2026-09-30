@@ -1,9 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { truncateToWidth } from "@oh-my-pi/pi-tui";
 
-import type { ParsedTaskRoute, RouteChoice } from "#src/routing.ts";
+import type { ParsedTaskRoute, RouteChoice, RouteOutcome } from "#src/routing.ts";
 
-const ROUTE_MESSAGE = "wows-omp-judge-dispatch.route";
+/** Transcript records written by 0.4.0 and earlier; sessions that hold them must still render them and keep them from the model. */
+const LEGACY_ROUTE_MESSAGE = "wows-omp-judge-dispatch.route";
 
 /** Presentation failures must never affect the task rewrite. */
 export function setRoutingWorkingMessage(pi: ExtensionAPI, ctx: ExtensionContext, message?: string): void {
@@ -15,6 +16,16 @@ export function setRoutingWorkingMessage(pi: ExtensionAPI, ctx: ExtensionContext
   }
 }
 
+/** An `info` notice is the host's dim status line (the one Ctrl+O prints): shown at once, never persisted or sent to the model. */
+export function showRoutingStatus(pi: ExtensionAPI, ctx: ExtensionContext, message: string): void {
+  try {
+    if (ctx.hasUI === false || typeof ctx.ui?.notify !== "function") return;
+    ctx.ui.notify(`judge-dispatch  ${message}`, "info");
+  } catch (error) {
+    pi.logger.warn("judge-dispatch routing status failed", { error: String(error) });
+  }
+}
+
 function singleLine(value: unknown): string {
   return String(value)
     .replace(/\p{Cc}/gu, " ")
@@ -22,53 +33,58 @@ function singleLine(value: unknown): string {
     .trim();
 }
 
-function changedRouteLine(route: ParsedTaskRoute, choice: RouteChoice | undefined, item: Record<string, unknown>): string | undefined {
-  const agentChanged = choice?.agent !== undefined && choice.agent !== route.requestedAgent;
-  const effortChanged = choice?.effort !== undefined && choice.effort !== item.effort;
-  if (!choice || (!agentChanged && !effortChanged)) return undefined;
-  const confidence = (value: number | undefined) => (value === undefined ? "" : ` (${value.toFixed(2)})`);
+function confidence(value: number | undefined): string {
+  return value === undefined ? "" : ` (${value.toFixed(2)})`;
+}
+
+function routeLine(route: ParsedTaskRoute, item: Record<string, unknown>, outcome: RouteOutcome, choice: RouteChoice | undefined): string {
   const requested = singleLine(route.requestedAgent ?? "default");
-  const parts = [agentChanged ? `${requested} → ${singleLine(choice.agent)}${confidence(choice.agentConfidence)}` : requested];
-  if (effortChanged) parts.push(`effort ${singleLine(item.effort ?? "default")} → ${choice.effort}${confidence(choice.effortConfidence)}`);
+  const parts: string[] = [];
+  if (typeof outcome === "string") parts.push(`${requested} kept (${outcome})`);
+  else if (choice?.agent !== undefined && choice.agent !== route.requestedAgent) {
+    parts.push(`${requested} → ${singleLine(choice.agent)}${confidence(choice.agentConfidence)}`);
+  } else if (choice?.agent !== undefined) parts.push(`${requested} kept${confidence(choice.agentConfidence)}`);
+  else parts.push(outcome.agentUndecided ? `${requested} kept (no confident choice)` : requested);
+
+  if (choice?.effort !== undefined) {
+    const current = item.effort;
+    const change = choice.effort === current ? choice.effort : `${singleLine(current ?? "default")} → ${choice.effort}`;
+    parts.push(`effort ${change}${confidence(choice.effortConfidence)}`);
+  } else if (typeof outcome !== "string" && outcome.difficulty) {
+    parts.push(`difficulty ${outcome.difficulty}${confidence(outcome.difficultyConfidence)}`);
+  }
   return `${route.index === null ? "" : `#${route.index + 1} `}${parts.join(" · ")}`;
 }
 
-/** Install the model-context exclusion before allowing any transcript records. */
-export function registerRouteIndicator(
+/** One status line per `task` call covering every routed item, changed or kept. */
+export function showRouteOutcomes(
   pi: ExtensionAPI,
-): (input: Record<string, unknown>, routes: readonly ParsedTaskRoute[], choices: readonly (RouteChoice | undefined)[]) => void {
-  let available = false;
-  try {
-    if (typeof pi.on === "function") {
-      pi.on("context", (event) => ({
-        messages: event.messages.filter((message) => message.role !== "custom" || message.customType !== ROUTE_MESSAGE),
-      }));
-      if (typeof pi.registerMessageRenderer === "function" && typeof pi.sendMessage === "function") {
-        pi.registerMessageRenderer(ROUTE_MESSAGE, (message, _options, theme) => ({
-          render: (width) => [theme.fg("dim", truncateToWidth(singleLine(message.content), Math.max(0, width)))],
-          invalidate() {},
-        }));
-        available = true;
-      }
-    }
-  } catch (error) {
-    pi.logger.warn("judge-dispatch transcript indicator unavailable", { error: String(error) });
+  ctx: ExtensionContext,
+  input: Record<string, unknown>,
+  routes: readonly ParsedTaskRoute[],
+  outcomes: readonly RouteOutcome[],
+  choices: readonly (RouteChoice | undefined)[],
+): void {
+  const lines: string[] = [];
+  for (const [index, route] of routes.entries()) {
+    const item = route.index === null ? input : (input.tasks as Record<string, unknown>[] | undefined)?.[route.index];
+    const outcome = outcomes[index];
+    if (!item || outcome === undefined) continue;
+    lines.push(routeLine(route, item, outcome, choices[index]));
   }
+  if (lines.length > 0) showRoutingStatus(pi, ctx, lines.join(" ; "));
+}
 
-  return (input, routes, choices) => {
-    if (!available) return;
-    try {
-      const lines: string[] = [];
-      for (const [index, route] of routes.entries()) {
-        const item = route.index === null ? input : (input.tasks as Record<string, unknown>[])[route.index];
-        if (!item) continue;
-        const line = changedRouteLine(route, choices[index], item);
-        if (line) lines.push(line);
-      }
-      if (lines.length === 0) return;
-      pi.sendMessage({ customType: ROUTE_MESSAGE, content: `judge-dispatch  ${lines.join(" ; ")}`, display: true }, { deliverAs: "aside" });
-    } catch (error) {
-      pi.logger.warn("judge-dispatch transcript indicator failed", { error: String(error) });
-    }
-  };
+export function registerLegacyRouteRecords(pi: ExtensionAPI): void {
+  try {
+    pi.on("context", (event) => ({
+      messages: event.messages.filter((message) => message.role !== "custom" || message.customType !== LEGACY_ROUTE_MESSAGE),
+    }));
+    pi.registerMessageRenderer(LEGACY_ROUTE_MESSAGE, (message, _options, theme) => ({
+      render: (width) => [theme.fg("dim", truncateToWidth(singleLine(message.content), Math.max(0, width)))],
+      invalidate() {},
+    }));
+  } catch (error) {
+    pi.logger.warn("judge-dispatch legacy route records unavailable", { error: String(error) });
+  }
 }

@@ -13,7 +13,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
 
 import { readHostSetting } from "#src/host-settings.ts";
-import { registerRouteIndicator, setRoutingWorkingMessage } from "#src/indicator.ts";
+import { registerLegacyRouteRecords, setRoutingWorkingMessage, showRouteOutcomes, showRoutingStatus } from "#src/indicator.ts";
 import {
   acceptRoutingDecision,
   blendedPrice,
@@ -27,6 +27,7 @@ import {
   parseLegalAgentNames,
   parseTaskInput,
   type RouteChoice,
+  type RouteOutcome,
   type RoutingCandidate,
   rewriteTaskRoutes,
   routableCandidates,
@@ -219,13 +220,6 @@ const DIFFICULTY_QUESTION: ChoiceQuestion<TaskDifficulty> = {
   },
 };
 
-interface JudgedRoute {
-  agent?: string;
-  difficulty?: TaskDifficulty;
-  agentConfidence?: number;
-  difficultyConfidence?: number;
-}
-
 async function judgeRoute(
   route: ParsedTaskRoute,
   allCandidates: readonly RoutingCandidate[],
@@ -233,14 +227,14 @@ async function judgeRoute(
   judge: ChainJudge,
   signal: AbortSignal,
   beforeJudge: () => void,
-): Promise<JudgedRoute | undefined | typeof JUDGE_UNAVAILABLE> {
+): Promise<RouteOutcome | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
   const candidates = routableCandidates(route.requestedAgent, allCandidates);
-  if (!candidates) return undefined;
-  if (candidates.length === 0) return undefined;
+  if (!candidates) return "workflow-owned or unknown agent";
+  if (candidates.length === 0) return "no alternatives";
   const routesAgent = candidates.length >= 2;
   const judgesDifficulty = config.judgeEffort || config.modelBudget !== "off";
-  if (!routesAgent && !judgesDifficulty) return undefined;
+  if (!routesAgent && !judgesDifficulty) return "no alternatives";
 
   const serialized = candidates.map(serializeCandidate);
   const candidateNames = serialized.map((candidate) => candidate.name);
@@ -281,6 +275,7 @@ async function judgeRoute(
         const difficulty = judgesDifficulty ? accept("difficulty", TASK_DIFFICULTIES) : undefined;
         return {
           ...(agent ? { agent, agentConfidence: answers.agent?.confidence } : {}),
+          ...(routesAgent && !agent ? { agentUndecided: true } : {}),
           ...(difficulty ? { difficulty, difficultyConfidence: answers.difficulty?.confidence } : {}),
         };
       },
@@ -306,25 +301,26 @@ async function judgeRouteFailOpen(
   route: ParsedTaskRoute,
   candidates: readonly RoutingCandidate[],
   signal: AbortSignal,
-): Promise<JudgedRoute | undefined> {
+): Promise<RouteOutcome> {
   try {
     const judged = await judgeRoute(route, candidates, session.config, session.judge, signal, session.beforeJudge);
     if (judged !== JUDGE_UNAVAILABLE) return judged;
     session.notifyUnavailable(session.ctx);
+    return "judge unavailable";
   } catch {
     session.pi.logger.warn("judge-dispatch judgment failed; preserving the original route");
+    return signal.aborted ? "timed out" : "judge failed";
   }
-  return undefined;
 }
 
 /** Turn a judgment into the task-call rewrite, recording the budget decision its spawn hook will look up. */
 function routeChoice(
   route: ParsedTaskRoute,
-  judged: JudgedRoute | undefined,
+  judged: RouteOutcome,
   config: JudgeDispatchSettings,
   pending: PendingSpawnRoutes,
 ): RouteChoice | undefined {
-  if (!judged) return undefined;
+  if (typeof judged === "string") return undefined;
   const choice: RouteChoice = {
     ...(judged.agent ? { agent: judged.agent, agentConfidence: judged.agentConfidence } : {}),
     ...(config.judgeEffort && judged.difficulty
@@ -376,7 +372,7 @@ function unavailableNotifier(pi: ExtensionAPI): (ctx: ExtensionContext) => void 
 
 export default function judgeDispatch(pi: ExtensionAPI): void {
   const notifyUnavailable = unavailableNotifier(pi);
-  const recordRoutes = registerRouteIndicator(pi);
+  registerLegacyRouteRecords(pi);
   const pendingBySession = new WeakMap<object, PendingSpawnRoutes>();
   const pendingFor = (ctx: ExtensionContext): PendingSpawnRoutes => {
     let pending = pendingBySession.get(ctx.sessionManager);
@@ -390,6 +386,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "task") return undefined;
     let working = false;
+    let indicator = false;
     try {
       // Prometheus owns agent and effort choices while executing its approved plan.
       // Read the latest valid workflow state on this branch, not assignment wording.
@@ -403,12 +400,19 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         break;
       }
       const config = await effectivePluginSettings(ctx.cwd);
+      indicator = config.indicator;
       const settings = scopedSettings(ctx);
       const deadlineMs = routingDeadlineMs(await readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
-      if (deadlineMs === undefined) return undefined;
+      if (deadlineMs === undefined) {
+        if (indicator) showRoutingStatus(pi, ctx, "kept the requested agent: extensionHandlers.toolCallTimeoutMs leaves no time to judge");
+        return undefined;
+      }
       const taskTool = pi.getAllTools().find((tool) => tool.name === "task");
       const legalNames = taskTool ? parseLegalAgentNames(taskTool.description) : undefined;
-      if (!legalNames?.length) return undefined;
+      if (!legalNames?.length) {
+        if (indicator) showRoutingStatus(pi, ctx, "kept the requested agent: the task tool lists no agents to route between");
+        return undefined;
+      }
       return await withRoutingDeadline(deadlineMs, async (signal) => {
         const input = event.input as Record<string, unknown>;
         const routes = parseTaskInput(input);
@@ -428,16 +432,20 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
             setRoutingWorkingMessage(pi, ctx, `judge-dispatch: routing ${routes.length} ${routes.length === 1 ? "task" : "tasks"}…`);
           },
         };
-        const judged = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
+        const outcomes = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
         signal.throwIfAborted();
         const pending = pendingFor(ctx);
-        const choices = routes.map((route, index) => routeChoice(route, judged[index], config, pending));
+        const choices = routes.map((route, index) => routeChoice(route, outcomes[index] as RouteOutcome, config, pending));
         const rewritten = rewriteTaskRoutes(input, routes, choices);
-        if (config.indicator && rewritten !== input) recordRoutes(input, routes, choices);
+        if (indicator) showRouteOutcomes(pi, ctx, input, routes, outcomes, choices);
         return rewritten === input ? undefined : { input: rewritten };
       });
     } catch (error) {
       pi.logger.warn("judge-dispatch task interception failed open", { error: errorMessage(error) });
+      if (indicator) {
+        const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+        showRoutingStatus(pi, ctx, `kept the requested agent: routing ${timedOut ? "timed out" : "failed"}`);
+      }
       return undefined;
     } finally {
       if (working) setRoutingWorkingMessage(pi, ctx);

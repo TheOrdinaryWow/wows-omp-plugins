@@ -76,6 +76,21 @@ export interface RouteChoice {
   name?: string;
 }
 
+/** Accepted answers from one native judgment; an absent field was not asked or not confident enough. */
+export interface JudgedRoute {
+  agent?: string;
+  difficulty?: TaskDifficulty;
+  agentConfidence?: number;
+  difficultyConfidence?: number;
+  /** The agent question was asked but no legal answer cleared `minimumConfidence`. */
+  agentUndecided?: boolean;
+}
+
+/** Why a route kept its requested agent without a usable judgment. */
+export type KeptReason = "workflow-owned or unknown agent" | "no alternatives" | "judge unavailable" | "judge failed" | "timed out";
+
+export type RouteOutcome = JudgedRoute | KeptReason;
+
 const DESCRIPTION_LIMIT = 320;
 const MAX_ROUTING_DEADLINE_MS = 8_000;
 const TOOL_CALL_SAFETY_MARGIN_MS = 1_000;
