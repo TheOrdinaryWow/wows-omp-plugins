@@ -274,6 +274,22 @@ export function nestedXdevToolCall(input: unknown): NestedXdevToolCall | undefin
   return { toolName, input: record(parsed), documentation: false };
 }
 
+/**
+ * The `local://<slug>-plan.md` a `write xd://propose` names, which the host tries first. The slug arrives as plain
+ * text or as `{ "title": … }`; anything that is not a plain slug yields undefined so the host's own resolution applies.
+ */
+export function proposedPlanUrl(input: unknown): string | undefined {
+  if (nestedXdevToolCall(input)?.toolName !== "propose") return undefined;
+  const content = stringField(record(input) ?? {}, "content");
+  let title = content;
+  try {
+    const parsed = record(JSON.parse(content));
+    title = typeof parsed?.title === "string" ? parsed.title.trim() : "";
+  } catch {}
+  const slug = title.replace(/-plan$/i, "");
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(slug) ? `local://${slug}-plan.md` : undefined;
+}
+
 function readBlockReason(input: Record<string, unknown>): string | undefined {
   const path = stringField(input, "path").toLowerCase();
   if (path.startsWith("ssh://")) return "`ssh://` resolution starts a remote shell rather than a local read backend";
@@ -380,6 +396,7 @@ export const PLANNING_PREAMBLE = [
   "",
   "The Prometheus workflow owns this native plan-mode session. Follow the complete workflow below until native approval or an explicit user exit.",
   "Do not repeat opt-in, do not mix in the host's generic planning workflow, and do not announce this instruction block. Keep native read-only boundaries and submit the final local://<slug>-plan.md only through write xd://propose.",
+  "Before every proposal, including a re-proposal and a draft written before this workflow took over, make the plan follow the plan grammar in this workflow: `## Tasks` with sequential T rows and `## Final gates` with F1–F4. Rewrite a non-conforming draft first; the plugin refuses a proposal whose plan does not parse.",
 ].join("\n");
 
 export const EXECUTION_PREAMBLE = [

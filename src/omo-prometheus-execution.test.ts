@@ -321,6 +321,20 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   await writeFile(sourcePlanFile, name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : plan);
   await commands.get("prometheus")?.("", ctx);
+  if (name === "propose-grammar") {
+    const propose = async (content: string) =>
+      (await hook("tool_call", { toolName: "write", toolCallId: `propose-${sequence++}`, input: { path: "xd://propose", content } })) as
+        | { block?: boolean; reason?: string }
+        | undefined;
+    await writeFile(join(artifacts, "local", "slices-plan.md"), "# Plan\n\n## Approach\n\n### Slice A\n");
+    const refusal = await propose("slices");
+    assert.equal(refusal?.block, true);
+    assert.match(refusal?.reason ?? "", /Missing ## Tasks or T rows/);
+    assert.equal(await propose(JSON.stringify({ title: "integrity" })), undefined);
+    // An unresolvable slug is left to the host, which reports the missing plan itself.
+    assert.equal(await propose("absent"), undefined);
+    return;
+  }
   if (name === "plan-mode-restored" || name === "plan-mode-reentered") {
     await hook("before_agent_start", { prompt: "draft the plan", systemPrompt: [] });
     // A resumed session restores plan mode by appending another `plan` entry; only an exit between them starts a new episode.
@@ -1766,6 +1780,7 @@ if (process.env[CHILD_ENV]) {
       "compact-after-save-and-quit",
       "plan-mode-restored",
       "plan-mode-reentered",
+      "propose-grammar",
     ]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "prometheus-execution-"));

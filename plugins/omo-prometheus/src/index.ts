@@ -37,6 +37,7 @@ import {
   isComplete,
   type LedgerItem,
   ledgerRows,
+  parsePlanChecklist,
   planDigest,
   refreshDispatchAgents,
   renderLedgerSummary,
@@ -66,6 +67,7 @@ import {
   planReferencesMatch,
   prometheusArtifactUrl,
   proposedPlanPathFromToolResult,
+  proposedPlanUrl,
   taskSpawnBlockReason,
 } from "./workflow.ts";
 
@@ -1120,6 +1122,22 @@ export default function prometheus(pi: ExtensionAPI): void {
     return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool);
   };
 
+  /** Refuses a Prometheus proposal Atlas could not execute, before the native approval overlay opens. */
+  const proposalGrammarBlockReason = async (ctx: ExtensionContext, input: unknown): Promise<string | undefined> => {
+    const planUrl = proposedPlanUrl(input);
+    if (!planUrl) return undefined;
+    let content: string;
+    try {
+      content = await fs.readFile(resolveLocalUrlToPath(planUrl, localOptions(ctx)), "utf8");
+    } catch {
+      // The host resolves the plan itself and reports a missing file.
+      return undefined;
+    }
+    const { errors } = parsePlanChecklist(content, availableAgents());
+    if (!errors.length) return undefined;
+    return `Prometheus refused this proposal: ${planUrl} does not follow the plan grammar Atlas executes (${errors.join("; ")}). Rewrite it with \`## Tasks\` (sequential T rows with Agent, Depends on and Acceptance) and \`## Final gates\` (exactly F1–F4 with their required titles), then propose again.`;
+  };
+
   const planningBlock = async (ctx: ExtensionContext): Promise<string> => {
     const roster = availableAgents();
     const agentBlock = roster
@@ -1863,6 +1881,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!live) return undefined;
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (event.toolName === "ask" && record) record.pendingConsent = undefined;
+    if (event.toolName === "write" && record?.phase === "planning" && live.getPlanModeState()?.enabled === true) {
+      const proposalDetail = await proposalGrammarBlockReason(ctx, event.input);
+      if (proposalDetail) return { block: true, reason: proposalDetail };
+    }
     if (event.toolName === "task") {
       const taskSpawnDetail = taskSpawnBlockReason(record?.phase, event.input);
       if (taskSpawnDetail) return { block: true, reason: taskSpawnDetail };
