@@ -84,6 +84,8 @@ While Atlas is active, bare `/atlas` opens the same fullscreen inspector as a li
 
 During execution an above-editor Atlas widget shows the plan bar, done/total and gate counts, running children, and compact live per-row usage. It remains visible while you use the normal editor and disappears on exit, session switch, or shutdown. Disable it with `atlasWidget`; the `/atlas` observation page remains available.
 
+Atlas also maintains session todo phases from the validated ledger: tasks, corrections when present, and final gates. Existing non-Atlas phases remain in place. Atlas phases are restored on attach and after ledger changes; do not edit them manually. Each changed-row `atlas_ledger` result names a repeatable `todo` call to refresh the host HUD. Exiting Atlas leaves the todo list intact.
+
 Session A can finish part of a plan and exit, and session B can pick it up with `/atlas <name>`, as long as both use the same host session directory and workspace. Exiting is immediate: it neither cancels children nor marks anything complete, and it does not block closing the host. While native child work is still running, the plan stays owned by its session until that work reports a final result, so no other session can write to it at the same time. A session that owns a plan and has provably died can be recovered; unclear ownership, or ownership by another host, is refused.
 
 Some hosts do not give Atlas a reliable signal that a child's final processing has finished, and a cancelled wake-up can settle before the child does. In those cases the plan stays owned until the original OMP process exits; start a new session after closing it.

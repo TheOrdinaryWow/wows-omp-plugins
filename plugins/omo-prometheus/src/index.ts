@@ -26,13 +26,15 @@ import {
 import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { findPlanSessions } from "./atlas-sessions.ts";
-import { AtlasStatusWidget } from "./atlas-widget.ts";
 import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
+import { atlasTodoRefreshCall, syncAtlasTodos } from "./atlas-todo.ts";
+import { AtlasStatusWidget } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import {
   addFixRow,
   type ExecutionLedger,
   isComplete,
+  type LedgerItem,
   ledgerRows,
   planDigest,
   refreshDispatchAgents,
@@ -494,11 +496,13 @@ export default function prometheus(pi: ExtensionAPI): void {
         throw new Error("the host plan reference differs from the approved Atlas plan");
       }
       if ((await fs.realpath(ctx.cwd)) !== ownership.plan.cwd) throw new Error("the approved plan belongs to a different workspace");
-      return await ownership.store.transaction(
+      let validatedLedger: ExecutionLedger | undefined;
+      const result = await ownership.store.transaction(
         ownership.plan.id,
         ownership.sessionId,
         async (ledger, plan) => {
           refreshDispatchAgents(ledger, availableAgents());
+          validatedLedger = ledger;
           record.ledgerError = undefined;
           return await run(ledger, plan, ownership.store);
         },
@@ -515,6 +519,9 @@ export default function prometheus(pi: ExtensionAPI): void {
           },
         },
       );
+      if (validatedLedger && record.phase === "executing" && record.ownership === ownership && !ownership.detached)
+        syncLedgerTodos(ctx, validatedLedger);
+      return result;
     } catch (error) {
       if (record.ownership === ownership) record.ledgerError = errorMessage(error);
       throw error;
@@ -530,6 +537,16 @@ export default function prometheus(pi: ExtensionAPI): void {
     } catch (error) {
       pi.logger.warn("Atlas shared execution ledger is unavailable", { error: errorMessage(error) });
       return undefined;
+    }
+  };
+
+  const syncLedgerTodos = (ctx: ExtensionContext, ledger: ExecutionLedger): void => {
+    const live = mainSession(ctx);
+    if (!live) return;
+    try {
+      syncAtlasTodos(live, live.sessionManager, ledger);
+    } catch (error) {
+      pi.logger.warn("Atlas could not persist session todo phases", { error: errorMessage(error) });
     }
   };
 
@@ -560,6 +577,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       acquired = true;
       if (record.phase !== "executing" || record.activation !== activation)
         throw new Error("Atlas attachment changed during ownership acquisition");
+      let validatedLedger: ExecutionLedger | undefined;
       const ledgerId = await store.transaction(
         plan.id,
         sessionId,
@@ -567,6 +585,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           if (record.phase !== "executing" || record.activation !== activation)
             throw new Error("Atlas attachment changed during plan validation");
           refreshDispatchAgents(ledger, availableAgents());
+          validatedLedger = ledger;
           return ledger.ledgerId;
         },
         { resume: resume && newlyOwned },
@@ -600,6 +619,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.sourceSessionId = plan.sourceSessionId;
       record.ledgerError = undefined;
       persist(record);
+      if (validatedLedger) syncLedgerTodos(ctx, validatedLedger);
       await installObservation(ctx, store, plan);
     } catch (error) {
       const binding = hostBindings.get(live);
@@ -1489,8 +1509,9 @@ export default function prometheus(pi: ExtensionAPI): void {
       const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
       if (!mainSession(ctx) || record?.phase !== "executing") return fail("Atlas execution is not active in this main session.");
       const ownership = record.ownership;
+      let changedRow: LedgerItem | undefined;
       try {
-        return await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
+        const result = await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
           if (params.action === "status") return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: { ledger } };
           const id = params.id?.trim();
           const item = ledgerRows(ledger).find((entry) => entry.id === id);
@@ -1509,6 +1530,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               },
               availableAgents(),
             );
+            changedRow = fix;
             return {
               content: [
                 {
@@ -1557,6 +1579,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             reopenRow(ledger, item.id, evidence);
             if (params.action === "block") item.status = "blocked";
           }
+          changedRow = item;
           return {
             content: [
               {
@@ -1567,6 +1590,16 @@ export default function prometheus(pi: ExtensionAPI): void {
             details: { id: item.id, status: item.status, outputSchema: schema },
           };
         });
+        if (changedRow) {
+          return {
+            ...result,
+            content: [
+              ...result.content,
+              { type: "text" as const, text: atlasTodoRefreshCall(params.action as Exclude<LedgerParams["action"], "status">, changedRow) },
+            ],
+          };
+        }
+        return result;
       } catch (error) {
         return fail(
           `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid shared approved ledger; /atlas exit remains the user exit.`,

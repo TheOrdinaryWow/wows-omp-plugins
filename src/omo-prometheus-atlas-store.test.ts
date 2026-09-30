@@ -788,7 +788,7 @@ describe("Atlas shared plan storage", () => {
     await fixture(async (f) => {
       await f.store.acquire(f.plan.id, "session-a");
       const file = path.join(f.plan.directory, "timeline.jsonl");
-      await fs.appendFile(file, `${JSON.stringify({ version: 2, at: 1, kind: "future", sessionId: "session-a" })}\n{\"version\":1,`);
+      await fs.appendFile(file, `${JSON.stringify({ version: 2, at: 1, kind: "future", sessionId: "session-a" })}\n{"version":1,`);
       expect((await f.store.details(f.root))[0]?.enterable).toBe(false);
       await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "T1"));
       expect((await f.store.details(f.root))[0]?.timeline.map((event) => event.kind)).toEqual(["attached", "started"]);

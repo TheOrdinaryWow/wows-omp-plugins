@@ -1,7 +1,7 @@
 import { type Component, type Theme, type TUI, truncateToWidth } from "@oh-my-pi/pi-tui";
 
-import { formatElapsed, progressBar, rowMark } from "./atlas-menu.ts";
 import type { AtlasLive, AtlasLiveSnapshot } from "./atlas-live.ts";
+import { formatElapsed, progressBar, rowMark } from "./atlas-menu.ts";
 
 /** A compact observation above the editor. The editor and the agent retain keyboard focus. */
 export class AtlasStatusWidget implements Component {
