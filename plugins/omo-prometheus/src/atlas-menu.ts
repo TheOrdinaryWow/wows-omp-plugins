@@ -5,6 +5,8 @@ import {
   Markdown,
   matchesKey,
   padding,
+  routeSgrMouseInput,
+  type SgrMouseEvent,
   type Theme,
   type TUI,
   truncateToWidth,
@@ -50,6 +52,8 @@ const FILTER_LABELS: Record<AtlasFilter, string> = { unfinished: "Unfinished", a
 const LIST_ROWS = 8;
 const PREVIEW_ROWS = 10;
 const BAR_WIDTH = 10;
+/** Rows per wheel notch, as in the host's fullscreen plan review. */
+const WHEEL_ROWS = 3;
 
 /** Why a plan cannot be started or resumed from here; undefined when it can. */
 export function dispatchBlock(detail: AtlasPlanDetail, kind: AtlasDispatch, displayOnly: boolean): string | undefined {
@@ -305,6 +309,10 @@ export class AtlasPlanView implements Component {
   #markdown = new Map<string, Markdown>();
   #message = "";
   #bodyRows = 1;
+  /** Last frame's geometry: mouse reports hit-test against what was painted. */
+  #bodyTop = 0;
+  #dividerCol = 0;
+  #scrollMax = { row: Number.MAX_SAFE_INTEGER, timeline: Number.MAX_SAFE_INTEGER };
   #liveSnapshot?: AtlasLiveSnapshot;
   #unsubscribe?: () => void;
   #timeline = false;
@@ -354,11 +362,21 @@ export class AtlasPlanView implements Component {
     if (next === this.#selected) return;
     this.#selected = next;
     this.#rowScroll = 0;
+    this.#scrollMax.row = Number.MAX_SAFE_INTEGER;
   }
 
   #scrollBy(delta: number): void {
-    if (this.#timeline) this.#timelineScroll = Math.max(0, this.#timelineScroll + delta);
-    else this.#rowScroll = Math.max(0, this.#rowScroll + delta);
+    if (this.#timeline) this.#timelineScroll = Math.max(0, Math.min(this.#scrollMax.timeline, this.#timelineScroll + delta));
+    else this.#rowScroll = Math.max(0, Math.min(this.#scrollMax.row, this.#rowScroll + delta));
+  }
+
+  /** Wheel over the sidebar moves the row selection, over the body scrolls it; every other report is swallowed. */
+  #handleMouse(event: SgrMouseEvent): void {
+    if (event.wheel === null) return;
+    const line = event.row - this.#bodyTop;
+    if (line < 0 || line >= this.#bodyRows) return;
+    if (event.col < this.#dividerCol) this.#select(this.#selected + event.wheel);
+    else if (event.col > this.#dividerCol) this.#scrollBy(event.wheel * WHEEL_ROWS);
   }
 
   #toggleOutput(): void {
@@ -394,6 +412,16 @@ export class AtlasPlanView implements Component {
   }
 
   handleInput(key: string): void {
+    // Checked before anything else: pointer motion must not clear the notice or act as a key.
+    if (
+      routeSgrMouseInput(key, (event) => {
+        this.#handleMouse(event);
+        return true;
+      })
+    ) {
+      this.tui.requestRender();
+      return;
+    }
     this.#message = "";
     if (matchesKey(key, "escape") || matchesKey(key, "left")) {
       this.dispose();
@@ -594,7 +622,7 @@ export class AtlasPlanView implements Component {
           this.theme.fg("muted", this.#timeline ? " scroll" : " row"),
         ...(!this.#timeline ? [rawKeyHint("space", "child output")] : []),
         rawKeyHint("tab", this.#timeline ? "row" : "timeline"),
-        rawKeyHint("pageDown", "scroll"),
+        this.theme.fg("dim", "PgDn/wheel") + this.theme.fg("muted", " scroll"),
         ...(this.mode === "active"
           ? [rawKeyHint("shift+x", "exit Atlas")]
           : [rawKeyHint("enter", "start"), rawKeyHint("shift+r", "resume")]),
@@ -617,14 +645,19 @@ export class AtlasPlanView implements Component {
     const header = [summary, origin, ...(notice ? [t.fg("warning", notice)] : [])];
 
     this.#bodyRows = Math.max(3, height - 2 - header.length - 2 - hints.length);
+    this.#bodyTop = 1 + header.length + 1;
+    this.#dividerCol = sidebarWidth + 3;
     const body = this.#body(bodyWidth);
-    const scroll = Math.max(0, Math.min(this.#timeline ? this.#timelineScroll : this.#rowScroll, body.length - this.#bodyRows));
+    const scrollMax = Math.max(0, body.length - this.#bodyRows);
+    if (this.#timeline) this.#scrollMax.timeline = scrollMax;
+    else this.#scrollMax.row = scrollMax;
+    const scroll = Math.min(this.#timeline ? this.#timelineScroll : this.#rowScroll, scrollMax);
     if (this.#timeline) this.#timelineScroll = scroll;
     else this.#rowScroll = scroll;
     const shown = body.slice(scroll, scroll + this.#bodyRows);
     // The notice replaces the last visible line, so that line counts as hidden too.
     const more = body.length - scroll - shown.length + 1;
-    if (more > 1 && shown.length) shown[shown.length - 1] = t.fg("dim", `+${more} more lines; PgDn to scroll`);
+    if (more > 1 && shown.length) shown[shown.length - 1] = t.fg("dim", `+${more} more lines; PgDn/wheel to scroll`);
     const sidebar = this.#sidebar(sidebarWidth, this.#bodyRows);
 
     const box = t.boxRound;

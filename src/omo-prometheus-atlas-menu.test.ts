@@ -202,20 +202,21 @@ test("Atlas plan view for the running plan only reads and exits", () => {
   expect(active.actions).toEqual(["exit", "back"]);
 });
 
+const long: AtlasPlanDetail = {
+  ...plan,
+  rows: plan.rows.map((row) =>
+    row.id === "T1" ? { ...row, acceptance: Array.from({ length: 60 }, (_, index) => `- criterion ${index}`).join("\n") } : row,
+  ),
+  timeline: Array.from({ length: 40 }, (_, index) => ({
+    version: 1 as const,
+    at: index * 60_000,
+    kind: "started" as const,
+    row: `T${index}`,
+    sessionId: "session-a",
+  })),
+};
+
 test("Atlas plan view keeps separate row-body and timeline scroll positions across Tab", () => {
-  const long: AtlasPlanDetail = {
-    ...plan,
-    rows: plan.rows.map((row) =>
-      row.id === "T1" ? { ...row, acceptance: Array.from({ length: 60 }, (_, index) => `- criterion ${index}`).join("\n") } : row,
-    ),
-    timeline: Array.from({ length: 40 }, (_, index) => ({
-      version: 1 as const,
-      at: index * 60_000,
-      kind: "started" as const,
-      row: `T${index}`,
-      sessionId: "session-a",
-    })),
-  };
   const { component } = view(long);
   const screen = (): string => text(component.render(100));
   component.handleInput("\x1b[6~");
@@ -228,6 +229,53 @@ test("Atlas plan view keeps separate row-body and timeline scroll positions acro
   expect(screen()).not.toMatch(/T1 {2}Build/);
   component.handleInput("\t");
   expect(screen()).not.toMatch(/started {2}T39\b/);
+});
+
+test("Atlas plan view wheel scrolls the body, moves the sidebar selection, and never acts as a key", () => {
+  const { component, actions } = view(long);
+  // Terminal rows 30, width 100: body rows start at frame row 4 (0-based), sidebar left of column 39.
+  const body = (): string[] =>
+    component
+      .render(100)
+      .slice(4, 10)
+      .map((line) => text([line]).split("│")[2]?.trim() ?? "");
+  const wheelDown = "\x1b[<65;90;10M";
+  const wheelUp = "\x1b[<64;90;10M";
+  const top = body();
+  expect(top[0]).toMatch(/T1 {2}Build/);
+  component.handleInput(wheelDown);
+  expect(body()[0]).toBe(top[3] as string);
+  component.handleInput(wheelUp);
+  expect(body()).toEqual(top);
+  component.handleInput("\x1b[<66;90;10M");
+  component.handleInput("\x1b[<67;90;10M");
+  expect(body()).toEqual(top);
+
+  for (let notch = 0; notch < 40; notch++) component.handleInput(wheelDown);
+  const last = body();
+  component.handleInput(wheelUp);
+  expect(body()).not.toEqual(last);
+
+  component.handleInput("\x1b[<65;5;10M");
+  expect(body()[0]).toMatch(/F1 {2}Review/);
+  component.handleInput("\x1b[<64;5;10M");
+  expect(body()[0]).toMatch(/T1 {2}Build/);
+
+  component.handleInput("\t");
+  expect(body()[0]).toMatch(/started {2}T39\b/);
+  component.handleInput(wheelDown);
+  expect(body()[0]).toMatch(/started {2}T36\b/);
+
+  for (const report of ["\x1b[<0;5;10M", "\x1b[<0;5;10m", "\x1b[<35;90;10M", "\x1b[<65;90;1M"]) component.handleInput(report);
+  expect(body()[0]).toMatch(/started {2}T36\b/);
+  expect(actions).toEqual([]);
+
+  const unstarted = view(fresh);
+  unstarted.component.handleInput("R");
+  unstarted.component.handleInput("\x1b[<35;5;10M");
+  unstarted.component.handleInput(wheelDown);
+  expect(text(unstarted.component.render(100))).toMatch(/not started yet/);
+  expect(unstarted.actions).toEqual([]);
 });
 
 const running: AtlasPlanDetail = {
