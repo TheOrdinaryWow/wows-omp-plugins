@@ -1,6 +1,8 @@
 import {
   type Component,
+  getMarkdownTheme,
   getSelectListTheme,
+  Markdown,
   matchesKey,
   padding,
   type Theme,
@@ -281,6 +283,7 @@ export class AtlasPlanView implements Component {
   #scroll = 0;
   #expanded = new Set<string>();
   #outputs = new Map<string, string>();
+  #markdown = new Map<string, Markdown>();
   #message = "";
   #bodyRows = 1;
 
@@ -379,6 +382,14 @@ export class AtlasPlanView implements Component {
     const field = (label: string, value: string): void => {
       lines.push(...wrapTextWithAnsi(`${t.fg("muted", label.padEnd(10))}${value}`, width));
     };
+    const markdown = (text: string): void => {
+      let component = this.#markdown.get(text);
+      if (!component) {
+        component = new Markdown(text, 0, 0, getMarkdownTheme());
+        this.#markdown.set(text, component);
+      }
+      lines.push(...component.render(width));
+    };
     wrap(`${item.id}  ${item.title}`, (value) => t.bold(t.fg("accent", value)));
     lines.push("");
     const mark = rowMark(t, item.status);
@@ -394,7 +405,7 @@ export class AtlasPlanView implements Component {
       item.outputPath && item.evidence?.startsWith(`${item.outputPath}: `)
         ? item.evidence.slice(item.outputPath.length + 2)
         : item.evidence;
-    if (summary) wrap(summary);
+    if (summary) markdown(summary);
     else lines.push(t.fg("dim", item.status === "done" ? "No evidence summary" : "No evidence yet"));
     if (item.receipt) {
       field("Child", t.fg("dim", item.receipt.childAgentId));
@@ -411,7 +422,7 @@ export class AtlasPlanView implements Component {
       }
     }
     lines.push("", t.bold("Acceptance"));
-    wrap(item.acceptance);
+    markdown(item.acceptance);
     return lines;
   }
 
