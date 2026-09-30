@@ -9,6 +9,7 @@ import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/l
 import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
+import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 
 import { parseLegalAgentNames } from "./agents.ts";
@@ -27,7 +28,7 @@ import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { findPlanSessions } from "./atlas-sessions.ts";
 import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
-import { atlasTodoRefreshCall, syncAtlasTodos } from "./atlas-todo.ts";
+import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import {
@@ -1906,6 +1907,32 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     if (!live) return undefined;
     const record = records.get(sessionId) ?? rehydrate(ctx) ?? recordFor(sessionId);
+    if (event.toolName === "todo" && !event.isError && record.phase === "executing") {
+      const details = event.details;
+      if (
+        details &&
+        typeof details === "object" &&
+        "op" in details &&
+        details.op !== "view" &&
+        "phases" in details &&
+        Array.isArray(details.phases) &&
+        details.phases.every(isTodoPhase)
+      ) {
+        const ledger = await readLedger(ctx, record);
+        if (!ledger) return undefined;
+        // The host todo tool normalizes to one running item; restore parallel Atlas rows before
+        // its tracker and HUD consume this result, while leaving non-Atlas edits intact.
+        const corrected = mergeAtlasTodos(details.phases, ledger);
+        if (corrected) {
+          if (JSON.stringify(live.getTodoPhases()) !== JSON.stringify(corrected)) {
+            live.setTodoPhases(corrected);
+            live.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: corrected });
+          }
+          return { details: { ...details, phases: corrected } };
+        }
+      }
+      return undefined;
+    }
     observeFinalJobs(ctx);
 
     if (event.toolName === "ask") {

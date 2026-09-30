@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { prompt as hostPrompt } from "@oh-my-pi/pi-utils";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { prompt as hostPrompt } from "@oh-my-pi/pi-utils";
 
 import type { ExecutionLedger, LedgerItem } from "../plugins/omo-prometheus/src/ledger.ts";
 
@@ -955,7 +955,32 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.deepEqual(todoPhases.find((phase) => phase.name === "Atlas fixes")?.tasks, [
       { content: "X1. Stabilize retention test", status: "pending" },
     ]);
+    // This host import must follow isolated HOME setup, like the other host modules above.
+    const { applyOpsToPhases } = await import("@oh-my-pi/pi-coding-agent/tools/todo");
+    const normalized = applyOpsToPhases(todoPhases, [{ op: "unblock", task: "X1. Stabilize retention test" }]);
+    assert.deepEqual(normalized.errors, []);
+    assert.equal(normalized.phases.find((phase) => phase.name === "Atlas final gates")?.tasks[1]?.status, "in_progress");
+    live.setTodoPhases(normalized.phases);
+    const priorWrites = entries.length;
+    const correctedResult = await hook("tool_result", {
+      toolName: "todo",
+      toolCallId: "todo-refresh",
+      isError: false,
+      content: [],
+      details: { op: "unblock", phases: normalized.phases, storage: "session" },
+    });
+    assert(correctedResult && typeof correctedResult === "object" && "details" in correctedResult);
+    const correctedDetails = correctedResult.details;
+    assert(correctedDetails && typeof correctedDetails === "object" && "phases" in correctedDetails);
+    assert.deepEqual(correctedDetails.phases, todoPhases);
+    assert.equal(todoPhases.find((phase) => phase.name === "Atlas fixes")?.tasks[0]?.status, "pending");
+    assert(entries.length > priorWrites);
+    const persisted = entries.at(-1);
+    assert(persisted && typeof persisted === "object" && "customType" in persisted && "data" in persisted);
+    assert.equal(persisted.customType, "user_todo_edit");
+    assert.deepEqual(persisted.data, { phases: todoPhases });
     assert.equal(todoPhases.find((phase) => phase.name === "Atlas final gates")?.tasks[0]?.status, "completed");
+    assert.equal(todoPhases.find((phase) => phase.name === "Atlas final gates")?.tasks[1]?.status, "pending");
     refused(await call({ action: "start", id: "F2" }));
     await finish("X1");
     assert.equal(todoPhases.find((phase) => phase.name === "Atlas fixes")?.tasks[0]?.status, "completed");
