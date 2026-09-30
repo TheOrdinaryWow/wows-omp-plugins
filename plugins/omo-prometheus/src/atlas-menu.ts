@@ -27,6 +27,7 @@ import {
 } from "@oh-my-pi/pi-tui/chrome";
 import { type SelectItem, SelectList, type SelectListRenderItemContext } from "@oh-my-pi/pi-tui/components/select-list";
 
+import type { AtlasLive, AtlasLiveSnapshot } from "./atlas-live.ts";
 import type { AtlasPlanDetail, AtlasRowDetail } from "./atlas-store.ts";
 
 export type AtlasFilter = "unfinished" | "all";
@@ -57,7 +58,7 @@ export function dispatchBlock(detail: AtlasPlanDetail, kind: AtlasDispatch, disp
   return undefined;
 }
 
-function progressBar(theme: Theme, done: number, total: number): string {
+export function progressBar(theme: Theme, done: number, total: number): string {
   const { filled: full, empty } = theme.progress;
   if (!total) return theme.fg("dim", empty.repeat(BAR_WIDTH));
   const filled = Math.round((done / total) * BAR_WIDTH);
@@ -75,7 +76,7 @@ function shortStatus(detail: AtlasPlanDetail): string {
   return detail.status.replace(/\s*\(\d+\/\d+\)/, "").replace(/^In progress \d+\/\d+/, "In progress");
 }
 
-function rowMark(theme: Theme, status: string): string {
+export function rowMark(theme: Theme, status: string): string {
   const s = theme.status;
   if (status === "done") return theme.fg("success", s.success);
   if (status === "in_progress") return theme.fg("accent", s.running);
@@ -110,6 +111,14 @@ export function formatTime(ms: number): string {
   const date = new Date(ms);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function formatElapsed(startedAt: number | undefined, now: number): string {
+  if (startedAt === undefined) return "—";
+  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return hours ? `${hours}h ${String(minutes).padStart(2, "0")}m` : `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 const ROW_STATUS: Record<string, string> = { open: "Not started", in_progress: "In progress", done: "Done", blocked: "Blocked" };
@@ -286,15 +295,41 @@ export class AtlasPlanView implements Component {
   #markdown = new Map<string, Markdown>();
   #message = "";
   #bodyRows = 1;
+  #liveSnapshot?: AtlasLiveSnapshot;
+  #unsubscribe?: () => void;
+  #timeline = false;
 
   constructor(
-    readonly detail: AtlasPlanDetail,
+    detail: AtlasPlanDetail,
     readonly mode: AtlasPlanViewMode,
     readonly theme: Theme,
     readonly tui: TUI,
     readonly readOutput: (file: string) => Promise<string>,
     readonly done: (action: AtlasPlanViewAction) => void,
-  ) {}
+    live?: AtlasLive,
+  ) {
+    this.detail = detail;
+    if (live && mode === "active")
+      this.#unsubscribe = live.subscribe((snapshot) => {
+        this.#liveSnapshot = snapshot;
+        this.updateDetail(snapshot.detail);
+      });
+  }
+
+  detail: AtlasPlanDetail;
+
+  dispose(): void {
+    this.#unsubscribe?.();
+    this.#unsubscribe = undefined;
+  }
+
+  updateDetail(detail: AtlasPlanDetail): void {
+    const selectedId = this.#row()?.id;
+    const next = detail.rows.findIndex((row) => row.id === selectedId);
+    this.detail = detail;
+    this.#selected = next >= 0 ? next : Math.min(this.#selected, Math.max(0, detail.rows.length - 1));
+    this.tui.requestRender();
+  }
 
   #row(): AtlasRowDetail | undefined {
     return this.detail.rows[this.#selected];
@@ -341,16 +376,32 @@ export class AtlasPlanView implements Component {
 
   handleInput(key: string): void {
     this.#message = "";
-    if (matchesKey(key, "escape") || matchesKey(key, "left")) this.done("back");
-    else if (matchesKey(key, "up")) this.#select(this.#selected - 1);
-    else if (matchesKey(key, "down")) this.#select(this.#selected + 1);
-    else if (matchesKey(key, "home")) this.#select(0);
-    else if (matchesKey(key, "end")) this.#select(this.detail.rows.length - 1);
-    else if (matchesKey(key, "pageDown")) this.#scroll += Math.max(1, this.#bodyRows - 2);
+    if (matchesKey(key, "escape") || matchesKey(key, "left")) {
+      this.dispose();
+      this.done("back");
+    } else if (matchesKey(key, "tab")) {
+      this.#timeline = !this.#timeline;
+      this.#scroll = 0;
+    } else if (matchesKey(key, "up")) {
+      if (this.#timeline) this.#scroll = Math.max(0, this.#scroll - 1);
+      else this.#select(this.#selected - 1);
+    } else if (matchesKey(key, "down")) {
+      if (this.#timeline) this.#scroll += 1;
+      else this.#select(this.#selected + 1);
+    } else if (matchesKey(key, "home")) {
+      if (this.#timeline) this.#scroll = 0;
+      else this.#select(0);
+    } else if (matchesKey(key, "end")) {
+      if (this.#timeline) this.#scroll = this.detail.timeline.length;
+      else this.#select(this.detail.rows.length - 1);
+    } else if (matchesKey(key, "pageDown")) this.#scroll += Math.max(1, this.#bodyRows - 2);
     else if (matchesKey(key, "pageUp")) this.#scroll = Math.max(0, this.#scroll - Math.max(1, this.#bodyRows - 2));
-    else if (matchesKey(key, "space") || key === " " || matchesKey(key, "right")) this.#toggleOutput();
+    else if (!this.#timeline && (matchesKey(key, "space") || key === " " || matchesKey(key, "right"))) this.#toggleOutput();
     else if (this.mode === "active") {
-      if (key === "X" || matchesKey(key, "shift+x")) this.done("exit");
+      if (key === "X" || matchesKey(key, "shift+x")) {
+        this.dispose();
+        this.done("exit");
+      }
     } else if (matchesKey(key, "enter")) this.#dispatch("start");
     else if (key === "R" || matchesKey(key, "shift+r")) this.#dispatch("resume");
     this.tui.requestRender();
@@ -366,12 +417,24 @@ export class AtlasPlanView implements Component {
       const index = start + offset;
       const selected = index === this.#selected;
       const cursor = selected ? this.theme.fg("accent", `${this.theme.nav.cursor} `) : "  ";
-      const label = `${marks[index] ?? ""} ${this.theme.fg("muted", item.id.padEnd(idWidth))} ${this.theme.fg(selected ? "accent" : "text", item.title)}`;
+      const label = `${marks[index] ?? ""} ${this.theme.fg("muted", item.id.padEnd(idWidth))} ${this.theme.fg(selected ? "accent" : "text", item.title)}${item.status === "in_progress" ? ` ${this.theme.fg("dim", formatElapsed(item.startedAt, this.#liveSnapshot?.at ?? Date.now()))}` : ""}`;
       return truncateToWidth(cursor + label, width);
     });
   }
 
+  #timelineBody(width: number): string[] {
+    if (!this.detail.timeline.length) return [this.theme.fg("dim", "No recorded activity")];
+    const lines: string[] = [];
+    for (const event of [...this.detail.timeline].reverse()) {
+      const label = `${formatTime(event.at)}  ${event.kind.replaceAll("_", " ")}${event.row ? `  ${event.row}` : ""}${event.derived ? "  [derived]" : ""}`;
+      lines.push(...wrapTextWithAnsi(this.theme.fg(event.derived ? "dim" : "text", label), width));
+      if (event.detail) lines.push(...wrapTextWithAnsi(`  ${event.detail}`, width));
+    }
+    return lines;
+  }
+
   #body(width: number): string[] {
+    if (this.#timeline) return this.#timelineBody(width);
     const item = this.#row();
     if (!item) return [this.theme.fg("dim", "No row selected")];
     const t = this.theme;
@@ -400,6 +463,39 @@ export class AtlasPlanView implements Component {
     field("Agent", item.agent);
     field("Depends", item.dependsOn.length ? item.dependsOn.join(", ") : t.format.dash);
     field("Updated", formatTime(item.updatedAt));
+    if (item.status === "in_progress") {
+      const current = this.#liveSnapshot?.rows.get(item.id);
+      const progress = current && current.attempt === item.attempt ? current.progress : undefined;
+      lines.push("", t.bold("Live"));
+      field("Child", current?.childAgentId ?? item.childAgentId ?? t.format.dash);
+      field("Elapsed", formatElapsed(item.startedAt, this.#liveSnapshot?.at ?? Date.now()));
+      if (progress) {
+        field(
+          "Model",
+          `${progress.resolvedModel ?? t.format.dash}${progress.resolvedThinkingLevel ? ` · ${progress.resolvedThinkingLevel}` : ""}`,
+        );
+        if (progress.currentTool) {
+          field("Tool", `${progress.currentTool} · ${formatElapsed(progress.currentToolStartMs, this.#liveSnapshot?.at ?? Date.now())}`);
+          if (progress.currentToolArgs) wrap(progress.currentToolArgs);
+        }
+        if (progress.lastIntent) field("Intent", progress.lastIntent);
+        field("Counts", `${progress.toolCount} tools · ${progress.requests} requests · ${progress.tokens} tokens`);
+        if (progress.contextTokens !== undefined || progress.contextWindow !== undefined)
+          field("Context", `${progress.contextTokens ?? "?"}/${progress.contextWindow ?? "?"} tokens`);
+        field("Cost", `$${progress.cost.toFixed(4)}`);
+        if (progress.retryState)
+          field("Retry", `${progress.retryState.attempt}/${progress.retryState.maxAttempts} · ${progress.retryState.errorMessage}`);
+        if (progress.retryFailure) field("Failure", progress.retryFailure.errorMessage);
+        if (progress.recentTools.length) {
+          lines.push(t.bold("Recent tools"));
+          for (const tool of progress.recentTools.slice(-3)) wrap(`  ${tool.tool} ${tool.args}`);
+        }
+        if (progress.recentOutput.length) {
+          lines.push(t.bold("Recent output"));
+          for (const output of progress.recentOutput.slice(0, 4)) wrap(`  ${output}`);
+        }
+      } else lines.push(t.fg("dim", "Waiting for child progress"));
+    }
     lines.push("", t.bold("Evidence"));
     const summary =
       item.outputPath && item.evidence?.startsWith(`${item.outputPath}: `)
@@ -434,8 +530,10 @@ export class AtlasPlanView implements Component {
     const bodyWidth = Math.max(1, splitBodyWidth(width, sidebarWidth));
     const hints = hintLines(
       [
-        this.theme.fg("dim", `${editorKey("tui.select.up")}/${editorKey("tui.select.down")}`) + this.theme.fg("muted", " row"),
-        rawKeyHint("space", "child output"),
+        this.theme.fg("dim", `${editorKey("tui.select.up")}/${editorKey("tui.select.down")}`) +
+          this.theme.fg("muted", this.#timeline ? " scroll" : " row"),
+        ...(!this.#timeline ? [rawKeyHint("space", "child output")] : []),
+        rawKeyHint("tab", this.#timeline ? "row" : "timeline"),
         rawKeyHint("pageDown", "scroll"),
         ...(this.mode === "active"
           ? [rawKeyHint("shift+x", "exit Atlas")]
@@ -452,7 +550,8 @@ export class AtlasPlanView implements Component {
       .join("  ");
     const status =
       this.mode === "active" ? t.fg("accent", "Active in this session") : t.fg(statusColor(this.detail), shortStatus(this.detail));
-    const summary = `${status}  ${progressBar(t, this.detail.done, this.detail.total)} ${counts}    ${tally}`;
+    const running = this.#liveSnapshot?.runningChildren ?? this.detail.rows.filter((item) => item.status === "in_progress").length;
+    const summary = `${status}  ${progressBar(t, this.detail.done, this.detail.total)} ${counts}  ${running} running · ${formatElapsed(this.detail.startedAt, this.#liveSnapshot?.at ?? Date.now())}  ${tally}`;
     const origin = t.fg("dim", `${this.detail.plan.id}  ${this.detail.plan.cwd || "Workspace unavailable"}`);
     const notice = this.#message || (this.mode === "display" ? "Display only; start or resume from the Unfinished filter" : "");
     const header = [summary, origin, ...(notice ? [t.fg("warning", notice)] : [])];

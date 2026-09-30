@@ -719,6 +719,8 @@ describe("Atlas shared plan storage", () => {
       );
       await finish(f, f.store, "session-a", "X1");
       await finish(f, f.store, "session-a", "F2");
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "F3"));
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => reopenRow(ledger, "F3", "Review rejected the real surface"));
       await f.store.release(f.plan.id, "session-a");
       const timeline = (await f.store.details(f.root))[0]?.timeline;
       expect(timeline?.filter((event) => event.row === "T3").map((event) => [event.kind, event.attempt])).toEqual([
@@ -736,6 +738,7 @@ describe("Atlas shared plan storage", () => {
         ["fix_added", "X1"],
         ["gate_failed", "F2"],
         ["gate_passed", "F2"],
+        ["gate_failed", "F3"],
       ]);
       expect(timeline?.find((event) => event.kind === "fix_added")?.detail).toBe("F2 rejected: the real output is incorrect");
       expect(timeline?.[0]?.kind).toBe("attached");
@@ -772,6 +775,8 @@ describe("Atlas shared plan storage", () => {
       );
       expect((await upgraded.details(f.root))[0]?.timeline.map((event) => [event.kind, event.row, event.sessionId, event.derived])).toEqual(
         [
+          ["started", "T1", "session-a", true],
+          ["done", "T1", "session-a", true],
           ["attached", undefined, "session-b", undefined],
           ["started", "T2", "session-b", undefined],
         ],

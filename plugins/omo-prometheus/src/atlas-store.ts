@@ -281,10 +281,34 @@ export class AtlasStore {
   readonly #root: string;
   readonly #storeToken = randomUUID();
   readonly #held = new Map<string, { plan: AtlasPlan; approvalSha256: string; generation: number; claim: Claim }>();
+  readonly #listeners = new Map<string, Set<() => void>>();
 
   constructor(sessionDir: string) {
     if (!path.isAbsolute(sessionDir)) throw new Error("Atlas requires an absolute file-backed session directory");
     this.#root = path.resolve(sessionDir, "atlas");
+  }
+
+  subscribe(planId: string, listener: () => void): () => void {
+    let listeners = this.#listeners.get(planId);
+    if (!listeners) {
+      listeners = new Set();
+      this.#listeners.set(planId, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size) this.#listeners.delete(planId);
+    };
+  }
+
+  #notify(planId: string): void {
+    for (const listener of this.#listeners.get(planId) ?? []) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn(`Atlas observation subscriber failed for ${planId}: ${String(error)}`);
+      }
+    }
   }
 
   async #base(create = false): Promise<boolean> {
@@ -516,6 +540,7 @@ export class AtlasStore {
     await withLedgerLock(path.join(this.#root, planId, "ledger.json"), async () => {
       const { plan } = await this.#plan(planId);
       await writeLedgerAtomic(path.join(plan.directory, "label.json"), { version: 1, name }, false);
+      this.#notify(planId);
     });
   }
 
@@ -645,7 +670,17 @@ export class AtlasStore {
 
   async #timeline(plan: AtlasPlan, ledger: ExecutionLedger): Promise<AtlasEvent[]> {
     try {
-      return parseTimeline(await regularFile(path.join(plan.directory, "timeline.jsonl")));
+      const saved = parseTimeline(await regularFile(path.join(plan.directory, "timeline.jsonl")));
+      const derived = derivedTimeline(ledger, plan.sourceSessionId).filter(
+        (event) =>
+          !saved.some(
+            (entry) =>
+              entry.kind === event.kind &&
+              entry.row === event.row &&
+              (entry.kind === "reopened" || entry.kind === "fix_added" || entry.attempt === event.attempt),
+          ),
+      );
+      return [...saved, ...derived].sort((a, b) => a.at - b.at);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return derivedTimeline(ledger, plan.sourceSessionId);
       console.warn(`Atlas timeline could not be loaded for ${plan.id}: ${String(error)}`);
@@ -790,6 +825,7 @@ export class AtlasStore {
       }
       this.#held.set(plan.id, { plan, approvalSha256, ...(await this.#claimSlot(plan, sessionId)) });
       await this.#appendTimeline(plan, [{ version: 1, at: Date.now(), kind: "attached", sessionId }]);
+      this.#notify(planId);
     });
   }
 
@@ -806,6 +842,7 @@ export class AtlasStore {
       });
       this.#held.delete(planId);
       await this.#appendTimeline(owned.plan, [{ version: 1, at: Date.now(), kind: "released", sessionId }]);
+      this.#notify(planId);
     });
   }
 
@@ -880,6 +917,7 @@ export class AtlasStore {
         await writeLedgerAtomic(path.join(plan.directory, "checkpoint.json"), checkpointFor(ledger, approvalSha256));
         await writeLedgerAtomic(plan.ledgerPath, ledger);
         await this.#appendTimeline(plan, ledgerEvents(beforeRecovery, ledger, sessionId));
+        this.#notify(planId);
       }
       const recovered = JSON.stringify(ledger);
       const beforeMutation = rowSnapshot(ledger);
@@ -921,6 +959,7 @@ export class AtlasStore {
         await writeLedgerAtomic(path.join(plan.directory, "checkpoint.json"), checkpointFor(ledger, approvalSha256));
         await writeLedgerAtomic(plan.ledgerPath, ledger);
         await this.#appendTimeline(plan, ledgerEvents(beforeMutation, ledger, sessionId));
+        this.#notify(planId);
       }
       return result;
     });

@@ -137,6 +137,49 @@ export class ChildEvidence {
     if (assignments && ![...this.#children.values()].some((child) => assignments.includes(child.assignment))) this.#dispatches.delete(key);
   }
 
+  #matchingDispatches(parentToolCallId: string, index: number, childAgentId: string, sessionFile: string): Assignment[] {
+    const matches: Assignment[] = [];
+    // Global events need both the owning session's dispatch and its exact native artifact.
+    for (const [key, assignments] of this.#dispatches) {
+      const assignment = assignments[index];
+      if (!assignment || key !== `${assignment.sessionId}:${parentToolCallId}`) continue;
+      if (path.resolve(sessionFile) !== path.resolve(assignment.artifactsDir, `${childAgentId}.jsonl`)) continue;
+      matches.push(assignment);
+    }
+    return matches;
+  }
+
+  /** Observation-only dispatch binding, shared by lifecycle and progress; never authenticates completion. */
+  matchDispatch(payload: unknown): {
+    sessionId: string;
+    planSha256: string;
+    rows: Readonly<Record<string, string>>;
+    childAgentId: string;
+    status?: string;
+  }[] {
+    if (
+      !object(payload) ||
+      typeof payload.parentToolCallId !== "string" ||
+      typeof payload.index !== "number" ||
+      typeof payload.sessionFile !== "string"
+    )
+      return [];
+    const childAgentId =
+      typeof payload.id === "string"
+        ? payload.id
+        : object(payload.progress) && typeof payload.progress.id === "string"
+          ? payload.progress.id
+          : undefined;
+    if (!childAgentId) return [];
+    return this.#matchingDispatches(payload.parentToolCallId, payload.index, childAgentId, payload.sessionFile).map((assignment) => ({
+      sessionId: assignment.sessionId,
+      planSha256: assignment.planSha256,
+      rows: assignment.rows,
+      childAgentId,
+      status: this.#children.get(`${assignment.sessionId}:${childAgentId}`)?.status,
+    }));
+  }
+
   observe(payload: unknown): void {
     if (
       !object(payload) ||
@@ -147,11 +190,7 @@ export class ChildEvidence {
       typeof payload.status !== "string"
     )
       return;
-    // Lifecycle events are global. Tool-call ids alone do not establish the origin session.
-    for (const [key, assignments] of this.#dispatches) {
-      const assignment = assignments[payload.index];
-      if (!assignment || key !== `${assignment.sessionId}:${payload.parentToolCallId}`) continue;
-      if (path.resolve(payload.sessionFile) !== path.resolve(assignment.artifactsDir, `${payload.id}.jsonl`)) continue;
+    for (const assignment of this.#matchingDispatches(payload.parentToolCallId, payload.index, payload.id, payload.sessionFile)) {
       const childKey = `${assignment.sessionId}:${payload.id}`;
       const previous = this.#children.get(childKey);
       if (previous?.assignment === assignment && previous.sessionFile === payload.sessionFile) {

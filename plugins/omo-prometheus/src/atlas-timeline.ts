@@ -71,7 +71,7 @@ export function ledgerEvents(before: ReadonlyMap<string, LedgerItem>, ledger: Ex
       (previous.status !== "open" || previous.attempt !== row.attempt || previous.evidence !== row.evidence)
     ) {
       add("reopened", row, row.updatedAt, row.evidence, previous.attempt);
-      if (row.id.startsWith("F")) rejectedGates.add(row.id);
+      if (row.id.startsWith("F") && previous.status === "in_progress") rejectedGates.add(row.id);
     }
   }
   for (const id of rejectedGates) {
@@ -90,7 +90,7 @@ export function derivedTimeline(ledger: ExecutionLedger, sessionId: string): Atl
         at,
         kind,
         row: row.id,
-        attempt: row.attempt,
+        attempt: kind === "fix_added" ? undefined : row.attempt,
         sessionId: row.receipt?.sessionId ?? sessionId,
         detail: shortDetail(detail),
         derived: true,
@@ -141,6 +141,7 @@ export function parseTimeline(content: string): AtlasEvent[] {
       attempt: event.attempt,
       sessionId: event.sessionId,
       detail: shortDetail(event.detail),
+      derived: event.derived === true ? true : undefined,
     });
   }
   return events;
