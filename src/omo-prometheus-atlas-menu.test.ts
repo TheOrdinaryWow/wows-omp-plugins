@@ -27,6 +27,7 @@ const plan: AtlasPlanDetail = {
   status: "In progress 1/2",
   done: 1,
   total: 2,
+  timeline: [],
   rows: [
     {
       id: "T1",

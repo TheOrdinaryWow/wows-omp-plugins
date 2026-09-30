@@ -683,4 +683,134 @@ describe("Atlas shared plan storage", () => {
       expect(await f.store.transaction(f.plan.id, "session-a", (ledger) => ledger.gates[0]?.status)).toBe("in_progress");
     });
   });
+
+  test("published transitions append an ordered timeline without recording refused mutations", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      const attempt = await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "T3").attempt);
+      await expect(
+        f.store.transaction(f.plan.id, "session-a", (ledger) => {
+          reopenRow(ledger, "T3", "not published");
+          throw new Error("refused");
+        }),
+      ).rejects.toThrow("refused");
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => {
+        const row = ledger.items[2];
+        if (!row) throw new Error("Missing T3");
+        row.status = "blocked";
+        row.evidence = "Input unavailable";
+        row.updatedAt += 1;
+      });
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => reopenRow(ledger, "T3", "Input restored"));
+      for (const id of ["T1", "T2", "T3"]) await finish(f, f.store, "session-a", id);
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "F2"));
+      await f.store.transaction(f.plan.id, "session-a", (ledger) =>
+        addFixRow(
+          ledger,
+          "F2",
+          {
+            title: "Repair observed defect",
+            acceptance: "The original reproduction succeeds",
+            agent: "deep-low",
+            reason: "the real output is incorrect",
+          },
+          ["deep-low", "task"],
+        ),
+      );
+      await finish(f, f.store, "session-a", "X1");
+      await finish(f, f.store, "session-a", "F2");
+      await f.store.release(f.plan.id, "session-a");
+      const timeline = (await f.store.details(f.root))[0]?.timeline;
+      expect(timeline?.filter((event) => event.row === "T3").map((event) => [event.kind, event.attempt])).toEqual([
+        ["started", attempt],
+        ["blocked", attempt],
+        ["reopened", attempt],
+        ["started", timeline?.find((event) => event.kind === "done" && event.row === "T3")?.attempt],
+        ["done", timeline?.find((event) => event.kind === "done" && event.row === "T3")?.attempt],
+      ]);
+      expect(
+        timeline
+          ?.filter((event) => ["fix_added", "gate_failed", "gate_passed"].includes(event.kind))
+          .map((event) => [event.kind, event.row]),
+      ).toEqual([
+        ["fix_added", "X1"],
+        ["gate_failed", "F2"],
+        ["gate_passed", "F2"],
+      ]);
+      expect(timeline?.find((event) => event.kind === "fix_added")?.detail).toBe("F2 rejected: the real output is incorrect");
+      expect(timeline?.[0]?.kind).toBe("attached");
+      expect(timeline?.at(-1)?.kind).toBe("released");
+      expect(timeline?.some((event) => event.detail === "not published")).toBe(false);
+      expect(timeline?.every((event) => event.sessionId === "session-a" && !event.derived)).toBe(true);
+    });
+  });
+
+  test("a previous-format bundle without a timeline resumes with derived history and then appends real events", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      const receipt = await finish(f, f.store, "session-a", "T1");
+      await f.store.release(f.plan.id, "session-a");
+      const file = path.join(f.plan.directory, "timeline.jsonl");
+      await fs.rm(file);
+      const upgraded = new AtlasStore(f.root);
+      const before = (await upgraded.details(f.root))[0];
+      expect(before?.timeline.map((event) => [event.kind, event.row, event.derived])).toEqual([
+        ["started", "T1", true],
+        ["done", "T1", true],
+      ]);
+      expect(before?.timeline[1]?.at).toBe(receipt.capturedAt);
+      await expect(fs.stat(file)).rejects.toHaveProperty("code", "ENOENT");
+      await upgraded.acquire(f.plan.id, "session-b");
+      await upgraded.transaction(
+        f.plan.id,
+        "session-b",
+        (ledger) => {
+          expect(ledger.items[0]?.receipt?.receiptId).toBe(receipt.receiptId);
+          startRow(ledger, "T2");
+        },
+        { resume: true },
+      );
+      expect((await upgraded.details(f.root))[0]?.timeline.map((event) => [event.kind, event.row, event.sessionId, event.derived])).toEqual(
+        [
+          ["attached", undefined, "session-b", undefined],
+          ["started", "T2", "session-b", undefined],
+        ],
+      );
+    });
+  });
+
+  test("a partial trailing line and future event versions never block resume or later appends", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      const file = path.join(f.plan.directory, "timeline.jsonl");
+      await fs.appendFile(file, `${JSON.stringify({ version: 2, at: 1, kind: "future", sessionId: "session-a" })}\n{\"version\":1,`);
+      expect((await f.store.details(f.root))[0]?.enterable).toBe(false);
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "T1"));
+      expect((await f.store.details(f.root))[0]?.timeline.map((event) => event.kind)).toEqual(["attached", "started"]);
+      await f.store.release(f.plan.id, "session-a");
+      const resumed = new AtlasStore(f.root);
+      await resumed.acquire(f.plan.id, "session-b");
+      await resumed.transaction(
+        f.plan.id,
+        "session-b",
+        (ledger) => {
+          expect(ledger.items[0]?.status).toBe("open");
+        },
+        { resume: true },
+      );
+    });
+  });
+
+  test("timeline append failure does not roll back a ledger commit or ownership release", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      const file = path.join(f.plan.directory, "timeline.jsonl");
+      await fs.rm(file);
+      await fs.mkdir(file);
+      const attempt = await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "T1").attempt);
+      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).items[0].attempt).toBe(attempt);
+      await f.store.release(f.plan.id, "session-a");
+      await new AtlasStore(f.root).acquire(f.plan.id, "session-b");
+    });
+  });
 });

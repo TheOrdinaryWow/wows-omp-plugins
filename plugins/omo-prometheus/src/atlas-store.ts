@@ -5,6 +5,7 @@ import * as fs from "node:fs/promises";
 import { hostname } from "node:os";
 import * as path from "node:path";
 
+import { type AtlasEvent, derivedTimeline, ledgerEvents, parseTimeline, rowSnapshot } from "#src/atlas-timeline.ts";
 import { validateGateOutput } from "./evidence.ts";
 import {
   type ChildReceipt,
@@ -43,6 +44,8 @@ export interface AtlasRowDetail {
   dependsOn: string[];
   evidence?: string;
   attempt?: string;
+  startedAt?: number;
+  childAgentId?: string;
   updatedAt: number;
   receipt?: Pick<ChildReceipt, "receiptId" | "childAgentId" | "sessionId" | "capturedAt">;
   /** Archived native child output backing a completed row. */
@@ -55,6 +58,8 @@ export interface AtlasPlanDetail {
   done: number;
   total: number;
   rows: AtlasRowDetail[];
+  timeline: AtlasEvent[];
+  startedAt?: number;
   unfinished: boolean;
   enterable: boolean;
   /** Some row moved or a session has held the plan before. */
@@ -429,6 +434,12 @@ export class AtlasStore {
       const raw = await regularFile(path.join(stage, "approval.json"));
       await writeLedgerAtomic(path.join(stage, "checkpoint.json"), checkpointFor(ledger, planDigest(raw)));
       await writeLedgerAtomic(path.join(stage, "ledger.json"), ledger);
+      const timeline = await fs.open(path.join(stage, "timeline.jsonl"), "wx", 0o600);
+      try {
+        await timeline.sync();
+      } finally {
+        await timeline.close();
+      }
       await syncDirectory(path.join(stage, "evidence"));
       await syncDirectory(path.join(stage, "ownership"));
       await syncDirectory(stage);
@@ -543,6 +554,7 @@ export class AtlasStore {
             done: 0,
             total: 0,
             rows: [],
+            timeline: [],
             unfinished: false,
             enterable: false,
             started: false,
@@ -572,6 +584,8 @@ export class AtlasStore {
           }
           const complete = isComplete(ledger);
           const started = slots.length > 0 || rows.some((row) => row.status !== "open");
+          const timeline = await this.#timeline(plan, ledger);
+          const starts = timeline.filter((event) => event.kind === "started" || event.kind === "attached").map((event) => event.at);
           const status = inUse
             ? "In use by another session"
             : complete
@@ -584,6 +598,8 @@ export class AtlasStore {
             status: `${status}${status.startsWith("In progress") ? "" : ` (${done}/${rows.length})`}${mismatch ? " · Different workspace" : ""}`,
             done,
             total: rows.length,
+            timeline,
+            startedAt: starts.length ? Math.min(...starts) : undefined,
             rows: rows.map((row) => ({
               id: row.id,
               title: row.title,
@@ -593,6 +609,8 @@ export class AtlasStore {
               dependsOn: row.dependsOn,
               evidence: row.evidence,
               attempt: row.attempt,
+              startedAt: row.startedAt,
+              childAgentId: row.childAgentId,
               updatedAt: row.updatedAt,
               receipt: row.receipt && {
                 receiptId: row.receipt.receiptId,
@@ -614,6 +632,7 @@ export class AtlasStore {
             done: 0,
             total: 0,
             rows: [],
+            timeline: [],
             unfinished: false,
             enterable: false,
             started: false,
@@ -622,6 +641,36 @@ export class AtlasStore {
         }
       }),
     );
+  }
+
+  async #timeline(plan: AtlasPlan, ledger: ExecutionLedger): Promise<AtlasEvent[]> {
+    try {
+      return parseTimeline(await regularFile(path.join(plan.directory, "timeline.jsonl")));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return derivedTimeline(ledger, plan.sourceSessionId);
+      console.warn(`Atlas timeline could not be loaded for ${plan.id}: ${String(error)}`);
+      return [];
+    }
+  }
+
+  async #appendTimeline(plan: AtlasPlan, events: AtlasEvent[]): Promise<void> {
+    if (!events.length) return;
+    try {
+      const handle = await fs.open(
+        path.join(plan.directory, "timeline.jsonl"),
+        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        // Separate a partial final line left by a crash from the next real event.
+        await handle.writeFile(`\n${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      console.warn(`Atlas timeline append failed for ${plan.id}: ${String(error)}`);
+    }
   }
 
   async #assertNoLiveOwner(ownerDir: string): Promise<void> {
@@ -740,6 +789,7 @@ export class AtlasStore {
         return;
       }
       this.#held.set(plan.id, { plan, approvalSha256, ...(await this.#claimSlot(plan, sessionId)) });
+      await this.#appendTimeline(plan, [{ version: 1, at: Date.now(), kind: "attached", sessionId }]);
     });
   }
 
@@ -755,6 +805,7 @@ export class AtlasStore {
         token: held.claim.token,
       });
       this.#held.delete(planId);
+      await this.#appendTimeline(owned.plan, [{ version: 1, at: Date.now(), kind: "released", sessionId }]);
     });
   }
 
@@ -799,6 +850,7 @@ export class AtlasStore {
       const ledger = restoreLedger(data, plan.planFilePath, content, plan.planSha256);
       if (data !== ledger) throw new Error("Atlas shared ledger must use a receipt-bearing version");
       const checkpoint = validateCheckpoint(await jsonFile(path.join(plan.directory, "checkpoint.json")), ledger, approvalSha256);
+      const beforeRecovery = rowSnapshot(ledger);
       let changed = false;
       for (const row of ledgerRows(ledger)) {
         const saved = checkpoint.attempts[row.id];
@@ -827,8 +879,10 @@ export class AtlasStore {
       if (changed) {
         await writeLedgerAtomic(path.join(plan.directory, "checkpoint.json"), checkpointFor(ledger, approvalSha256));
         await writeLedgerAtomic(plan.ledgerPath, ledger);
+        await this.#appendTimeline(plan, ledgerEvents(beforeRecovery, ledger, sessionId));
       }
       const recovered = JSON.stringify(ledger);
+      const beforeMutation = rowSnapshot(ledger);
       options?.assertActive?.();
       const scope: TransactionScope = { store: this, plan, sessionId, ledger, checkpoint, active: true, authenticated: new Map() };
       for (const row of ledgerRows(ledger)) {
@@ -866,6 +920,7 @@ export class AtlasStore {
         // The checkpoint leads the ledger, so interrupted writes cannot authorize stale completion.
         await writeLedgerAtomic(path.join(plan.directory, "checkpoint.json"), checkpointFor(ledger, approvalSha256));
         await writeLedgerAtomic(plan.ledgerPath, ledger);
+        await this.#appendTimeline(plan, ledgerEvents(beforeMutation, ledger, sessionId));
       }
       return result;
     });

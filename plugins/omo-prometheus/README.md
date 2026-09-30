@@ -152,6 +152,7 @@ Native approval creates a plan bundle at `ctx.sessionManager.getSessionDir()/atl
 plan.md          exact approved plan
 approval.json    source approval, workspace, and plan identity
 ledger.json      task and gate progress
+timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of immutable approval
 checkpoint.json independent attempt and receipt bindings
 evidence/        copied native outputs and origin receipts
@@ -169,6 +170,8 @@ When Atlas stops with unfinished rows, the plugin continues it with a hidden `<a
 Progress lives in the shared bundle, not in the session. Child outputs are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the original session. `atlas_ledger status` shows where those outputs are. Only the child's own output is kept; files it merely links to are not copied. If a row's proof goes missing or changes, that row reopens, and an old session branch cannot roll shared progress back.
 
 Updating the plugin keeps existing plans runnable. A ledger written by an earlier release is upgraded when it is loaded, keeping its verified progress, and needs no fresh approval.
+
+`timeline.jsonl` records attachment and release, row starts, completion, blocking and reopening, correction rows, and gate verdicts. It is display-only: a missing or damaged timeline never invalidates approval, ownership, receipts, or progress. Bundles from earlier releases show derived history from their ledger until real timeline events are appended; derived events are not written back. A crash-truncated final line and unknown future event versions are ignored.
 
 Plans run with older versions of the plugin kept their ledger inside the session. Those are not migrated: resuming one pauses and asks for fresh approval. The old `prometheus_ledger` and `prometheus_release` tools are now `atlas_ledger` and `atlas_release`, with no aliases.
 
