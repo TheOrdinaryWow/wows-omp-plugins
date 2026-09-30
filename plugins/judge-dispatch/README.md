@@ -58,9 +58,32 @@ omp plugin config set wows-omp-plugin-judge-dispatch modelBudget balanced
 | `includeSharedContext` | boolean | `true` | Sends the task call's shared `context` along with the routing request. |
 | `judgeEffort` | boolean | `false` | Also lets the judge set each `task` call's thinking effort; see [Thinking effort](#thinking-effort). |
 | `modelBudget` | `off`, `minimum`, `balanced`, `max` | `off` | Picks each spawn's model by task difficulty, intelligence, and price; see [Model budget](#model-budget). |
+| `indicator` | boolean | `true` | Shows routing activity; see [What you see](#what-you-see). Routing works the same either way. |
 
 User settings merge with project overrides. The plugin reads them on every
 `task` call, so changes apply without a restart.
+
+## What you see
+
+While the judge runs, the working message reads `judge-dispatch: routing N
+tasks…`, and the default message returns once judging finishes, fails, or
+times out.
+
+When the judge changes a call's agent or effort, one dim line is added to the
+conversation, for example:
+
+```text
+judge-dispatch  #1 explore → task (0.87) ; #2 task · effort med → hi (0.92)
+```
+
+Each changed item shows the requested and routed values with the judge's
+confidence; a batch call produces a single line, and unchanged calls produce
+none. The line appears at the next step boundary, so a long synchronous task
+shows it after the task returns. It is for you only: the plugin removes it from
+the context sent to the model. Model changes from `modelBudget` already appear
+as OMP's note next to the child's model and are not repeated.
+
+Set `indicator` to `false` to hide both.
 
 ## Thinking effort
 

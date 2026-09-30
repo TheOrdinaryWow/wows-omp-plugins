@@ -13,6 +13,11 @@
       "./src/index.ts"
     ],
     "settings": {
+      "indicator": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show a working message while judging and a transcript line when a route changes (never sent to the model)"
+      },
       "minimumConfidence": {
         "type": "number",
         "default": 0.7,

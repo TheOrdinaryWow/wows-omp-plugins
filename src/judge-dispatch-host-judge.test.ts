@@ -38,6 +38,11 @@ interface SessionReport {
   warnings: unknown[];
   notifications: unknown[];
   usage: unknown[];
+  /** Working-message calls in order; a restore (`undefined`) arrives as `null`. */
+  working: unknown[];
+  records: { message: { customType?: string; content?: unknown; display?: boolean }; options?: unknown }[];
+  /** Custom message types that remain after the plugin's `context` hook, given every record plus one ordinary message. */
+  modelView: unknown[];
 }
 
 interface ChildReport {
@@ -112,7 +117,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       const settings = await Settings.loadIsolated({ cwd: session.project, agentDir });
       const registry = new ModelRegistry(await discoverAuthStorage(agentDir), join(agentDir, "models.yml"), { settings });
       const handlers = new Map<string, TestHandler[]>();
-      const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [] };
+      const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [], working: [], records: [], modelView: [] };
 
       const api = {
         logger: {
@@ -124,6 +129,10 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
           handlers.set(event, [...(handlers.get(event) ?? []), handler]);
         },
         getAllTools: () => [{ name: "task", description: session.description ?? TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
+        registerMessageRenderer() {},
+        sendMessage(message: SessionReport["records"][number]["message"], options?: unknown) {
+          report.records.push({ message, options });
+        },
       } as unknown as ExtensionAPI;
 
       const context = {
@@ -131,6 +140,9 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         ui: {
           notify(message: unknown, level?: unknown) {
             report.notifications.push({ message, level });
+          },
+          setWorkingMessage(message?: unknown) {
+            report.working.push(message ?? null);
           },
         },
         sessionManager: {
@@ -166,6 +178,17 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
           ),
         );
       }
+      const filtered = (await onlyHandler("context")(
+        {
+          type: "context",
+          messages: [
+            { role: "custom", customType: "other-plugin.note", content: "kept" },
+            ...report.records.map(({ message }) => ({ role: "custom", ...message })),
+          ],
+        },
+        context,
+      )) as { messages: { customType?: string }[] };
+      report.modelView = filtered.messages.map((message) => message.customType);
       sessionReports.push(report);
     }
 
@@ -247,6 +270,51 @@ async function registerTests(): Promise<void> {
         expect(report.sessions[0]?.usage).toHaveLength(1);
         expect(report.sessions[0]?.notifications).toEqual([]);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
+      });
+    });
+
+    test("shows routing activity, records only changed routes, and keeps the record from the model", async () => {
+      await withProjects([{ judgeEffort: true }, { judgeEffort: true, indicator: false }], async ([shown, hidden]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: shown as string, calls: 1 },
+            { project: hidden as string, calls: 1 },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+        });
+        const rewritten = { input: { task: "Implement the requested repository change", agent: "scout", effort: "hi" } };
+        const [visible, silent] = report.sessions;
+
+        expect(visible?.results).toEqual([rewritten]);
+        expect(visible?.working).toEqual(["judge-dispatch: routing 1 task…", null]);
+        expect(visible?.records).toEqual([
+          {
+            message: {
+              customType: "wows-omp-judge-dispatch.route",
+              content: "judge-dispatch  task → scout (0.99) · effort default → hi (0.99)",
+              display: true,
+            },
+            options: { deliverAs: "aside" },
+          },
+        ]);
+        expect(visible?.modelView).toEqual(["other-plugin.note"]);
+
+        expect(silent?.results).toEqual([rewritten]);
+        expect(silent?.working).toEqual([]);
+        expect(silent?.records).toEqual([]);
+      });
+
+      await withProjects([{}], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [{ project: project as string, calls: 1 }],
+          response: "success",
+          agentChoice: "task",
+          hostKey: HOST_KEY,
+        });
+        expect(report.sessions[0]?.results).toEqual([null]);
+        expect(report.sessions[0]?.working).toEqual(["judge-dispatch: routing 1 task…", null]);
+        expect(report.sessions[0]?.records).toEqual([]);
       });
     });
 
@@ -411,6 +479,8 @@ async function registerTests(): Promise<void> {
 
         expect(report.sessions[0]?.results).toEqual([null]);
         expect(report.sessions[0]?.notifications).toEqual([]);
+        expect(report.sessions[0]?.working).toEqual(["judge-dispatch: routing 1 task…", null]);
+        expect(report.sessions[0]?.records).toEqual([]);
         expect(report.sessions[0]?.warnings.length).toBeGreaterThan(0);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
       });

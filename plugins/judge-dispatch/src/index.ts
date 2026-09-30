@@ -13,6 +13,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
 
 import { readHostSetting } from "#src/host-settings.ts";
+import { registerRouteIndicator, setRoutingWorkingMessage } from "#src/indicator.ts";
 import {
   acceptRoutingDecision,
   blendedPrice,
@@ -43,6 +44,7 @@ const DEFAULT_SETTINGS: JudgeDispatchSettings = {
   includeSharedContext: true,
   judgeEffort: false,
   modelBudget: "off",
+  indicator: true,
 };
 
 function errorMessage(error: unknown): string {
@@ -86,11 +88,17 @@ function parseSettings(raw: Record<string, unknown>): JudgeDispatchSettings {
     throw new Error(`invalid modelBudget ${JSON.stringify(modelBudget)}`);
   }
 
+  const indicator = raw.indicator ?? DEFAULT_SETTINGS.indicator;
+  if (typeof indicator !== "boolean") {
+    throw new Error(`invalid indicator ${JSON.stringify(indicator)}`);
+  }
+
   return {
     minimumConfidence,
     includeSharedContext,
     judgeEffort,
     modelBudget: modelBudget as ModelBudget,
+    indicator,
   };
 }
 
@@ -214,6 +222,8 @@ const DIFFICULTY_QUESTION: ChoiceQuestion<TaskDifficulty> = {
 interface JudgedRoute {
   agent?: string;
   difficulty?: TaskDifficulty;
+  agentConfidence?: number;
+  difficultyConfidence?: number;
 }
 
 async function judgeRoute(
@@ -222,6 +232,7 @@ async function judgeRoute(
   config: JudgeDispatchSettings,
   judge: ChainJudge,
   signal: AbortSignal,
+  beforeJudge: () => void,
 ): Promise<JudgedRoute | undefined | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
   const candidates = routableCandidates(route.requestedAgent, allCandidates);
@@ -254,6 +265,7 @@ async function judgeRoute(
   // the chain's first usable candidate must be native; anything else is never called.
   let reachedNative = false;
   try {
+    beforeJudge();
     return await judge.withCandidate(
       async (candidate, kind) => {
         if (kind !== "native") return JUDGE_UNAVAILABLE;
@@ -267,7 +279,10 @@ async function judgeRoute(
         };
         const agent = routesAgent ? accept("agent", candidateNames) : undefined;
         const difficulty = judgesDifficulty ? accept("difficulty", TASK_DIFFICULTIES) : undefined;
-        return { ...(agent ? { agent } : {}), ...(difficulty ? { difficulty } : {}) };
+        return {
+          ...(agent ? { agent, agentConfidence: answers.agent?.confidence } : {}),
+          ...(difficulty ? { difficulty, difficultyConfidence: answers.difficulty?.confidence } : {}),
+        };
       },
       { signal },
     );
@@ -283,6 +298,7 @@ interface RoutingSession {
   config: JudgeDispatchSettings;
   judge: ChainJudge;
   notifyUnavailable(ctx: ExtensionContext): void;
+  beforeJudge(): void;
 }
 
 async function judgeRouteFailOpen(
@@ -292,7 +308,7 @@ async function judgeRouteFailOpen(
   signal: AbortSignal,
 ): Promise<JudgedRoute | undefined> {
   try {
-    const judged = await judgeRoute(route, candidates, session.config, session.judge, signal);
+    const judged = await judgeRoute(route, candidates, session.config, session.judge, signal, session.beforeJudge);
     if (judged !== JUDGE_UNAVAILABLE) return judged;
     session.notifyUnavailable(session.ctx);
   } catch {
@@ -310,8 +326,10 @@ function routeChoice(
 ): RouteChoice | undefined {
   if (!judged) return undefined;
   const choice: RouteChoice = {
-    ...(judged.agent ? { agent: judged.agent } : {}),
-    ...(config.judgeEffort && judged.difficulty ? { effort: DIFFICULTY_EFFORT[judged.difficulty] } : {}),
+    ...(judged.agent ? { agent: judged.agent, agentConfidence: judged.agentConfidence } : {}),
+    ...(config.judgeEffort && judged.difficulty
+      ? { effort: DIFFICULTY_EFFORT[judged.difficulty], effortConfidence: judged.difficultyConfidence }
+      : {}),
   };
   if (config.modelBudget !== "off" && judged.difficulty) {
     const agent = judged.agent ?? route.requestedAgent;
@@ -358,6 +376,7 @@ function unavailableNotifier(pi: ExtensionAPI): (ctx: ExtensionContext) => void 
 
 export default function judgeDispatch(pi: ExtensionAPI): void {
   const notifyUnavailable = unavailableNotifier(pi);
+  const recordRoutes = registerRouteIndicator(pi);
   const pendingBySession = new WeakMap<object, PendingSpawnRoutes>();
   const pendingFor = (ctx: ExtensionContext): PendingSpawnRoutes => {
     let pending = pendingBySession.get(ctx.sessionManager);
@@ -370,6 +389,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "task") return undefined;
+    let working = false;
     try {
       // Prometheus owns agent and effort choices while executing its approved plan.
       // Read the latest valid workflow state on this branch, not assignment wording.
@@ -394,16 +414,33 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         const routes = parseTaskInput(input);
         if (!routes) return undefined;
         const candidates = await discoverCandidates(ctx, settings, legalNames);
-        const session = { pi, ctx, config, judge: sessionJudge(ctx, settings), notifyUnavailable };
+        signal.throwIfAborted();
+        const session: RoutingSession = {
+          pi,
+          ctx,
+          config,
+          judge: sessionJudge(ctx, settings),
+          notifyUnavailable,
+          beforeJudge() {
+            // A judgment that starts after the deadline would set a message the finally block already restored.
+            if (!config.indicator || working || signal.aborted) return;
+            working = true;
+            setRoutingWorkingMessage(pi, ctx, `judge-dispatch: routing ${routes.length} ${routes.length === 1 ? "task" : "tasks"}…`);
+          },
+        };
         const judged = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
+        signal.throwIfAborted();
         const pending = pendingFor(ctx);
         const choices = routes.map((route, index) => routeChoice(route, judged[index], config, pending));
         const rewritten = rewriteTaskRoutes(input, routes, choices);
+        if (config.indicator && rewritten !== input) recordRoutes(input, routes, choices);
         return rewritten === input ? undefined : { input: rewritten };
       });
     } catch (error) {
       pi.logger.warn("judge-dispatch task interception failed open", { error: errorMessage(error) });
       return undefined;
+    } finally {
+      if (working) setRoutingWorkingMessage(pi, ctx);
     }
   });
 

@@ -16,6 +16,7 @@ export interface JudgeDispatchSettings {
   includeSharedContext: boolean;
   judgeEffort: boolean;
   modelBudget: ModelBudget;
+  indicator: boolean;
 }
 
 export interface CandidateModelSummary {
@@ -69,6 +70,8 @@ export interface RoutingDecision {
 export interface RouteChoice {
   agent?: string;
   effort?: TaskEffort;
+  agentConfidence?: number;
+  effortConfidence?: number;
   /** Spawn label to write when the call has none, so the spawn hook can find this route's budget decision. */
   name?: string;
 }
