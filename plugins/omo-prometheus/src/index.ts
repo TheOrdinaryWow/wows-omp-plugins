@@ -13,6 +13,7 @@ import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
+import { AtlasLive } from "./atlas-live.ts";
 import {
   type AtlasFilter,
   AtlasMenu,
@@ -25,6 +26,7 @@ import {
 import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { findPlanSessions } from "./atlas-sessions.ts";
+import { AtlasStatusWidget } from "./atlas-widget.ts";
 import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import {
@@ -142,9 +144,12 @@ export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
   const authorizedActivationCalls = new Map<string, string>();
   const reviewLevels = new Map<string, ReviewLevel>();
+  const atlasWidgets = new Map<string, boolean>();
   const childEvidence = new ChildEvidence();
   const stores = new Map<string, AtlasStore>();
   const ownerships = new Set<Ownership>();
+  const liveModels = new Map<string, AtlasLive>();
+  const WIDGET_KEY = "atlas";
   let atlasCompletions: AutocompleteItem[] = [];
   let planReferences = new AtlasPlanReferences();
   const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
@@ -164,9 +169,12 @@ export default function prometheus(pi: ExtensionAPI): void {
   const loadReviewLevel = async (ctx: ExtensionContext): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
     try {
-      reviewLevels.set(sessionId, parseReviewLevel((await getPluginSettings(PACKAGE_NAME, ctx.cwd)).reviewLevel));
+      const settings = await getPluginSettings(PACKAGE_NAME, ctx.cwd);
+      reviewLevels.set(sessionId, parseReviewLevel(settings.reviewLevel));
+      atlasWidgets.set(sessionId, settings.atlasWidget !== false);
     } catch (error) {
       reviewLevels.set(sessionId, "ask");
+      atlasWidgets.set(sessionId, true);
       pi.logger.warn("prometheus reviewLevel is invalid; using ask", { error: errorMessage(error) });
     }
   };
@@ -368,6 +376,34 @@ export default function prometheus(pi: ExtensionAPI): void {
     return store;
   };
 
+  const clearObservation = (ctx: ExtensionContext, sessionId: string): void => {
+    liveModels.get(sessionId)?.dispose();
+    liveModels.delete(sessionId);
+    if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
+  };
+
+  const installObservation = async (ctx: ExtensionContext, store: AtlasStore, plan: AtlasPlan): Promise<void> => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    clearObservation(ctx, sessionId);
+    if (!ctx.hasUI) return;
+    try {
+      const detail = (await store.details(plan.cwd)).find((item) => item.plan.id === plan.id);
+      if (!detail || detail.status.startsWith("Invalid")) return;
+      const live = new AtlasLive(detail, childEvidence, {
+        sessionId,
+        events: pi.events,
+        subscribeLedger: (listener) => store.subscribe(plan.id, listener),
+        reload: async () => (await store.details(plan.cwd)).find((item) => item.plan.id === plan.id),
+        warn: (error) => pi.logger.warn("Atlas live observation failed", { error: errorMessage(error) }),
+      });
+      liveModels.set(sessionId, live);
+      if (atlasWidgets.get(sessionId) !== false)
+        ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => new AtlasStatusWidget(live, tui, theme), { placement: "aboveEditor" });
+    } catch (error) {
+      pi.logger.warn("Atlas live observation could not start", { error: errorMessage(error) });
+    }
+  };
+
   const refreshAtlasCompletions = async (ctx: ExtensionContext): Promise<void> => {
     try {
       const cwd = await fs.realpath(ctx.cwd);
@@ -564,6 +600,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.sourceSessionId = plan.sourceSessionId;
       record.ledgerError = undefined;
       persist(record);
+      await installObservation(ctx, store, plan);
     } catch (error) {
       const binding = hostBindings.get(live);
       if (binding?.sessionId === sessionId && binding.planUrl === atlasPlanUrl(plan.id)) {
@@ -638,6 +675,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     authorizedActivationCalls.clear();
     // Invalidate in-flight publication synchronously, before any file or UI operation.
     record.phase = "idle";
+    clearObservation(ctx, ctx.sessionManager.getSessionId());
     record.ownership = undefined;
     record.activation = undefined;
     detach(ownership);
@@ -734,11 +772,28 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const openPlanView = async (ctx: ExtensionContext, detail: AtlasPlanDetail, mode: AtlasPlanViewMode): Promise<AtlasPlanViewAction> =>
-    await ctx.ui.custom<AtlasPlanViewAction>(
-      (tui, theme, _keys, done) => new AtlasPlanView(detail, mode, theme, tui, (file) => fs.readFile(file, "utf8"), done),
-      { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
-    );
+  const openPlanView = async (ctx: ExtensionContext, detail: AtlasPlanDetail, mode: AtlasPlanViewMode): Promise<AtlasPlanViewAction> => {
+    let view: AtlasPlanView | undefined;
+    try {
+      return await ctx.ui.custom<AtlasPlanViewAction>(
+        (tui, theme, _keys, done) => {
+          view = new AtlasPlanView(
+            detail,
+            mode,
+            theme,
+            tui,
+            (file) => fs.readFile(file, "utf8"),
+            done,
+            mode === "active" ? liveModels.get(ctx.sessionManager.getSessionId()) : undefined,
+          );
+          return view;
+        },
+        { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
+      );
+    } finally {
+      view?.dispose();
+    }
+  };
 
   /** Exits right away when every row is done; otherwise asks first. Shared progress is always kept. */
   const exitAtlas = async (ctx: ExtensionContext, record: SessionRecord): Promise<void> => {
@@ -1921,6 +1976,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   const recoverSession = async (ctx: ExtensionContext, fresh = false, switched = false): Promise<void> => {
+    for (const sessionId of liveModels.keys()) clearObservation(ctx, sessionId);
     authorizedActivationCalls.clear();
     const sessionId = ctx.sessionManager.getSessionId();
     const live = mainSession(ctx);
@@ -1981,6 +2037,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const live = mainSession(ctx);
     if (live) restoreApprovalTiers(live);
     const sessionId = ctx.sessionManager.getSessionId();
+    clearObservation(ctx, sessionId);
     const record = records.get(sessionId);
     if (record) {
       record.phase = "idle";
@@ -1998,6 +2055,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     records.delete(sessionId);
     reviewLevels.delete(sessionId);
+    atlasWidgets.delete(sessionId);
     authorizedActivationCalls.clear();
   });
 }

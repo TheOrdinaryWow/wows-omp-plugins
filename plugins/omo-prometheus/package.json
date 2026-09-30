@@ -23,6 +23,11 @@
         ],
         "default": "ask",
         "description": "Choose no plan review, the default review offer, routine Momus only, or Momus and Oracle on every plan"
+      },
+      "atlasWidget": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show live Atlas plan progress above the editor during execution"
       }
     }
   }

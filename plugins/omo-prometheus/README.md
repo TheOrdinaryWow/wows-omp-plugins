@@ -74,13 +74,15 @@ A plan runs in one session at a time, so Enter and Shift+R refuse a plan that an
 
 **Resume (Shift+R).** Only plans that have started can be resumed. The plugin scans this project's session files for sessions that executed the plan. With one match it switches there; with several it lists them, most recently used first. The session comes back in Atlas mode but does not continue on its own; send a message when you are ready. Resume is refused during planning.
 
-**Plan view (Space, Shift+I).** A fullscreen view with the plan's progress, a row list, and the selected row's status, agent, dependencies, evidence summary, receipt, and acceptance criteria. Space shows the row's archived child output from `evidence/`. Up/Down select rows, PgUp/PgDn scroll, Enter and Shift+R start or resume as in the list, and Esc returns to the list.
+**Plan view (Space, Shift+I).** The fullscreen inspector keeps its row selection and scroll when progress changes. Tab switches its body between the selected row and a newest-first timeline; derived events from older bundles are marked. Space still reveals archived child output. Up/Down select rows, PgUp/PgDn scroll, Enter and Shift+R start or resume as in the list, and Esc returns to the list.
 
 Deleting asks for confirmation and permanently removes the plan and its evidence. It is refused while a live session owns the plan or native work is pending. Without an interactive UI, bare `/atlas` prints the plan list.
 
 A plan can be selected by its display label, its original name, or either name without the `-plan` suffix, so `checkout` and `checkout-plan` match the same plan. If several plans share a name, use the full ID from the list.
 
-While Atlas is active, `/atlas` never opens the menu or switches plans. Bare `/atlas` opens the running plan's fullscreen view. It is read-only: rows, evidence, child output, and scrolling work as above, but start, resume, delete, and rename are gone. Shift+X there exits Atlas, the same as `/atlas exit`, and Esc closes the view. Without an interactive UI, bare `/atlas` only says which plan is running. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`; it never falls back to unrestricted implementation.
+While Atlas is active, bare `/atlas` opens the same fullscreen inspector as a live, read-only observation page: committed ledger changes, child lifecycle, and host progress update without reopening it. The header reports running children and plan elapsed time; in-progress rows show elapsed time in the sidebar and a Live section with child identity, model/thinking, tool and arguments, intent, usage, cost, retries, and recent activity when the host supplies it. Tab switches to the persisted timeline. Start, resume, delete, and rename are unavailable. Shift+X exits Atlas as `/atlas exit` does, and Esc closes the page. If the host has no progress channel, ledger and lifecycle details still work. Without an interactive UI, bare `/atlas` only says which plan is running. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`; it never falls back to prompt-only execution.
+
+During execution an above-editor Atlas widget shows the plan bar, done/total and gate counts, running children, and compact live per-row usage. It remains visible while you use the normal editor and disappears on exit, session switch, or shutdown. Disable it with `atlasWidget`; the `/atlas` observation page remains available.
 
 Session A can finish part of a plan and exit, and session B can pick it up with `/atlas <name>`, as long as both use the same host session directory and workspace. Exiting is immediate: it neither cancels children nor marks anything complete, and it does not block closing the host. While native child work is still running, the plan stays owned by its session until that work reports a final result, so no other session can write to it at the same time. A session that owns a plan and has provably died can be recovered; unclear ownership, or ownership by another host, is refused.
 
@@ -100,13 +102,14 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 | Setting | Values | Default | Effect |
 | ------- | ------ | ------- | ------ |
 | `reviewLevel` | `off` \| `ask` \| `standard` \| `high-accuracy` | `ask` | Controls plan review before the proposal. |
+| `atlasWidget` | `true` \| `false` | `true` | Show the live progress widget above the editor while this session executes Atlas. |
 
 - `ask`: Momus reviews every plan. Momus and Oracle together review when you ask for high accuracy or the work is nontrivial and unclear; for clear work you get a one-time choice.
 - `standard`: Momus reviews every plan without offering high accuracy, but an explicit request still adds Oracle.
 - `high-accuracy`: Momus and Oracle always review, with no choice offered.
 - `off`: no Momus or Oracle plan review, even on request. Metis still checks for planning gaps, and Atlas still runs the F1 compliance gate after approval.
 
-User settings merge with project overrides. The plugin reads the setting for the session's cwd at startup, so restart the session after changing it.
+User settings merge with project overrides. The plugin reads settings for the session's cwd at startup, so restart the session after changing them.
 
 ## Plan format
 
