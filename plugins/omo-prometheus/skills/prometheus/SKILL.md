@@ -117,7 +117,7 @@ A task row and its body look like this:
 
 Other sections may use checkboxes freely; only rows at column 0 under these two headings are ledger rows. Every row starts unchecked (`- [ ]`).
 
-After all task rows are complete, independent fresh children perform F1–F3 first; F4 starts only after their reports pass and synthesizes that completed evidence. F1 requests `momus` with `review_kind: compliance`; F2 and F4 request `deep-high` (fallback `task`); F3 requests `deep-low` (fallback `task`). Atlas uses each ledger-resolved agent, fresh attempt binding, and the runtime-supplied structured gate outputSchema. Verification children are distinct from implementation children and from one another.
+After all task rows are complete, independent fresh children run F1–F4 together. F1 requests `momus` with `review_kind: compliance`; F2 and F4 request `deep-high` (fallback `task`); F3 requests `deep-low` (fallback `task`). Atlas uses each ledger-resolved agent, fresh attempt binding, and the runtime-supplied structured gate outputSchema. Verification children are distinct from implementation children and from one another. A rejecting gate gets correction rows appended at execution time and is the only gate rerun, so the plan needs no rework tasks of its own.
 
 Size the plan to the work. Split slices where they are genuinely independent, and keep one cohesive task when splitting would sever shared reasoning. **Do not pad**: no template sections that carry no content, no invented phases, no minimum number of tasks, children, or verification lanes, and no implementation minutiae a competent worker derives from the code you already referenced.
 

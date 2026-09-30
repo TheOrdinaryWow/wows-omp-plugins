@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import type { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
-import { type ChildReceipt, type ExecutionLedger, type LedgerItem, planDigest } from "./ledger.ts";
+import { type ChildReceipt, type ExecutionLedger, type LedgerItem, ledgerRows, planDigest } from "./ledger.ts";
 
 interface Assignment {
   ledgerId: string;
@@ -44,23 +44,12 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function reviewedGates(ledger: ExecutionLedger, row: LedgerItem): Record<string, string> {
-  if (row.id !== "F4") return {};
-  const hashes: Record<string, string> = {};
-  for (const gate of ledger.gates.filter((candidate) => candidate.id !== "F4")) {
-    if (gate.status !== "done" || !gate.receipt) throw new Error("F4 requires completed F1–F3 receipts");
-    hashes[gate.id] = gate.receipt.outputSha256;
-  }
-  return hashes;
-}
-
 /** The exact outputSchema given to a native gate child; it overrides any agent-native prose format. */
 export function gateOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Record<string, unknown> {
-  const reviewed = reviewedGates(ledger, row);
   return {
     type: "object",
     additionalProperties: false,
-    required: ["gateId", "planSha256", "attempt", "verdict", "summary", "evidence", "reviewedGates"],
+    required: ["gateId", "planSha256", "attempt", "verdict", "summary", "evidence"],
     properties: {
       gateId: { const: row.id },
       planSha256: { const: ledger.planSha256 },
@@ -68,12 +57,6 @@ export function gateOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Reco
       verdict: { enum: ["PASS", "FAIL", "INCONCLUSIVE"] },
       summary: { type: "string", minLength: 1 },
       evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
-      reviewedGates: {
-        type: "object",
-        additionalProperties: false,
-        required: Object.keys(reviewed),
-        properties: Object.fromEntries(Object.entries(reviewed).map(([id, hash]) => [id, { const: hash }])),
-      },
     },
   };
 }
@@ -86,7 +69,7 @@ export function validateGateOutput(content: string, ledger: ExecutionLedger, row
   } catch {
     throw new Error(`${row.id} child output must be a JSON object matching the gate outputSchema`);
   }
-  const expected = reviewedGates(ledger, row);
+  // Outputs from earlier plugin versions may carry a reviewedGates field; it no longer affects the verdict.
   if (
     !object(result) ||
     result.gateId !== row.id ||
@@ -96,15 +79,14 @@ export function validateGateOutput(content: string, ledger: ExecutionLedger, row
     !result.summary.trim() ||
     !Array.isArray(result.evidence) ||
     !result.evidence.length ||
-    result.evidence.some((entry) => typeof entry !== "string" || !entry.trim()) ||
-    !object(result.reviewedGates) ||
-    Object.keys(result.reviewedGates).length !== Object.keys(expected).length ||
-    Object.entries(expected).some(([id, hash]) => result.reviewedGates && object(result.reviewedGates) && result.reviewedGates[id] !== hash)
+    result.evidence.some((entry) => typeof entry !== "string" || !entry.trim())
   ) {
-    throw new Error(`${row.id} child output does not match the current plan, attempt, and prerequisite reports`);
+    throw new Error(`${row.id} child output does not match the current plan and attempt`);
   }
   if (result.verdict !== "PASS")
-    throw new Error(`${row.id} did not pass: ${String(result.verdict)}. Reopen affected work or report the blocker.`);
+    throw new Error(
+      `${row.id} did not pass: ${String(result.verdict)}. Record each correction with atlas_ledger fix, or report the blocker.`,
+    );
 }
 
 /** Correlates native dispatch and terminal lifecycle events; it never launches or schedules children. */
@@ -132,7 +114,7 @@ export class ChildEvidence {
       }
       const rows: Record<string, string> = {};
       for (const [id, attempt] of Object.entries(binding.rows)) {
-        const row = [...ledger.items, ...ledger.gates].find((candidate) => candidate.id === id);
+        const row = ledgerRows(ledger).find((candidate) => candidate.id === id);
         if (row?.status !== "in_progress" || typeof attempt !== "string" || attempt !== row.attempt) {
           throw new Error(`${id} has no current started attempt; use atlas_ledger start before dispatch`);
         }

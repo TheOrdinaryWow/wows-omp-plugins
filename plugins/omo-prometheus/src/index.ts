@@ -28,12 +28,14 @@ import { findPlanSessions } from "./atlas-sessions.ts";
 import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import {
+  addFixRow,
   type ExecutionLedger,
-  invalidateRows,
   isComplete,
+  ledgerRows,
   planDigest,
   refreshDispatchAgents,
   renderLedgerSummary,
+  reopenRow,
   startRow,
 } from "./ledger.ts";
 import { writeLedgerAtomic } from "./ledger-store.ts";
@@ -324,7 +326,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const ledgerSummary = (ledger: ExecutionLedger): string => {
-    const proofs = [...ledger.items, ...ledger.gates].flatMap((row) =>
+    const proofs = ledgerRows(ledger).flatMap((row) =>
       row.receipt && row.status === "done"
         ? [
             `- ${row.id}: ${path.join(path.dirname(ledger.planFilePath), "evidence", `${row.receipt.receiptId}.md`)} (origin session ${row.receipt.sessionId}, child ${row.receipt.childAgentId})`,
@@ -749,7 +751,9 @@ export default function prometheus(pi: ExtensionAPI): void {
         const snapshot: unknown = JSON.parse(await fs.readFile(record.ledgerPath ?? "", "utf8"));
         const rows =
           snapshot && typeof snapshot === "object" && "items" in snapshot && "gates" in snapshot
-            ? [snapshot.items, snapshot.gates].flatMap((list) => (Array.isArray(list) ? list : []))
+            ? [snapshot.items, "fixes" in snapshot ? snapshot.fixes : [], snapshot.gates].flatMap((list) =>
+                Array.isArray(list) ? list : [],
+              )
             : [];
         if (rows.length) remaining = rows.filter((row) => row?.status !== "done" || !row.receipt).length;
       } catch {
@@ -1247,25 +1251,33 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   const ledgerParameters = z.object({
     action: z
-      .enum(["status", "start", "done", "block", "reopen"])
-      .describe("status shows every row; start, done, block, and reopen change the row named by id"),
-    id: z.string().optional().describe("Plan row id such as T3 or F2; required for every action except status"),
+      .enum(["status", "start", "done", "block", "reopen", "fix"])
+      .describe(
+        "status shows every row; start, done, block, and reopen change the row named by id; fix appends an X row for the rejecting gate named by id",
+      ),
+    id: z.string().optional().describe("Row id such as T3, X1, or F2; required for every action except status"),
     evidence: z
       .string()
       .optional()
       .describe(
-        "Inspected observable evidence; required for done and block. Gate verdicts are read from native child output, not this text",
+        "Inspected observable evidence; required for done, block, and fix (the gate's rejection). Gate verdicts are read from native child output, not this text",
       ),
     childAgentId: z
       .string()
       .optional()
       .describe("Required for done: exact id of the owned native child dispatched for this started attempt"),
+    title: z.string().optional().describe("Required for fix: the correction the rejecting gate asked for"),
+    acceptance: z.string().optional().describe("Required for fix: the observable check that proves the correction"),
+    agent: z.string().optional().describe("Optional for fix: agent that performs the correction; defaults to task"),
   });
   type LedgerParams = {
-    action: "status" | "start" | "done" | "block" | "reopen";
+    action: "status" | "start" | "done" | "block" | "reopen" | "fix";
     id?: string;
     evidence?: string;
     childAgentId?: string;
+    title?: string;
+    acceptance?: string;
+    agent?: string;
   };
 
   pi.registerTool({
@@ -1355,7 +1367,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const ledger = await readLedger(ctx, record);
       if (!ledger) return { content: [{ type: "text" as const, text: pauseMessage(record) }], isError: true, details: {} };
       if (!isComplete(ledger)) {
-        const unfinished = [...ledger.items, ...ledger.gates].filter((item) => item.status !== "done");
+        const unfinished = ledgerRows(ledger).filter((item) => item.status !== "done");
         return {
           content: [
             {
@@ -1412,7 +1424,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. Gates require distinct fresh children with structured PASS output; F4 follows F1–F3. Reopen/block invalidates descendants and stale gate attempts.",
+      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Reopen/block affect only the named row.",
     parameters: ledgerParameters,
     defaultInactive: true,
     loadMode: "essential",
@@ -1426,10 +1438,32 @@ export default function prometheus(pi: ExtensionAPI): void {
         return await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
           if (params.action === "status") return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: { ledger } };
           const id = params.id?.trim();
-          const item = [...ledger.items, ...ledger.gates].find((entry) => entry.id === id);
+          const item = ledgerRows(ledger).find((entry) => entry.id === id);
           if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
           const evidence = params.evidence?.trim();
           let schema: Record<string, unknown> | undefined;
+          if (params.action === "fix") {
+            const fix = addFixRow(
+              ledger,
+              item.id,
+              {
+                title: params.title ?? "",
+                acceptance: params.acceptance ?? "",
+                agent: params.agent?.trim() || "task",
+                reason: evidence ?? "",
+              },
+              availableAgents(),
+            );
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.\n\n${ledgerSummary(ledger)}`,
+                },
+              ],
+              details: { id: fix.id, status: fix.status, gate: item.id },
+            };
+          }
           if (params.action === "start") {
             startRow(ledger, item.id);
             if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
@@ -1449,7 +1483,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               ledger,
               row: item,
               childAgentId,
-              priorReceipts: [...ledger.items, ...ledger.gates].flatMap((row) => (row.receipt ? [row.receipt] : [])),
+              priorReceipts: ledgerRows(ledger).flatMap((row) => (row.receipt ? [row.receipt] : [])),
             });
             if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during child evidence capture");
             // Only authenticated final native results can publish shared immutable proof.
@@ -1465,7 +1499,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             if ((params.action === "reopen" && item.status === "open") || (params.action === "block" && item.status === "blocked")) {
               throw new Error(`${item.id} is already ${item.status}`);
             }
-            invalidateRows(ledger, item.id, evidence);
+            reopenRow(ledger, item.id, evidence);
             if (params.action === "block") item.status = "blocked";
           }
           return {
@@ -1873,7 +1907,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return undefined;
     }
     if (isComplete(ledger)) return undefined;
-    const stamp = Math.max(...[...ledger.items, ...ledger.gates].map((item) => item.updatedAt));
+    const stamp = Math.max(...ledgerRows(ledger).map((item) => item.updatedAt));
     record.stallCount = stamp === record.lastContinuationLedgerStamp ? record.stallCount + 1 : 0;
     if (record.stallCount >= 2) {
       notify(ctx, "Atlas execution stalled; run /atlas exit or send new instructions", "warning");

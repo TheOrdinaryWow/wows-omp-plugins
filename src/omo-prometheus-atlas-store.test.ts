@@ -6,7 +6,15 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type AtlasPlan, AtlasStore } from "../plugins/omo-prometheus/src/atlas-store.ts";
-import { type ChildReceipt, type ExecutionLedger, invalidateRows, planDigest, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
+import {
+  addFixRow,
+  type ChildReceipt,
+  type ExecutionLedger,
+  ledgerRows,
+  planDigest,
+  reopenRow,
+  startRow,
+} from "../plugins/omo-prometheus/src/ledger.ts";
 
 const content = `# Shared execution
 
@@ -69,7 +77,7 @@ async function finish(
 ): Promise<ChildReceipt> {
   await store.transaction(fixture.plan.id, sessionId, (ledger) => startRow(ledger, id));
   return await store.transaction(fixture.plan.id, sessionId, async (ledger, plan) => {
-    const row = [...ledger.items, ...ledger.gates].find((item) => item.id === id);
+    const row = ledgerRows(ledger).find((item) => item.id === id);
     if (!row?.attempt || row.startedAt === undefined) throw new Error("Missing started row");
     const output = id.startsWith("F")
       ? JSON.stringify({
@@ -79,10 +87,6 @@ async function finish(
           verdict: "PASS",
           summary: "Verified the acceptance criteria",
           evidence: ["Observed the real result"],
-          reviewedGates:
-            id === "F4"
-              ? Object.fromEntries(ledger.gates.filter((gate) => gate.id !== "F4").map((gate) => [gate.id, gate.receipt?.outputSha256]))
-              : {},
         })
       : `Verified ${id}: the actual result matches its acceptance criterion.`;
     const source = path.join(fixture.native, `${randomUUID()}.md`);
@@ -214,13 +218,13 @@ describe("Atlas shared plan storage", () => {
     });
   });
 
-  test("missing copied output invalidates dependent receipts durably even when mutation is refused", async () => {
+  test("missing copied output reopens only the row whose proof is gone, durably even when mutation is refused", async () => {
     await fixture(async (f) => {
       await f.store.acquire(f.plan.id, "session-a");
       const source = await finish(f, f.store, "session-a", "T1");
-      await finish(f, f.store, "session-a", "T2");
-      const independent = await finish(f, f.store, "session-a", "T3");
-      await finish(f, f.store, "session-a", "F1");
+      const dependent = await finish(f, f.store, "session-a", "T2");
+      await finish(f, f.store, "session-a", "T3");
+      const gate = await finish(f, f.store, "session-a", "F1");
       await fs.rm(path.join(f.plan.directory, "evidence", `${source.receiptId}.md`));
       await expect(
         f.store.transaction(f.plan.id, "session-a", () => {
@@ -229,13 +233,72 @@ describe("Atlas shared plan storage", () => {
       ).rejects.toThrow("refused");
       const ledger: ExecutionLedger = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8"));
       expect(ledger.items[0]?.status).toBe("open");
-      expect(ledger.items[1]?.status).toBe("open");
-      expect(ledger.gates[0]?.status).toBe("open");
-      expect(ledger.items[2]?.receipt).toEqual(independent);
-      expect(ledger.items[1]?.attempt).toBeUndefined();
+      expect(ledger.items[1]?.receipt).toEqual(dependent);
+      expect(ledger.gates[0]?.receipt).toEqual(gate);
       const checkpoint = JSON.parse(await fs.readFile(path.join(f.plan.directory, "checkpoint.json"), "utf8"));
       expect(checkpoint.attempts.T1).toBeNull();
-      expect(checkpoint.attempts.T2).toBeNull();
+      expect(checkpoint.attempts.T2.receiptId).toBe(dependent.receiptId);
+    });
+  });
+
+  test("a gate rejection persists its fix row and reruns only that gate, even after an interrupted write", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      for (const id of ["T1", "T2", "T3", "F1"]) await finish(f, f.store, "session-a", id);
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "F2"));
+      const beforeFix = await fs.readFile(f.plan.ledgerPath, "utf8");
+      const fix = {
+        title: "Stabilize retention test",
+        acceptance: "bun test passes twice",
+        agent: "task",
+        reason: "expected 8 keys, got 10",
+      };
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => addFixRow(ledger, "F2", fix, ["deep-low", "task"]));
+      // The checkpoint already names X1, but the ledger replacement that adds it was interrupted.
+      await fs.writeFile(f.plan.ledgerPath, beforeFix);
+      const interrupted = await f.store.transaction(f.plan.id, "session-a", (ledger) => ledger);
+      expect(interrupted.fixes).toEqual([]);
+      expect(interrupted.gates[1]?.status).toBe("open");
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => addFixRow(ledger, "F2", fix, ["deep-low", "task"]));
+      await finish(f, f.store, "session-a", "X1");
+      await finish(f, f.store, "session-a", "F2");
+      const ledger = await f.store.transaction(f.plan.id, "session-a", (value) => value);
+      expect(ledgerRows(ledger).map((row) => [row.id, row.status])).toEqual([
+        ["T1", "done"],
+        ["T2", "done"],
+        ["T3", "done"],
+        ["X1", "done"],
+        ["F1", "done"],
+        ["F2", "done"],
+        ["F3", "open"],
+        ["F4", "open"],
+      ]);
+      expect(ledger.gates[1]?.dependsOn).toEqual(["T1", "T2", "T3", "X1"]);
+    });
+  });
+
+  test("a bundle written by the previous ledger version keeps its progress and continues after upgrade", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      for (const id of ["T1", "T3"]) await finish(f, f.store, "session-a", id);
+      await f.store.release(f.plan.id, "session-a");
+      const { fixes: _fixes, ...current } = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      const f4 = current.gates[3];
+      if (!f4) throw new Error("Missing F4");
+      f4.dependsOn.push("F1", "F2", "F3");
+      await fs.writeFile(f.plan.ledgerPath, JSON.stringify({ ...current, version: 2 }));
+      const upgraded = new AtlasStore(f.root);
+      expect((await upgraded.details(f.root)).find((detail) => detail.plan.id === f.plan.id)?.done).toBe(2);
+      await upgraded.acquire(f.plan.id, "session-b");
+      const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => ledger, { resume: true });
+      expect(ledgerRows(resumed).map((row) => row.status)).toEqual(["done", "open", "done", "open", "open", "open", "open"]);
+      await finish(f, upgraded, "session-b", "T2");
+      await finish(f, upgraded, "session-b", "F4");
+      const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      expect(saved.version).toBe(3);
+      expect(saved.fixes).toEqual([]);
+      expect(saved.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
+      expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
     });
   });
 
@@ -244,7 +307,7 @@ describe("Atlas shared plan storage", () => {
       await f.store.acquire(f.plan.id, "session-a");
       await finish(f, f.store, "session-a", "T1");
       const completed = await fs.readFile(f.plan.ledgerPath, "utf8");
-      await f.store.transaction(f.plan.id, "session-a", (ledger) => invalidateRows(ledger, "T1"));
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => reopenRow(ledger, "T1"));
       await f.store.transaction(f.plan.id, "session-a", (ledger) => startRow(ledger, "T1"));
       // A checkpoint write succeeded, but the following ledger replacement was interrupted.
       await fs.writeFile(f.plan.ledgerPath, completed);
@@ -438,7 +501,7 @@ describe("Atlas shared plan storage", () => {
       await f.store.acquire(f.plan.id, "session-a");
       for (const row of ["T1", "T2", "T3"]) await finish(f, f.store, "session-a", row);
       await finish(f, f.store, "session-a", "F1", "RepeatedName");
-      await f.store.transaction(f.plan.id, "session-a", (ledger) => invalidateRows(ledger, "F1"));
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => reopenRow(ledger, "F1"));
       await expect(finish(f, f.store, "session-a", "F1", "RepeatedName")).rejects.toThrow("fresh native child");
       await f.store.release(f.plan.id, "session-a");
       const b = new AtlasStore(f.root);
@@ -456,7 +519,7 @@ describe("Atlas shared plan storage", () => {
       const previous = `${f.plan.ledgerPath}.previous`;
       await expect(
         f.store.transaction(f.plan.id, "session-a", async (ledger) => {
-          invalidateRows(ledger, "T1");
+          reopenRow(ledger, "T1");
           await fs.rename(f.plan.ledgerPath, previous);
           await fs.mkdir(f.plan.ledgerPath);
         }),
@@ -499,7 +562,7 @@ describe("Atlas shared plan storage", () => {
     });
   });
 
-  test("session B verifies F4 from copied F1-F3 reports with the original receipt identities", async () => {
+  test("session B completes the last gate while copied gate receipts keep their original identities", async () => {
     await fixture(async (f) => {
       await f.store.acquire(f.plan.id, "session-a");
       for (const id of ["T1", "T2", "T3", "F1", "F2", "F3"]) await finish(f, f.store, "session-a", id);
@@ -514,8 +577,6 @@ describe("Atlas shared plan storage", () => {
       expect(after.gates.slice(0, 3)).toEqual(before.gates.slice(0, 3));
       expect(after.gates.every((row) => row.status === "done")).toBe(true);
       expect(synthesis.sessionId).toBe("session-b");
-      const output = JSON.parse(await fs.readFile(path.join(f.plan.directory, "evidence", `${synthesis.receiptId}.md`), "utf8"));
-      expect(output.reviewedGates).toEqual(Object.fromEntries(before.gates.slice(0, 3).map((row) => [row.id, row.receipt?.outputSha256])));
     });
   });
 

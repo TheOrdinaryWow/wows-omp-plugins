@@ -158,32 +158,34 @@ evidence/        copied native outputs and origin receipts
 ownership/       exclusive execution ownership records
 ```
 
-The ledger tracks each T and F row's acceptance criteria, dependencies, status, requested and resolved agent, attempt, evidence receipt, and the plan's SHA-256. The dependency graph is validated up front, so a plan with a cycle never partially runs. Ticking a box in the plan file does not count as progress.
+The ledger tracks each T and F row's acceptance criteria, dependencies, status, requested and resolved agent, attempt, evidence receipt, and the plan's SHA-256, plus any X correction rows a final gate asked for. The dependency graph is validated up front, so a plan with a cycle never partially runs. Ticking a box in the plan file does not count as progress.
 
-Atlas drives the ledger with `atlas_ledger` (`status`, `start`, `done`, `block`, `reopen`). A row is marked done only with proof from the child's real final result, so a failed, foreign, or still-running child, or a hand-written reference, cannot complete work. Blocking or reopening a row also reopens everything that depends on it. `atlas_release` needs a valid receipt for every row plus your explicit confirmation.
+Atlas drives the ledger with `atlas_ledger` (`status`, `start`, `done`, `block`, `reopen`, `fix`). A row is marked done only with proof from the child's real final result, so a failed, foreign, or still-running child, or a hand-written reference, cannot complete work. Blocking or reopening a row affects only that row: completed work that depends on it keeps its proof, and the final gates judge the finished result. `atlas_release` needs a valid receipt for every row plus your explicit confirmation.
 
 If the ledger or plan artifacts are missing, corrupt, or no longer match the approved plan, Atlas pauses instead of carrying on without one, and nothing is silently rebuilt. Restore the approved artifacts, or exit with `/atlas` and get a changed plan approved again.
 
 When Atlas stops with unfinished rows, the plugin continues it with a hidden `<atlas-continuation>` message containing the ledger summary. OMP allows at most eight chained continuations per user turn. Two continuations in a row without progress stop the loop and notify you; exit with `/atlas` or send new instructions. Any message from you resets the count.
 
-Progress lives in the shared bundle, not in the session. Child outputs are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the original session. `atlas_ledger status` shows where those outputs are. Only the child's own output is kept; files it merely links to are not copied. If proof goes missing or changes, the affected rows and their dependents reopen, and an old session branch cannot roll shared progress back.
+Progress lives in the shared bundle, not in the session. Child outputs are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the original session. `atlas_ledger status` shows where those outputs are. Only the child's own output is kept; files it merely links to are not copied. If a row's proof goes missing or changes, that row reopens, and an old session branch cannot roll shared progress back.
+
+Updating the plugin keeps existing plans runnable. A ledger written by an earlier release is upgraded when it is loaded, keeping its verified progress, and needs no fresh approval.
 
 Plans run with older versions of the plugin kept their ledger inside the session. Those are not migrated: resuming one pauses and asks for fresh approval. The old `prometheus_ledger` and `prometheus_release` tools are now `atlas_ledger` and `atlas_release`, with no aliases.
 
 ## Final gates
 
-Once every T row is done, Atlas sends F1–F3 to three separate fresh verification children, none of which did implementation work or already reviewed. F4 starts only after all three pass and reads their reports.
+Once every T row is done, Atlas sends F1–F4 together to four separate fresh verification children, none of which did implementation work or already reviewed.
 
 |Gate|Agent|Fallback|Checks|
 |---|---|---|---|
 |F1. Plan compliance review|`momus` (`review_kind: compliance`)|`reviewer`|executed changes match the approved plan, using the ledger summary and `git diff --stat`|
 |F2. Code quality review|`deep-high`|`task`|maintainability, scope, test value, and evidence-backed blockers|
 |F3. Real-surface QA|`deep-low`|`task`|every scenario in the plan's Verification section run on the real surface with command and observed result|
-|F4. Success-criteria fidelity|`deep-high`|`task`|independent synthesis of completed F1–F3 reports and criterion-tied evidence|
+|F4. Success-criteria fidelity|`deep-high`|`task`|every named success criterion and adversarial case, tied to evidence|
 
-Each gate returns a strict structured verdict (`PASS`, `FAIL`, or `INCONCLUSIVE`) with a summary and evidence; F4 also cites the F1–F3 reports it reviewed. Only a matching structured `PASS` counts, never a passing word in prose.
+Each gate returns a strict structured verdict (`PASS`, `FAIL`, or `INCONCLUSIVE`) with a summary and evidence. Only a matching structured `PASS` counts, never a passing word in prose.
 
-A failed gate reopens the affected T rows, everything that depends on them, and all final gates. Reopening only F1, F2, or F3 keeps the other two reviews but always reruns F4.
+When a gate rejects the work, Atlas records each correction as an X row (`atlas_ledger fix`), dispatches it like any task, and then reruns only the gate that rejected. Completed T rows and gates that already passed are not reopened.
 
 ## Models
 

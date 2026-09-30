@@ -11,9 +11,10 @@ import {
   createLedger,
   type ExecutionLedger,
   type ItemStatus,
-  invalidateRows,
   isComplete,
+  ledgerRows,
   planDigest,
+  reopenRow,
   restoreLedger,
 } from "./ledger.ts";
 import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
@@ -199,7 +200,7 @@ function checkpointFor(ledger: ExecutionLedger, approvalSha256: string): Checkpo
     ledgerId: ledger.ledgerId,
     planSha256: ledger.planSha256,
     attempts: Object.fromEntries(
-      [...ledger.items, ...ledger.gates].map((row) => [
+      ledgerRows(ledger).map((row) => [
         row.id,
         row.attempt && row.startedAt !== undefined
           ? { attempt: row.attempt, startedAt: row.startedAt, receiptId: row.status === "done" ? (row.receipt?.receiptId ?? null) : null }
@@ -223,8 +224,10 @@ function validateCheckpoint(raw: unknown, ledger: ExecutionLedger, approvalSha25
   )
     throw new Error("Atlas attempt checkpoint does not match the approved ledger");
   const attempts = value.attempts;
-  const rows = [...ledger.items, ...ledger.gates];
-  if (Object.keys(attempts).length !== rows.length || rows.some((row) => !Object.hasOwn(attempts, row.id))) {
+  const rows = ledgerRows(ledger);
+  // A fix row is checkpointed before the ledger that adds it, so an interrupted write may leave only its checkpoint key.
+  const unexpected = Object.keys(attempts).filter((id) => !rows.some((row) => row.id === id));
+  if (rows.some((row) => !Object.hasOwn(attempts, row.id)) || unexpected.some((id) => !/^X[1-9]\d*$/.test(id))) {
     throw new Error("Atlas attempt checkpoint has missing or unexpected rows");
   }
   for (const attempt of Object.values(attempts)) {
@@ -549,9 +552,9 @@ export class AtlasStore {
           const { approvalSha256 } = await this.#plan(plan.id);
           const data = await jsonFile(plan.ledgerPath);
           const ledger = restoreLedger(data, plan.planFilePath, await regularFile(plan.planFilePath), plan.planSha256);
-          if (data !== ledger) throw new Error("Atlas shared ledger must use receipt-bearing version two");
+          if (data !== ledger) throw new Error("Atlas shared ledger must use a receipt-bearing version");
           validateCheckpoint(await jsonFile(path.join(plan.directory, "checkpoint.json")), ledger, approvalSha256);
-          const rows = [...ledger.items, ...ledger.gates];
+          const rows = ledgerRows(ledger);
           const done = rows.filter((row) => row.status === "done").length;
           const ownerDir = path.join(plan.directory, "ownership");
           const slots = await this.#ownershipSlots(ownerDir);
@@ -729,7 +732,7 @@ export class AtlasStore {
       const { plan, approvalSha256 } = await this.#plan(planId);
       const data = await jsonFile(plan.ledgerPath);
       const ledger = restoreLedger(data, plan.planFilePath, await regularFile(plan.planFilePath), plan.planSha256);
-      if (ledger !== data) throw new Error("Atlas shared ledger must use receipt-bearing version two");
+      if (ledger !== data) throw new Error("Atlas shared ledger must use a receipt-bearing version");
       validateCheckpoint(await jsonFile(path.join(plan.directory, "checkpoint.json")), ledger, approvalSha256);
       if (this.#held.has(plan.id)) {
         const held = await this.#assertOwner(plan, sessionId);
@@ -762,7 +765,7 @@ export class AtlasStore {
       const base = path.join(plan.directory, "evidence", receipt.receiptId);
       const saved = await jsonFile(`${base}.json`);
       const output = await regularFile(`${base}.md`);
-      const row = [...ledger.items, ...ledger.gates].find((item) => item.id === receipt.rowId);
+      const row = ledgerRows(ledger).find((item) => item.id === receipt.rowId);
       if (
         !row ||
         row.startedAt === undefined ||
@@ -794,14 +797,14 @@ export class AtlasStore {
       const content = await regularFile(plan.planFilePath);
       const data = await jsonFile(plan.ledgerPath);
       const ledger = restoreLedger(data, plan.planFilePath, content, plan.planSha256);
-      if (data !== ledger) throw new Error("Atlas shared ledger must use receipt-bearing version two");
+      if (data !== ledger) throw new Error("Atlas shared ledger must use a receipt-bearing version");
       const checkpoint = validateCheckpoint(await jsonFile(path.join(plan.directory, "checkpoint.json")), ledger, approvalSha256);
       let changed = false;
-      for (const row of [...ledger.items, ...ledger.gates]) {
+      for (const row of ledgerRows(ledger)) {
         const saved = checkpoint.attempts[row.id];
         const sameAttempt = saved !== null && saved !== undefined && saved.attempt === row.attempt && saved.startedAt === row.startedAt;
         if (row.status === "in_progress" && (options?.resume || !sameAttempt)) {
-          invalidateRows(ledger, row.id, "Interrupted or invalidated attempt reopened; dispatch a fresh child.");
+          reopenRow(ledger, row.id, "Interrupted or invalidated attempt reopened; dispatch a fresh child.");
           changed = true;
         }
         if (row.status !== "done") continue;
@@ -816,7 +819,7 @@ export class AtlasStore {
           receipt.childAgentId !== row.childAgentId ||
           !(await this.#verifyReceipt(plan, ledger, receipt))
         ) {
-          invalidateRows(ledger, row.id, INVALID_PROOF);
+          reopenRow(ledger, row.id, INVALID_PROOF);
           changed = true;
         }
       }
@@ -828,7 +831,7 @@ export class AtlasStore {
       const recovered = JSON.stringify(ledger);
       options?.assertActive?.();
       const scope: TransactionScope = { store: this, plan, sessionId, ledger, checkpoint, active: true, authenticated: new Map() };
-      for (const row of [...ledger.items, ...ledger.gates]) {
+      for (const row of ledgerRows(ledger)) {
         if (row.status === "done" && row.receipt && row.startedAt !== undefined) {
           scope.authenticated.set(row.id, { receipt: JSON.stringify(row.receipt), startedAt: row.startedAt });
         }
@@ -844,7 +847,7 @@ export class AtlasStore {
       await this.#assertOwner(plan, sessionId);
       const validated = restoreLedger(ledger, plan.planFilePath, content, plan.planSha256);
       if (validated !== ledger || ledger.ledgerId !== checkpoint.ledgerId) throw new Error("Atlas ledger identity changed in transaction");
-      for (const row of [...ledger.items, ...ledger.gates]) {
+      for (const row of ledgerRows(ledger)) {
         if (row.status !== "done") continue;
         if (
           !row.receipt ||
@@ -883,7 +886,7 @@ export class AtlasStore {
       receipt.nativeFinal !== true
     )
       throw new Error("Atlas receipt differs from the owned native assignment");
-    const row = [...ledger.items, ...ledger.gates].find((item) => item.id === receipt.rowId);
+    const row = ledgerRows(ledger).find((item) => item.id === receipt.rowId);
     if (
       row?.status !== "in_progress" ||
       !row.attempt ||

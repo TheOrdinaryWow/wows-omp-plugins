@@ -2,13 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 
 import {
+  addFixRow,
   createLedger,
-  invalidateRows,
   isComplete,
+  ledgerRows,
   nextDispatchable,
   parsePlanChecklist,
   refreshDispatchAgents,
   renderLedgerSummary,
+  reopenRow,
   restoreLedger,
   startRow,
 } from "../plugins/omo-prometheus/src/ledger.ts";
@@ -65,17 +67,14 @@ describe("Prometheus execution ledger", () => {
     expect(() => createLedger("local://example-plan.md", plan.replace("  - Depends on: T1", "  - Depends on: T77"))).toThrow();
   });
 
-  test("never accepts plan checkboxes as execution receipts and orders final synthesis", () => {
+  test("never accepts plan checkboxes as execution receipts and starts all gates together", () => {
     const ledger = createLedger("local://example-plan.md", plan);
     expect(ledger.items.map((item) => item.status)).toEqual(["open", "open", "open"]);
     expect(ledger.items[0]?.acceptance).toBe("initial behavior observed");
     expect(nextDispatchable(ledger).map((item) => item.id)).toEqual(["T1"]);
     expect(() => startRow(ledger, "T2")).toThrow("unfinished");
     for (const item of ledger.items) item.status = "done";
-    expect(nextDispatchable(ledger).map((item) => item.id)).toEqual(["F1", "F2", "F3"]);
-    expect(() => startRow(ledger, "F4")).toThrow("unfinished");
-    for (const gate of ledger.gates.slice(0, 3)) gate.status = "done";
-    expect(nextDispatchable(ledger).map((item) => item.id)).toEqual(["F4"]);
+    expect(nextDispatchable(ledger).map((item) => item.id)).toEqual(["F1", "F2", "F3", "F4"]);
     for (const gate of ledger.gates) gate.status = "done";
     expect(isComplete(ledger)).toBe(false); // Status-only completion cannot authorize release.
   });
@@ -130,33 +129,90 @@ describe("Prometheus execution ledger", () => {
     expect(() => createLedger("local://cycle-plan.md", plan.replace("Depends on: none", "Depends on: T3"))).toThrow("cycle");
   });
 
-  test("reopening work invalidates transitive descendants and all verification attempts", () => {
+  test("reopening a row discards only its attempt and keeps completed dependents and passed gates", () => {
     const ledger = createLedger("local://example-plan.md", plan);
-    for (const row of [...ledger.items, ...ledger.gates]) {
+    for (const row of ledgerRows(ledger)) {
       row.status = "done";
       row.attempt = "old-attempt";
       row.childAgentId = "OldChild";
-      row.evidence = "obsolete proof";
     }
-    if (ledger.gates[3]) ledger.gates[3].status = "in_progress";
-    expect(invalidateRows(ledger, "T1")).toEqual(["T1", "T2", "T3", "F1", "F2", "F3", "F4"]);
-    expect(
-      [...ledger.items, ...ledger.gates].every(
-        (row) => row.status === "open" && row.attempt === undefined && row.childAgentId === undefined && row.evidence === undefined,
-      ),
-    ).toBe(true);
-    const started = startRow(ledger, "T1");
+    reopenRow(ledger, "T1");
+    expect(ledgerRows(ledger).map((row) => [row.id, row.status])).toEqual([
+      ["T1", "open"],
+      ["T2", "done"],
+      ["T3", "done"],
+      ["F1", "done"],
+      ["F2", "done"],
+      ["F3", "done"],
+      ["F4", "done"],
+    ]);
+    expect(ledger.items[0]?.attempt).toBeUndefined();
+    expect(ledger.items[1]?.attempt).toBe("old-attempt");
+    const oldAttempt = startRow(ledger, "T1").attempt;
     expect(() => startRow(ledger, "T1")).toThrow("reopen");
-    const oldAttempt = started.attempt;
-    invalidateRows(ledger, "T1");
+    reopenRow(ledger, "T1");
     expect(startRow(ledger, "T1").attempt).not.toBe(oldAttempt);
+    expect(restoreLedger(ledger, ledger.planFilePath, plan, ledger.planSha256)).toBe(ledger);
   });
 
-  test("reopening one independent review invalidates synthesis without discarding other reviews", () => {
+  test("a gate rejection appends fix rows that only that gate waits for", () => {
     const ledger = createLedger("local://example-plan.md", plan);
-    for (const row of [...ledger.items, ...ledger.gates]) row.status = "done";
-    expect(invalidateRows(ledger, "F2")).toEqual(["F2", "F4"]);
-    expect(ledger.gates.map((row) => row.status)).toEqual(["done", "open", "done", "open"]);
+    for (const row of ledger.items) row.status = "done";
+    for (const gate of ledger.gates) startRow(ledger, gate.id);
+    const failedAttempt = ledger.gates[1]?.attempt;
+    const fix = { title: "Remove wiring tests", acceptance: "bun test passes without them", agent: "task", reason: "wiring-only tests" };
+    expect(addFixRow(ledger, "F2", fix).id).toBe("X1");
+    expect(addFixRow(ledger, "F2", { ...fix, title: "Stabilize snapshot retention" }).id).toBe("X2");
+    const f2 = ledger.gates[1];
+    expect(f2?.status).toBe("open");
+    expect(f2?.attempt).not.toBe(failedAttempt);
+    expect(f2?.dependsOn).toEqual(["T1", "T2", "T3", "X1", "X2"]);
+    expect(ledger.gates.filter((gate) => gate.id !== "F2").every((gate) => gate.status === "in_progress" && gate.attempt)).toBe(true);
+    expect(ledger.items.every((row) => row.status === "done")).toBe(true);
+    expect(nextDispatchable(ledger).map((row) => row.id)).toEqual(["X1", "X2"]);
+    expect(() => startRow(ledger, "F2")).toThrow("X1, X2");
+    for (const row of ledger.fixes) row.status = "done";
+    expect(nextDispatchable(ledger).map((row) => row.id)).toEqual(["F2"]);
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).fixes).toHaveLength(2);
+  });
+
+  test("fix rows are refused for tasks, passed gates, missing checks, and unknown agents", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    const fix = { title: "Correct it", acceptance: "check passes", agent: "task", reason: "rejected" };
+    expect(() => addFixRow(ledger, "T2", fix)).toThrow("final gate");
+    if (ledger.gates[0]) ledger.gates[0].status = "done";
+    expect(() => addFixRow(ledger, "F1", fix)).toThrow("already passed");
+    expect(() => addFixRow(ledger, "F2", { ...fix, acceptance: " " })).toThrow("acceptance");
+    expect(() => addFixRow(ledger, "F2", { ...fix, agent: "made-up-agent" })).toThrow("made-up-agent");
+    expect(ledger.fixes).toEqual([]);
+  });
+
+  test("refuses fix rows whose identity or gate binding was tampered with", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    addFixRow(ledger, "F3", { title: "Rerun QA fixture", acceptance: "scenario passes", agent: "task", reason: "flaky" });
+    const renumbered = structuredClone(ledger);
+    if (renumbered.fixes[0]) renumbered.fixes[0].id = "X2";
+    expect(() => restoreLedger(renumbered, ledger.planFilePath, plan, ledger.planSha256)).toThrow("fix row");
+    const rebound = structuredClone(ledger);
+    if (rebound.fixes[0]) rebound.fixes[0].origin = "F1";
+    expect(() => restoreLedger(rebound, ledger.planFilePath, plan, ledger.planSha256)).toThrow("Malformed");
+  });
+
+  test("upgrades a version-two ledger in place and keeps its verified progress", () => {
+    const current = createLedger("local://example-plan.md", plan);
+    const { fixes: _fixes, ...rest } = current;
+    const legacy = {
+      ...rest,
+      version: 2,
+      items: current.items.map((row) => ({ ...row, status: row.id === "T2" ? "open" : "done", attempt: "a", startedAt: 1 })),
+      gates: current.gates.map((row) => ({ ...row, dependsOn: row.id === "F4" ? [...row.dependsOn, "F1", "F2", "F3"] : row.dependsOn })),
+    };
+    const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
+    expect(restored).toBe(legacy as unknown as typeof restored);
+    expect(restored.version).toBe(3);
+    expect(restored.fixes).toEqual([]);
+    expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
+    expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
   });
 
   test("refuses altered plan bytes and corrupt structural state on restore", () => {
@@ -178,7 +234,7 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(2);
+    expect(restored.version).toBe(3);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
   });
 });

@@ -271,7 +271,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const ledger = async (): Promise<ExecutionLedger> => JSON.parse(await readFile(ledgerFile, "utf8"));
   const row = async (id: string): Promise<LedgerItem> => {
     const current = await ledger();
-    const item = [...current.items, ...current.gates].find((item) => item.id === id);
+    const item = [...current.items, ...(current.fixes ?? []), ...current.gates].find((item) => item.id === id);
     assert(item);
     return item;
   };
@@ -535,10 +535,6 @@ async function scenario(name: string, root: string): Promise<void> {
       asyncStatus?: string;
     } = {},
   ) => {
-    const reviewed =
-      prepared.item.id === "F4"
-        ? Object.fromEntries(prepared.current.gates.slice(0, 3).map((item) => [item.id, item.receipt?.outputSha256]))
-        : {};
     const content =
       options.content ??
       (prepared.item.id.startsWith("F")
@@ -549,7 +545,6 @@ async function scenario(name: string, root: string): Promise<void> {
             verdict: "PASS",
             summary: "The named criteria were exercised",
             evidence: ["actual command and observed result"],
-            reviewedGates: reviewed,
           })
         : "Implemented assigned behavior; command observed the expected result.");
     await writeFile(join(artifacts, `${childAgentId}.md`), content);
@@ -902,26 +897,69 @@ async function scenario(name: string, root: string): Promise<void> {
     refused(await call({ action: "done", id: "T1", childAgentId: "Bogus", evidence: "agent://Bogus PASS" }));
     refused(await call({ action: "start", id: "F1" }));
     await tasksDone();
-    refused(await call({ action: "start", id: "F4" }));
-    await finish("F1");
-    await finish("F2");
-    refused(await call({ action: "start", id: "F4" }));
-    await finish("F3");
-    const synthesis = await prepare("F4");
-    await publish(synthesis, "WrongReports", {
+    const fidelity = await prepare("F4");
+    await publish(fidelity, "StaleAttempt", {
       content: JSON.stringify({
         gateId: "F4",
-        planSha256: synthesis.current.planSha256,
-        attempt: synthesis.item.attempt,
+        planSha256: fidelity.current.planSha256,
+        attempt: "stale-attempt",
         verdict: "PASS",
         summary: "claims success",
         evidence: ["report"],
-        reviewedGates: {},
       }),
     });
-    refused(await done("F4", "WrongReports"));
-    await publish(synthesis, "Synthesis");
-    ok(await done("F4", "Synthesis"));
+    refused(await done("F4", "StaleAttempt"));
+    await publish(fidelity, "Fidelity");
+    ok(await done("F4", "Fidelity"));
+    await finish("F1");
+    return;
+  }
+  if (name === "gate-fix") {
+    await tasksDone();
+    await finish("F1");
+    const review = await prepare("F2");
+    await publish(review, "Rejecting", {
+      content: JSON.stringify({
+        gateId: "F2",
+        planSha256: review.current.planSha256,
+        attempt: review.item.attempt,
+        verdict: "FAIL",
+        summary: "snapshot retention test is nondeterministic",
+        evidence: ["expected 8 keys, got 10"],
+      }),
+    });
+    refused(await done("F2", "Rejecting"));
+    refused(await call({ action: "fix", id: "F2", evidence: "nondeterministic test", title: "Stabilize retention test" }));
+    refused(await call({ action: "fix", id: "T2", evidence: "x", title: "x", acceptance: "x" }));
+    ok(
+      await call({
+        action: "fix",
+        id: "F2",
+        evidence: "snapshot retention test is nondeterministic",
+        title: "Stabilize retention test",
+        acceptance: "the retention test passes on repeated runs",
+      }),
+    );
+    refused(await call({ action: "start", id: "F2" }));
+    await finish("X1");
+    await finish("F2");
+    await finish("F3");
+    await finish("F4");
+    const current = await ledger();
+    assert.deepEqual(
+      [...current.items, ...current.fixes, ...current.gates].map((item) => [item.id, item.status]),
+      [
+        ["T1", "done"],
+        ["T2", "done"],
+        ["T3", "done"],
+        ["X1", "done"],
+        ["F1", "done"],
+        ["F2", "done"],
+        ["F3", "done"],
+        ["F4", "done"],
+      ],
+    );
+    ok(await call({ reason: "verified completion" }, "atlas_release"));
     return;
   }
   if (name === "final-native-outcome") {
@@ -1492,22 +1530,17 @@ async function scenario(name: string, root: string): Promise<void> {
   if (name === "reopen-running") {
     await finish("F1");
     await finish("F2");
-    await finish("F3");
     const running = await prepare("F4");
-    ok(await call({ action: "reopen", id: "F2" }));
-    assert.equal((await row("F1")).status, "done");
-    assert.equal((await row("F3")).status, "done");
-    assert.equal((await row("F4")).attempt, undefined);
-    await publish(running, "StaleSynthesis");
-    refused(await done("F4", "StaleSynthesis"));
-    await finish("F2");
+    ok(await call({ action: "reopen", id: "F4" }));
+    await publish(running, "StaleFidelity");
+    refused(await done("F4", "StaleFidelity"));
+    await finish("F3");
     await finish("F4");
     ok(await call({ action: "reopen", id: "T1" }));
     const current = await ledger();
-    assert.equal(current.items[2]?.status, "done");
     assert.equal(current.items[0]?.status, "open");
-    assert.equal(current.items[1]?.status, "open");
-    assert(current.gates.every((item) => item.status === "open" && item.receipt === undefined));
+    assert.equal(current.items[1]?.status, "done");
+    assert(current.gates.every((item) => item.status === "done" && item.receipt));
     refused(await call({ reason: "stale success" }, "atlas_release"));
     return;
   }
@@ -1533,9 +1566,8 @@ async function scenario(name: string, root: string): Promise<void> {
     await reload();
     const current = await ledger();
     assert.equal(current.items[0]?.status, "open");
-    assert.equal(current.items[1]?.status, "open");
-    assert.equal(current.items[2]?.status, "done");
-    assert(current.gates.every((item) => item.status === "open"));
+    assert.equal(current.items[1]?.status, "done");
+    assert(current.gates.every((item) => item.status === "done"));
     return;
   }
   if (name === "changed-output") {
@@ -1544,8 +1576,8 @@ async function scenario(name: string, root: string): Promise<void> {
     await writeFile(join(dirname(planFile), "evidence", `${original.receipt.receiptId}.md`), "Different unverified output");
     ok(await call({ action: "status" }));
     assert.equal((await row("T1")).status, "open");
-    assert.equal((await row("T2")).status, "open");
-    assert((await ledger()).gates.every((item) => item.status === "open"));
+    assert.equal((await row("T2")).status, "done");
+    assert((await ledger()).gates.every((item) => item.status === "done"));
     return;
   }
   if (name === "resume") {
@@ -1581,9 +1613,9 @@ async function scenario(name: string, root: string): Promise<void> {
     await reload();
     const reopened = await ledger();
     assert.equal(reopened.items[0]?.status, "open");
-    assert.equal(reopened.items[1]?.status, "open");
+    assert.equal(reopened.items[1]?.status, "done");
     assert.equal(reopened.items[2]?.status, "done");
-    assert(reopened.gates.every((item) => item.status === "open"));
+    assert(reopened.gates.every((item) => item.status === "done"));
     const next = await prepare("T1");
     await publish(next, "HistoricalFile", { observe: false });
     refused(await done("T1", "HistoricalFile"));
@@ -1616,6 +1648,7 @@ if (process.env[CHILD_ENV]) {
       "resume-missing-provenance",
       "invalid-ledger",
       "ordering",
+      "gate-fix",
       "untrusted-children",
       "final-native-outcome",
       "reopen-running",
