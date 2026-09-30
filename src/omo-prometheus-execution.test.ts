@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { prompt as hostPrompt } from "@oh-my-pi/pi-utils";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 import type { ExecutionLedger, LedgerItem } from "../plugins/omo-prometheus/src/ledger.ts";
 
@@ -126,6 +127,9 @@ async function scenario(name: string, root: string): Promise<void> {
     getSessionDir: () => join(root, "sessions"),
     getArtifactsDir: () => artifacts,
     getBranch: () => entries,
+    appendCustomEntry: (customType: string, data: unknown) => {
+      entries.push({ type: "custom", customType, data });
+    },
   };
   const localProtocolOptions = { getSessionId: () => sessionId, getArtifactsDir: () => artifacts };
   const cycledOrders: string[][] = [];
@@ -136,6 +140,7 @@ async function scenario(name: string, root: string): Promise<void> {
       return undefined;
     },
   };
+  let todoPhases: TodoPhase[] = [];
   const live = Object.assign(Object.create(sessionPrototype), {
     settings,
     resolveRoleModelWithThinking: (role: string) => {
@@ -147,6 +152,10 @@ async function scenario(name: string, root: string): Promise<void> {
       appliedRoles.push({ role: entry.role, model: `${entry.model.provider}/${entry.model.id}` });
     },
     sessionManager,
+    getTodoPhases: () => todoPhases,
+    setTodoPhases: (next: typeof todoPhases) => {
+      todoPhases = next;
+    },
     getPlanModeState: () => ({ enabled: mode }),
     getPlanReferencePath: () => reference,
     setPlanReferencePath: (path: string) => {
@@ -177,6 +186,7 @@ async function scenario(name: string, root: string): Promise<void> {
     },
     getSystemPrompt: () => [],
     ui: {
+      setWidget: () => {},
       notify(message: string) {
         notices.push(message);
       },
@@ -915,6 +925,8 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
   if (name === "gate-fix") {
+    assert.equal(todoPhases.find((phase) => phase.name === "Atlas tasks")?.tasks[0]?.status, "pending");
+    assert.equal(todoPhases.find((phase) => phase.name === "Atlas final gates")?.tasks[0]?.status, "pending");
     await tasksDone();
     await finish("F1");
     const review = await prepare("F2");
@@ -940,8 +952,13 @@ async function scenario(name: string, root: string): Promise<void> {
         acceptance: "the retention test passes on repeated runs",
       }),
     );
+    assert.deepEqual(todoPhases.find((phase) => phase.name === "Atlas fixes")?.tasks, [
+      { content: "X1. Stabilize retention test", status: "pending" },
+    ]);
+    assert.equal(todoPhases.find((phase) => phase.name === "Atlas final gates")?.tasks[0]?.status, "completed");
     refused(await call({ action: "start", id: "F2" }));
     await finish("X1");
+    assert.equal(todoPhases.find((phase) => phase.name === "Atlas fixes")?.tasks[0]?.status, "completed");
     await finish("F2");
     await finish("F3");
     await finish("F4");
