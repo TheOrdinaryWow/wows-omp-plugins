@@ -9,6 +9,23 @@
 - Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.9.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.8.0...omo-prometheus@0.9.0) (2026-09-30)
+
+
+### Features
+
+* **omo-prometheus:** persist Atlas observation timeline ([76fed51](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/76fed5161ee9b3699541f45b7bcf1280d6031ddd))
+* **omo-prometheus:** render live Atlas plan activity ([9658f05](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/9658f05d2f7ba268ccda1b1be18ab1208bc31b2f))
+* **omo-prometheus:** show configurable Atlas status widget ([d17bcbf](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/d17bcbfcfe285eedf8139360a99b18c9f32c1ffe))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** keep Atlas live page scroll per body and list waiting rows in the widget ([1625908](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/162590850b1e7db0c70dd3fa6ab96f3dbd828f52))
+* **omo-prometheus:** preserve Atlas todos through HUD refresh ([09a6286](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/09a6286b24c0dccbd75ad5a3b1b0c318f67844fd))
+* **omo-prometheus:** render Atlas row evidence and acceptance as Markdown ([80b5ea2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/80b5ea244eb3c9fbbb1943383e6dcd76ed849c3c))
+* **omo-prometheus:** synchronize Atlas ledger with session todos ([e0cf6cb](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e0cf6cb31bbdaf8965a2c1ae7bd3ab38cd6a21e3))
+
 ## [0.8.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.7.0...omo-prometheus@0.8.0) (2026-09-30)
 
 
