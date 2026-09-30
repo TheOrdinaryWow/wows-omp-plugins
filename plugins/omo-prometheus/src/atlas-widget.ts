@@ -1,7 +1,11 @@
-import { type Component, type Theme, type TUI, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { type Component, type Theme, type TUI, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { formatNumber } from "@oh-my-pi/pi-utils";
 
 import type { AtlasLive, AtlasLiveSnapshot } from "./atlas-live.ts";
-import { formatElapsed, progressBar, rowMark } from "./atlas-menu.ts";
+import { formatElapsed, progressBar, rowMark, singleLine } from "./atlas-menu.ts";
+
+/** Header plus row lines; the overflow notice takes the last row slot only when it hides two or more rows. */
+const MAX_LINES = 6;
 
 /** A compact observation above the editor. The editor and the agent retain keyboard focus. */
 export class AtlasStatusWidget implements Component {
@@ -25,24 +29,38 @@ export class AtlasStatusWidget implements Component {
   }
 
   render(width: number): readonly string[] {
+    const t = this.theme;
     const { detail, rows, at, runningChildren } = this.#snapshot;
     const gates = detail.rows.filter((item) => /^F[1-4]$/.test(item.id));
     const passed = gates.filter((item) => item.status === "done").length;
-    const title = `${this.theme.bold(detail.plan.name)}  ${progressBar(this.theme, detail.done, detail.total)} ${detail.done}/${detail.total} · ${runningChildren} running · gates ${passed}/${gates.length}`;
-    const active = detail.rows.filter((item) => {
-      const child = rows.get(item.id);
-      return item.status === "in_progress" && child && (child.status === "started" || child.status === "running");
-    });
-    const shown = active.slice(0, 4).map((item) => {
-      const child = rows.get(item.id);
+    // Stats first in priority: a long plan name gives way before the progress numbers do.
+    const stats = ` ${progressBar(t, detail.done, detail.total)} ${detail.done}/${detail.total} ${t.fg("dim", "·")} ${runningChildren} running${gates.length ? ` ${t.fg("dim", "·")} gates ${passed}/${gates.length}` : ""}`;
+    const name = truncateToWidth(detail.plan.name, Math.max(8, width - visibleWidth(stats)));
+    const title = `${t.bold(t.fg("accent", name))}${stats}`;
+
+    // Every ledger row in progress is listed, including one whose child has not reported yet.
+    const active = detail.rows.filter((item) => item.status === "in_progress");
+    const slots = MAX_LINES - 1;
+    const listed = active.length > slots ? active.slice(0, slots - 1) : active;
+    const idWidth = Math.max(0, ...listed.map((item) => item.id.length));
+    const lines = listed.map((item) => {
+      const current = rows.get(item.id);
+      const child = current?.attempt === item.attempt ? current : undefined;
       const progress = child?.progress;
-      const activity = progress?.currentTool ?? progress?.lastIntent ?? "running";
-      const usage = progress ? `${progress.tokens} tokens · $${progress.cost.toFixed(4)}` : "usage pending";
-      return `${rowMark(this.theme, item.status)} ${item.id} ${item.agent} ${formatElapsed(item.startedAt, at)} · ${activity} · ${usage}`;
+      const head = `${rowMark(t, item.status)} ${item.id.padEnd(idWidth)} ${t.fg("muted", item.agent)} ${t.fg("dim", formatElapsed(item.startedAt, at))}`;
+      const usage = progress ? t.fg("dim", ` · ${formatNumber(progress.tokens)} tok · $${progress.cost.toFixed(2)}`) : "";
+      const activity = !child
+        ? t.fg("dim", "waiting for child")
+        : progress?.currentTool
+          ? `${progress.currentTool}${progress.currentToolArgs ? t.fg("dim", ` ${singleLine(progress.currentToolArgs)}`) : ""}`
+          : progress?.lastIntent
+            ? singleLine(progress.lastIntent)
+            : t.fg("dim", child.status === "started" || child.status === "running" ? "running" : `child ${child.status}`);
+      // Activity is free text; it takes whatever width the fixed fields leave instead of pushing usage off.
+      const room = width - visibleWidth(head) - visibleWidth(usage) - 3;
+      return room >= 8 ? `${head} ${t.fg("dim", "·")} ${truncateToWidth(activity, room)}${usage}` : `${head}${usage}`;
     });
-    const overflow = active.length - shown.length;
-    return [title, ...shown, ...(overflow ? [this.theme.fg("dim", `+${overflow} more`)] : [])].map((line) =>
-      truncateToWidth(line, Math.max(1, width)),
-    );
+    if (listed.length < active.length) lines.push(t.fg("dim", `+${active.length - listed.length} more in progress`));
+    return [title, ...lines].map((line) => truncateToWidth(line, Math.max(1, width)));
   }
 }

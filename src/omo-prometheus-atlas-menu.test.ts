@@ -2,9 +2,11 @@ import { beforeAll, expect, test } from "bun:test";
 
 import { initTheme, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
 
+import type { AtlasLive, AtlasLiveRow, AtlasLiveSnapshot, AtlasProgress } from "../plugins/omo-prometheus/src/atlas-live.ts";
 import type { AtlasPlanViewMode } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import { AtlasMenu, type AtlasMenuAction, AtlasPlanView, type AtlasPlanViewAction } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
+import { AtlasStatusWidget } from "../plugins/omo-prometheus/src/atlas-widget.ts";
 
 beforeAll(async () => {
   await initTheme();
@@ -198,4 +200,105 @@ test("Atlas plan view for the running plan only reads and exits", () => {
   active.component.handleInput("X");
   active.component.handleInput("\x1b");
   expect(active.actions).toEqual(["exit", "back"]);
+});
+
+test("Atlas plan view keeps separate row-body and timeline scroll positions across Tab", () => {
+  const long: AtlasPlanDetail = {
+    ...plan,
+    rows: plan.rows.map((row) =>
+      row.id === "T1" ? { ...row, acceptance: Array.from({ length: 60 }, (_, index) => `- criterion ${index}`).join("\n") } : row,
+    ),
+    timeline: Array.from({ length: 40 }, (_, index) => ({
+      version: 1 as const,
+      at: index * 60_000,
+      kind: "started" as const,
+      row: `T${index}`,
+      sessionId: "session-a",
+    })),
+  };
+  const { component } = view(long);
+  const screen = (): string => text(component.render(100));
+  component.handleInput("\x1b[6~");
+  expect(screen()).not.toMatch(/T1 {2}Build/);
+  component.handleInput("\t");
+  expect(screen()).toMatch(/started {2}T39\b/);
+  component.handleInput("\x1b[6~");
+  expect(screen()).not.toMatch(/started {2}T39\b/);
+  component.handleInput("\t");
+  expect(screen()).not.toMatch(/T1 {2}Build/);
+  component.handleInput("\t");
+  expect(screen()).not.toMatch(/started {2}T39\b/);
+});
+
+const running: AtlasPlanDetail = {
+  ...plan,
+  done: 0,
+  total: 7,
+  rows: Array.from({ length: 7 }, (_, index) => ({
+    id: `T${index + 1}`,
+    title: `Work ${index + 1}`,
+    status: "in_progress" as const,
+    agent: "task",
+    acceptance: "Done",
+    dependsOn: [],
+    updatedAt: 0,
+    attempt: `attempt-${index + 1}`,
+    startedAt: 0,
+  })),
+};
+
+const progress = {
+  status: "running",
+  currentTool: "bash",
+  currentToolArgs: "bun test\n--watch",
+  currentToolStartMs: 50_000,
+  lastIntent: "Running tests",
+  recentTools: ["newest", "second", "third", "fourth", "oldest"].map((tool) => ({ tool, args: "x", endMs: 0 })),
+  recentOutput: ["final line", "earlier line"],
+  toolCount: 5,
+  requests: 3,
+  tokens: 12_345,
+  cost: 0.5,
+} as unknown as AtlasProgress;
+
+function observed(detail: AtlasPlanDetail, rows: Map<string, AtlasLiveRow>): AtlasLive {
+  const snapshot: AtlasLiveSnapshot = { detail, rows, at: 60_000, runningChildren: rows.size };
+  return {
+    snapshot,
+    subscribe: (listener: (next: AtlasLiveSnapshot) => void) => {
+      listener(snapshot);
+      return () => undefined;
+    },
+  } as unknown as AtlasLive;
+}
+
+test("Atlas plan view shows the newest recent tools and the output tail in reading order", () => {
+  const live = observed(running, new Map([["T1", { attempt: "attempt-1", childAgentId: "child-1", status: "running", progress }]]));
+  const component = new AtlasPlanView(
+    running,
+    "active",
+    theme,
+    { requestRender() {}, terminal: { rows: 60 } } as unknown as TUI,
+    async () => "",
+    () => undefined,
+    live,
+  );
+  const screen = text(component.render(120));
+  expect(screen).toMatch(/newest x/);
+  expect(screen).not.toMatch(/oldest x/);
+  expect(screen.indexOf("earlier line")).toBeLessThan(screen.indexOf("final line"));
+});
+
+test("Atlas widget lists rows still waiting for a child and stays within six lines and the width", () => {
+  const two = { ...running, rows: running.rows.slice(0, 2) };
+  const live = observed(two, new Map([["T1", { attempt: "attempt-1", childAgentId: "child-1", status: "running", progress }]]));
+  const widget = new AtlasStatusWidget(live, tui, theme);
+  for (const width of [40, 60, 100]) {
+    const lines = widget.render(width);
+    expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+    expect(lines.some((line) => /\bT2\b/.test(Bun.stripANSI(line)))).toBe(true);
+  }
+  const crowded = new AtlasStatusWidget(observed(running, new Map()), tui, theme).render(80);
+  expect(crowded).toHaveLength(6);
+  expect(Bun.stripANSI(crowded[5] ?? "")).toMatch(/\+3 more/);
 });

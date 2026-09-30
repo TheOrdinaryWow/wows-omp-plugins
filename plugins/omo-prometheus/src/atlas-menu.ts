@@ -26,9 +26,11 @@ import {
   topBorder,
 } from "@oh-my-pi/pi-tui/chrome";
 import { type SelectItem, SelectList, type SelectListRenderItemContext } from "@oh-my-pi/pi-tui/components/select-list";
+import { formatNumber } from "@oh-my-pi/pi-utils";
 
 import type { AtlasLive, AtlasLiveSnapshot } from "./atlas-live.ts";
 import type { AtlasPlanDetail, AtlasRowDetail } from "./atlas-store.ts";
+import type { AtlasEvent } from "./atlas-timeline.ts";
 
 export type AtlasFilter = "unfinished" | "all";
 export type AtlasDispatch = "start" | "resume";
@@ -119,6 +121,11 @@ export function formatElapsed(startedAt: number | undefined, now: number): strin
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   return hours ? `${hours}h ${String(minutes).padStart(2, "0")}m` : `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/** Child-supplied text (intents, tool args, errors) collapsed onto one display line. */
+export function singleLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 const ROW_STATUS: Record<string, string> = { open: "Not started", in_progress: "In progress", done: "Done", blocked: "Blocked" };
@@ -289,7 +296,10 @@ export class AtlasMenu extends OverlayPanel {
  */
 export class AtlasPlanView implements Component {
   #selected = 0;
-  #scroll = 0;
+  /** Row body and timeline scroll independently; Tab and live refreshes keep both. */
+  #rowScroll = 0;
+  #timelineScroll = 0;
+  #timelineCache?: { events: readonly AtlasEvent[]; width: number; lines: string[] };
   #expanded = new Set<string>();
   #outputs = new Map<string, string>();
   #markdown = new Map<string, Markdown>();
@@ -327,7 +337,11 @@ export class AtlasPlanView implements Component {
     const selectedId = this.#row()?.id;
     const next = detail.rows.findIndex((row) => row.id === selectedId);
     this.detail = detail;
-    this.#selected = next >= 0 ? next : Math.min(this.#selected, Math.max(0, detail.rows.length - 1));
+    if (next >= 0) this.#selected = next;
+    else {
+      this.#selected = Math.min(this.#selected, Math.max(0, detail.rows.length - 1));
+      this.#rowScroll = 0;
+    }
     this.tui.requestRender();
   }
 
@@ -339,7 +353,12 @@ export class AtlasPlanView implements Component {
     const next = Math.max(0, Math.min(this.detail.rows.length - 1, index));
     if (next === this.#selected) return;
     this.#selected = next;
-    this.#scroll = 0;
+    this.#rowScroll = 0;
+  }
+
+  #scrollBy(delta: number): void {
+    if (this.#timeline) this.#timelineScroll = Math.max(0, this.#timelineScroll + delta);
+    else this.#rowScroll = Math.max(0, this.#rowScroll + delta);
   }
 
   #toggleOutput(): void {
@@ -379,23 +398,22 @@ export class AtlasPlanView implements Component {
     if (matchesKey(key, "escape") || matchesKey(key, "left")) {
       this.dispose();
       this.done("back");
-    } else if (matchesKey(key, "tab")) {
-      this.#timeline = !this.#timeline;
-      this.#scroll = 0;
-    } else if (matchesKey(key, "up")) {
-      if (this.#timeline) this.#scroll = Math.max(0, this.#scroll - 1);
+    } else if (matchesKey(key, "tab")) this.#timeline = !this.#timeline;
+    else if (matchesKey(key, "up")) {
+      if (this.#timeline) this.#scrollBy(-1);
       else this.#select(this.#selected - 1);
     } else if (matchesKey(key, "down")) {
-      if (this.#timeline) this.#scroll += 1;
+      if (this.#timeline) this.#scrollBy(1);
       else this.#select(this.#selected + 1);
     } else if (matchesKey(key, "home")) {
-      if (this.#timeline) this.#scroll = 0;
+      if (this.#timeline) this.#timelineScroll = 0;
       else this.#select(0);
     } else if (matchesKey(key, "end")) {
-      if (this.#timeline) this.#scroll = this.detail.timeline.length;
+      // Render clamps to the last page.
+      if (this.#timeline) this.#timelineScroll = Number.MAX_SAFE_INTEGER;
       else this.#select(this.detail.rows.length - 1);
-    } else if (matchesKey(key, "pageDown")) this.#scroll += Math.max(1, this.#bodyRows - 2);
-    else if (matchesKey(key, "pageUp")) this.#scroll = Math.max(0, this.#scroll - Math.max(1, this.#bodyRows - 2));
+    } else if (matchesKey(key, "pageDown")) this.#scrollBy(Math.max(1, this.#bodyRows - 2));
+    else if (matchesKey(key, "pageUp")) this.#scrollBy(-Math.max(1, this.#bodyRows - 2));
     else if (!this.#timeline && (matchesKey(key, "space") || key === " " || matchesKey(key, "right"))) this.#toggleOutput();
     else if (this.mode === "active") {
       if (key === "X" || matchesKey(key, "shift+x")) {
@@ -412,24 +430,43 @@ export class AtlasPlanView implements Component {
     if (!rows.length) return [this.theme.fg("dim", "No plan rows")];
     const { marks } = rowMarks(this.theme, rows);
     const idWidth = Math.max(0, ...rows.map((item) => item.id.length));
+    const now = this.#liveSnapshot?.at ?? Date.now();
     const start = Math.max(0, Math.min(this.#selected - Math.floor(height / 2), rows.length - height));
     return rows.slice(start, start + height).map((item, offset) => {
       const index = start + offset;
       const selected = index === this.#selected;
       const cursor = selected ? this.theme.fg("accent", `${this.theme.nav.cursor} `) : "  ";
-      const label = `${marks[index] ?? ""} ${this.theme.fg("muted", item.id.padEnd(idWidth))} ${this.theme.fg(selected ? "accent" : "text", item.title)}${item.status === "in_progress" ? ` ${this.theme.fg("dim", formatElapsed(item.startedAt, this.#liveSnapshot?.at ?? Date.now()))}` : ""}`;
-      return truncateToWidth(cursor + label, width);
+      const prefix = `${cursor}${marks[index] ?? ""} ${this.theme.fg("muted", item.id.padEnd(idWidth))} `;
+      // The elapsed clock is the live signal here, so the title gives way to it, not the other way round.
+      const elapsed = item.status === "in_progress" ? ` ${formatElapsed(item.startedAt, now)}` : "";
+      const titleWidth = Math.max(1, width - visibleWidth(prefix) - elapsed.length);
+      const title = this.theme.fg(selected ? "accent" : "text", truncateToWidth(item.title, titleWidth));
+      return truncateToWidth(`${prefix}${title}${this.theme.fg("dim", elapsed)}`, width);
     });
   }
 
+  /** Newest first. Rebuilt only when a reload replaces the event list or the width changes. */
   #timelineBody(width: number): string[] {
-    if (!this.detail.timeline.length) return [this.theme.fg("dim", "No recorded activity")];
+    const events = this.detail.timeline;
+    if (!events.length) return [this.theme.fg("dim", "No recorded activity")];
+    const cached = this.#timelineCache;
+    if (cached?.events === events && cached.width === width) return cached.lines;
     const lines: string[] = [];
-    for (const event of [...this.detail.timeline].reverse()) {
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index] as AtlasEvent;
       const label = `${formatTime(event.at)}  ${event.kind.replaceAll("_", " ")}${event.row ? `  ${event.row}` : ""}${event.derived ? "  [derived]" : ""}`;
       lines.push(...wrapTextWithAnsi(this.theme.fg(event.derived ? "dim" : "text", label), width));
-      if (event.detail) lines.push(...wrapTextWithAnsi(`  ${event.detail}`, width));
+      if (event.detail) {
+        // Evidence details repeat the archive path the row body already shows; two lines identify the event.
+        const detail = wrapTextWithAnsi(singleLine(event.detail).replace(/^\/\S+\.md: /, ""), Math.max(1, width - 2));
+        const shown = detail.length > 2 ? [detail[0] ?? "", truncateToWidth(`${detail[1]} ${detail[2]}`, width - 2)] : detail;
+        for (const line of shown) lines.push(`  ${this.theme.fg("muted", line)}`);
+      }
     }
+    // New events arrive on top; keep a reader who scrolled into history on the same entries.
+    if (cached && cached.width === width && this.#timelineScroll > 0)
+      this.#timelineScroll = Math.max(0, this.#timelineScroll + lines.length - cached.lines.length);
+    this.#timelineCache = { events, width, lines };
     return lines;
   }
 
@@ -442,8 +479,14 @@ export class AtlasPlanView implements Component {
     const wrap = (text: string, style: (value: string) => string = (value) => value): void => {
       for (const paragraph of text.split("\n")) lines.push(...wrapTextWithAnsi(style(paragraph), width));
     };
-    const field = (label: string, value: string): void => {
-      lines.push(...wrapTextWithAnsi(`${t.fg("muted", label.padEnd(10))}${value}`, width));
+    /** Label column with a hanging indent, so wrapped values stay aligned under their value. */
+    const field = (label: string, value: string, maxLines = Number.POSITIVE_INFINITY): void => {
+      if (width < 30) {
+        lines.push(...wrapTextWithAnsi(`${t.fg("muted", label.padEnd(10))}${value}`, width).slice(0, maxLines));
+        return;
+      }
+      const wrapped = wrapTextWithAnsi(value, width - 10).slice(0, maxLines);
+      for (const [index, line] of wrapped.entries()) lines.push(`${index ? padding(10) : t.fg("muted", label.padEnd(10))}${line}`);
     };
     const markdown = (text: string): void => {
       let component = this.#markdown.get(text);
@@ -464,37 +507,54 @@ export class AtlasPlanView implements Component {
     field("Depends", item.dependsOn.length ? item.dependsOn.join(", ") : t.format.dash);
     field("Updated", formatTime(item.updatedAt));
     if (item.status === "in_progress") {
+      const now = this.#liveSnapshot?.at ?? Date.now();
       const current = this.#liveSnapshot?.rows.get(item.id);
-      const progress = current && current.attempt === item.attempt ? current.progress : undefined;
+      const live = current && current.attempt === item.attempt ? current : undefined;
+      const progress = live?.progress;
       lines.push("", t.bold("Live"));
-      field("Child", current?.childAgentId ?? item.childAgentId ?? t.format.dash);
-      field("Elapsed", formatElapsed(item.startedAt, this.#liveSnapshot?.at ?? Date.now()));
+      field("Child", live?.childAgentId ?? item.childAgentId ?? t.format.dash);
+      if (live) field("State", live.status);
+      field("Elapsed", formatElapsed(item.startedAt, now));
       if (progress) {
         field(
           "Model",
           `${progress.resolvedModel ?? t.format.dash}${progress.resolvedThinkingLevel ? ` · ${progress.resolvedThinkingLevel}` : ""}`,
         );
         if (progress.currentTool) {
-          field("Tool", `${progress.currentTool} · ${formatElapsed(progress.currentToolStartMs, this.#liveSnapshot?.at ?? Date.now())}`);
-          if (progress.currentToolArgs) wrap(progress.currentToolArgs);
+          field("Tool", `${progress.currentTool} ${t.fg("dim", formatElapsed(progress.currentToolStartMs, now))}`);
+          // Arguments can be a whole file body; the first wrapped lines identify the call.
+          if (progress.currentToolArgs) field("", t.fg("dim", singleLine(progress.currentToolArgs)), 3);
         }
-        if (progress.lastIntent) field("Intent", progress.lastIntent);
-        field("Counts", `${progress.toolCount} tools · ${progress.requests} requests · ${progress.tokens} tokens`);
+        if (progress.lastIntent) field("Intent", singleLine(progress.lastIntent));
+        field("Usage", `${progress.toolCount} tools · ${progress.requests} requests · ${formatNumber(progress.tokens)} tokens`);
         if (progress.contextTokens !== undefined || progress.contextWindow !== undefined)
-          field("Context", `${progress.contextTokens ?? "?"}/${progress.contextWindow ?? "?"} tokens`);
+          field(
+            "Context",
+            `${progress.contextTokens === undefined ? "?" : formatNumber(progress.contextTokens)}/${progress.contextWindow === undefined ? "?" : formatNumber(progress.contextWindow)} tokens`,
+          );
         field("Cost", `$${progress.cost.toFixed(4)}`);
         if (progress.retryState)
-          field("Retry", `${progress.retryState.attempt}/${progress.retryState.maxAttempts} · ${progress.retryState.errorMessage}`);
-        if (progress.retryFailure) field("Failure", progress.retryFailure.errorMessage);
+          field(
+            "Retry",
+            t.fg(
+              "warning",
+              `${progress.retryState.attempt}/${progress.retryState.maxAttempts} · ${singleLine(progress.retryState.errorMessage)}`,
+            ),
+          );
+        if (progress.retryFailure) field("Failure", t.fg("error", singleLine(progress.retryFailure.errorMessage)));
+        // The host keeps both lists newest first.
         if (progress.recentTools.length) {
-          lines.push(t.bold("Recent tools"));
-          for (const tool of progress.recentTools.slice(-3)) wrap(`  ${tool.tool} ${tool.args}`);
+          lines.push(t.fg("muted", "Recent tools"));
+          for (const tool of progress.recentTools.slice(0, 3))
+            lines.push(truncateToWidth(`  ${tool.tool} ${t.fg("dim", singleLine(tool.args))}`, width));
         }
         if (progress.recentOutput.length) {
-          lines.push(t.bold("Recent output"));
-          for (const output of progress.recentOutput.slice(0, 4)) wrap(`  ${output}`);
+          lines.push(t.fg("muted", "Recent output"));
+          for (const output of progress.recentOutput.slice(0, 4).reverse()) wrap(`  ${output}`);
         }
-      } else lines.push(t.fg("dim", "Waiting for child progress"));
+      } else if (!live) lines.push(t.fg("dim", "Waiting for the child to start"));
+      else if (live.status === "started" || live.status === "running") lines.push(t.fg("dim", "No progress reported by this child yet"));
+      else lines.push(t.fg("dim", `Child ${live.status}; waiting for the ledger to record the result`));
     }
     lines.push("", t.bold("Evidence"));
     const summary =
@@ -558,10 +618,13 @@ export class AtlasPlanView implements Component {
 
     this.#bodyRows = Math.max(3, height - 2 - header.length - 2 - hints.length);
     const body = this.#body(bodyWidth);
-    this.#scroll = Math.max(0, Math.min(this.#scroll, body.length - this.#bodyRows));
-    const shown = body.slice(this.#scroll, this.#scroll + this.#bodyRows);
-    const more = body.length - this.#scroll - shown.length;
-    if (more > 0 && shown.length) shown[shown.length - 1] = t.fg("dim", `+${more} more lines; PgDn to scroll`);
+    const scroll = Math.max(0, Math.min(this.#timeline ? this.#timelineScroll : this.#rowScroll, body.length - this.#bodyRows));
+    if (this.#timeline) this.#timelineScroll = scroll;
+    else this.#rowScroll = scroll;
+    const shown = body.slice(scroll, scroll + this.#bodyRows);
+    // The notice replaces the last visible line, so that line counts as hidden too.
+    const more = body.length - scroll - shown.length + 1;
+    if (more > 1 && shown.length) shown[shown.length - 1] = t.fg("dim", `+${more} more lines; PgDn to scroll`);
     const sidebar = this.#sidebar(sidebarWidth, this.#bodyRows);
 
     const box = t.boxRound;
