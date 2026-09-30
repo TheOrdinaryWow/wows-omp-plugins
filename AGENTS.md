@@ -150,6 +150,23 @@ first usable candidate is native (a judgment API, calibrated confidence), never
 calls a chat-model fallback, and fails open everywhere: a missing native judge
 keeps the requested agent and warns once per session.
 
+## Persisted plugin state must survive upgrades
+
+Users upgrade plugins while work is in flight, so any state a plugin writes to
+disk (omo-prometheus's Atlas bundle: `ledger.json`, `checkpoint.json`,
+`approval.json`, `evidence/`) must stay loadable by the next release without
+fresh approval or manual repair:
+
+- A format change bumps that file's `version` and ships an upgrade on load from
+  every earlier version still in use, keeping verified progress. Refusing an old
+  version is a breaking change and needs the user's explicit sign-off.
+- The same change adds a test that writes the previous format to disk and
+  resumes the plan through `AtlasStore` (see "a bundle written by the previous
+  ledger version" in `src/omo-prometheus-atlas-store.test.ts`).
+- Relaxing a validation rule must not make formerly valid data fail, and
+  outputs written by older releases (for example, gate JSON with extra fields)
+  must still verify.
+
 ## Testing a plugin locally
 
 Two marketplaces, one per purpose:
