@@ -1,6 +1,6 @@
 {
   "plugins/audit-goal": "0.2.0",
-  "plugins/judge-dispatch": "0.3.0",
+  "plugins/judge-dispatch": "0.4.0",
   "plugins/omo-prometheus": "0.9.0",
   "plugins/omo-ultrawork": "0.3.0",
   "plugins/omo-toolkit": "0.3.0"
