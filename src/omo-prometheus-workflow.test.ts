@@ -157,6 +157,19 @@ describe("Atlas execution guard", () => {
   });
 });
 
+test("admits only the read-only operations of op-gated native tools", () => {
+  expect(executionBlockReason("github", { op: "run_watch" })).toBeUndefined();
+  expect(executionBlockReason("github", { op: "pr_push" })).toBeTruthy();
+  expect(executionBlockReason("debug", { action: "STACK_TRACE" })).toBeUndefined();
+  expect(executionBlockReason("debug", { action: "continue" })).toBeTruthy();
+  expect(executionBlockReason("ida", { action: "list" })).toBeUndefined();
+  expect(executionBlockReason("ida", { action: "exec" })).toBeTruthy();
+  expect(executionBlockReason("rewind", { report: "x" })).toBeTruthy();
+  const device = (tool: string, args: object) => ({ path: `xd://${tool}`, content: JSON.stringify(args) });
+  expect(executionBlockReason("write", device("github", { op: "file_read" }))).toBeUndefined();
+  expect(executionBlockReason("write", device("github", { op: "pr_create" }))).toBeTruthy();
+});
+
 describe("plan-gated reviewer spawns", () => {
   test("allows both gated reviewers during planning", () => {
     expect(taskSpawnBlockReason("planning", { task: "Review the planning gap", agent: "metis" })).toBeUndefined();

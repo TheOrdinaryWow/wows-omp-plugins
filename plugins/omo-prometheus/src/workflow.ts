@@ -192,9 +192,16 @@ export function inlinesApprovedPlan(handoff: string, planFilePath: string, conte
 /** Plugin-owned tools that are trusted only when registered by this runtime file. */
 export const PLUGIN_OWNED_TOOLS: Record<string, true> = { atlas_release: true, atlas_ledger: true };
 
-/** Parent-session orchestration and observation surfaces retained by Atlas. */
+/**
+ * Parent-session orchestration and observation surfaces retained by Atlas. The memory, skill, goal,
+ * and context tools only touch host-owned state (memory backends, managed skills, the session
+ * journal), never the workspace. `new_context` rolls over through ordinary compaction, which Atlas
+ * already survives. `checkpoint`/`rewind` stay out: rewind branches the session tree away from the
+ * task receipts that prove completed ledger rows.
+ */
 const ALLOWED_TOOLS: Record<string, true> = {
   ask: true,
+  ast_grep: true,
   find: true,
   glob: true,
   grep: true,
@@ -205,6 +212,15 @@ const ALLOWED_TOOLS: Record<string, true> = {
   todo: true,
   wait: true,
   web_search: true,
+  context_notes: true,
+  new_context: true,
+  goal: true,
+  recall: true,
+  reflect: true,
+  retain: true,
+  memory_edit: true,
+  learn: true,
+  manage_skill: true,
 };
 
 /**
@@ -212,7 +228,7 @@ const ALLOWED_TOOLS: Record<string, true> = {
  * cannot pass the builtin provenance check, and they never touch the workspace. Context-mode's
  * `ctx_execute*` tools are deliberately absent: they run code.
  */
-const CONTEXT_MEMORY_TOOLS: Record<string, true> = {
+const MAGIC_CONTEXT_TOOLS: Record<string, true> = {
   ctx_expand: true,
   ctx_memory: true,
   ctx_note: true,
@@ -232,6 +248,32 @@ const READ_ONLY_LSP_ACTIONS: Record<string, true> = {
   type_definition: true,
 };
 
+/** Mirrors the host's `GITHUB_READONLY_OPS`; `pr_checkout`, `pr_push`, and `pr_create` change repositories. */
+const READ_ONLY_GITHUB_OPS: Record<string, true> = {
+  file_read: true,
+  repo_view: true,
+  run_watch: true,
+  search_code: true,
+  search_commits: true,
+  search_issues: true,
+  search_prs: true,
+  search_repos: true,
+};
+
+/** Mirrors the host's `DEBUG_READONLY_ACTIONS`: inspect program state without launching or resuming it. */
+const READ_ONLY_DEBUG_ACTIONS: Record<string, true> = {
+  disassemble: true,
+  loaded_sources: true,
+  modules: true,
+  output: true,
+  read_memory: true,
+  scopes: true,
+  sessions: true,
+  stack_trace: true,
+  threads: true,
+  variables: true,
+};
+
 const OBSERVING_OR_COORDINATING_HUB_OPS: Record<string, true> = {
   cancel: true,
   describe: true,
@@ -246,8 +288,11 @@ const OBSERVING_OR_COORDINATING_HUB_OPS: Record<string, true> = {
 
 const SAFE_XDEV_TOOLS: Record<string, true> = {
   ...ALLOWED_TOOLS,
-  ...CONTEXT_MEMORY_TOOLS,
+  ...MAGIC_CONTEXT_TOOLS,
+  debug: true,
+  github: true,
   hub: true,
+  ida: true,
   lsp: true,
   read: true,
 };
@@ -332,6 +377,24 @@ function hubBlockReason(input: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+function githubBlockReason(input: Record<string, unknown>): string | undefined {
+  const op = stringField(input, "op");
+  if (READ_ONLY_GITHUB_OPS[op] === true) return undefined;
+  return `\`github\` op \`${op || "(missing)"}\` changes a repository, branch, or worktree`;
+}
+
+function debugBlockReason(input: Record<string, unknown>): string | undefined {
+  const action = stringField(input, "action").toLowerCase();
+  if (READ_ONLY_DEBUG_ACTIONS[action] === true) return undefined;
+  return `\`debug\` action \`${action || "(missing)"}\` launches, resumes, or mutates the debuggee`;
+}
+
+function idaBlockReason(input: Record<string, unknown>): string | undefined {
+  const action = stringField(input, "action");
+  if (action === "list") return undefined;
+  return `\`ida\` action \`${action || "(missing)"}\` opens, edits, or scripts a database`;
+}
+
 function writeBlockReason(input: Record<string, unknown>): string | undefined {
   const path = stringField(input, "path");
   const lowerPath = path.toLowerCase();
@@ -360,7 +423,7 @@ function writeBlockReason(input: Record<string, unknown>): string | undefined {
  * their real inner dispatch is intercepted again by the host's `tool_call` event.
  */
 export function executionBlockReason(toolName: string, input: unknown): string | undefined {
-  if (ALLOWED_TOOLS[toolName] === true || CONTEXT_MEMORY_TOOLS[toolName] === true) return undefined;
+  if (ALLOWED_TOOLS[toolName] === true || MAGIC_CONTEXT_TOOLS[toolName] === true) return undefined;
   const args = record(input) ?? {};
   switch (toolName) {
     case "read":
@@ -369,6 +432,12 @@ export function executionBlockReason(toolName: string, input: unknown): string |
       return lspBlockReason(args);
     case "hub":
       return hubBlockReason(args);
+    case "github":
+      return githubBlockReason(args);
+    case "debug":
+      return debugBlockReason(args);
+    case "ida":
+      return idaBlockReason(args);
     case "write":
       return writeBlockReason(args);
     default:
@@ -386,7 +455,7 @@ export function executionToolSourceBlockReason(
     return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
   }
   if (source === "builtin") return undefined;
-  if (CONTEXT_MEMORY_TOOLS[toolName] === true && source === "extension") return undefined;
+  if (MAGIC_CONTEXT_TOOLS[toolName] === true && source === "extension") return undefined;
   return `\`${toolName}\` resolves to ${source ? `a ${source} tool` : "an unverified tool"}, not a trusted native/plugin tool`;
 }
 

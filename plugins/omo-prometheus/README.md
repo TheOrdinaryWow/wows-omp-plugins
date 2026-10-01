@@ -44,6 +44,29 @@ In ordinary `/plan` mode, small and well-defined requests stay on the normal OMP
 
 After approval the main session becomes Atlas. For this plan, the execution prompt overrides OMP's delegation preference, and the extension blocks direct implementation tools in the parent session, so all work goes to child agents through `task`. `/prometheus` does not exit Atlas; use `/atlas exit`.
 
+The guard admits only tools that observe or touch host-owned state, never the workspace. A tool missing from your session (for example, a memory tool while no memory backend is configured) is simply absent; nothing here enables it.
+
+|Tool|Allowed in the Atlas parent|
+|---|---|
+|`task`, `wait`, `todo`, `ask`, `think`, `web_search`, `atlas_ledger`, `atlas_release`|always|
+|`read`, `find`, `glob`, `grep`, `ast_grep`|always; `read` refuses `ssh://`|
+|`lsp`|read-only actions, and `code_actions` without `apply`|
+|`github`|`repo_view`, `file_read`, `search_*`, `run_watch`|
+|`debug`|state inspection only (`threads`, `stack_trace`, `scopes`, `variables`, `output`, …), never `launch`, `continue`, or breakpoints|
+|`ida`|`list`|
+|`recall`, `reflect`, `retain`, `memory_edit`, `learn`, `manage_skill`|always: they write memory backends and managed skills, not the workspace|
+|`goal`, `context_notes`, `new_context`|always|
+|`write`|`agent://` peer messages, `proc://<id>/kill`, and `xd://` dispatch of any admitted tool|
+|`hub`|observing ops and `send` to agents, never process input|
+
+Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file writes, `security_scan`, and `checkpoint`/`rewind`. Rewind branches the session tree away from the task receipts that prove completed ledger rows. Tools registered by other extensions or MCP servers are blocked, even when they share a native tool's name, unless listed under third-party integrations below.
+
+#### Third-party integrations
+
+|Integration|Admitted tools|
+|---|---|
+|[Magic Context](https://github.com/cortexkit/magic-context) (an extension, not part of OMP)|`ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, `ctx_note`, only when registered by an extension; same-named MCP tools stay blocked|
+
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session. To survive that switch, the plugin writes a marker to `local://prometheus/<slug>.proposal.json` when the plan is proposed, and OMP copies it into the new session along with the plan. Plans approved in ordinary Plan Mode have no marker, and the plugin leaves them alone.
 
 ### Dispatching with `/atlas`
