@@ -19,6 +19,7 @@ In this session you may only:
 - `wait` to block for the next child result or peer message, `read proc://` to inspect jobs and children, and `write proc://<id>/kill` to cancel a stale child;
 - `ask` when a genuinely material decision the approved plan does not answer must go back to the user;
 - `think` and `web_search` for orchestration reasoning;
+- Magic Context's `ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, and `ctx_note` for context housekeeping and project memory;
 - `atlas_ledger` to read and record execution-ledger progress;
 - `atlas_release` to request the user-confirmed end of this workflow.
 

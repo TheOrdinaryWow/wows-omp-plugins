@@ -207,6 +207,19 @@ const ALLOWED_TOOLS: Record<string, true> = {
   web_search: true,
 };
 
+/**
+ * Magic Context's context-housekeeping and memory tools. They are extension-registered, so they
+ * cannot pass the builtin provenance check, and they never touch the workspace. Context-mode's
+ * `ctx_execute*` tools are deliberately absent: they run code.
+ */
+const CONTEXT_MEMORY_TOOLS: Record<string, true> = {
+  ctx_expand: true,
+  ctx_memory: true,
+  ctx_note: true,
+  ctx_reduce: true,
+  ctx_search: true,
+};
+
 const READ_ONLY_LSP_ACTIONS: Record<string, true> = {
   capabilities: true,
   definition: true,
@@ -233,6 +246,7 @@ const OBSERVING_OR_COORDINATING_HUB_OPS: Record<string, true> = {
 
 const SAFE_XDEV_TOOLS: Record<string, true> = {
   ...ALLOWED_TOOLS,
+  ...CONTEXT_MEMORY_TOOLS,
   hub: true,
   lsp: true,
   read: true,
@@ -346,7 +360,7 @@ function writeBlockReason(input: Record<string, unknown>): string | undefined {
  * their real inner dispatch is intercepted again by the host's `tool_call` event.
  */
 export function executionBlockReason(toolName: string, input: unknown): string | undefined {
-  if (ALLOWED_TOOLS[toolName] === true) return undefined;
+  if (ALLOWED_TOOLS[toolName] === true || CONTEXT_MEMORY_TOOLS[toolName] === true) return undefined;
   const args = record(input) ?? {};
   switch (toolName) {
     case "read":
@@ -372,6 +386,7 @@ export function executionToolSourceBlockReason(
     return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
   }
   if (source === "builtin") return undefined;
+  if (CONTEXT_MEMORY_TOOLS[toolName] === true && source === "extension") return undefined;
   return `\`${toolName}\` resolves to ${source ? `a ${source} tool` : "an unverified tool"}, not a trusted native/plugin tool`;
 }
 

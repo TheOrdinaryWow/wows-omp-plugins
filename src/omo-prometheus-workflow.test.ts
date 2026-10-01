@@ -150,6 +150,10 @@ describe("Atlas execution guard", () => {
     expect(executionToolSourceBlockReason("atlas_ledger", "extension", true)).toBeUndefined();
     expect(executionToolSourceBlockReason("atlas_ledger", "extension", false)).toBeTruthy();
     expect(executionToolSourceBlockReason("atlas_ledger", "mcp", false)).toBeTruthy();
+    expect(executionToolSourceBlockReason("ctx_reduce", "extension")).toBeUndefined();
+    expect(executionToolSourceBlockReason("ctx_reduce", "mcp")).toBeTruthy();
+    expect(executionBlockReason("ctx_reduce", { drop: ["§1§"] })).toBeUndefined();
+    expect(executionBlockReason("ctx_execute", { code: "rm -rf ." })).toBeTruthy();
   });
 });
 
