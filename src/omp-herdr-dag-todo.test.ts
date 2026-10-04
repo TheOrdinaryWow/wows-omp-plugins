@@ -505,7 +505,7 @@ if (process.env[CHILD_ENV]) {
       const ctx = { sessionManager: h.ctx.sessionManager } as ExtensionContext;
       const result = await h.definition?.execute("missing", { op: "init" }, undefined, undefined, ctx);
       expect(result?.isError).toBe(true);
-      expect(result?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("OMP 18.3.1 or newer") });
+      expect(result?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("OMP 18.3.5 or newer") });
       await h.definition?.execute("missing-again", { op: "init" }, undefined, undefined, ctx);
       expect(h.warnings).toHaveLength(1);
       expect(h.forwarded).toEqual([]);

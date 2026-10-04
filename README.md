@@ -2,6 +2,8 @@
 
 A personal [omp](https://omp.sh) plugin marketplace.
 
+Requires OMP 18.3.5 or newer.
+
 ## Usage
 
 ```bash

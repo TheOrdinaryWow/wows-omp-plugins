@@ -244,7 +244,7 @@ modelRoles:
 
 ## Compatibility
 
-Requires OMP 18.3.1 or newer. OMP stays in charge of `xd://propose` approval and autosave. Planning drafts and the handoff marker live in `local://`, and approved plans live in the shared Atlas bundle. The plugin creates no project-local `.omo` state and runs children through OMP's native execution.
+Requires OMP 18.3.5 or newer. OMP stays in charge of `xd://propose` approval and autosave. Planning drafts and the handoff marker live in `local://`, and approved plans live in the shared Atlas bundle. The plugin creates no project-local `.omo` state and runs children through OMP's native execution.
 
 Shared execution needs file-backed sessions on a local filesystem that supports hard links, atomic rename, and file and directory sync. In-memory, remote-only, or otherwise unsupported storage makes Atlas refuse to run. Sessions with different session directories cannot see each other's plans, and moving a session does not move its `atlas/` directory.
 

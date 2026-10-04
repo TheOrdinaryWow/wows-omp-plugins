@@ -52,7 +52,7 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
       ctx: ExtensionContext,
     ) {
       if (!ctx.invokeTool) {
-        const text = `Herdr DAG cannot delegate todo on OMP ${VERSION}: ctx.invokeTool is unavailable (requires OMP 18.3.1 or newer).`;
+        const text = `Herdr DAG cannot delegate todo on OMP ${VERSION}: ctx.invokeTool is unavailable (requires OMP 18.3.5 or newer).`;
         if (!warnedMissingInvoke) {
           warnedMissingInvoke = true;
           pi.logger.warn(text);

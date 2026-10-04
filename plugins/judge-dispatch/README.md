@@ -11,7 +11,7 @@ child's model from its configured chain. OMP still validates every spawn.
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-Requires OMP 18.3.1 or newer. Restart the session afterwards so the extension
+Requires OMP 18.3.5 or newer. Restart the session afterwards so the extension
 can register. The plugin has no credentials of its own; it judges through OMP's
 built-in judgment support (see [Enabling the judge role](#enabling-the-judge-role)).
 

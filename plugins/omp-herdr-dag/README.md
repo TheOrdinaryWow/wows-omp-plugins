@@ -8,7 +8,7 @@ Live native todos, approved-plan execution, Atlas dependencies, and subagent act
 omp plugin install omp-herdr-dag@wows-omp-plugins
 ```
 
-Restart OMP after installation. Requires OMP 18.3.1 or newer, the `herdr` CLI on `PATH`, and an interactive OMP session inside Herdr. Linux and macOS use the same implementation; **macOS is unverified**. Windows is unsupported and receives a one-time notice. Noninteractive child sessions don't start a viewer.
+Restart OMP after installation. Requires OMP 18.3.5 or newer, the `herdr` CLI on `PATH`, and an interactive OMP session inside Herdr. Linux and macOS use the same implementation; **macOS is unverified**. Windows is unsupported and receives a one-time notice. Noninteractive child sessions don't start a viewer.
 
 The pane needs a Bun executable. Put `bun` on `PATH` or set `viewerRuntime` to its path. Automatic discovery tries `bun` first, then the host executable only if its `--version` output looks like Bun's semantic version. A compiled OMP executable isn't assumed to be a usable viewer runtime. Missing Bun produces a warning and skips pane management.
 

@@ -39,8 +39,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `locked` is the version in bun.lock; 18.3.1 is the oldest host the plugins support.
-        omp: [locked, 18.3.1]
+        # `locked` is the version in bun.lock; 18.3.5 is the oldest host the plugins support.
+        omp: [locked, 18.3.5]
     steps:
       - uses: actions/checkout@v7
         with:

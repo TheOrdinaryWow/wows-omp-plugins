@@ -11,7 +11,7 @@ agents.
 omp plugin install audit-goal@wows-omp-plugins
 ```
 
-Requires OMP 18.3.1 or newer and goal mode (`goal.enabled`, on by default).
+Requires OMP 18.3.5 or newer and goal mode (`goal.enabled`, on by default).
 Restart the session after installing.
 
 ## Usage
