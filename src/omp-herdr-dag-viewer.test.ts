@@ -206,6 +206,26 @@ describe("omp-herdr-dag viewer rendering", () => {
     expect(joined).toContain("↳ Fix flaky test");
   });
 
+  test("stalled running cards use warning borders, spinner and label whether linked or unlinked", async () => {
+    const snapshot = await fixture("tasks");
+    const running = snapshot.tasks.find((task) => task.status === "running");
+    expect(running).toBeDefined();
+    if (!running) throw new Error("Expected running fixture card");
+    const linkedNode = snapshot.runs.flatMap((run) => run.nodes).find((node) => node.state === "running");
+    if (!linkedNode) throw new Error("Expected running fixture node");
+    for (const nodeId of [undefined, linkedNode.id]) {
+      const task = { ...running, nodeId, retry: undefined, stalled: true };
+      const stalled = frame({ ...snapshot, tasks: [task] }, { view: "tasks", cols: 90 }).join("\n");
+      expect(stalled).toContain(`\x1b[1;${color(snapshot.theme.warning)}m stalled`);
+      expect(stalled).toContain(`\x1b[1;${color(snapshot.theme.warning)}m╔═ `);
+      expect(stalled).toContain(`\x1b[1;${color(snapshot.theme.warning)}m⠋`);
+      const normal = frame({ ...snapshot, tasks: [{ ...task, stalled: false }] }, { view: "tasks", cols: 90 }).join("\n");
+      expect(strip(normal)).not.toContain("stalled");
+      expect(normal).toContain(`\x1b[1;${color(snapshot.theme.accent)}m⠋`);
+      expect(normal).not.toContain(`\x1b[1;${color(snapshot.theme.warning)}m╔═ `);
+    }
+  });
+
   test("selection moves through nodes and the footer shows the selected node's detail", async () => {
     const snapshot = await fixture("atlas");
     const viewState: ViewState = { ...DEFAULT_VIEW_STATE, folded: [] };

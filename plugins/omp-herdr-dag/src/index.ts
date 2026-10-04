@@ -140,13 +140,12 @@ class DagExtension {
 
   #buildSnapshot(): Snapshot {
     const tasks = this.#tasks?.tasks ?? [];
-    const stalled = this.#tasks?.stalledTaskIds ?? new Set<string>();
     const runs = [...(this.#todo?.runs ?? []), ...(this.#atlas?.run ? [this.#atlas.run] : [])].map((original) => {
       const run = structuredClone(original);
       for (const node of run.nodes) {
         const linked = tasks.filter((task) => task.nodeId === node.id || node.taskIds.includes(task.id));
         node.taskIds = [...new Set([...node.taskIds, ...linked.map((task) => task.id)])];
-        node.stalled = linked.some((task) => stalled.has(task.id));
+        node.stalled = linked.some((task) => task.stalled);
       }
       run.stats = runStats(run, tasks);
       return run;

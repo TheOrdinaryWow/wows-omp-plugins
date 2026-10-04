@@ -60,7 +60,7 @@ State colors come from the OMP theme, separately from source colors:
 | `⊘` | Blocked | Warning |
 | `⊖` | Abandoned | Dim |
 
-A running node linked to a stalled child uses warning color. Child failure doesn't mark a todo or ledger row failed or done.
+A running node linked to a stalled child uses warning color. Running task cards, linked or unlinked, also use warning borders and a `stalled` label until new progress arrives. Child failure doesn't mark a todo or ledger row failed or done.
 
 The Tasks view shows direct children from native `task`, eval agents, and workpool: tool and arguments, recent output, model, retry details, elapsed time, tokens, and cost when supplied by the host. A child is attached to the native todo in progress when it starts. Repeated activations of the same child retain completed usage and add the current activation, rather than double-counting cumulative progress frames. Run usage counts each linked child once. Unavailable metrics use a missing-value marker, not zero.
 
@@ -104,7 +104,7 @@ Settings are read for the session's working directory on startup, session switch
 | `portraitSize` | number: 0.15 to 0.6 | `0.4` | DAG share in portrait; next open or orientation recreation. |
 | `followOrientation` | boolean | `true` | Enable recreation on orientation flips; applies on the next orientation check. |
 | `focusPane` | boolean | `false` | Focus the viewer when creating it; next open or recreation. See the swap caveat below. |
-| `stalledAfterSeconds` | number: 10 to 900 | `90` | Time without child progress before linked running nodes are marked stalled; restart OMP to update the task source threshold. |
+| `stalledAfterSeconds` | number: 10 to 900 | `90` | Time without child progress before running task cards and linked running nodes are marked stalled; restart OMP to update the task source threshold. |
 | `todoDependencies` | boolean | `true` | Process and persist explicit todo edges; applies to subsequent tool calls after settings reload. |
 | `atlasIntegration` | boolean | `true` | Listen to the Atlas contract; reload disables or reactivates the consumer and adjusts mirror deduplication. |
 | `followTheme` | boolean | `true` | Poll OMP theme changes on heartbeats; turning it off keeps the last sampled palette. |
@@ -172,7 +172,7 @@ Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionI
 | `snapshot.json` | `version`, session ID/name, generation, connection flag, timestamp, runs, task cards, theme palette, three source colors, and Atlas availability. |
 | Run objects | ID, source, title, generation, nodes, edges, creation/update/finish timestamps, and done/total/elapsed/token/cost stats. |
 | Node objects | ID, label, state, band/name, detail, start/finish timestamps, agent, linked task IDs, and stalled flag. Edges contain `from`, `to`, and `kind`. |
-| Task cards | ID, parent task/node IDs, agent, status, description, current tool/arguments, recent output, completed/current activation totals, activation count, model, retry attempt/limit/error, transcript path, start/finish timestamps, detached flag, depth, and activity-availability flag. Activation totals contain tokens, cost, and duration. |
+| Task cards | ID, parent task/node IDs, agent, status, optional stalled flag, description, current tool/arguments, recent output, completed/current activation totals, activation count, model, retry attempt/limit/error, transcript path, start/finish timestamps, detached flag, depth, and activity-availability flag. Activation totals contain tokens, cost, and duration. |
 | Theme palette | Text, muted, dim, accent, success, error, warning, border, accented/muted border, and optional background colors. |
 | `pane.json` | `version`, splitting/open phase, pane/tab IDs when known, host pane ID, orientation, position, launch timestamp, optional launching socket path, and dismissal flag. |
 | `view-state.json` | `version`, folded run IDs, view (`dag`, `tasks`, `transcript`), selected run ID, and critical-path toggle. |

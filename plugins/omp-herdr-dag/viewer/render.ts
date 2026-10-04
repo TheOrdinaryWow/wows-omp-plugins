@@ -1049,7 +1049,10 @@ function compose(header: Line[], body: Line[], footer: Line[], rows: number, ui:
 function taskIcon(task: TaskCard, ctx: Ctx): Segment {
   switch (task.status) {
     case "running":
-      return { text: SPINNER[ctx.tick % SPINNER.length] as string, style: fg(ctx.pal, "accent", { bold: true }) };
+      return {
+        text: SPINNER[ctx.tick % SPINNER.length] as string,
+        style: fg(ctx.pal, task.stalled ? "warning" : "accent", { bold: true }),
+      };
     case "completed":
       return { text: STATE_ICONS.done, style: fg(ctx.pal, "success") };
     case "failed":
@@ -1076,7 +1079,8 @@ function nodeLabel(snapshot: Snapshot | undefined, nodeId: string | undefined): 
 
 function taskCard(task: TaskCard, input: RenderInput, ctx: Ctx, width: number, selected: boolean): Line[] {
   const glyphs = BOXES[selected ? "double" : "rounded"];
-  const borderToken = task.status === "failed" ? "error" : task.status === "running" ? "borderAccent" : "borderMuted";
+  const stalled = task.status === "running" && task.stalled;
+  const borderToken = task.status === "failed" ? "error" : stalled ? "warning" : task.status === "running" ? "borderAccent" : "borderMuted";
   const border = fg(ctx.pal, borderToken, { bold: selected });
   const inner = width - 4;
   const content: Line[] = [];
@@ -1121,9 +1125,9 @@ function taskCard(task: TaskCard, input: RenderInput, ctx: Ctx, width: number, s
     }
   }
   // Title embedded in the top border.
-  const status = task.status === "running" ? "" : ` ${task.status}`;
-  const statusStyle = fg(ctx.pal, task.status === "failed" ? "error" : task.status === "aborted" ? "warning" : "dim", {
-    bold: task.status === "failed",
+  const status = task.status === "running" ? (stalled ? " stalled" : "") : ` ${task.status}`;
+  const statusStyle = fg(ctx.pal, task.status === "failed" ? "error" : stalled || task.status === "aborted" ? "warning" : "dim", {
+    bold: stalled || task.status === "failed",
   });
   const elapsed = ` ${formatDuration(taskElapsed(task, ctx.now))} `;
   const fixed = 3 + 2 + textWidth(status) + 1 + textWidth(elapsed) + 2;

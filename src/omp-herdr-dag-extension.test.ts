@@ -127,6 +127,7 @@ async function scenario(name: string, root: string): Promise<void> {
   let nextPane = 0;
   let hungClose = false;
   const clock = new Clock();
+  const nativeNow = Date.now;
   const peers: Peer[] = [];
   let shutdown = false;
   const ctx = {
@@ -621,6 +622,36 @@ async function scenario(name: string, root: string): Promise<void> {
       await hook("before_agent_start", { prompt: handoff });
       await todo();
       assert.equal((await peer.snapshot()).runs[0]?.source, "plan");
+    } else if (name === "stalled-tasks") {
+      Date.now = () => nativeNow() + clock.now;
+      await configure({ stalledAfterSeconds: 10 });
+      await hook("session_start");
+      bus.emit("task:subagent:lifecycle", { id: "unlinked", status: "started", agent: "task", index: 0 });
+      await todo();
+      bus.emit("task:subagent:lifecycle", { id: "linked", status: "started", agent: "task", index: 0 });
+      await command("open");
+      const peer = await connect();
+      const initial = await peer.snapshot();
+      assert(initial.tasks.every((task) => task.stalled === false));
+      const before = peer.frames.length;
+      clock.advance(10_000);
+      await Promise.resolve();
+      await hook("agent_end", { willContinue: true });
+      clock.advance(100);
+      await eventually(() =>
+        peer.frames.slice(before).some((frame) => frame.type === "delta" && frame.ops.some((op) => op.op === "task" && op.task.stalled)),
+      );
+      const stalled = await peer.snapshot();
+      assert(stalled.tasks.every((task) => task.stalled));
+      assert(stalled.runs[0]?.nodes[0]?.stalled);
+      assert(stalled.tasks.find((task) => task.id === "unlinked")?.nodeId === undefined);
+      bus.emit("task:subagent:progress", { progress: { id: "linked", currentTool: "read" } });
+      bus.emit("task:subagent:lifecycle", { id: "unlinked", status: "completed" });
+      await hook("agent_end", { willContinue: true });
+      clock.advance(100);
+      const active = await peer.snapshot();
+      assert(active.tasks.every((task) => task.stalled === false));
+      assert.equal(active.runs[0]?.nodes[0]?.stalled, false);
     } else if (name.startsWith("shutdown-")) {
       await configure({ finishBehavior: name === "shutdown-keep" ? "keep-open" : "close-with-omp" });
       await hook("session_start");
@@ -748,6 +779,7 @@ async function scenario(name: string, root: string): Promise<void> {
     } else assert.fail(`Unknown scenario ${name}`);
     assert.deepEqual(warnings, name === "shutdown-hung" ? warnings : []);
   } finally {
+    Date.now = nativeNow;
     if (!shutdown) await hook("session_shutdown");
     for (const peer of peers) peer.socket.destroy();
     AgentRegistry.resetGlobalForTests();
@@ -788,6 +820,7 @@ if (process.env[CHILD_ENV]) {
       "switch-replay",
       "dismiss-switch",
       "resume-socket",
+      "stalled-tasks",
       "shutdown-close",
       "shutdown-keep",
       "shutdown-hung",

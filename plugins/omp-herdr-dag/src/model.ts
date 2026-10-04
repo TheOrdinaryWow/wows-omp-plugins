@@ -43,6 +43,7 @@ export interface TaskCard {
   nodeId?: string;
   agent: string;
   status: "running" | "completed" | "failed" | "aborted";
+  stalled?: boolean;
   description?: string;
   currentTool?: string;
   currentToolArgs?: string;

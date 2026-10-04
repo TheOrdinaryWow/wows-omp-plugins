@@ -93,6 +93,12 @@ export class TaskSource {
     return this.#options.now?.() ?? Date.now();
   }
   #notify(): void {
+    const now = this.#now();
+    for (const card of this.#cards.values()) {
+      card.stalled =
+        card.status === "running" &&
+        now - (this.#activity.get(card.id) ?? card.startedAt) >= (this.#options.stalledAfterSeconds ?? 90) * 1000;
+    }
     for (const listener of this.#listeners) listener(this.tasks);
   }
   #frame(channel: string, payload: unknown): void {

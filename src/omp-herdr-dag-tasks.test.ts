@@ -86,9 +86,12 @@ describe("task sources", () => {
       });
       expect(source.tasks.find((card) => card.id === "live")?.currentTool).toBe("bash");
       now += 10001;
+      source.sample();
+      expect(source.tasks.find((card) => card.id === "live")?.stalled).toBe(true);
       expect(source.stalledTaskIds.has("live")).toBe(true);
       events.emit("task:subagent:event", { id: "live", event: { type: "tool_execution_end" } });
       expect(source.stalledTaskIds.has("live")).toBe(false);
+      expect(source.tasks.find((card) => card.id === "live")?.stalled).toBe(false);
     } finally {
       source.dispose();
     }
