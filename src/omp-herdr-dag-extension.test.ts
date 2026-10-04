@@ -968,7 +968,7 @@ async function scenario(name: string, root: string): Promise<void> {
       await eventually(() => writeError !== undefined);
       await assert.rejects(brokenWriter.flush());
     } else assert.fail(`Unknown scenario ${name}`);
-    assert.deepEqual(warnings, name === "shutdown-hung" ? warnings : []);
+    if (name !== "shutdown-hung") assert.deepEqual(warnings, []);
   } finally {
     Date.now = nativeNow;
     if (!shutdown) await hook("session_shutdown");
