@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   type AtlasRow,
@@ -13,6 +16,18 @@ import {
   todoRun,
   validateTodoEdges,
 } from "../plugins/omp-herdr-dag/src/model.ts";
+import {
+  type PaneState,
+  readPane,
+  readSnapshot,
+  readVersioned,
+  readViewState,
+  type ViewState,
+  writePane,
+  writeSnapshot,
+  writeViewState,
+} from "../plugins/omp-herdr-dag/src/persisted.ts";
+import { applyOps, encodeFrame, type Frame, FrameParser, MAX_FRAME_BYTES, type Op } from "../plugins/omp-herdr-dag/src/protocol.ts";
 
 function phases(): TodoPhase[] {
   return [
@@ -165,5 +180,121 @@ describe("DAG model", () => {
     });
     expect(runStats(done, [], 500).elapsedMs).toBe(100);
     expect(sanitizeText("\u001b[31m中文\u001b[0m\u001b]0;bad\u0007\u001bPbad\u001b\\\u0000\nnext")).toBe("中文\nnext");
+  });
+});
+
+describe("wire protocol and persistence", () => {
+  test("streaming partial UTF-8, concatenated frames, invalid/version rejection and byte limit", () => {
+    const parser = new FrameParser();
+    const first: Frame = { v: 1, seq: 1, type: "hello", sessionId: "中文", pid: 10, generation: 1, paths: { snapshot: "a", state: "b" } };
+    const bytes = Buffer.from(encodeFrame(first));
+    const split = bytes.indexOf(Buffer.from("中")) + 1;
+    expect(parser.feed(bytes.subarray(0, split))).toEqual([]);
+    expect(parser.feed(bytes.subarray(split))).toEqual([first]);
+    const heartbeat: Frame = { v: 1, seq: 2, type: "heartbeat", at: 100 };
+    expect(parser.feed(`${encodeFrame(heartbeat)}bad\n{"v":2,"seq":3,"type":"ready"}\n${encodeFrame(heartbeat)}`)).toEqual([
+      heartbeat,
+      heartbeat,
+    ]);
+    expect(parser.ignored).toBe(2);
+    const oversized = new FrameParser();
+    expect(oversized.feed("x".repeat(MAX_FRAME_BYTES))).toEqual([]);
+    expect(oversized.dropped).toBe(false);
+    oversized.feed("x");
+    expect(oversized.dropped).toBe(true);
+    expect(oversized.feed(encodeFrame(heartbeat))).toEqual([]);
+    const single = new FrameParser();
+    single.feed(`${"中".repeat(Math.ceil(MAX_FRAME_BYTES / 3))}\n`);
+    expect(single.dropped).toBe(true);
+  });
+
+  test("operations reproduce snapshots, removals and session paths; mismatch changes nothing", () => {
+    const initial = snapshot();
+    const run = todoRun({ sessionId: "session", generation: 1, phases: phases(), now: 100 });
+    const task = attachTask(undefined, { id: "child", status: "started", at: 100 });
+    const ops: Op[] = [
+      { op: "run", run },
+      { op: "task", task },
+      { op: "atlas", available: true },
+      { op: "theme", theme: { ...initial.theme, accent: "#123456" } },
+    ];
+    const first = applyOps(initial, { v: 1, seq: 2, type: "delta", base: 1, ops }, 1);
+    expect(first.snapshot).toEqual({
+      ...initial,
+      runs: [run],
+      tasks: [task],
+      atlasAvailable: true,
+      theme: { ...initial.theme, accent: "#123456" },
+    });
+    const bad = applyOps(first.snapshot, { v: 1, seq: 4, type: "delta", base: 3, ops: [] }, 2);
+    expect(bad.baseMismatch).toBe(true);
+    expect(bad.snapshot).toBe(first.snapshot);
+    expect(bad.seq).toBe(2);
+    const removed = applyOps(
+      first.snapshot,
+      {
+        v: 1,
+        seq: 3,
+        type: "delta",
+        base: 2,
+        ops: [
+          { op: "removeRun", id: run.id },
+          { op: "removeTask", id: task.id },
+        ],
+      },
+      2,
+    );
+    expect(removed.snapshot.runs).toEqual([]);
+    expect(removed.snapshot.tasks).toEqual([]);
+    const paths = { snapshot: "new/snapshot.json", state: "new/view-state.json" };
+    const rebound = applyOps(
+      first.snapshot,
+      { v: 1, seq: 3, type: "delta", base: 2, ops: [{ op: "session", sessionId: "new", sessionName: "Next", generation: 2, paths }] },
+      2,
+    );
+    expect(rebound.paths).toEqual(paths);
+    expect(rebound.snapshot).toEqual({
+      ...first.snapshot,
+      sessionId: "new",
+      sessionName: "Next",
+      generation: 2,
+      runs: [],
+      tasks: [],
+      atlasAvailable: false,
+    });
+  });
+
+  test("v1 snapshot, pane and view state write/reopen; unknown version ignored and reset atomically", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dag-core-"));
+    try {
+      const snap = snapshot();
+      const pane: PaneState = {
+        version: 1,
+        phase: "open",
+        paneId: "pane",
+        tabId: "tab",
+        hostPaneId: "host",
+        orientation: "landscape",
+        position: "right",
+        launchedAt: 100,
+        dismissed: false,
+      };
+      const state: ViewState = { version: 1, folded: ["layer"], view: "tasks", selectedRun: "run", criticalPath: true };
+      await writeSnapshot(join(dir, "snapshot.json"), snap);
+      await writePane(join(dir, "pane.json"), pane);
+      await writeViewState(join(dir, "view-state.json"), state);
+      expect(await readSnapshot(join(dir, "snapshot.json"))).toEqual(snap);
+      expect(await readPane(join(dir, "pane.json"))).toEqual(pane);
+      expect(await readViewState(join(dir, "view-state.json"))).toEqual(state);
+      await writeFile(join(dir, "snapshot.json"), '{"version":99}');
+      expect(await readSnapshot(join(dir, "snapshot.json"))).toBeUndefined();
+      expect(await readVersioned(join(dir, "snapshot.json"), snap)).toEqual(snap);
+      expect(JSON.parse(await readFile(join(dir, "snapshot.json"), "utf8"))).toEqual(snap);
+      await writeFile(join(dir, "view-state.json"), "{");
+      expect(await readViewState(join(dir, "view-state.json"))).toBeUndefined();
+      expect((await readdir(dir)).sort()).toEqual(["pane.json", "snapshot.json", "view-state.json"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
