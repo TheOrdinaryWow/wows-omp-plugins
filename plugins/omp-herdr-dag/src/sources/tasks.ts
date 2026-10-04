@@ -163,7 +163,7 @@ export class TaskSource {
     const refs = this.#options.registry?.list() ?? [];
     const byId = new Map(refs.map((ref) => [ref.id, ref]));
     for (const ref of refs) {
-      if (ref.kind !== "subagent" || !ref.parentId) continue;
+      if ((ref.kind !== "sub" && ref.kind !== "subagent") || !ref.parentId) continue;
       const parent = this.#cards.get(ref.parentId);
       if (parent?.depth !== 1) continue;
       const existing = this.#cards.get(ref.id);

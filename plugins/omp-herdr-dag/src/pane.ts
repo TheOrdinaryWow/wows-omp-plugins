@@ -263,6 +263,14 @@ export class PaneManager {
     });
   }
 
+  /** A new run may auto-open even after the user dismissed the previous run. */
+  resetDismissal(): Promise<void> {
+    return this.#serial(async () => {
+      await this.#load();
+      if (this.#state?.dismissed) await this.#save({ ...this.#state, dismissed: false });
+    });
+  }
+
   update(options: PaneUpdate): Promise<void> {
     return this.#serial(async () => {
       await this.#load();

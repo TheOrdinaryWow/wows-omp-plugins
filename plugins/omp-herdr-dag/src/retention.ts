@@ -1,5 +1,5 @@
 import type { Stats } from "node:fs";
-import { readdir, lstat, rm } from "node:fs/promises";
+import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface RetentionOptions {

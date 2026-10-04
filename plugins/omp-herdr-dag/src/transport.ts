@@ -307,6 +307,7 @@ export interface SnapshotWriterOptions {
   file: string;
   timer?: SnapshotTimer;
   delayMs?: number;
+  onError?: (error: unknown) => void;
 }
 
 /** Debounced, atomic snapshot persistence used only for viewer recovery. */
@@ -328,6 +329,8 @@ export class SnapshotWriter {
     this.#timerHandle = this.#timer.setTimeout(() => {
       this.#timerHandle = undefined;
       this.#queue = this.#queue.then(() => this.#writePending());
+      // Attach a rejection observer immediately; flush still reports the original I/O failure.
+      void this.#queue.catch((error: unknown) => this.#options.onError?.(error));
     }, this.#options.delayMs ?? 250);
   }
 
