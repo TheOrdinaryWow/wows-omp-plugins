@@ -41,6 +41,10 @@ export interface AtlasRowDetail {
   title: string;
   status: ItemStatus;
   agent: string;
+  /** Preserve the display agent while exposing the ledger's requested role to observers. */
+  originalAgent?: string;
+  dispatchAgent?: string;
+  origin?: string;
   acceptance: string;
   dependsOn: string[];
   evidence?: string;
@@ -631,6 +635,9 @@ export class AtlasStore {
               title: row.title,
               status: row.status,
               agent: row.dispatchAgent ?? row.agent,
+              originalAgent: row.agent,
+              dispatchAgent: row.dispatchAgent,
+              origin: row.origin,
               acceptance: row.acceptance,
               dependsOn: row.dependsOn,
               evidence: row.evidence,

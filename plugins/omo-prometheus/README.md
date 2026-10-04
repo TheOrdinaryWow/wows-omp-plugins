@@ -128,6 +128,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 | ------- | ------ | ------- | ------ |
 | `reviewLevel` | `off` \| `ask` \| `standard` \| `high-accuracy` | `ask` | Controls plan review before the proposal. |
 | `atlasWidget` | `true` \| `false` | `true` | Show the live progress widget above the editor while this session executes Atlas. |
+| `herdrDag` | `true` \| `false` | `true` | Publish the versioned Atlas event contract for the Herdr DAG viewer; false disables all contract emissions, including hello replies. |
 
 - `ask`: Momus reviews every plan. Momus and Oracle together review when you ask for high accuracy or the work is nontrivial and unclear; for clear work you get a one-time choice.
 - `standard`: Momus reviews every plan without offering high accuracy, but an explicit request still adds Oracle.
@@ -135,6 +136,16 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 - `off`: no Momus or Oracle plan review, even on request. Metis still checks for planning gaps, and Atlas still runs the F1 compliance gate after approval.
 
 User settings merge with project overrides. The plugin reads settings for the session's cwd at startup, so restart the session after changing them.
+
+## Herdr DAG contract
+
+With `herdrDag` enabled, `omp-herdr-dag` can observe this session's bound Atlas plan through `pi.events`. The producer answers `herdr-dag:hello {v:1, sessionId, requestId}` synchronously with `atlas:hello`, preserving `requestId` and including the bound plan when present. A bound plan's hello is immediately followed by `atlas:snapshot`; startup order does not matter. Unsupported versions and sessions not known to this producer are ignored.
+
+Binding emits `atlas:hello` and `atlas:snapshot`. Live updates publish the plan identity, ledger status and totals, T/X/F rows with dependency and fix-origin metadata, per-row child progress, and the last 50 timeline events. Last-known progress remains visible after a row finishes, but is cleared on a new attempt. Payloads are plain JSON and use `v:1`; this does not change Atlas bundle formats.
+
+An enabled producer also announces availability without a plan after an unbound session starts or switches, so a viewer that starts first does not need to retry its initial handshake.
+
+Detaching emits `atlas:released` with `reason: "exit"`, `"session-switch"`, or `"shutdown"`, followed by a hello without a plan. Release means detached from the view, not finished execution or cancelled children. With `herdrDag: false`, no contract events are emitted, including hello replies; ledger, todo mirror, ownership, and UI behavior remain unchanged. No viewer or runtime dependency is required by this producer.
 
 ## Plan format
 

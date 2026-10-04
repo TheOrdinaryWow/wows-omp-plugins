@@ -31,6 +31,7 @@ import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
+import { HerdrDagContract } from "./herdr-dag-contract.ts";
 import {
   addFixRow,
   type ExecutionLedger,
@@ -154,6 +155,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const stores = new Map<string, AtlasStore>();
   const ownerships = new Set<Ownership>();
   const liveModels = new Map<string, AtlasLive>();
+  const herdrDag = new HerdrDagContract(pi.events);
   const WIDGET_KEY = "atlas";
   let atlasCompletions: AutocompleteItem[] = [];
   let planReferences = new AtlasPlanReferences();
@@ -173,14 +175,18 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   const loadReviewLevel = async (ctx: ExtensionContext): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
+    let herdrDagEnabled = true;
     try {
       const settings = await getPluginSettings(PACKAGE_NAME, ctx.cwd);
+      herdrDagEnabled = settings.herdrDag !== false;
       reviewLevels.set(sessionId, parseReviewLevel(settings.reviewLevel));
       atlasWidgets.set(sessionId, settings.atlasWidget !== false);
     } catch (error) {
       reviewLevels.set(sessionId, "ask");
       atlasWidgets.set(sessionId, true);
       pi.logger.warn("prometheus reviewLevel is invalid; using ask", { error: errorMessage(error) });
+    } finally {
+      if (mainSession(ctx)) herdrDag.configure(sessionId, herdrDagEnabled);
     }
   };
 
@@ -394,7 +400,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const installObservation = async (ctx: ExtensionContext, store: AtlasStore, plan: AtlasPlan): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
     clearObservation(ctx, sessionId);
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI && !herdrDag.enabled(sessionId)) return;
     try {
       const detail = (await store.details(plan.cwd)).find((item) => item.plan.id === plan.id);
       if (!detail || detail.status.startsWith("Invalid")) return;
@@ -406,7 +412,9 @@ export default function prometheus(pi: ExtensionAPI): void {
         warn: (error) => pi.logger.warn("Atlas live observation failed", { error: errorMessage(error) }),
       });
       liveModels.set(sessionId, live);
-      if (atlasWidgets.get(sessionId) !== false)
+      herdrDag.bind(sessionId, plan);
+      live.subscribe((snapshot) => herdrDag.publish(sessionId, snapshot));
+      if (ctx.hasUI && atlasWidgets.get(sessionId) !== false)
         ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => new AtlasStatusWidget(live, tui, theme), { placement: "aboveEditor" });
     } catch (error) {
       pi.logger.warn("Atlas live observation could not start", { error: errorMessage(error) });
@@ -702,6 +710,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     authorizedActivationCalls.clear();
     // Invalidate in-flight publication synchronously, before any file or UI operation.
     record.phase = "idle";
+    if (expected === "executing") herdrDag.release(ctx.sessionManager.getSessionId(), "exit");
     clearObservation(ctx, ctx.sessionManager.getSessionId());
     record.ownership = undefined;
     record.activation = undefined;
@@ -2062,7 +2071,13 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   const recoverSession = async (ctx: ExtensionContext, fresh = false, switched = false): Promise<void> => {
-    for (const sessionId of liveModels.keys()) clearObservation(ctx, sessionId);
+    for (const sessionId of liveModels.keys()) {
+      if (switched && sessionId !== ctx.sessionManager.getSessionId()) {
+        herdrDag.release(sessionId, "session-switch");
+        herdrDag.forget(sessionId);
+      }
+      clearObservation(ctx, sessionId);
+    }
     authorizedActivationCalls.clear();
     const sessionId = ctx.sessionManager.getSessionId();
     const live = mainSession(ctx);
@@ -2085,6 +2100,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     await settleDetached();
     await resumeLedger(ctx, restored, previousReference);
+    if (!restored?.ownership) herdrDag.release(sessionId, "exit");
     if (live && knownBinding && !restored?.ownership && planReferencesMatch(live.getPlanReferencePath(), knownBinding.planUrl)) {
       live.setPlanReferencePath(DEFAULT_PLAN_REFERENCE);
     }
@@ -2101,6 +2117,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     registerRole(ctx);
     await loadReviewLevel(ctx);
     await recoverSession(ctx);
+    herdrDag.announce(ctx.sessionManager.getSessionId());
     await refreshAtlasCompletions(ctx);
   });
 
@@ -2108,6 +2125,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     registerRole(ctx);
     await loadReviewLevel(ctx);
     await recoverSession(ctx, event.reason === "new", true);
+    herdrDag.announce(ctx.sessionManager.getSessionId());
     await refreshAtlasCompletions(ctx);
   });
 
@@ -2123,6 +2141,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const live = mainSession(ctx);
     if (live) restoreApprovalTiers(live);
     const sessionId = ctx.sessionManager.getSessionId();
+    herdrDag.release(sessionId, "shutdown");
     clearObservation(ctx, sessionId);
     const record = records.get(sessionId);
     if (record) {
@@ -2142,6 +2161,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     records.delete(sessionId);
     reviewLevels.delete(sessionId);
     atlasWidgets.delete(sessionId);
+    herdrDag.forget(sessionId);
     authorizedActivationCalls.clear();
   });
 }
