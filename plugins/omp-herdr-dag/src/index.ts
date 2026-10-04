@@ -467,6 +467,21 @@ export default function herdrDag(pi: ExtensionAPI, deps: Dependencies = {}): voi
   pi.on("session_tree", (_event, ctx) => extension.run(() => extension.restore(ctx)));
   pi.on("session_compact", (_event, ctx) => extension.run(() => extension.restore(ctx, { preserveProposal: true })));
   pi.on("before_agent_start", (event, ctx) => extension.run(() => extension.beforeAgentStart(event.prompt, ctx)));
+  pi.on("context", (event, ctx) =>
+    extension.run(async () => {
+      for (const message of event.messages) {
+        if (message.role !== "developer" || message.attribution !== "agent" || message.synthetic !== true) continue;
+        const prompt =
+          typeof message.content === "string"
+            ? message.content
+            : message.content
+                .filter((part) => part.type === "text")
+                .map((part) => part.text)
+                .join("\n");
+        await extension.beforeAgentStart(prompt, ctx);
+      }
+    }),
+  );
   pi.on("agent_end", (event) => extension.run(() => extension.agentEnd(event.willContinue)));
   pi.on("tool_result", (event) => extension.run(() => extension.toolResult(event)));
   pi.on("session_shutdown", () => extension.shutdown());

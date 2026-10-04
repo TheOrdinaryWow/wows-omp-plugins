@@ -211,6 +211,39 @@ if (process.env[CHILD_ENV]) {
       expect(reads).toBe(2);
     });
 
+    test("new canonical lists after the poll baseline claim approval, historical replay never does", () => {
+      for (const writer of ["user_todo_edit", "tool-result"]) {
+        const entries: SessionEntry[] = [];
+        const plan = new PlanExecutionTracker({
+          persist: (data) => entries.push({ ...customEntry(PLAN_EXECUTION_ENTRY, data), id: `state-${entries.length}` }),
+        });
+        const source = new TodoSource({ sessionId: "session", plan });
+        source.replay(entries, null);
+        plan.observeResult({
+          toolName: "write",
+          details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
+        });
+        plan.beforeAgentStart(handoff, "local://approved.md");
+        const canonical = (id: string, list: TodoPhase[]) =>
+          writer === "tool-result"
+            ? messageEntry(id, id === "list" ? "init" : "done", list)
+            : { ...customEntry("user_todo_edit", { phases: list }), id };
+        const historical = new TodoSource({ sessionId: "historical", plan });
+        historical.replay([...entries, canonical("old", phases)], "old");
+        expect(historical.current?.source).toBe("todo");
+        expect(plan.state.runId).toBeUndefined();
+        entries.push(canonical("list", phases));
+        source.poll({ getLeafId: () => "list", getBranch: () => entries });
+        expect(source.current?.source).toBe("plan");
+        expect(plan.state.runId).toBe(source.current?.id);
+        const terminal: TodoPhase[] = [{ name: "Build", tasks: [{ content: "A", status: "completed" }] }];
+        entries.push(canonical("done", terminal));
+        source.poll({ getLeafId: () => "done", getBranch: () => entries });
+        expect(plan.agentEnd(source.current)).toBe(true);
+        expect(plan.state.state).toBe("idle");
+      }
+    });
+
     test("Atlas mirrors are hidden only while bound, including an all-mirror list", () => {
       const source = new TodoSource({ sessionId: "session", now: () => 1_000 });
       const mirrored = ["Atlas tasks", "Atlas fixes", "Atlas final gates"].map(

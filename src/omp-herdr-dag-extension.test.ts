@@ -404,6 +404,45 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal(state(), "executing");
       await hook("agent_end");
       assert.equal(state(), "idle");
+    } else if (name === "queued-plan") {
+      await configure({ displayTiming: "plan-execution" });
+      await hook("session_start");
+      await proposal();
+      const state = () => {
+        const entry = manager.getBranch().findLast((entry) => entry.type === "custom" && entry.customType === PLAN_EXECUTION_ENTRY);
+        assert(entry?.type === "custom");
+        const data = entry.data;
+        assert(data && typeof data === "object" && "state" in data && typeof data.state === "string");
+        return data.state;
+      };
+      const message = { role: "developer", attribution: "agent", synthetic: true, content: [{ type: "text", text: handoff }] };
+      await hook("context", {
+        messages: [
+          { ...message, role: "user" },
+          { ...message, synthetic: false },
+        ],
+      });
+      assert.equal(state(), "proposed");
+      reference = "local://different.md";
+      await hook("context", { messages: [message] });
+      assert.equal(state(), "proposed");
+      reference = "local://approved.md";
+      await hook("context", { messages: [message] });
+      assert.equal(state(), "executing");
+      manager.appendCustomEntry("user_todo_edit", { phases: list });
+      clock.advance(2_000);
+      await Promise.resolve();
+      await hook("agent_end", { willContinue: true });
+      assert.equal(splits(), 1);
+      const peer = await connect();
+      assert.equal((await peer.snapshot()).runs.at(-1)?.source, "plan");
+      manager.appendCustomEntry("user_todo_edit", {
+        phases: [{ name: "Build", tasks: [{ content: "A", status: "completed" }] }],
+      });
+      clock.advance(2_000);
+      await Promise.resolve();
+      await hook("agent_end");
+      assert.equal(state(), "idle");
     } else if (name === "atlas") {
       await configure({ displayTiming: "atlas-only" });
       await hook("session_start");
@@ -693,6 +732,7 @@ if (process.env[CHILD_ENV]) {
       "outside-herdr",
       "streaming",
       "plan",
+      "queued-plan",
       "atlas",
       "manual-dismissal",
       "switch-replay",

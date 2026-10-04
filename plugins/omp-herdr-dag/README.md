@@ -43,6 +43,8 @@ Subagent activity by itself doesn't open the pane. Pressing `q` in the viewer or
 
 Plan execution requires the recorded proposal, the host's matching plan reference, and its exact approval envelope. A user message saying `Plan approved.` or a bare new-session event isn't enough. The plan epoch ends once its list is completed or abandoned and the agent turn ends without continuation. A later list is an ordinary blue todo run.
 
+Queued synthetic developer approval messages use the same checks as a new turn's approval prompt. Canonical todo writes observed after the live polling baseline can claim the first plan list; historical lists replayed on startup, switching, or rewinding cannot.
+
 While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fixes`, and `Atlas final gates` are hidden from the native todo view. They reappear as plain todos when Atlas releases or integration is disabled.
 
 Forward dependencies use solid connectors. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted. The critical path uses observed node elapsed time, or unit weight for unstarted nodes, across explicit dependency edges only. Runs without those edges have no critical path. Completed layers can be folded.

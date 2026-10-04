@@ -134,6 +134,10 @@ export class TodoSource {
   }
 
   replay(entries: readonly SessionEntry[], leafId?: string | null, preserveProposal = false): void {
+    this.#replay(entries, leafId, preserveProposal);
+  }
+
+  #replay(entries: readonly SessionEntry[], leafId?: string | null, preserveProposal = false, liveAfter = entries.length): void {
     const oldRuns = new Map(this.runs.map((run) => [run.id, run]));
     this.#options.plan?.replay(entries, preserveProposal);
     this.#phases = [];
@@ -143,7 +147,7 @@ export class TodoSource {
     this.#previous = undefined;
     this.#edges.clear();
     let pendingGeneration = 0;
-    for (const raw of entries) {
+    for (const [index, raw] of entries.entries()) {
       const entry = record(raw);
       if (entry?.type === "custom" && entry.customType === TODO_EDGES_ENTRY) {
         const data = record(entry.data);
@@ -155,7 +159,7 @@ export class TodoSource {
       const snapshot = snapshotEntry(raw);
       if (!snapshot) continue;
       latestAt = snapshot.at ?? this.#now();
-      this.#accept(snapshot.phases, snapshot.op === "init", latestAt, false, oldRuns, pendingGeneration);
+      this.#accept(snapshot.phases, snapshot.op === "init", latestAt, index > liveAfter, oldRuns, pendingGeneration);
       pendingGeneration = 0;
     }
     // The exported host helper is authoritative for the latest branch snapshot.
@@ -169,7 +173,12 @@ export class TodoSource {
   poll(manager: TodoBranchReader): boolean {
     const leafId = manager.getLeafId();
     if (leafId === this.#leafId) return false;
-    this.replay(manager.getBranch(), leafId, true);
+    const entries = manager.getBranch();
+    // Only writes after an established baseline are live. A missing baseline means
+    // initial replay or a branch change, neither of which can claim an approval.
+    const baseline = this.#leafId === null ? -1 : entries.findIndex((entry) => entry.id === this.#leafId);
+    const liveAfter = this.#leafId !== undefined && (this.#leafId === null || baseline >= 0) ? baseline : entries.length;
+    this.#replay(entries, leafId, true, liveAfter);
     return true;
   }
 
