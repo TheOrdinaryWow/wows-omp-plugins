@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "sessionId": "01a1054d-3bd0-77c4",
+  "sessionName": "herdr-dag",
+  "generation": 1,
+  "connected": true,
+  "at": 1791101800000,
+  "runs": [
+    {
+      "id": "atlas:omp-herdr-dag--1a1f",
+      "source": "atlas",
+      "title": "omp-herdr-dag",
+      "generation": 0,
+      "nodes": [
+        {
+          "id": "atlas:T1",
+          "label": "T1. Scaffold the plugin package",
+          "state": "done",
+          "band": 0,
+          "bandName": "Tasks",
+          "detail": "bun run check-catalog passed",
+          "agent": "deep-low",
+          "startedAt": 1791100000000,
+          "finishedAt": 1791101200000,
+          "taskIds": []
+        },
+        {
+          "id": "atlas:T2",
+          "label": "T2. Pure core: protocol, model, layout",
+          "state": "done",
+          "band": 0,
+          "bandName": "Tasks",
+          "agent": "deep-low",
+          "startedAt": 1791100120000,
+          "finishedAt": 1791101200000,
+          "taskIds": []
+        },
+        {
+          "id": "atlas:T3",
+          "label": "T3. Herdr control and pane manager",
+          "state": "done",
+          "band": 0,
+          "bandName": "Tasks",
+          "agent": "deep-low",
+          "startedAt": 1791100120000,
+          "finishedAt": 1791101200000,
+          "taskIds": []
+        },
+        {
+          "id": "atlas:T4",
+          "label": "T4. Viewer process",
+          "state": "running",
+          "band": 0,
+          "bandName": "Tasks",
+          "agent": "visual-engineering",
+          "startedAt": 1791100540000,
+          "taskIds": ["sub-viewer"]
+        },
+        {
+          "id": "atlas:T5",
+          "label": "T5. Extension integration",
+          "state": "pending",
+          "band": 0,
+          "bandName": "Tasks",
+          "agent": "deep-low",
+          "taskIds": []
+        },
+        {
+          "id": "atlas:X1",
+          "label": "X1. Fix pane ratio inversion",
+          "state": "running",
+          "band": 1,
+          "bandName": "Fixes",
+          "agent": "deep-low",
+          "startedAt": 1791101320000,
+          "taskIds": ["sub-fix"]
+        },
+        {
+          "id": "atlas:F1",
+          "label": "F1. Plan compliance review",
+          "state": "done",
+          "band": 2,
+          "bandName": "Final gates",
+          "detail": "PASS: all rows map to plan tasks",
+          "agent": "reviewer",
+          "finishedAt": 1791101200000,
+          "taskIds": []
+        },
+        {
+          "id": "atlas:F2",
+          "label": "F2. Code quality review",
+          "state": "blocked",
+          "band": 2,
+          "bandName": "Final gates",
+          "detail": "FAIL: ratio is inverted for bottom splits",
+          "agent": "reviewer",
+          "taskIds": []
+        },
+        {
+          "id": "atlas:F3",
+          "label": "F3. Real-surface QA",
+          "state": "pending",
+          "band": 2,
+          "bandName": "Final gates",
+          "agent": "reviewer",
+          "taskIds": []
+        }
+      ],
+      "edges": [
+        { "from": "atlas:T1", "to": "atlas:T2", "kind": "depends" },
+        { "from": "atlas:T1", "to": "atlas:T3", "kind": "depends" },
+        { "from": "atlas:T2", "to": "atlas:T4", "kind": "depends" },
+        { "from": "atlas:T3", "to": "atlas:T5", "kind": "depends" },
+        { "from": "atlas:T4", "to": "atlas:T5", "kind": "depends" },
+        { "from": "atlas:X1", "to": "atlas:F2", "kind": "fix" },
+        { "from": "atlas:T5", "to": "atlas:F1", "kind": "depends" },
+        { "from": "atlas:T5", "to": "atlas:F2", "kind": "depends" },
+        { "from": "atlas:T5", "to": "atlas:F3", "kind": "depends" }
+      ],
+      "createdAt": 1791100000000,
+      "updatedAt": 1791101200000,
+      "stats": { "done": 4, "total": 9, "elapsedMs": 1800000, "tokens": 129500, "costUsd": 0.923 }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "sub-viewer",
+      "agent": "visual-engineering",
+      "status": "running",
+      "recentOutput": ["12 pass", "Rendering fixtures", "Writing render.ts"],
+      "completed": { "durationMs": 0 },
+      "current": { "durationMs": 1200000, "tokens": 120400, "costUsd": 0.882 },
+      "activations": 1,
+      "startedAt": 1791100540000,
+      "depth": 1,
+      "activityAvailable": true,
+      "nodeId": "atlas:T4",
+      "currentTool": "bash",
+      "currentToolArgs": "bun test src/omp-herdr-dag-viewer.test.ts",
+      "model": "claude-opus-4"
+    },
+    {
+      "id": "sub-fix",
+      "agent": "deep-low",
+      "status": "running",
+      "recentOutput": [],
+      "completed": { "durationMs": 0 },
+      "current": { "durationMs": 420000, "tokens": 9100, "costUsd": 0.041 },
+      "activations": 1,
+      "startedAt": 1791101320000,
+      "depth": 1,
+      "activityAvailable": true,
+      "nodeId": "atlas:X1",
+      "currentTool": "read",
+      "currentToolArgs": "src/pane.ts",
+      "model": "claude-sonnet-4-5"
+    }
+  ],
+  "theme": {
+    "text": "#e6edf3",
+    "muted": "#8b949e",
+    "dim": "#6e7681",
+    "accent": "#58a6ff",
+    "success": "#3fb950",
+    "error": "#f85149",
+    "warning": "#d29922",
+    "border": "#6e7681",
+    "borderAccent": "#58a6ff",
+    "borderMuted": "#30363d"
+  },
+  "sources": { "todo": "#4f8cff", "plan": "#a371f7", "atlas": "#3fb950" },
+  "atlasAvailable": true
+}

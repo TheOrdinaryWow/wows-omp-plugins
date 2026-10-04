@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "sessionId": "01a1054d-3bd0-77c4",
+  "sessionName": "herdr-dag",
+  "generation": 1,
+  "connected": true,
+  "at": 1791101800000,
+  "runs": [
+    {
+      "id": "todo:01a1054d-3bd0-77c4:1",
+      "source": "todo",
+      "title": "中文任务",
+      "generation": 1,
+      "nodes": [
+        {
+          "id": "todo:1:0:f569269bf9",
+          "label": "阅读宿主事件总线源码",
+          "state": "done",
+          "band": 0,
+          "bandName": "第一阶段：调研",
+          "taskIds": [],
+          "finishedAt": 1791100000000
+        },
+        {
+          "id": "todo:1:0:4782836a43",
+          "label": "确认 Herdr 面板命令",
+          "state": "done",
+          "band": 0,
+          "bandName": "第一阶段：调研",
+          "taskIds": [],
+          "finishedAt": 1791100000000
+        },
+        {
+          "id": "todo:1:1:8be6581969",
+          "label": "实现查看器渲染与中文宽字符对齐",
+          "state": "running",
+          "band": 1,
+          "bandName": "第二阶段：实现",
+          "taskIds": [],
+          "startedAt": 1791100720000
+        },
+        { "id": "todo:1:1:5107969a7a", "label": "编写测试用例", "state": "pending", "band": 1, "bandName": "第二阶段：实现", "taskIds": [] }
+      ],
+      "edges": [{ "from": "todo:1:1:8be6581969", "to": "todo:1:1:5107969a7a", "kind": "depends" }],
+      "createdAt": 1791100000000,
+      "updatedAt": 1791100720000,
+      "stats": { "done": 2, "total": 4, "elapsedMs": 1800000 }
+    }
+  ],
+  "tasks": [],
+  "theme": {
+    "text": "#e6edf3",
+    "muted": "#8b949e",
+    "dim": "#6e7681",
+    "accent": "#58a6ff",
+    "success": "#3fb950",
+    "error": "#f85149",
+    "warning": "#d29922",
+    "border": "#6e7681",
+    "borderAccent": "#58a6ff",
+    "borderMuted": "#30363d"
+  },
+  "sources": { "todo": "#4f8cff", "plan": "#a371f7", "atlas": "#3fb950" },
+  "atlasAvailable": true
+}

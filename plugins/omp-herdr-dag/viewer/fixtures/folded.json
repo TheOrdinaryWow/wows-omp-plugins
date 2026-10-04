@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "sessionId": "01a1054d-3bd0-77c4",
+  "sessionName": "herdr-dag",
+  "generation": 1,
+  "connected": true,
+  "at": 1791101800000,
+  "runs": [
+    {
+      "id": "todo:01a1054d-3bd0-77c4:1",
+      "source": "todo",
+      "title": "Todos",
+      "generation": 1,
+      "nodes": [
+        {
+          "id": "todo:1:0:6f563f99c6",
+          "label": "Install toolchain",
+          "state": "done",
+          "band": 0,
+          "bandName": "Setup",
+          "taskIds": [],
+          "finishedAt": 1791100000000
+        },
+        {
+          "id": "todo:1:0:1401be69a8",
+          "label": "Configure CI",
+          "state": "done",
+          "band": 0,
+          "bandName": "Setup",
+          "taskIds": [],
+          "finishedAt": 1791100000000
+        },
+        {
+          "id": "todo:1:1:f7433dc43b",
+          "label": "Port settings reader",
+          "state": "done",
+          "band": 1,
+          "bandName": "Migrate",
+          "taskIds": [],
+          "finishedAt": 1791100000000
+        },
+        {
+          "id": "todo:1:1:402748b7be",
+          "label": "Port pane manager",
+          "state": "abandoned",
+          "band": 1,
+          "bandName": "Migrate",
+          "taskIds": [],
+          "finishedAt": 1791100000000
+        },
+        {
+          "id": "todo:1:2:043ec777f6",
+          "label": "Theme sync",
+          "state": "running",
+          "band": 2,
+          "bandName": "Polish",
+          "taskIds": [],
+          "startedAt": 1791100720000
+        },
+        { "id": "todo:1:2:2c8ac4a6a4", "label": "Retention pruning", "state": "pending", "band": 2, "bandName": "Polish", "taskIds": [] }
+      ],
+      "edges": [
+        { "from": "todo:1:1:f7433dc43b", "to": "todo:1:2:043ec777f6", "kind": "depends" },
+        { "from": "todo:1:0:1401be69a8", "to": "todo:1:1:f7433dc43b", "kind": "depends" }
+      ],
+      "createdAt": 1791100000000,
+      "updatedAt": 1791100720000,
+      "stats": { "done": 4, "total": 6, "elapsedMs": 1800000 }
+    }
+  ],
+  "tasks": [],
+  "theme": {
+    "text": "#e6edf3",
+    "muted": "#8b949e",
+    "dim": "#6e7681",
+    "accent": "#58a6ff",
+    "success": "#3fb950",
+    "error": "#f85149",
+    "warning": "#d29922",
+    "border": "#6e7681",
+    "borderAccent": "#58a6ff",
+    "borderMuted": "#30363d"
+  },
+  "sources": { "todo": "#4f8cff", "plan": "#a371f7", "atlas": "#3fb950" },
+  "atlasAvailable": true
+}

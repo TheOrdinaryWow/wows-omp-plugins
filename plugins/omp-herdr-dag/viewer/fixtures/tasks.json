@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "sessionId": "01a1054d-3bd0-77c4",
+  "sessionName": "herdr-dag",
+  "generation": 1,
+  "connected": true,
+  "at": 1791101800000,
+  "runs": [
+    {
+      "id": "todo:01a1054d-3bd0-77c4:1",
+      "source": "todo",
+      "title": "Todos",
+      "generation": 1,
+      "nodes": [
+        {
+          "id": "todo:1:0:d9dcf76989",
+          "label": "Explore codebase",
+          "state": "done",
+          "band": 0,
+          "bandName": "Work",
+          "taskIds": ["sub-review"],
+          "finishedAt": 1791100000000,
+          "agent": "reviewer"
+        },
+        {
+          "id": "todo:1:0:0cf3e0cd34",
+          "label": "Fix flaky test",
+          "state": "running",
+          "band": 0,
+          "bandName": "Work",
+          "taskIds": ["sub-fix"],
+          "startedAt": 1791100000000,
+          "agent": "deep-low"
+        },
+        { "id": "todo:1:0:b11a1fc68a", "label": "Review change", "state": "pending", "band": 0, "bandName": "Work", "taskIds": [] }
+      ],
+      "edges": [],
+      "createdAt": 1791100000000,
+      "updatedAt": 1791100000000,
+      "stats": { "done": 1, "total": 3, "elapsedMs": 1800000, "tokens": 120, "costUsd": 0.75 }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "sub-lint",
+      "agent": "deep-low",
+      "status": "failed",
+      "recentOutput": ["error: biome found 3 problems"],
+      "completed": { "tokens": 3000, "costUsd": 0.012, "durationMs": 180000 },
+      "current": { "durationMs": 0 },
+      "activations": 1,
+      "startedAt": 1791100120000,
+      "depth": 1,
+      "activityAvailable": true,
+      "currentTool": "bash",
+      "finishedAt": 1791100360000,
+      "description": "Fix Biome lint errors"
+    },
+    {
+      "id": "sub-review",
+      "agent": "reviewer",
+      "status": "completed",
+      "recentOutput": [],
+      "completed": { "tokens": 120, "costUsd": 0.75, "durationMs": 300000 },
+      "current": { "durationMs": 0 },
+      "activations": 2,
+      "startedAt": 1791101560000,
+      "depth": 1,
+      "activityAvailable": true,
+      "nodeId": "todo:1:0:d9dcf76989",
+      "detached": true,
+      "model": "claude-opus-4",
+      "finishedAt": 1791101620000,
+      "description": "Review the change after IRC wake"
+    },
+    {
+      "id": "sub-explore-2",
+      "agent": "explore",
+      "status": "running",
+      "recentOutput": [
+        "Found 4 matches in protocol.ts",
+        "Reading src/protocol.ts lines 30-80",
+        "Searching for FrameParser usages",
+        "older line"
+      ],
+      "completed": { "durationMs": 0 },
+      "current": { "durationMs": 540000, "tokens": 15400, "costUsd": 0.061 },
+      "activations": 1,
+      "startedAt": 1791101200000,
+      "depth": 1,
+      "activityAvailable": true,
+      "currentTool": "grep",
+      "currentToolArgs": "pattern=FrameParser path=plugins/",
+      "model": "claude-haiku-4-5",
+      "description": "Map every FrameParser caller"
+    },
+    {
+      "id": "sub-grandchild",
+      "parentTaskId": "sub-explore-2",
+      "agent": "librarian",
+      "status": "running",
+      "recentOutput": [],
+      "completed": { "durationMs": 0 },
+      "current": { "durationMs": 0 },
+      "activations": 1,
+      "startedAt": 1791101440000,
+      "depth": 2,
+      "activityAvailable": false
+    },
+    {
+      "id": "sub-fix",
+      "agent": "deep-low",
+      "status": "running",
+      "recentOutput": ["Waiting before retry"],
+      "completed": { "durationMs": 0 },
+      "current": { "durationMs": 240000 },
+      "activations": 1,
+      "startedAt": 1791101500000,
+      "depth": 1,
+      "activityAvailable": true,
+      "nodeId": "todo:1:0:0cf3e0cd34",
+      "currentTool": "edit",
+      "currentToolArgs": "src/omp-herdr-dag-core.test.ts",
+      "retry": { "attempt": 2, "maxAttempts": 3, "errorMessage": "429 rate limited by provider" },
+      "description": "Fix flaky core test"
+    }
+  ],
+  "theme": {
+    "text": "#e6edf3",
+    "muted": "#8b949e",
+    "dim": "#6e7681",
+    "accent": "#58a6ff",
+    "success": "#3fb950",
+    "error": "#f85149",
+    "warning": "#d29922",
+    "border": "#6e7681",
+    "borderAccent": "#58a6ff",
+    "borderMuted": "#30363d"
+  },
+  "sources": { "todo": "#4f8cff", "plan": "#a371f7", "atlas": "#3fb950" },
+  "atlasAvailable": true
+}

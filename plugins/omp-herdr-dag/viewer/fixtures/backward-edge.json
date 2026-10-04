@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "sessionId": "01a1054d-3bd0-77c4",
+  "sessionName": "herdr-dag",
+  "generation": 1,
+  "connected": true,
+  "at": 1791101800000,
+  "runs": [
+    {
+      "id": "todo:01a1054d-3bd0-77c4:1",
+      "source": "todo",
+      "title": "Todos",
+      "generation": 1,
+      "nodes": [
+        { "id": "todo:1:0:bd5dd0afd5", "label": "Define schema", "state": "pending", "band": 0, "bandName": "Design", "taskIds": [] },
+        {
+          "id": "todo:1:0:4cc56d0b0a",
+          "label": "Sketch screens",
+          "state": "done",
+          "band": 0,
+          "bandName": "Design",
+          "taskIds": [],
+          "finishedAt": 1791100000000
+        },
+        {
+          "id": "todo:1:1:555828ffa4",
+          "label": "Implement parser",
+          "state": "running",
+          "band": 1,
+          "bandName": "Build",
+          "taskIds": [],
+          "startedAt": 1791100720000
+        },
+        { "id": "todo:1:1:c99722e7d5", "label": "Render screens", "state": "pending", "band": 1, "bandName": "Build", "taskIds": [] }
+      ],
+      "edges": [
+        { "from": "todo:1:1:555828ffa4", "to": "todo:1:0:bd5dd0afd5", "kind": "depends" },
+        { "from": "todo:1:0:4cc56d0b0a", "to": "todo:1:1:c99722e7d5", "kind": "depends" }
+      ],
+      "createdAt": 1791100000000,
+      "updatedAt": 1791100720000,
+      "stats": { "done": 1, "total": 4, "elapsedMs": 1800000 }
+    }
+  ],
+  "tasks": [],
+  "theme": {
+    "text": "#e6edf3",
+    "muted": "#8b949e",
+    "dim": "#6e7681",
+    "accent": "#58a6ff",
+    "success": "#3fb950",
+    "error": "#f85149",
+    "warning": "#d29922",
+    "border": "#6e7681",
+    "borderAccent": "#58a6ff",
+    "borderMuted": "#30363d"
+  },
+  "sources": { "todo": "#4f8cff", "plan": "#a371f7", "atlas": "#3fb950" },
+  "atlasAvailable": true
+}
