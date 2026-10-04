@@ -45,6 +45,23 @@
       "license": "MIT"
     },
     {
+      "name": "omp-herdr-dag",
+      "source": "./omp-herdr-dag",
+      "description": "Live todo, plan, Atlas DAG and subagent views in a Herdr side pane",
+      "version": "0.1.0",
+      "author": {
+        "name": "TheOrdinaryWow"
+      },
+      "category": "productivity",
+      "keywords": [
+        "herdr",
+        "dag",
+        "todo",
+        "atlas"
+      ],
+      "license": "MIT"
+    },
+    {
       "name": "omo-prometheus",
       "source": "./omo-prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",

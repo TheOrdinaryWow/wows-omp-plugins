@@ -20,6 +20,13 @@
         { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='judge-dispatch')].version" }
       ]
     },
+    "plugins/omp-herdr-dag": {
+      "component": "omp-herdr-dag",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='omp-herdr-dag')].version" }
+      ]
+    },
     "plugins/omo-prometheus": {
       "component": "omo-prometheus",
       "extra-files": [

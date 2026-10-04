@@ -1,0 +1,133 @@
+{
+  "name": "wows-omp-plugin-omp-herdr-dag",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Live todo, plan, Atlas DAG and subagent views in a Herdr side pane",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "settings": {
+      "displayTiming": {
+        "type": "enum",
+        "default": "plan-execution",
+        "description": "When to open the pane automatically",
+        "values": [
+          "never",
+          "any-todo",
+          "plan-execution",
+          "atlas-only"
+        ]
+      },
+      "finishBehavior": {
+        "type": "enum",
+        "default": "close-with-omp",
+        "description": "Pane behavior when OMP exits or heartbeat is lost",
+        "values": [
+          "close-with-omp",
+          "keep-open"
+        ]
+      },
+      "landscapePosition": {
+        "type": "enum",
+        "default": "right",
+        "description": "Pane placement in landscape",
+        "values": [
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ]
+      },
+      "portraitPosition": {
+        "type": "enum",
+        "default": "bottom",
+        "description": "Pane placement in portrait",
+        "values": [
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ]
+      },
+      "landscapeSize": {
+        "type": "number",
+        "default": 0.35,
+        "description": "DAG pane share in landscape",
+        "min": 0.15,
+        "max": 0.6
+      },
+      "portraitSize": {
+        "type": "number",
+        "default": 0.4,
+        "description": "DAG pane share in portrait",
+        "min": 0.15,
+        "max": 0.6
+      },
+      "followOrientation": {
+        "type": "boolean",
+        "default": true,
+        "description": "Move the open pane when orientation changes"
+      },
+      "focusPane": {
+        "type": "boolean",
+        "default": false,
+        "description": "Focus the pane when opened"
+      },
+      "stalledAfterSeconds": {
+        "type": "number",
+        "default": 90,
+        "description": "Seconds without progress before a running item is stalled",
+        "min": 10,
+        "max": 900
+      },
+      "todoDependencies": {
+        "type": "boolean",
+        "default": true,
+        "description": "Register the native todo wrapper accepting explicit edges"
+      },
+      "atlasIntegration": {
+        "type": "boolean",
+        "default": true,
+        "description": "Listen to the omo-prometheus Atlas event contract"
+      },
+      "followTheme": {
+        "type": "boolean",
+        "default": true,
+        "description": "Synchronize viewer colors with the OMP theme"
+      },
+      "colorTodo": {
+        "type": "string",
+        "default": "#4f8cff",
+        "description": "Todo source color (#rrggbb)"
+      },
+      "colorPlan": {
+        "type": "string",
+        "default": "#a371f7",
+        "description": "Plan source color (#rrggbb)"
+      },
+      "colorAtlas": {
+        "type": "string",
+        "default": "#3fb950",
+        "description": "Atlas source color (#rrggbb)"
+      },
+      "retentionDays": {
+        "type": "number",
+        "default": 14,
+        "description": "Prune plugin files for other sessions older than this many days",
+        "min": 1,
+        "max": 365
+      },
+      "viewerRuntime": {
+        "type": "string",
+        "default": "",
+        "description": "Path to a Bun binary; empty means automatic discovery"
+      }
+    }
+  }
+}
