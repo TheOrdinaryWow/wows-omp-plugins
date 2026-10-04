@@ -115,6 +115,7 @@ export class SnapshotServer {
       };
       const onListening = () => {
         server.off("error", onError);
+        if (this.#stopped) server.close();
         resolve();
       };
       server.once("error", onError);
@@ -133,15 +134,15 @@ export class SnapshotServer {
 
   async stop(reason: "shutdown" | "switch" = "shutdown"): Promise<void> {
     this.#stopped = true;
+    this.#timer.clearInterval(this.#heartbeat);
+    this.#heartbeat = undefined;
+    for (const client of [...this.#clients]) {
+      this.#send(client, { type: "bye", reason });
+      this.#closeClient(client, true);
+    }
     try {
       await this.#starting;
     } finally {
-      this.#timer.clearInterval(this.#heartbeat);
-      this.#heartbeat = undefined;
-      for (const client of [...this.#clients]) {
-        this.#send(client, { type: "bye", reason });
-        this.#closeClient(client, true);
-      }
       const server = this.#server;
       this.#server = undefined;
       this.#started = false;
@@ -197,6 +198,10 @@ export class SnapshotServer {
   }
 
   #accept(socket: Socket): void {
+    if (this.#stopped) {
+      socket.destroy();
+      return;
+    }
     const client: Client = {
       socket,
       parser: new FrameParser(),
@@ -330,6 +335,7 @@ export class SnapshotWriter {
   #pending?: Snapshot;
   #timerHandle?: NodeJS.Timeout;
   #queue: Promise<void> = Promise.resolve();
+  #stopped = false;
 
   constructor(options: SnapshotWriterOptions) {
     this.#options = options;
@@ -337,6 +343,7 @@ export class SnapshotWriter {
   }
 
   schedule(snapshot: Snapshot): void {
+    if (this.#stopped) return;
     this.#pending = structuredClone(snapshot);
     this.#timer.clearTimeout(this.#timerHandle);
     this.#timerHandle = this.#timer.setTimeout(() => {
@@ -345,6 +352,15 @@ export class SnapshotWriter {
       // Attach a rejection observer immediately; flush still reports the original I/O failure.
       void this.#queue.catch((error: unknown) => this.#options.onError?.(error));
     }, this.#options.delayMs ?? 250);
+  }
+
+  stop(): Promise<void> {
+    this.#stopped = true;
+    this.#timer.clearTimeout(this.#timerHandle);
+    this.#timerHandle = undefined;
+    if (this.#pending) this.#queue = this.#queue.then(() => this.#writePending());
+    void this.#queue.catch((error: unknown) => this.#options.onError?.(error));
+    return this.flush();
   }
 
   async flush(): Promise<void> {

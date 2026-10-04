@@ -433,6 +433,32 @@ describe("PaneManager", () => {
     await manager.close();
   });
 
+  test("shutdown is terminal for queued opens and resize timers", async () => {
+    const { manager, fake } = await fixture();
+    const { promise: gate, resolve } = Promise.withResolvers<void>();
+    let paused = false;
+    fake.before = async (args) => {
+      if (args[1] === "layout") {
+        paused = true;
+        await gate;
+      }
+    };
+    const opening = manager.open();
+    while (!paused) await new Promise<void>((done) => setImmediate(done));
+    const closing = manager.close("shutdown");
+    resolve();
+    await Promise.all([opening, closing]);
+    const count = fake.calls.length;
+    jest.useFakeTimers();
+    manager.onResize();
+    expect(jest.getTimerCount()).toBe(0);
+    await Promise.all([manager.open(), manager.ensure(), manager.checkOrientation()]);
+    jest.advanceTimersByTime(750);
+    await manager.idle();
+    expect(fake.calls).toHaveLength(count);
+    expect(fake.calls.some((args) => args[1] === "split" || args[1] === "run")).toBe(false);
+  });
+
   test("followOrientation=false and close cancel pending resize work", async () => {
     const { manager, fake } = await fixture({ followOrientation: false });
     await manager.open();

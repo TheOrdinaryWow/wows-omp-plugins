@@ -59,6 +59,7 @@ export class PaneManager {
   #resizeTimer?: ReturnType<typeof setTimeout>;
   #warned = false;
   #orientation?: Orientation;
+  #stopped = false;
 
   constructor(options: PaneManagerOptions) {
     this.#options = { ...options };
@@ -107,22 +108,28 @@ export class PaneManager {
   }
 
   async #open(manual: boolean): Promise<PaneState | undefined> {
+    if (this.#stopped) return this.#state;
     await this.#load();
+    if (this.#stopped) return this.#state;
     if (manual && this.#state?.dismissed) await this.#save({ ...this.#state, dismissed: false });
+    if (this.#stopped) return this.#state;
     if (!manual && this.#state?.dismissed) return this.#state;
     if (this.#state?.phase === "splitting") {
       // Crash between split and recording its id: never locate/adopt/close a pane by title or time.
       await rm(join(this.#options.dir, "pane.json"), { force: true });
+      if (this.#stopped) return this.#state;
       this.#state = undefined;
       this.#options.notify("A previous DAG pane may be left open; close it manually");
     }
     if (this.#state?.paneId) {
       try {
         await this.#options.herdr.get(this.#state.paneId);
+        if (this.#stopped) return this.#state;
         if (this.#state.socketPath === this.#options.socketPath) return this.#state;
         // A surviving keep-open viewer still retries the old process's socket.
         // Recreate only our recorded pane through the normal launch path.
         await this.#options.herdr.close(this.#state.paneId);
+        if (this.#stopped) return this.#state;
         await rm(join(this.#options.dir, "pane.json"), { force: true });
         this.#state = undefined;
       } catch (error) {
@@ -131,7 +138,9 @@ export class PaneManager {
         this.#state = undefined;
       }
     }
+    if (this.#stopped) return this.#state;
     const layout = await this.#options.herdr.layout(this.#options.hostPaneId);
+    if (this.#stopped) return this.#state;
     const { cols, rows } = unsplitDimensions(layout, this.#options.hostPaneId);
     const orientation = paneOrientation(cols, rows, this.#orientation);
     const position = orientation === "landscape" ? this.#options.settings.landscapePosition : this.#options.settings.portraitPosition;
@@ -147,6 +156,7 @@ export class PaneManager {
       dismissed: false,
     };
     await this.#save(state);
+    if (this.#stopped) return this.#state;
     let ownedId: string | undefined;
     try {
       const pane = await this.#options.herdr.split({
@@ -159,6 +169,7 @@ export class PaneManager {
       });
       ownedId = pane.pane_id;
       await this.#save({ ...state, phase: "open", paneId: ownedId, tabId: pane.tab_id });
+      if (this.#stopped) return this.#state;
       this.#orientation = orientation;
       if (swapping) {
         // Herdr focuses the swap source. With focusPane=false restore the normal OMP focus;
@@ -168,8 +179,11 @@ export class PaneManager {
           this.#options.settings.focusPane ? this.#options.hostPaneId : ownedId,
         );
       }
+      if (this.#stopped) return this.#state;
       await this.#options.herdr.rename(ownedId, `DAG · ${this.#options.sessionName || this.#options.sessionId.slice(0, 8)}`);
+      if (this.#stopped) return this.#state;
       await this.#options.herdr.run(ownedId, this.#options.viewerCommand(ownedId));
+      if (this.#stopped) return this.#state;
       await this.#save({ ...state, phase: "open", paneId: ownedId, tabId: pane.tab_id, socketPath: this.#options.socketPath });
       return this.#state;
     } catch (error) {
@@ -199,6 +213,7 @@ export class PaneManager {
   }
 
   onResize(): void {
+    if (this.#stopped) return;
     clearTimeout(this.#resizeTimer);
     this.#resizeTimer = setTimeout(() => {
       this.#resizeTimer = undefined;
@@ -208,10 +223,13 @@ export class PaneManager {
 
   checkOrientation(): Promise<void> {
     return this.#serial(async () => {
+      if (this.#stopped) return;
       await this.#load();
+      if (this.#stopped) return;
       const state = this.#state;
       if (!state?.paneId || state.dismissed || !this.#options.settings.followOrientation) return;
       const layout = await this.#options.herdr.layout(this.#options.hostPaneId);
+      if (this.#stopped) return;
       const { cols, rows } = unsplitDimensions(layout, this.#options.hostPaneId, state);
       const orientation = paneOrientation(cols, rows, this.#orientation);
       if (orientation === this.#orientation) return;
@@ -230,6 +248,7 @@ export class PaneManager {
   }
 
   close(reason: string = "close"): Promise<void> {
+    if (reason === "shutdown") this.#stopped = true;
     clearTimeout(this.#resizeTimer);
     this.#resizeTimer = undefined;
     return this.#serial(async () => {
@@ -275,19 +294,23 @@ export class PaneManager {
   resetDismissal(): Promise<void> {
     return this.#serial(async () => {
       await this.#load();
+      if (this.#stopped) return;
       if (this.#state?.dismissed) await this.#save({ ...this.#state, dismissed: false });
     });
   }
 
   update(options: PaneUpdate): Promise<void> {
     return this.#serial(async () => {
+      if (this.#stopped) return;
       await this.#load();
+      if (this.#stopped) return;
       const oldFile = join(this.#options.dir, "pane.json");
       this.#options = { ...this.#options, ...options };
       this.#warned = false;
       if (this.#state) {
         await this.#save(this.#state);
         if (oldFile !== join(this.#options.dir, "pane.json")) await rm(oldFile, { force: true });
+        if (this.#stopped) return;
         if (this.#state.paneId) {
           try {
             await this.#options.herdr.rename(

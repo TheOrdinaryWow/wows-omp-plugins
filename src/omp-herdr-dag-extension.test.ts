@@ -699,6 +699,84 @@ async function scenario(name: string, root: string): Promise<void> {
       const active = await peer.snapshot();
       assert(active.tasks.every((task) => task.stalled === false));
       assert.equal(active.runs[0]?.nodes[0]?.stalled, false);
+    } else if (name === "shutdown-paused-evaluation") {
+      // Modules load in the executable child to preserve the isolated host module-loading boundary.
+      const { PaneManager } = await import("../plugins/omp-herdr-dag/src/pane.ts");
+      await configure({ displayTiming: "any-todo" });
+      await hook("session_start");
+      const reset = PaneManager.prototype.resetDismissal;
+      let paused = false;
+      const { promise: gate, resolve: resume } = Promise.withResolvers<void>();
+      PaneManager.prototype.resetDismissal = async function () {
+        paused = true;
+        await gate;
+        await reset.call(this);
+      };
+      const evaluation = todo();
+      try {
+        await eventually(() => paused);
+        await hook("session_shutdown");
+        shutdown = true;
+        const before = calls.length;
+        resume();
+        await evaluation;
+        assert.equal(calls.length, before, "paused auto-open must not issue Herdr commands after shutdown");
+        assert.equal(clock.pending, 0, "shutdown must not leave heartbeat or snapshot timers");
+      } finally {
+        resume();
+        PaneManager.prototype.resetDismissal = reset;
+      }
+    } else if (name === "shutdown-overall-deadline") {
+      // Keep the executable child's isolated host module-loading boundary.
+      const { Server } = await import("node:net");
+      const { SnapshotWriter } = await import("../plugins/omp-herdr-dag/src/transport.ts");
+      const listen = Server.prototype.listen;
+      const flush = SnapshotWriter.prototype.flush;
+      let releaseListen!: () => void;
+      let pendingListen = false;
+      let flushed = false;
+      Server.prototype.listen = function (this: InstanceType<typeof Server>, ...args: Parameters<typeof listen>) {
+        pendingListen = true;
+        releaseListen = () => {
+          listen.apply(this, args);
+        };
+        return this;
+      } as typeof listen;
+      SnapshotWriter.prototype.flush = async function () {
+        // This integration regression measures the host's real shutdown cap, not a fake-clock delay.
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 2_200);
+        await promise;
+        await flush.call(this);
+        flushed = true;
+      };
+      const starting = hook("session_start");
+      try {
+        await eventually(() => pendingListen);
+        // Release the platform listen even with the old unbounded stop, so the pre-fix failure settles.
+        const releaseTimer = setTimeout(() => releaseListen(), 2_200);
+        const at = Date.now();
+        await hook("session_shutdown");
+        shutdown = true;
+        assert(Date.now() - at < 1_950, "the whole shutdown must fit within the host's two-second handler cap");
+        assert.equal(clock.pending, 0);
+        releaseListen();
+        clearTimeout(releaseTimer);
+        await starting;
+        await eventually(() => flushed);
+        assert.equal(clock.pending, 0, "late startup and persistence must not restart timers");
+        const path = herdrSocketPath("host", process.pid);
+        await eventually(async () => !(await Bun.file(path).exists()));
+        const peer = new Peer(path);
+        peers.push(peer);
+        const { promise: refused, resolve: onRefused } = Promise.withResolvers<void>();
+        peer.socket.once("error", onRefused);
+        await refused;
+        assert.equal(peer.frames.length, 0, "a stopped server must never accept a late viewer");
+      } finally {
+        Server.prototype.listen = listen;
+        SnapshotWriter.prototype.flush = flush;
+      }
     } else if (name === "stop-during-start") {
       // This scenario exercises the isolated child module-loading boundary.
       const { SnapshotServer } = await import("../plugins/omp-herdr-dag/src/transport.ts");
@@ -928,6 +1006,8 @@ if (process.env[CHILD_ENV]) {
       "dismiss-switch",
       "resume-socket",
       "stop-during-start",
+      "shutdown-paused-evaluation",
+      "shutdown-overall-deadline",
       "stalled-tasks",
       "shutdown-close",
       "shutdown-keep",

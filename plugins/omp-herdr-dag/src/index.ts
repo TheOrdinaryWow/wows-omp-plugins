@@ -102,7 +102,9 @@ class DagExtension {
   async #readSettings(ctx: ExtensionContext): Promise<void> {
     const previous = this.#settings;
     this.#settings = await readSettings(ctx.cwd, (message) => ctx.ui.notify(message, "warning"));
+    if (this.#stopping) return;
     if (this.#pane && JSON.stringify(previous) !== JSON.stringify(this.#settings)) await this.#pane.update({ settings: this.#settings });
+    if (this.#stopping) return;
     if (!previous.followTheme && this.#settings.followTheme) this.#sampleTheme(true);
     if (!this.#settings.atlasIntegration) {
       this.#atlas?.dispose();
@@ -191,11 +193,13 @@ class DagExtension {
     const ctx = this.#ctx;
     if (!ctx || !this.#server || !this.#pane || this.#stopping) return;
     await this.#readSettings(ctx);
+    if (this.#stopping) return;
     this.#publish();
     const runs = this.#snapshot?.runs ?? [];
     const newRun = runs.some((run) => !this.#seenRuns.has(run.id));
     for (const run of runs) this.#seenRuns.add(run.id);
     if (newRun) await this.#pane.resetDismissal();
+    if (this.#stopping) return;
     if (
       !shouldDisplay(this.#settings.displayTiming, {
         todoActive: !!this.#todo?.current,
@@ -206,6 +210,7 @@ class DagExtension {
       return;
     const wasOpen = !!this.#pane.paneId;
     await this.#pane.ensure();
+    if (this.#stopping) return;
     if (!wasOpen && this.#pane.paneId) this.#atlas?.activate();
   }
 
@@ -350,6 +355,7 @@ class DagExtension {
               this.#sampleTheme();
               this.#publish();
               await this.#evaluate();
+              if (this.#stopping) return;
               this.#pane?.onResize();
             }),
           onError: (error) => this.#report(error),
@@ -373,6 +379,7 @@ class DagExtension {
   async command(args: string, ctx: ExtensionContext): Promise<void> {
     this.#ctx = ctx;
     await this.#readSettings(ctx);
+    if (this.#stopping) return;
     if (!this.#supported(ctx) || !this.#server || !this.#pane) {
       if ((this.#deps.platform ?? process.platform) !== "win32")
         ctx.ui.notify("Herdr DAG is available in an interactive Herdr session", "info");
@@ -385,9 +392,11 @@ class DagExtension {
     }
     if (action === "close" || (action === "toggle" && this.#pane.paneId)) {
       await this.#pane.dismiss();
+      if (this.#stopping) return;
       await this.#pane.close();
     } else {
       await this.#pane.open();
+      if (this.#stopping) return;
       this.#atlas?.activate();
     }
     this.#publish();
@@ -441,19 +450,20 @@ class DagExtension {
     this.#tasks?.dispose();
     this.#server?.sendBye("shutdown");
     for (const controller of this.#controllers) controller.abort();
-    let timer: NodeJS.Timeout | undefined;
-    const deadline = new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        for (const controller of this.#controllers) controller.abort();
-        resolve();
-      }, 1_400);
-    });
+    const { promise: deadline, resolve } = Promise.withResolvers<void>();
+    const timer = setTimeout(() => {
+      for (const controller of this.#controllers) controller.abort();
+      resolve();
+    }, 1_800);
+    const finish = (work: Promise<void> | undefined) => work?.catch((error: unknown) => this.#report(error));
     try {
-      await Promise.race([this.#pane?.close("shutdown").catch((error: unknown) => this.#report(error)), deadline]);
+      // Start all teardown immediately; a slow pane, socket initialization or disk write shares one budget.
+      await Promise.race([
+        Promise.all([finish(this.#pane?.close("shutdown")), finish(this.#server?.stop()), finish(this.#writer?.stop())]),
+        deadline,
+      ]);
     } finally {
       clearTimeout(timer);
-      await this.#server?.stop();
-      await this.#writer?.flush();
     }
   }
 }

@@ -125,7 +125,7 @@ Right and bottom use a direct split; left and top use a split followed by a swap
 
 - `close-with-omp`: close the pane on host shutdown. After three missed 2-second heartbeats, the viewer closes its own pane and exits.
 - `keep-open`: leave the pane on shutdown or heartbeat loss, show a disconnected banner, and retry the socket every second. A recovery snapshot is never proof that OMP is still live.
-Shutdown also cancels an in-flight socket startup and waits for its cleanup, so it cannot leave a listener or heartbeat running after the host exits.
+Shutdown blocks further pane launches and resize timers immediately. Pane closure, socket cleanup, and snapshot flushing share one 1.8-second budget; unfinished socket startup remains cancelled and cleans up without accepting viewers or starting heartbeats.
 
 On restart, an owned pane launched for a different socket (or an older record without a socket) is closed and recreated with the current viewer connection. A viewer closed with `q` remains dismissed across session rebinding; a missing pane does not prevent the transport from switching sessions.
 
