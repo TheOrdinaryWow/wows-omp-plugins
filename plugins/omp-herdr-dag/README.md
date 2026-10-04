@@ -125,6 +125,8 @@ Right and bottom use a direct split; left and top use a split followed by a swap
 - `close-with-omp`: close the pane on host shutdown. After three missed 2-second heartbeats, the viewer closes its own pane and exits.
 - `keep-open`: leave the pane on shutdown or heartbeat loss, show a disconnected banner, and retry the socket every second. A recovery snapshot is never proof that OMP is still live.
 
+On restart, an owned pane launched for a different socket (or an older record without a socket) is closed and recreated with the current viewer connection. A viewer closed with `q` remains dismissed across session rebinding; a missing pane does not prevent the transport from switching sessions.
+
 Pressing `q` always closes the viewer's own pane, regardless of finish behavior. A crash between splitting and recording the new pane ID may leave an orphan pane. The plugin warns rather than finding or closing panes by title; close that orphan manually.
 
 ## Viewer keys
@@ -172,7 +174,7 @@ Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionI
 | Node objects | ID, label, state, band/name, detail, start/finish timestamps, agent, linked task IDs, and stalled flag. Edges contain `from`, `to`, and `kind`. |
 | Task cards | ID, parent task/node IDs, agent, status, description, current tool/arguments, recent output, completed/current activation totals, activation count, model, retry attempt/limit/error, transcript path, start/finish timestamps, detached flag, depth, and activity-availability flag. Activation totals contain tokens, cost, and duration. |
 | Theme palette | Text, muted, dim, accent, success, error, warning, border, accented/muted border, and optional background colors. |
-| `pane.json` | `version`, splitting/open phase, pane/tab IDs when known, host pane ID, orientation, position, launch timestamp, and dismissal flag. |
+| `pane.json` | `version`, splitting/open phase, pane/tab IDs when known, host pane ID, orientation, position, launch timestamp, optional launching socket path, and dismissal flag. |
 | `view-state.json` | `version`, folded run IDs, view (`dag`, `tasks`, `transcript`), selected run ID, and critical-path toggle. |
 
 The host session also stores custom entries: `omp-herdr-dag:plan-execution` contains `v`, proposed/executing/idle state, optional plan path/run ID, and timestamp; `omp-herdr-dag:todo-edges` contains `v`, generation, and task/after dependency records. No credentials are collected, but snapshots can contain task descriptions, tool arguments, output fragments, error messages, and local paths. Treat them like session data.

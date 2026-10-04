@@ -17,6 +17,7 @@ export interface PaneManagerOptions {
   sessionId: string;
   hostPaneId: string;
   settings: PaneSettings;
+  socketPath: string;
   viewerCommand: (paneId: string) => string;
   notify: (message: string) => void;
   log: (message: string) => void;
@@ -28,6 +29,7 @@ export interface PaneUpdate {
   sessionId?: string;
   sessionName?: string;
   settings?: PaneSettings;
+  socketPath?: string;
   viewerCommand?: (paneId: string) => string;
   cwd?: string;
 }
@@ -117,7 +119,12 @@ export class PaneManager {
     if (this.#state?.paneId) {
       try {
         await this.#options.herdr.get(this.#state.paneId);
-        return this.#state;
+        if (this.#state.socketPath === this.#options.socketPath) return this.#state;
+        // A surviving keep-open viewer still retries the old process's socket.
+        // Recreate only our recorded pane through the normal launch path.
+        await this.#options.herdr.close(this.#state.paneId);
+        await rm(join(this.#options.dir, "pane.json"), { force: true });
+        this.#state = undefined;
       } catch (error) {
         if (!isMissingPane(error)) throw error;
         await rm(join(this.#options.dir, "pane.json"), { force: true });
@@ -163,6 +170,7 @@ export class PaneManager {
       }
       await this.#options.herdr.rename(ownedId, `DAG · ${this.#options.sessionName || this.#options.sessionId.slice(0, 8)}`);
       await this.#options.herdr.run(ownedId, this.#options.viewerCommand(ownedId));
+      await this.#save({ ...state, phase: "open", paneId: ownedId, tabId: pane.tab_id, socketPath: this.#options.socketPath });
       return this.#state;
     } catch (error) {
       if (ownedId) {
@@ -281,7 +289,16 @@ export class PaneManager {
         await this.#save(this.#state);
         if (oldFile !== join(this.#options.dir, "pane.json")) await rm(oldFile, { force: true });
         if (this.#state.paneId) {
-          await this.#options.herdr.rename(this.#state.paneId, `DAG · ${this.#options.sessionName || this.#options.sessionId.slice(0, 8)}`);
+          try {
+            await this.#options.herdr.rename(
+              this.#state.paneId,
+              `DAG · ${this.#options.sessionName || this.#options.sessionId.slice(0, 8)}`,
+            );
+          } catch (error) {
+            if (!isMissingPane(error)) throw error;
+            const { paneId: _paneId, tabId: _tabId, ...remaining } = this.#state;
+            await this.#save(remaining);
+          }
         }
       }
     });

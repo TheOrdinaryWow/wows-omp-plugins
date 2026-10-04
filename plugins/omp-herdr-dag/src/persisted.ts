@@ -13,6 +13,7 @@ export interface PaneState {
   orientation: "landscape" | "portrait";
   position: "left" | "right" | "top" | "bottom";
   launchedAt: number;
+  socketPath?: string;
   dismissed: boolean;
 }
 export interface ViewState {

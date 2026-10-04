@@ -77,6 +77,8 @@ class RecordingHerdr {
       }
       return response({ pane: { pane_id: this.dag.id, tab_id: "tab" } });
     }
+    if (op === "rename" && args[2] !== this.dag?.id)
+      return { stdout: JSON.stringify({ error: { code: "pane_not_found", message: "pane not found" } }), exitCode: 1 };
     if (op === "close") {
       if (args[2] !== this.dag?.id) {
         return { stdout: JSON.stringify({ error: { code: "pane_not_found", message: "pane not found" } }), exitCode: 1 };
@@ -102,6 +104,7 @@ async function fixture(overrides: Partial<PaneSettings> = {}) {
     sessionName: "Example",
     hostPaneId: "host",
     settings: { ...settings, ...overrides },
+    socketPath: "/tmp/current.sock",
     cwd: "/work/project",
     viewerCommand: (paneId) => `bun viewer.ts --pane ${paneId}`,
     notify: (message) => notices.push(message),
@@ -334,6 +337,7 @@ describe("PaneManager", () => {
       sessionId: "session",
       hostPaneId: "host",
       settings,
+      socketPath: "/tmp/current.sock",
       viewerCommand: () => "bun viewer.ts",
       notify: () => undefined,
       log: () => undefined,
@@ -354,6 +358,21 @@ describe("PaneManager", () => {
     expect(fake.calls.filter((args) => args[1] === "close")).toHaveLength(0);
     await manager.close("manual");
     expect(fake.calls.at(-1)).toEqual(["pane", "close", "dag1"]);
+  });
+
+  test("viewer dismissal followed by session rebinding clears a missing pane but preserves suppression", async () => {
+    const { manager, fake, dir } = await fixture();
+    await manager.open();
+    await manager.dismiss();
+    fake.dag = undefined; // Viewer q already closed the owned pane.
+    const nextDir = join(dir, "next-session");
+    await manager.update({ dir: nextDir, sessionId: "next" });
+    expect(manager.paneId).toBeUndefined();
+    expect(manager.state?.dismissed).toBe(true);
+    expect((await readPane(join(nextDir, "pane.json")))?.dismissed).toBe(true);
+    const count = fake.calls.length;
+    await manager.ensure();
+    expect(fake.calls).toHaveLength(count);
   });
 
   test("session rebind reuses the recorded pane, migrates pane.json, and renames", async () => {

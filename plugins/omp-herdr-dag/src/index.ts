@@ -311,6 +311,7 @@ class DagExtension {
           sessionId,
           hostPaneId: env.HERDR_PANE_ID as string,
           settings: this.#settings,
+          socketPath,
           viewerCommand,
           cwd: ctx.cwd,
           sessionName: ctx.sessionManager.getSessionName(),
@@ -323,6 +324,7 @@ class DagExtension {
           sessionId,
           sessionName: ctx.sessionManager.getSessionName(),
           settings: this.#settings,
+          socketPath,
           viewerCommand,
           cwd: ctx.cwd,
         });

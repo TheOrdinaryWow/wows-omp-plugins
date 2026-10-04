@@ -237,7 +237,7 @@ async function scenario(name: string, root: string): Promise<void> {
         paneIds.add(id);
         result = { pane: { pane_id: id, tab_id: "tab" } };
       }
-      if (operation === "get") {
+      if (operation === "get" || operation === "rename") {
         if (!paneIds.has(args[2] as string))
           return { stdout: JSON.stringify({ error: { code: "pane_not_found", message: "gone" } }), exitCode: 1 };
         result = { pane: { pane_id: args[2], tab_id: "tab" } };
@@ -248,6 +248,13 @@ async function scenario(name: string, root: string): Promise<void> {
             options.signal.addEventListener("abort", () => reject(new Error("aborted herdr close")), { once: true }),
           );
         paneIds.delete(args[2] as string);
+      }
+      if (operation === "run" && name === "resume-socket") {
+        const socketPath = /'--socket' '([^']+)'/.exec(args[3] ?? "")?.[1];
+        assert(socketPath, "viewer launch must specify its socket");
+        const peer = new Peer(socketPath);
+        peers.push(peer);
+        await peer.ready();
       }
       return { stdout: operation === "run" ? "" : JSON.stringify({ result }), exitCode: 0 };
     },
@@ -526,6 +533,48 @@ async function scenario(name: string, root: string): Promise<void> {
       await hook("session_start");
       await todo("start");
       assert.equal(splits(), baseline);
+    } else if (name === "dismiss-switch") {
+      await hook("session_start");
+      await command("open");
+      const peer = await connect();
+      peer.socket.write(encodeFrame({ v: 1, seq: 3, type: "closed" }));
+      await eventually(async () => JSON.parse(await readFile(join(dir(), "pane.json"), "utf8")).dismissed);
+      paneIds.delete("owned-1");
+      manager = SessionManager.create(cwd, join(root, "sessions"));
+      await hook("session_switch", { reason: "new" });
+      assert.equal((await peer.snapshot()).sessionId, manager.getSessionId());
+      const record = JSON.parse(await readFile(join(dir(), "pane.json"), "utf8"));
+      assert.equal(record.dismissed, true);
+      assert.equal(record.paneId, undefined);
+      assert.equal(splits(), 1);
+      assert.deepEqual(warnings, []);
+    } else if (name === "resume-socket") {
+      await configure({ finishBehavior: "keep-open" });
+      await writePane(join(dir(), "pane.json"), {
+        version: 1,
+        phase: "open",
+        paneId: "old-owned",
+        tabId: "tab",
+        hostPaneId: "host",
+        orientation: "landscape",
+        position: "right",
+        launchedAt: 1,
+        dismissed: false,
+        socketPath: herdrSocketPath("host", process.pid + 100),
+      });
+      paneIds.add("old-owned");
+      await hook("session_start");
+      await command("open");
+      assert(!paneIds.has("old-owned"));
+      assert.equal(splits(), 1);
+      assert.equal(peers.length, 1);
+      const peer = peers[0];
+      assert(peer);
+      assert.equal((await peer.snapshot()).sessionId, manager.getSessionId());
+      assert.equal(JSON.parse(await readFile(join(dir(), "pane.json"), "utf8")).socketPath, herdrSocketPath("host", process.pid));
+      await command("open");
+      assert.equal(splits(), 1);
+      assert.equal(peers.length, 1);
     } else if (name === "switch-replay") {
       await configure({ displayTiming: "any-todo" });
       await hook("session_start");
@@ -624,7 +673,8 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal(snapshot.runs[0]?.source, "plan");
       assert.equal(snapshot.runs[0]?.edges.length, 1);
       await command("open");
-      assert.equal(splits(), 0); // Own v1 record is adopted, no duplicate pane.
+      assert.equal(splits(), 1); // Old v1 records have an unknown launching socket and are relaunched.
+      assert(!paneIds.has("old-owned"));
       clock.advance(250);
       await eventually(async () => (await readSnapshot(join(dir(), "snapshot.json")))?.version === 1);
     } else if (name === "transport-edges") {
@@ -736,6 +786,8 @@ if (process.env[CHILD_ENV]) {
       "atlas",
       "manual-dismissal",
       "switch-replay",
+      "dismiss-switch",
+      "resume-socket",
       "shutdown-close",
       "shutdown-keep",
       "shutdown-hung",
