@@ -3,6 +3,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { crossingCount, layoutRun } from "../plugins/omp-herdr-dag/src/layout.ts";
 import {
   type AtlasRow,
   atlasRun,
@@ -296,5 +297,142 @@ describe("wire protocol and persistence", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("deterministic layered layout", () => {
+  test("forward longest paths, band ordering, long edge dummy routing and critical path weights", () => {
+    const run = todoRun({
+      sessionId: "session",
+      generation: 1,
+      phases: [
+        { name: "Build", tasks: ["A", "B", "C"].map((content) => ({ content, status: "pending" as const })) },
+        { name: "Check", tasks: [{ content: "D", status: "pending" }] },
+      ],
+      edges: [
+        { task: "B", after: ["A"] },
+        { task: "C", after: ["B"] },
+        { task: "D", after: ["A", "C"] },
+      ],
+      now: 100,
+    });
+    const layout = layoutRun(run, { foldCompleted: false, width: 80, now: 200 });
+    expect(layout.layers.map((layer) => layer.nodes.filter((node) => !node.dummy).map((node) => node.node?.label))).toEqual([
+      ["A"],
+      ["B"],
+      ["C"],
+      ["D"],
+    ]);
+    expect(layout.dummies).toHaveLength(2);
+    expect(layout.edges.find((route) => route.edge.from === run.nodes[0]?.id && route.edge.to === run.nodes[3]?.id)?.points).toHaveLength(
+      4,
+    );
+    expect(layout.criticalPath).toEqual(run.nodes.map((node) => node.id));
+    run.nodes.forEach((node, index) => {
+      node.startedAt = 100;
+      node.finishedAt = 100 + (index + 1) * 10;
+    });
+    const weighted = layoutRun(run, { foldCompleted: false, width: 80, now: 200 });
+    expect(weighted.criticalPath).toEqual(run.nodes.map((node) => node.id));
+    const [a, b, c, d] = run.nodes;
+    if (!a || !b || !c || !d) throw new Error("fixture missing nodes");
+    b.finishedAt = 300;
+    run.edges = [
+      { from: a.id, to: b.id, kind: "depends" },
+      { from: b.id, to: d.id, kind: "depends" },
+      { from: a.id, to: c.id, kind: "depends" },
+      { from: c.id, to: d.id, kind: "depends" },
+    ];
+    expect(layoutRun(run, { foldCompleted: false, width: 80 }).criticalPath).toEqual([a.id, b.id, d.id]);
+    run.edges = [{ from: a.id, to: d.id, kind: "fix" }];
+    expect(layoutRun(run, { foldCompleted: false, width: 80 }).criticalPath).toEqual([]);
+  });
+
+  test("two-band backward dependency terminates, retains bands/edge and includes it in critical path", () => {
+    const run = todoRun({
+      sessionId: "session",
+      generation: 1,
+      phases: [
+        { name: "First", tasks: [{ content: "A", status: "pending" }] },
+        { name: "Second", tasks: [{ content: "B", status: "pending" }] },
+      ],
+      edges: [{ task: "A", after: ["B"] }],
+      now: 100,
+    });
+    const layout = layoutRun(run, { foldCompleted: false, width: 50 });
+    expect(layout.layers.map((layer) => layer.band)).toEqual([0, 1]);
+    expect(layout.layers.map((layer) => layer.nodes[0]?.node?.label)).toEqual(["A", "B"]);
+    expect(layout.edges).toHaveLength(1);
+    expect(layout.edges[0]?.backward).toBe(true);
+    expect(layout.layers[0]?.nodes[0]?.backReferences).toEqual([{ from: run.nodes[1]?.id as string, label: "B" }]);
+    expect(layout.criticalPath).toEqual([run.nodes[1]?.id as string, run.nodes[0]?.id as string]);
+    // Invalid external cycles are tolerated without converting band order into dependencies.
+    run.edges.push({ from: run.nodes[0]?.id as string, to: run.nodes[1]?.id as string, kind: "depends" });
+    expect(layoutRun(run, { foldCompleted: false, width: 50 }).layers).toHaveLength(2);
+  });
+
+  test("barycenter sweeps reduce crossings in a six-node fixture and deterministic ties use ids", () => {
+    const run = todoRun({
+      sessionId: "session",
+      generation: 1,
+      phases: [
+        { name: "Sources", tasks: ["A", "B", "C"].map((content) => ({ content, status: "pending" as const })) },
+        { name: "Targets", tasks: ["D", "E", "F"].map((content) => ({ content, status: "pending" as const })) },
+      ],
+      now: 100,
+    });
+    run.nodes.forEach((node) => {
+      node.id = node.label;
+    });
+    run.edges = [
+      { from: "A", to: "F", kind: "depends" },
+      { from: "B", to: "E", kind: "depends" },
+      { from: "C", to: "D", kind: "depends" },
+    ];
+    const result = layoutRun(run, { foldCompleted: false, width: 80 });
+    const inputOrder = result.layers.map((layer) => ({ ...layer, nodes: [...layer.nodes].sort((a, b) => a.id.localeCompare(b.id)) }));
+    expect(crossingCount(inputOrder, result.edges)).toBe(3);
+    expect(crossingCount(result.layers, result.edges)).toBe(0);
+    const reversed = { ...run, nodes: [...run.nodes].reverse(), edges: [...run.edges].reverse() };
+    expect(layoutRun(reversed, { foldCompleted: false, width: 80 })).toEqual(result);
+    const independent = layoutRun({ ...run, edges: [] }, { foldCompleted: false, width: 80 });
+    expect(independent.layers.map((layer) => layer.nodes.map((node) => node.id))).toEqual([
+      ["A", "B", "C"],
+      ["D", "E", "F"],
+    ]);
+    expect(independent.criticalPath).toEqual([]);
+  });
+
+  test("folding yields one summary per terminal layer without losing cross-layer edges", () => {
+    const run = todoRun({
+      sessionId: "session",
+      generation: 1,
+      phases: [
+        {
+          name: "Done",
+          tasks: [
+            { content: "A", status: "completed" },
+            { content: "B", status: "abandoned" },
+          ],
+        },
+        { name: "Working", tasks: [{ content: "C", status: "in_progress" }] },
+      ],
+      edges: [{ task: "C", after: ["A"] }],
+      now: 100,
+    });
+    const folded = layoutRun(run, { foldCompleted: true, width: 30 });
+    expect(folded.folded).toHaveLength(1);
+    expect(folded.folded[0]?.count).toBe(2);
+    expect(folded.folded[0]?.bandName).toBe("Done");
+    expect(folded.layers.map((layer) => layer.folded)).toEqual([true, false]);
+    expect(folded.edges.map((route) => route.edge)).toEqual(run.edges);
+    expect(layoutRun(run, { foldCompleted: false, width: 30 }).folded).toEqual([]);
+    expect(layoutRun({ ...run, nodes: [], edges: [] }, { foldCompleted: true, width: 30 })).toEqual({
+      layers: [],
+      dummies: [],
+      criticalPath: [],
+      folded: [],
+      edges: [],
+    });
   });
 });
