@@ -153,7 +153,7 @@ class DagExtension {
       return run;
     });
     return {
-      version: 1,
+      version: 2,
       sessionId: this.#sessionId,
       sessionName: this.#ctx?.sessionManager.getSessionName(),
       generation: this.#generation,

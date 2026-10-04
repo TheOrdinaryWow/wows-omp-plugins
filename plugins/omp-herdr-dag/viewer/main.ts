@@ -463,7 +463,7 @@ export function parseArgs(argv: string[]): CliOptions {
 export async function renderOnce(options: CliOptions): Promise<string[]> {
   if (!options.snapshot) throw new Error("--once needs --snapshot <file>");
   const snapshot = await readSnapshot(options.snapshot);
-  if (!snapshot) throw new Error(`no v1 snapshot in ${options.snapshot}`);
+  if (!snapshot) throw new Error(`no supported snapshot in ${options.snapshot}`);
   const stored = options.state ? await readViewState(options.state) : undefined;
   const viewState: ViewState = { ...(stored ?? DEFAULT_VIEW_STATE), folded: [...(stored?.folded ?? [])] };
   if (options.view) viewState.view = options.view;

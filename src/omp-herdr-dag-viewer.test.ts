@@ -465,6 +465,28 @@ describe("omp-herdr-dag viewer process", () => {
     viewer.stop();
   });
 
+  test("viewer startup recovers both v1 and v2 snapshots from disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "herdr-dag-viewer-upgrade-"));
+    try {
+      const snapshot = await fixture("tasks");
+      for (const version of [1, 2]) {
+        const path = join(dir, `snapshot-v${version}.json`);
+        await writeFile(path, JSON.stringify({ ...snapshot, version }));
+        const { viewer } = await startViewer({ snapshot: path });
+        try {
+          expect(viewer.snapshot).toEqual(snapshot);
+          expect(viewer.snapshot?.version).toBe(2);
+          expect(viewer.snapshot?.tasks.length).toBeGreaterThan(0);
+          expect(await readSnapshot(path)).toEqual(snapshot);
+        } finally {
+          viewer.stop();
+        }
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a session op rebinds snapshot and view-state paths", async () => {
     const dir = await mkdtemp(join(tmpdir(), "herdr-dag-viewer-"));
     try {

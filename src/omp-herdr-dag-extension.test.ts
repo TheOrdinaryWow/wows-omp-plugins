@@ -382,8 +382,12 @@ async function scenario(name: string, root: string): Promise<void> {
       await todo("start");
       assert.equal((await peer.snapshot()).sources.todo, "#112233");
       clock.advance(250);
-      await eventually(async () => (await readSnapshot(join(dir(), "snapshot.json")))?.version === 1);
+      // An older snapshot can exist while its replacement is in flight; shutdown waits for the writer queue.
+      await hook("session_shutdown");
+      shutdown = true;
+      await eventually(async () => (await readSnapshot(join(dir(), "snapshot.json")))?.version === 2);
       assert.equal((await readSnapshot(join(dir(), "snapshot.json")))?.sessionId, manager.getSessionId());
+      assert.equal((await readSnapshot(join(dir(), "snapshot.json")))?.sources.todo, "#112233");
       assert.equal((await stat(join(dir(), "snapshot.json"))).mode & 0o777, 0o600);
       assert(!(await readdir(dir())).some((file) => file.endsWith(".tmp")));
     } else if (name === "plan") {
@@ -599,7 +603,7 @@ async function scenario(name: string, root: string): Promise<void> {
     } else if (name === "resume-socket") {
       await configure({ finishBehavior: "keep-open" });
       await writePane(join(dir(), "pane.json"), {
-        version: 1,
+        version: 2,
         phase: "open",
         paneId: "old-owned",
         tabId: "tab",
@@ -832,17 +836,21 @@ async function scenario(name: string, root: string): Promise<void> {
       );
     } else if (name === "v1-resume") {
       const path = join(dir(), "pane.json");
-      await writePane(path, {
-        version: 1,
-        phase: "open",
-        paneId: "old-owned",
-        tabId: "tab",
-        hostPaneId: "host",
-        orientation: "landscape",
-        position: "right",
-        launchedAt: 1,
-        dismissed: true,
-      });
+      await mkdir(dir(), { recursive: true });
+      await writeFile(
+        path,
+        JSON.stringify({
+          version: 1,
+          phase: "open",
+          paneId: "old-owned",
+          tabId: "tab",
+          hostPaneId: "host",
+          orientation: "landscape",
+          position: "right",
+          launchedAt: 1,
+          dismissed: true,
+        }),
+      );
       paneIds.add("old-owned");
       manager.appendCustomEntry("omp-herdr-dag:plan-execution", {
         v: 1,
@@ -864,7 +872,7 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal(splits(), 1); // Old v1 records have an unknown launching socket and are relaunched.
       assert(!paneIds.has("old-owned"));
       clock.advance(250);
-      await eventually(async () => (await readSnapshot(join(dir(), "snapshot.json")))?.version === 1);
+      await eventually(async () => (await readSnapshot(join(dir(), "snapshot.json")))?.version === 2);
     } else if (name === "transport-edges") {
       const { SnapshotServer, SnapshotWriter } = await import("../plugins/omp-herdr-dag/src/transport.ts");
       await hook("session_start");

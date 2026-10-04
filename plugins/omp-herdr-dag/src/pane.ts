@@ -147,7 +147,7 @@ export class PaneManager {
     const size = orientation === "landscape" ? this.#options.settings.landscapeSize : this.#options.settings.portraitSize;
     const swapping = position === "left" || position === "top";
     const state: PaneState = {
-      version: 1,
+      version: 2,
       phase: "splitting",
       hostPaneId: this.#options.hostPaneId,
       orientation,
@@ -279,7 +279,7 @@ export class PaneManager {
       if (this.#state) await this.#save({ ...this.#state, dismissed: true });
       else
         await this.#save({
-          version: 1,
+          version: 2,
           phase: "open",
           hostPaneId: this.#options.hostPaneId,
           orientation: this.#orientation ?? "landscape",

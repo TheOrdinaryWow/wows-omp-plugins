@@ -52,7 +52,7 @@ function phases(): TodoPhase[] {
 
 export function snapshot(runs: Run[] = []): Snapshot {
   return {
-    version: 1,
+    version: 2,
     sessionId: "session",
     generation: 1,
     connected: true,
@@ -265,12 +265,36 @@ describe("wire protocol and persistence", () => {
     });
   });
 
-  test("v1 snapshot, pane and view state write/reopen; unknown version ignored and reset atomically", async () => {
+  test("the snapshot reader upgrades a v1 disk snapshot without losing recovery data", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dag-core-upgrade-"));
+    try {
+      const run = todoRun({ sessionId: "session", generation: 3, phases: phases(), now: 100, edges: [{ task: "B", after: ["A"] }] });
+      const card = attachTask(undefined, { id: "child", status: "started", agent: "worker", at: 100, nodeId: run.nodes[0]?.id });
+      card.completed = { tokens: 100, costUsd: 0.1, durationMs: 40 };
+      card.current = { tokens: 20, costUsd: 0.02, durationMs: 10 };
+      card.activations = 2;
+      card.sessionFile = "/session/child.jsonl";
+      const previous = { ...snapshot([run]), version: 1, tasks: [card], sessionName: "In flight", generation: 3 };
+      delete previous.tasks[0]?.stalled;
+      const path = join(dir, "snapshot.json");
+      await writeFile(path, JSON.stringify(previous));
+      const restored = await readSnapshot(path);
+      expect(restored?.version).toBe(2);
+      expect(restored).toEqual(JSON.parse(JSON.stringify({ ...previous, version: 2 })));
+      expect(JSON.parse(await readFile(path, "utf8"))).toEqual(restored);
+      expect(await readSnapshot(path)).toEqual(restored);
+      expect(taskTotals(restored?.tasks[0] as NonNullable<typeof restored>["tasks"][number]).tokens).toBe(120);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("v2 snapshot and pane plus v1 view state write/reopen; unknown version ignored and reset atomically", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dag-core-"));
     try {
       const snap = snapshot();
       const pane: PaneState = {
-        version: 1,
+        version: 2,
         phase: "open",
         paneId: "pane",
         tabId: "tab",

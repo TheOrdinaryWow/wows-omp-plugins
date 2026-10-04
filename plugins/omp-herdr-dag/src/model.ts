@@ -74,7 +74,7 @@ export interface ThemeColors {
   background?: string;
 }
 export interface Snapshot {
-  version: 1;
+  version: 2;
   sessionId: string;
   sessionName?: string;
   generation: number;

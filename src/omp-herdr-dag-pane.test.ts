@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { createHerdr, HerdrError, type HerdrExec, isMissingPane, type PaneLayout } from "../plugins/omp-herdr-dag/src/herdr.ts";
 import { PaneManager, type PaneSettings, paneOrientation, unsplitDimensions } from "../plugins/omp-herdr-dag/src/pane.ts";
-import { type PaneState, readPane, writePane } from "../plugins/omp-herdr-dag/src/persisted.ts";
+import { type PaneState, readPane } from "../plugins/omp-herdr-dag/src/persisted.ts";
 import { buildViewerCommand, resolveViewerRuntime, shellQuote } from "../plugins/omp-herdr-dag/src/runtime.ts";
 
 const dirs: string[] = [];
@@ -262,17 +262,21 @@ describe("PaneManager", () => {
     expect(await readPane(join(dir, "pane.json"))).toBeUndefined();
   });
 
-  test("a leftover splitting record never searches, adopts, or closes an unrecorded pane", async () => {
+  test("a v1 leftover splitting record never searches, adopts, or closes an unrecorded pane", async () => {
     const { manager, fake, dir, notices } = await fixture();
-    await writePane(join(dir, "pane.json"), {
-      version: 1,
-      phase: "splitting",
-      hostPaneId: "host",
-      orientation: "landscape",
-      position: "right",
-      launchedAt: 1,
-      dismissed: false,
-    });
+    await writeFile(
+      join(dir, "pane.json"),
+      JSON.stringify({
+        version: 1,
+        phase: "splitting",
+        hostPaneId: "host",
+        orientation: "landscape",
+        position: "right",
+        launchedAt: 1,
+        dismissed: false,
+      }),
+    );
+    expect(await readPane(join(dir, "pane.json"))).toMatchObject({ version: 2, phase: "splitting", launchedAt: 1, dismissed: false });
     await manager.open();
     expect(fake.calls.map((args) => args[1])).toEqual(["layout", "split", "rename", "run"]);
     expect(notices).toEqual(["A previous DAG pane may be left open; close it manually"]);
@@ -281,18 +285,21 @@ describe("PaneManager", () => {
     await manager.close();
   });
 
-  test("a foreign-host record is discarded without mutating its pane", async () => {
+  test("a v1 foreign-host record is discarded without mutating its pane", async () => {
     const { manager, fake, dir } = await fixture();
-    await writePane(join(dir, "pane.json"), {
-      version: 1,
-      phase: "open",
-      paneId: "not-owned",
-      hostPaneId: "other-host",
-      orientation: "landscape",
-      position: "right",
-      launchedAt: 1,
-      dismissed: false,
-    });
+    await writeFile(
+      join(dir, "pane.json"),
+      JSON.stringify({
+        version: 1,
+        phase: "open",
+        paneId: "not-owned",
+        hostPaneId: "other-host",
+        orientation: "landscape",
+        position: "right",
+        launchedAt: 1,
+        dismissed: false,
+      }),
+    );
     await manager.open();
     expect(fake.calls.some((args) => args.includes("not-owned"))).toBe(false);
     await manager.close();
@@ -312,12 +319,40 @@ describe("PaneManager", () => {
     expect(fake.calls).toHaveLength(count);
   });
 
-  test("an unknown pane.json version is rewritten as v1 on fresh open", async () => {
+  test("a v1 disk pane preserves dismissal and ownership before relaunching only its recorded pane", async () => {
     const { manager, fake, dir } = await fixture();
-    await writeFile(join(dir, "pane.json"), JSON.stringify({ version: 2, phase: "open", paneId: "foreign" }));
+    fake.dag = { id: "previous-owned", direction: "right", ratio: 0.65, swapped: false };
+    const previous = {
+      version: 1,
+      phase: "open",
+      paneId: "previous-owned",
+      tabId: "tab",
+      hostPaneId: "host",
+      orientation: "landscape",
+      position: "right",
+      launchedAt: 123,
+      dismissed: true,
+    } as const;
+    const path = join(dir, "pane.json");
+    await writeFile(path, JSON.stringify(previous));
+    await manager.ensure();
+    expect(manager.state).toEqual({ ...previous, version: 2 });
+    expect(fake.calls).toEqual([]);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(manager.state);
+    expect(manager.state?.socketPath).toBeUndefined();
+    await manager.open();
+    expect(fake.calls.map((args) => args[1])).toEqual(["get", "close", "layout", "split", "rename", "run"]);
+    expect(fake.calls[1]).toEqual(["pane", "close", "previous-owned"]);
+    expect(manager.state).toMatchObject({ version: 2, dismissed: false, socketPath: "/tmp/current.sock" });
+    await manager.close();
+  });
+
+  test("an unknown pane.json version is rewritten as v2 on fresh open", async () => {
+    const { manager, fake, dir } = await fixture();
+    await writeFile(join(dir, "pane.json"), JSON.stringify({ version: 3, phase: "open", paneId: "foreign" }));
     await manager.open();
     expect(fake.calls.some((args) => args.includes("foreign"))).toBe(false);
-    expect(JSON.parse(await readFile(join(dir, "pane.json"), "utf8")).version).toBe(1);
+    expect(JSON.parse(await readFile(join(dir, "pane.json"), "utf8")).version).toBe(2);
     await manager.close();
   });
 
@@ -497,7 +532,7 @@ describe("orientation and runtime helpers", () => {
       ],
     };
     const state: PaneState = {
-      version: 1,
+      version: 2,
       phase: "open",
       paneId: "dag",
       hostPaneId: "host",

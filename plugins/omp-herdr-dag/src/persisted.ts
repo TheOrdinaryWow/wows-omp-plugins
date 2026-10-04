@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import type { Snapshot } from "./model.ts";
 
 export interface PaneState {
-  version: 1;
+  version: 2;
   phase: "splitting" | "open";
   paneId?: string;
   tabId?: string;
@@ -26,18 +26,29 @@ export interface ViewState {
 export const DEFAULT_VIEW_STATE: ViewState = { version: 1, folded: [], view: "dag", criticalPath: false };
 
 /** Only missing, invalid JSON and unknown versions reset; real I/O errors remain visible. */
-export async function readVersioned<T extends { version: 1 }>(file: string, fallback?: T): Promise<T | undefined> {
+export async function readVersioned<T extends { version: number }>(
+  file: string,
+  fallback?: T,
+  version = fallback?.version ?? 1,
+  upgradeV1?: (value: Omit<T, "version"> & { version: 1 }) => T,
+): Promise<T | undefined> {
+  let value: T | undefined;
   try {
-    const value = JSON.parse(await readFile(file, "utf8"));
-    if (value && value.version === 1) return value as T;
+    value = JSON.parse(await readFile(file, "utf8"));
   } catch (error) {
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (value && value.version === version) return value;
+  if (value && value.version === 1 && upgradeV1) {
+    const upgraded = upgradeV1(value as Omit<T, "version"> & { version: 1 });
+    await writeVersioned(file, upgraded);
+    return upgraded;
   }
   if (fallback) await writeVersioned(file, fallback);
   return fallback;
 }
 
-export async function writeVersioned<T extends { version: 1 }>(file: string, value: T): Promise<void> {
+export async function writeVersioned<T extends { version: number }>(file: string, value: T): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -49,9 +60,13 @@ export async function writeVersioned<T extends { version: 1 }>(file: string, val
 }
 
 // Typed entry points keep persisted contracts identical in the host and standalone viewer.
-export const readPane = (file: string): Promise<PaneState | undefined> => readVersioned<PaneState>(file);
+export const readPane = (file: string): Promise<PaneState | undefined> =>
+  // An absent v1 socket stays unknown: PaneManager relaunches only this record's owned pane.
+  readVersioned<PaneState>(file, undefined, 2, (previous) => ({ ...previous, version: 2 }));
 export const writePane = (file: string, value: PaneState): Promise<void> => writeVersioned(file, value);
-export const readSnapshot = (file: string): Promise<Snapshot | undefined> => readVersioned<Snapshot>(file);
+export const readSnapshot = (file: string): Promise<Snapshot | undefined> =>
+  // stalled is optional; absent v1 task flags remain unset until live sampling resumes.
+  readVersioned<Snapshot>(file, undefined, 2, (previous) => ({ ...previous, version: 2 }));
 export const writeSnapshot = (file: string, value: Snapshot): Promise<void> => writeVersioned(file, value);
 export const readViewState = (file: string): Promise<ViewState | undefined> => readVersioned<ViewState>(file);
 export const writeViewState = (file: string, value: ViewState): Promise<void> => writeVersioned(file, value);
