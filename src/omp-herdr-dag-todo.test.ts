@@ -286,6 +286,40 @@ if (process.env[CHILD_ENV]) {
       expect(source.current?.nodes).toHaveLength(3);
     });
 
+    test("hidden all-Atlas lists leave approval armed and release as blue todos", () => {
+      for (const writer of ["poll", "tool-result"]) {
+        const entries: SessionEntry[] = [];
+        const plan = new PlanExecutionTracker({
+          persist: (data) => entries.push({ ...customEntry(PLAN_EXECUTION_ENTRY, data), id: `state-${entries.length}` }),
+        });
+        const source = new TodoSource({ sessionId: "session", plan });
+        source.replay(entries, null);
+        source.setAtlasBound(true);
+        plan.observeResult({
+          toolName: "write",
+          details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
+        });
+        plan.beforeAgentStart(handoff, "local://approved.md");
+        const mirrored = ["Atlas tasks", "Atlas fixes", "Atlas final gates"].map(
+          (name): TodoPhase => ({ name, tasks: [{ content: name, status: "pending" }] }),
+        );
+        if (writer === "poll") {
+          entries.push({ ...customEntry("user_todo_edit", { phases: mirrored }), id: "mirror" });
+          source.poll({ getLeafId: () => "mirror", getBranch: () => entries });
+        } else source.observeResult(resultEvent("init", mirrored));
+        expect(source.current).toBeUndefined();
+        expect(plan.state.state).toBe("executing");
+        expect(plan.state.runId).toBeUndefined();
+        source.setAtlasBound(false);
+        expect(source.current?.source).toBe("todo");
+        expect(source.current?.nodes).toHaveLength(3);
+        expect(plan.state.runId).toBeUndefined();
+        source.observeResult(resultEvent());
+        expect(source.current?.source).toBe("plan");
+        expect(plan.state.runId).toBe(source.current?.id);
+      }
+    });
+
     test("generation-scoped edges survive replay and are pruned by removals", () => {
       const source = new TodoSource({ sessionId: "session", now: () => 1_000 });
       const edges: TodoEdgesEntry = { v: 1, generation: 1, edges: [{ task: "B", after: ["A"] }] };

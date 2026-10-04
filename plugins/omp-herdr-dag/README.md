@@ -46,7 +46,7 @@ Plan execution requires the recorded proposal, the host's matching plan referenc
 Queued synthetic developer approval messages use the same checks as a new turn's approval prompt. Canonical todo writes must be newer than both the live polling baseline and the recorded approval to claim the first plan list; historical lists replayed on startup, switching, or rewinding cannot. The final agent-turn boundary reconciles canonical todo writes before checking whether the plan list is terminal.
 Trusted queued handoffs are identified by their host timestamp and approval text, accepted only after the current proposal, and consumed once. A context retaining an old approval cannot approve a later proposal for the same path.
 
-While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fixes`, and `Atlas final gates` are hidden from the native todo view. They reappear as plain todos when Atlas releases or integration is disabled.
+While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fixes`, and `Atlas final gates` are hidden from the native todo view. An all-mirror list cannot claim or consume an armed native plan approval. The mirrors reappear as plain blue todos when Atlas releases or integration is disabled; a later new native list can still claim the approval.
 
 Forward dependencies use solid connectors. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted. The critical path uses observed node elapsed time, or unit weight for unstarted nodes, across explicit dependency edges only. Runs without those edges have no critical path. Completed layers can be folded.
 

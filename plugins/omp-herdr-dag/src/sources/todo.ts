@@ -6,6 +6,7 @@ import { type Run, type TodoDependency, type TodoPhase, todoRun, validateTodoEdg
 import { PLAN_EXECUTION_ENTRY, type PlanExecutionTracker } from "./plan-execution.ts";
 
 export const TODO_EDGES_ENTRY = "omp-herdr-dag:todo-edges";
+const ATLAS_MIRROR_PHASES: Record<string, true> = { "Atlas tasks": true, "Atlas fixes": true, "Atlas final gates": true };
 
 export interface TodoEdgesEntry {
   v: 1;
@@ -207,14 +208,15 @@ export class TodoSource {
       this.#current = oldRuns?.get(`todo:${this.#options.sessionId}:${this.#generation}`);
     }
     this.#phases = phases;
-    if (fresh && live) this.#options.plan?.claimRun(`todo:${this.#options.sessionId}:${this.#generation}`, phases);
+    if (fresh && live) {
+      const visible = this.#atlasBound ? phases.filter((phase) => !Object.hasOwn(ATLAS_MIRROR_PHASES, phase.name)) : phases;
+      this.#options.plan?.claimRun(`todo:${this.#options.sessionId}:${this.#generation}`, visible);
+    }
     this.#render(at);
   }
 
   #render(at: number): void {
-    const phases = this.#atlasBound
-      ? this.#phases.filter((phase) => !["Atlas tasks", "Atlas fixes", "Atlas final gates"].includes(phase.name))
-      : this.#phases;
+    const phases = this.#atlasBound ? this.#phases.filter((phase) => !Object.hasOwn(ATLAS_MIRROR_PHASES, phase.name)) : this.#phases;
     if (!this.#generation || !phases.some((phase) => phase.tasks.length > 0)) {
       this.#current = undefined;
       return;
