@@ -71,6 +71,8 @@ export class SnapshotServer {
   #paths: SessionPaths;
   #stateSeq = 0;
   #started = false;
+  #starting?: Promise<void>;
+  #stopped = false;
 
   constructor(options: SnapshotServerOptions) {
     this.#options = options;
@@ -91,13 +93,19 @@ export class SnapshotServer {
     return this.#clients.size;
   }
 
-  async start(): Promise<void> {
-    if (this.#started) return;
+  start(): Promise<void> {
+    if (this.#stopped || this.#started) return Promise.resolve();
+    this.#starting ??= this.#start();
+    return this.#starting;
+  }
+
+  async #start(): Promise<void> {
     await mkdir(dirname(this.#options.socketPath), { recursive: true, mode: 0o700 });
     await chmod(dirname(this.#options.socketPath), 0o700);
     await unlink(this.#options.socketPath).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     });
+    if (this.#stopped) return;
     this.#server = createServer((socket) => this.#accept(socket));
     await new Promise<void>((resolve, reject) => {
       const server = this.#server as Server;
@@ -113,6 +121,7 @@ export class SnapshotServer {
       server.once("listening", onListening);
       server.listen(this.#options.socketPath);
     });
+    if (this.#stopped) return;
     this.#started = true;
     this.#heartbeat = this.#timer.setInterval(() => {
       void Promise.resolve()
@@ -123,20 +132,24 @@ export class SnapshotServer {
   }
 
   async stop(reason: "shutdown" | "switch" = "shutdown"): Promise<void> {
-    if (!this.#started && !this.#server) return;
-    this.#timer.clearInterval(this.#heartbeat);
-    this.#heartbeat = undefined;
-    for (const client of [...this.#clients]) {
-      this.#send(client, { type: "bye", reason });
-      this.#closeClient(client, true);
+    this.#stopped = true;
+    try {
+      await this.#starting;
+    } finally {
+      this.#timer.clearInterval(this.#heartbeat);
+      this.#heartbeat = undefined;
+      for (const client of [...this.#clients]) {
+        this.#send(client, { type: "bye", reason });
+        this.#closeClient(client, true);
+      }
+      const server = this.#server;
+      this.#server = undefined;
+      this.#started = false;
+      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+      await unlink(this.#options.socketPath).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      });
     }
-    const server = this.#server;
-    this.#server = undefined;
-    this.#started = false;
-    if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
-    await unlink(this.#options.socketPath).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    });
   }
 
   /** Publish a state change. The caller supplies operations so small changes stay streaming deltas. */

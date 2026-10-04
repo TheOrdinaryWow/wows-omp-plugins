@@ -355,6 +355,7 @@ class DagExtension {
           onError: (error) => this.#report(error),
         });
         await this.#server.start();
+        if (this.#stopping) return;
       } else {
         this.#server.updateSession(sessionId, this.#paths, snapshot);
       }
@@ -402,13 +403,13 @@ class DagExtension {
     await this.#evaluate();
   }
 
-  async beforeAgentStart(prompt: string, ctx: ExtensionContext): Promise<void> {
+  async beforeAgentStart(prompt: string, ctx: ExtensionContext, handoffAt?: number): Promise<void> {
     if (!this.#server) return;
     this.#ctx = ctx;
     const live = AgentRegistry.global()
       .list()
       .find((ref) => ref.kind === "main" && ref.session?.sessionManager === ctx.sessionManager)?.session;
-    this.#plan.beforeAgentStart(prompt, live?.getPlanReferencePath());
+    this.#plan.beforeAgentStart(prompt, live?.getPlanReferencePath(), handoffAt);
     this.#publish();
     await this.#evaluate();
   }
@@ -482,7 +483,7 @@ export default function herdrDag(pi: ExtensionAPI, deps: Dependencies = {}): voi
                 .filter((part) => part.type === "text")
                 .map((part) => part.text)
                 .join("\n");
-        await extension.beforeAgentStart(prompt, ctx);
+        await extension.beforeAgentStart(prompt, ctx, message.timestamp);
       }
     }),
   );

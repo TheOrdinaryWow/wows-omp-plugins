@@ -30,6 +30,9 @@ class Clock implements SnapshotTimer {
   now = 0;
   #id = 0;
   #jobs = new Map<number, { at: number; callback: () => void; repeat?: number }>();
+  get pending(): number {
+    return this.#jobs.size;
+  }
   setTimeout(callback: () => void, milliseconds: number): NodeJS.Timeout {
     const id = ++this.#id;
     this.#jobs.set(id, { at: this.now + milliseconds, callback });
@@ -423,7 +426,13 @@ async function scenario(name: string, root: string): Promise<void> {
         assert(data && typeof data === "object" && "state" in data && typeof data.state === "string");
         return data.state;
       };
-      const message = { role: "developer", attribution: "agent", synthetic: true, content: [{ type: "text", text: handoff }] };
+      const message = {
+        role: "developer",
+        attribution: "agent",
+        synthetic: true,
+        content: [{ type: "text", text: handoff }],
+        timestamp: Date.now(),
+      };
       await hook("context", {
         messages: [
           { ...message, role: "user" },
@@ -468,6 +477,27 @@ async function scenario(name: string, root: string): Promise<void> {
       const data = entry.data;
       assert(data && typeof data === "object" && "state" in data);
       assert.equal(data.state, "idle");
+    } else if (name === "stale-approval") {
+      await hook("session_start");
+      await proposal();
+      const oldApproval = { role: "developer", attribution: "agent", synthetic: true, content: handoff, timestamp: Date.now() };
+      await hook("context", { messages: [oldApproval] });
+      await todo();
+      await todo("done", [{ name: "Build", tasks: [{ content: "A", status: "completed" }] }]);
+      await hook("agent_end");
+      await proposal();
+      await hook("context", { messages: [oldApproval] });
+      const state = () => {
+        const entry = manager.getBranch().findLast((entry) => entry.type === "custom" && entry.customType === PLAN_EXECUTION_ENTRY);
+        assert(entry?.type === "custom");
+        const data = entry.data;
+        assert(data && typeof data === "object" && "state" in data);
+        return data.state;
+      };
+      assert.equal(state(), "proposed");
+      const newApproval = { ...oldApproval, timestamp: Date.now() + 1 };
+      await hook("context", { messages: [oldApproval, newApproval] });
+      assert.equal(state(), "executing");
     } else if (name === "atlas") {
       await configure({ displayTiming: "atlas-only" });
       await hook("session_start");
@@ -669,6 +699,38 @@ async function scenario(name: string, root: string): Promise<void> {
       const active = await peer.snapshot();
       assert(active.tasks.every((task) => task.stalled === false));
       assert.equal(active.runs[0]?.nodes[0]?.stalled, false);
+    } else if (name === "stop-during-start") {
+      // This scenario exercises the isolated child module-loading boundary.
+      const { SnapshotServer } = await import("../plugins/omp-herdr-dag/src/transport.ts");
+      const start = SnapshotServer.prototype.start;
+      let stopping: Promise<void> | undefined;
+      SnapshotServer.prototype.start = function () {
+        const starting = start.call(this);
+        stopping = hook("session_shutdown");
+        return starting;
+      };
+      try {
+        await hook("session_start");
+        await stopping;
+        shutdown = true;
+      } finally {
+        SnapshotServer.prototype.start = start;
+      }
+      assert.equal(clock.pending, 0);
+      const socketPath = herdrSocketPath("host", process.pid);
+      await assert.rejects(stat(socketPath), { code: "ENOENT" });
+      const connectable = await new Promise<boolean>((resolve) => {
+        const socket = createConnection(socketPath);
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve(true);
+        });
+        socket.once("error", () => {
+          socket.destroy();
+          resolve(false);
+        });
+      });
+      assert.equal(connectable, false);
     } else if (name.startsWith("shutdown-")) {
       await configure({ finishBehavior: name === "shutdown-keep" ? "keep-open" : "close-with-omp" });
       await hook("session_start");
@@ -744,6 +806,32 @@ async function scenario(name: string, root: string): Promise<void> {
           closed++;
         },
       });
+      const stoppedClock = new Clock();
+      const stoppedPath = join(root, "socket/stopped.sock");
+      const stopped = new SnapshotServer({
+        socketPath: stoppedPath,
+        sessionId: snapshot.sessionId,
+        paths: { snapshot: "s", state: "v" },
+        snapshot,
+        timer: stoppedClock,
+      });
+      const starting = stopped.start();
+      await stopped.stop();
+      await starting;
+      assert.equal(stoppedClock.pending, 0);
+      await assert.rejects(stat(stoppedPath), { code: "ENOENT" });
+      const connectable = await new Promise<boolean>((resolve) => {
+        const socket = createConnection(stoppedPath);
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve(true);
+        });
+        socket.once("error", () => {
+          socket.destroy();
+          resolve(false);
+        });
+      });
+      assert.equal(connectable, false);
       await server.start();
       const other = new Peer(path);
       peers.push(other);
@@ -833,11 +921,13 @@ if (process.env[CHILD_ENV]) {
       "plan",
       "queued-plan",
       "canonical-final-turn",
+      "stale-approval",
       "atlas",
       "manual-dismissal",
       "switch-replay",
       "dismiss-switch",
       "resume-socket",
+      "stop-during-start",
       "stalled-tasks",
       "shutdown-close",
       "shutdown-keep",

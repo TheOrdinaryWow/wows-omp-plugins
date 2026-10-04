@@ -42,6 +42,7 @@ export class PlanExecutionTracker {
   readonly #now: () => number;
   readonly #persist?: (data: PlanExecutionState) => void;
   readonly #planRuns = new Set<string>();
+  readonly #consumedHandoffs = new Set<string>();
   #state: PlanExecutionState;
 
   constructor(options: PlanExecutionOptions = {}) {
@@ -64,8 +65,13 @@ export class PlanExecutionTracker {
     return true;
   }
 
-  beforeAgentStart(prompt: string, planReferencePath: string | undefined): boolean {
-    if (this.#state.state !== "proposed" || !isApprovedPlanHandoff(prompt, this.#state.planFilePath, planReferencePath)) return false;
+  beforeAgentStart(prompt: string, planReferencePath: string | undefined, handoffAt?: number): boolean {
+    if (!isApprovedPlanHandoff(prompt, this.#state.planFilePath, planReferencePath)) return false;
+    const identity = handoffAt === undefined ? undefined : `${handoffAt}\n${prompt}`;
+    if (identity && this.#state.state === "executing") this.#consumedHandoffs.add(identity);
+    if (this.#state.state !== "proposed" || (identity && this.#consumedHandoffs.has(identity))) return false;
+    if (handoffAt !== undefined && (!Number.isFinite(handoffAt) || handoffAt < this.#state.at)) return false;
+    if (identity) this.#consumedHandoffs.add(identity);
     this.#set({ ...this.#state, state: "executing", runId: undefined, at: this.#now() });
     return true;
   }
