@@ -1,17 +1,192 @@
 # omp-herdr-dag
 
-Live native todo, approved-plan execution, Atlas DAG, and subagent views in a Herdr side pane.
+Live native todos, approved-plan execution, Atlas dependencies, and subagent activity in a Herdr side pane. The viewer observes work. It doesn't schedule dependencies, complete todos, or change the Atlas ledger when a child finishes.
 
-## Install
+## Install and requirements
 
 ```bash
 omp plugin install omp-herdr-dag@wows-omp-plugins
 ```
 
-Requires OMP 18.3.1 or newer, Herdr, and Bun. Linux and macOS are supported; macOS is unverified.
-Windows is not supported. Restart the OMP session after installation.
+Restart OMP after installation. Requires OMP 18.3.1 or newer, the `herdr` CLI on `PATH`, and an interactive OMP session inside Herdr. Linux and macOS use the same implementation; **macOS is unverified**. Windows is unsupported and receives a one-time notice. Noninteractive child sessions don't start a viewer.
+
+The pane needs a Bun executable. Put `bun` on `PATH` or set `viewerRuntime` to its path. Automatic discovery tries `bun` first, then the host executable only if its `--version` output looks like Bun's semantic version. A compiled OMP executable isn't assumed to be a usable viewer runtime. Missing Bun produces a warning and skips pane management.
+
+Herdr supplies `HERDR_ENV=1`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`; all three are required. Outside Herdr, `/dag-pane` reports that the pane is unavailable. The native todo wrapper remains registered, including outside Herdr.
+
+## Commands and automatic opening
+
+```text
+/dag-pane [open|close|toggle]
+```
+
+The bare command toggles. `open` is idempotent; `close` is safe when no pane exists. Manual opening works regardless of `displayTiming`. The plugin manages only its recorded pane ID, never panes found by title.
+
+Automatic opening follows `displayTiming`:
+
+| Value | Opens for |
+| --- | --- |
+| `never` | Nothing automatically; use the command. |
+| `any-todo` | Native todos, approved-plan todos, or a bound Atlas plan. |
+| `plan-execution` | Verified native plan execution or a bound Atlas plan. |
+| `atlas-only` | A bound Atlas plan only. |
+
+Subagent activity by itself doesn't open the pane. Pressing `q` in the viewer or running `/dag-pane close` saves a dismissal. Updates to the same run won't reopen it. A newly observed run ID, or `/dag-pane open`, clears dismissal. `/new` and session switches reuse the pane while rebinding its contents and storage.
+
+## Sources and graph meaning
+
+| Source | Default border and header color | Meaning |
+| --- | --- | --- |
+| Native todo | Blue, `#4f8cff` | Native phases form bands. Dashed phase separators mean order, not dependency. |
+| Native plan execution | Purple, `#a371f7` | The first nonempty new todo list after a verified native approval handoff. |
+| Atlas | Green, `#3fb950` | omo-prometheus tasks, fixes, and final gates, with ledger dependency and fix-origin edges. |
+
+Plan execution requires the recorded proposal, the host's matching plan reference, and its exact approval envelope. A user message saying `Plan approved.` or a bare new-session event isn't enough. The plan epoch ends once its list is completed or abandoned and the agent turn ends without continuation. A later list is an ordinary blue todo run.
+
+While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fixes`, and `Atlas final gates` are hidden from the native todo view. They reappear as plain todos when Atlas releases or integration is disabled.
+
+Forward dependencies use solid connectors. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted. The critical path uses observed node elapsed time, or unit weight for unstarted nodes, across explicit dependency edges only. Runs without those edges have no critical path. Completed layers can be folded.
+
+State colors come from the OMP theme, separately from source colors:
+
+| Icon | State | Color role |
+| --- | --- | --- |
+| `○` | Pending | Muted |
+| `◐` | Running | Accent |
+| `✔` | Done | Success |
+| `✖` | Failed | Error |
+| `⊘` | Blocked | Warning |
+| `⊖` | Abandoned | Dim |
+
+A running node linked to a stalled child uses warning color. Child failure doesn't mark a todo or ledger row failed or done.
+
+The Tasks view shows direct children from native `task`, eval agents, and workpool: tool and arguments, recent output, model, retry details, elapsed time, tokens, and cost when supplied by the host. A child is attached to the native todo in progress when it starts. Repeated activations of the same child retain completed usage and add the current activation, rather than double-counting cumulative progress frames. Run usage counts each linked child once. Unavailable metrics use a missing-value marker, not zero.
+
+## Explicit todo dependencies
+
+With `todoDependencies` enabled, `todo` accepts optional `edges` alongside its unchanged native fields. Match task contents verbatim. `task` depends on every content string in `after`:
+
+```json
+{
+  "op": "init",
+  "list": [
+    { "phase": "Implementation", "items": ["Build parser", "Connect viewer"] },
+    { "phase": "Verification", "items": ["Check rendered output"] }
+  ],
+  "edges": [
+    { "task": "Connect viewer", "after": ["Build parser"] },
+    { "task": "Check rendered output", "after": ["Connect viewer"] }
+  ]
+}
+```
+
+The wrapper removes `edges` before delegating to the native tool, preserving native mutations, details, hooks, approval, batch failure, and rendering. Malformed, unknown-task, self-referencing, or cyclic dependencies are dropped with a `Herdr DAG edges:` warning appended to the result text; the successful todo change still applies. A native operation error doesn't record edges. Removing or changing tasks prunes their edges; `init` starts a fresh generation. No dependencies are inferred from wording or phase order. Turning off `todoDependencies` disables edge processing, not native todo operations.
+
+## Settings
+
+Package name for `omp plugin config`: `wows-omp-plugin-omp-herdr-dag`.
+
+```bash
+omp plugin config wows-omp-plugin-omp-herdr-dag
+```
+
+Settings are read for the session's working directory on startup, session switch, each command, and each automatic-opening evaluation, including heartbeat evaluations. Invalid fields fall back independently to their defaults, with one warning per project scope. “Next launch” below means close and reopen the viewer; changes don't restart an already running viewer.
+
+| Key | Type and values | Default | Effect and live behavior |
+| --- | --- | --- | --- |
+| `displayTiming` | enum: `never`, `any-todo`, `plan-execution`, `atlas-only` | `plan-execution` | Automatic-opening policy; applies on the next evaluation, without closing an existing pane. |
+| `finishBehavior` | enum: `close-with-omp`, `keep-open` | `close-with-omp` | Host shutdown uses the current setting; the viewer's heartbeat-loss policy is fixed at its next launch. |
+| `landscapePosition` | enum: `left`, `right`, `top`, `bottom` | `right` | Landscape placement; next open or orientation recreation. |
+| `portraitPosition` | enum: `left`, `right`, `top`, `bottom` | `bottom` | Portrait placement; next open or orientation recreation. |
+| `landscapeSize` | number: 0.15 to 0.6 | `0.35` | DAG share in landscape; next open or orientation recreation. |
+| `portraitSize` | number: 0.15 to 0.6 | `0.4` | DAG share in portrait; next open or orientation recreation. |
+| `followOrientation` | boolean | `true` | Enable recreation on orientation flips; applies on the next orientation check. |
+| `focusPane` | boolean | `false` | Focus the viewer when creating it; next open or recreation. See the swap caveat below. |
+| `stalledAfterSeconds` | number: 10 to 900 | `90` | Time without child progress before linked running nodes are marked stalled; restart OMP to update the task source threshold. |
+| `todoDependencies` | boolean | `true` | Process and persist explicit todo edges; applies to subsequent tool calls after settings reload. |
+| `atlasIntegration` | boolean | `true` | Listen to the Atlas contract; reload disables or reactivates the consumer and adjusts mirror deduplication. |
+| `followTheme` | boolean | `true` | Poll OMP theme changes on heartbeats; turning it off keeps the last sampled palette. |
+| `colorTodo` | string: `#rrggbb` | `#4f8cff` | Todo headers and borders; next snapshot publication after reload. |
+| `colorPlan` | string: `#rrggbb` | `#a371f7` | Plan headers and borders; next snapshot publication after reload. |
+| `colorAtlas` | string: `#rrggbb` | `#3fb950` | Atlas headers and borders; next snapshot publication after reload. |
+| `retentionDays` | number: 1 to 365 | `14` | Age cutoff for plugin-owned session files; pruning runs at session startup. |
+| `viewerRuntime` | string: executable path, or empty for discovery | `""` | Bun executable; next viewer launch. |
+
+## Placement and finish behavior
+
+Initial orientation is portrait when `cols < 2 * rows`, landscape otherwise. The measured OMP rectangle adds the owned DAG pane's share back, so opening the viewer doesn't itself flip orientation. Hysteresis switches landscape to portrait below `2 * rows - 4`, and portrait to landscape above `2 * rows + 4`. Resize checks are debounced by 750 ms and also requested on heartbeats.
+
+Herdr 0.9.3 can't move a pane within the same tab. On an orientation flip the plugin closes **only its recorded pane** and opens a replacement in the configured position, resuming the persisted view state and socket connection. The replacement has a new pane ID. Placement and size changes alone don't recreate an open pane.
+
+Right and bottom use a direct split; left and top use a split followed by a swap. Herdr focuses the swap source. With `focusPane: false`, the plugin restores normal OMP focus, but the CLI can't restore an arbitrary unrelated pane that was focused before the swap.
+
+- `close-with-omp`: close the pane on host shutdown. After three missed 2-second heartbeats, the viewer closes its own pane and exits.
+- `keep-open`: leave the pane on shutdown or heartbeat loss, show a disconnected banner, and retry the socket every second. A recovery snapshot is never proof that OMP is still live.
+
+Pressing `q` always closes the viewer's own pane, regardless of finish behavior. A crash between splitting and recording the new pane ID may leave an orphan pane. The plugin warns rather than finding or closing panes by title; close that orphan manually.
+
+## Viewer keys
+
+| Key | Action |
+| --- | --- |
+| `q`, Ctrl+C | Quit and close the viewer's own pane. |
+| `t` | Toggle DAG and Tasks; from transcript, switch to the other main view. |
+| `h` | Toggle visibility of the retained previous todo generation; only one previous generation is kept. |
+| Left / Right | Select previous / next run in the DAG view. |
+| `j` / `k`, Down / Up | Move selection, or scroll the transcript. |
+| PgUp / PgDn | Page through nodes, tasks, or transcript. |
+| Enter | Expand or collapse selected node or task details. |
+| `c` | Toggle folding of completed layers for the selected run. |
+| `p` | Toggle critical-path highlighting. |
+| `o` | Open the selected task's transcript, or a child transcript attached to the selected node. |
+| Esc | Return from transcript or dismiss help. |
+| `?` | Toggle help. |
+
+Transcript drill-down reads the existing child session file incrementally, showing assistant text, tool calls, and short result previews. It doesn't open a writable host session. User text and output have terminal control sequences stripped; labels use display-width-aware wrapping.
+
+## omo-prometheus integration
+
+Install [omo-prometheus](../omo-prometheus/README.md) to see Atlas runs. Both this plugin's `atlasIntegration` and the producer's `herdrDag` setting must be enabled; both default to `true`. Without an enabled producer, the viewer reports Atlas integration as unavailable, while native todos and Tasks remain usable.
+
+The observational `pi.events` contract uses plain JSON with `v: 1` and a matching `sessionId`:
+
+| Event | Direction and payload |
+| --- | --- |
+| `herdr-dag:hello` | Consumer to producer: session ID and request ID. |
+| `atlas:hello` | Producer availability, echoed request ID when replying, and optional bound plan identity (`id`, `name`, `planFilePath`, `cwd`). |
+| `atlas:snapshot` | Bound plan identity, ledger status and totals, rows with dependency/fix metadata, per-row child progress, last 50 timeline events, and timestamp. |
+| `atlas:released` | Detached plan ID and reason: `exit`, `session-switch`, or `shutdown`. |
+
+Hello replies are synchronous; a bound plan is followed by a snapshot. Binding and release also announce state, so startup order doesn't matter. Unknown versions and foreign sessions are ignored. Release means detached from this view, not finished work or cancelled children. When `herdrDag` is false, omo-prometheus emits nothing, including hello replies, without changing its ledger, todo mirror, ownership, or UI behavior. No Atlas bundle format changes are required.
+
+## Local storage and privacy
+
+Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionId>/`. They are versioned JSON, written with temporary-file replacement; unknown versions are ignored and replaced. The stored field allowlist is:
+
+| File | Stored fields |
+| --- | --- |
+| `snapshot.json` | `version`, session ID/name, generation, connection flag, timestamp, runs, task cards, theme palette, three source colors, and Atlas availability. |
+| Run objects | ID, source, title, generation, nodes, edges, creation/update/finish timestamps, and done/total/elapsed/token/cost stats. |
+| Node objects | ID, label, state, band/name, detail, start/finish timestamps, agent, linked task IDs, and stalled flag. Edges contain `from`, `to`, and `kind`. |
+| Task cards | ID, parent task/node IDs, agent, status, description, current tool/arguments, recent output, completed/current activation totals, activation count, model, retry attempt/limit/error, transcript path, start/finish timestamps, detached flag, depth, and activity-availability flag. Activation totals contain tokens, cost, and duration. |
+| Theme palette | Text, muted, dim, accent, success, error, warning, border, accented/muted border, and optional background colors. |
+| `pane.json` | `version`, splitting/open phase, pane/tab IDs when known, host pane ID, orientation, position, launch timestamp, and dismissal flag. |
+| `view-state.json` | `version`, folded run IDs, view (`dag`, `tasks`, `transcript`), selected run ID, and critical-path toggle. |
+
+The host session also stores custom entries: `omp-herdr-dag:plan-execution` contains `v`, proposed/executing/idle state, optional plan path/run ID, and timestamp; `omp-herdr-dag:todo-edges` contains `v`, generation, and task/after dependency records. No credentials are collected, but snapshots can contain task descriptions, tool arguments, output fragments, error messages, and local paths. Treat them like session data.
+
+Live transport uses a Unix socket under `os.tmpdir()/omp-herdr-dag/<hash>.sock`, keyed by the Herdr host pane and process ID, in a private directory. Snapshots provide restart recovery, not the live transport. Socket deltas are coalesced, with full resynchronization after a sequence mismatch or excessive backlog.
+
+On session startup, `retentionDays` prunes other plugin-owned session directories whose newest directory/file modification time is older than the cutoff. It never prunes the current session, host transcripts, Atlas bundles, or custom entries in host sessions. Transcript contents aren't copied into these files; the viewer reads their existing paths.
+
+## Limitations
+
+- Herdr only; no standalone terminal pane management or Windows support.
+- Grandchildren don't reach the root session's activity event bus. Registry-discovered descendants appear as status-only cards labeled `activity unavailable`, without live tools, output, or usage.
+- Metrics and transcript availability depend on what the host supplies. Child lifecycle is activity evidence, not proof of final task acceptance.
+- Dependency edges are display metadata, never a scheduler. Phase order isn't a dependency.
+- macOS follows the Linux code path but hasn't been verified here.
 
 ## License
 
-MIT. An improved port of [jc01rho/omo-herdr-dag](https://github.com/jc01rho/omo-herdr-dag),
-inspected at revision `a093cdf5da96e28dfe50348965d9f3bafb1c9531`. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+MIT. An improved port of [jc01rho/omo-herdr-dag](https://github.com/jc01rho/omo-herdr-dag), inspected at revision `a093cdf5da96e28dfe50348965d9f3bafb1c9531`. The upstream copyright and permission notice are retained in [NOTICE](NOTICE); see [LICENSE](LICENSE) for this plugin's license.
