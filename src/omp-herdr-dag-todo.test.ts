@@ -249,6 +249,20 @@ if (process.env[CHILD_ENV]) {
       expect(source.runs[0]?.finishedAt).toBe(1_000);
       expect(todoGeneration([messageEntry("one"), messageEntry("two", "start")])).toBe(1);
     });
+
+    test("eval-style canonical writes honor the wrapper's durable init generation", () => {
+      const edges = (generation: number): SessionEntry => customEntry(TODO_EDGES_ENTRY, { v: 1, generation, edges: [] });
+      const entries = [edges(1), customEntry("user_todo_edit", { phases }), edges(2), customEntry("user_todo_edit", { phases })];
+      const source = new TodoSource({ sessionId: "session", now: () => 1_000 });
+      source.replay(entries);
+      expect(source.generation).toBe(2);
+      expect(source.current?.id).toBe("todo:session:2");
+      expect(todoGeneration(entries)).toBe(2);
+      const native = [edges(1), messageEntry("first"), edges(2), messageEntry("second")];
+      expect(todoGeneration(native)).toBe(2);
+      source.replay(native);
+      expect(source.generation).toBe(2);
+    });
   });
 
   describe("plan execution epoch", () => {

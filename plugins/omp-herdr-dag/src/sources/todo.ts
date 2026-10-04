@@ -58,11 +58,20 @@ function snapshotEntry(raw: unknown): { phases: TodoPhase[]; op?: string; at?: n
 /** Native init results are the durable generation boundary; an external first list starts generation one. */
 export function todoGeneration(entries: readonly unknown[]): number {
   let generation = 0;
+  let pendingGeneration = 0;
   for (const entry of entries) {
+    const custom = record(entry);
+    if (custom?.type === "custom" && custom.customType === TODO_EDGES_ENTRY) {
+      const data = record(custom.data);
+      if (data?.v === 1 && Number.isInteger(data.generation) && Number(data.generation) > generation) {
+        pendingGeneration = Number(data.generation);
+      }
+    }
     const snapshot = snapshotEntry(entry);
     if (!snapshot) continue;
-    if (snapshot.op === "init") generation++;
-    else if (!generation && snapshot.phases.some((phase) => phase.tasks.length > 0)) generation = 1;
+    if (snapshot.op === "init") generation = Math.max(generation + 1, pendingGeneration);
+    else generation = Math.max(generation, pendingGeneration, snapshot.phases.some((phase) => phase.tasks.length > 0) ? 1 : 0);
+    pendingGeneration = 0;
   }
   return generation;
 }
@@ -133,18 +142,21 @@ export class TodoSource {
     this.#current = undefined;
     this.#previous = undefined;
     this.#edges.clear();
+    let pendingGeneration = 0;
     for (const raw of entries) {
       const entry = record(raw);
       if (entry?.type === "custom" && entry.customType === TODO_EDGES_ENTRY) {
         const data = record(entry.data);
         if (data?.v === 1 && Number.isInteger(data.generation) && Number(data.generation) > 0 && Array.isArray(data.edges)) {
           this.#edges.set(Number(data.generation), data.edges as TodoDependency[]);
+          pendingGeneration = Number(data.generation);
         }
       }
       const snapshot = snapshotEntry(raw);
       if (!snapshot) continue;
       latestAt = snapshot.at ?? this.#now();
-      this.#accept(snapshot.phases, snapshot.op === "init", latestAt, false, oldRuns);
+      this.#accept(snapshot.phases, snapshot.op === "init", latestAt, false, oldRuns, pendingGeneration);
+      pendingGeneration = 0;
     }
     // The exported host helper is authoritative for the latest branch snapshot.
     this.#phases = getLatestTodoPhasesFromEntries([...entries]);
@@ -161,12 +173,13 @@ export class TodoSource {
     return true;
   }
 
-  #accept(phases: TodoPhase[], init: boolean, at: number, live: boolean, oldRuns?: Map<string, Run>): void {
+  #accept(phases: TodoPhase[], init: boolean, at: number, live: boolean, oldRuns?: Map<string, Run>, persistedGeneration = 0): void {
     const nonempty = phases.some((phase) => phase.tasks.length > 0);
-    const fresh = init || (!this.#generation && nonempty);
+    const nextGeneration = Math.max(this.#generation + (init || (!this.#generation && nonempty) ? 1 : 0), persistedGeneration);
+    const fresh = nextGeneration !== this.#generation;
     if (fresh) {
       this.#previous = this.#current ? { ...this.#current, finishedAt: this.#current.finishedAt ?? at } : undefined;
-      this.#generation++;
+      this.#generation = nextGeneration;
       this.#current = oldRuns?.get(`todo:${this.#options.sessionId}:${this.#generation}`);
     }
     this.#phases = phases;
