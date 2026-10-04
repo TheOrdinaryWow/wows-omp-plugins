@@ -451,6 +451,23 @@ async function scenario(name: string, root: string): Promise<void> {
       await Promise.resolve();
       await hook("agent_end");
       assert.equal(state(), "idle");
+    } else if (name === "canonical-final-turn") {
+      await hook("session_start");
+      await proposal();
+      await hook("before_agent_start", { prompt: handoff });
+      await todo();
+      manager.appendCustomEntry("user_todo_edit", {
+        phases: [{ name: "Build", tasks: [{ content: "A", status: "completed" }] }],
+      });
+      await hook("agent_end");
+      clock.advance(2_000);
+      const peer = await connect();
+      assert.equal((await peer.snapshot()).runs.at(-1)?.nodes[0]?.state, "done");
+      const entry = manager.getBranch().findLast((entry) => entry.type === "custom" && entry.customType === PLAN_EXECUTION_ENTRY);
+      assert(entry?.type === "custom");
+      const data = entry.data;
+      assert(data && typeof data === "object" && "state" in data);
+      assert.equal(data.state, "idle");
     } else if (name === "atlas") {
       await configure({ displayTiming: "atlas-only" });
       await hook("session_start");
@@ -815,6 +832,7 @@ if (process.env[CHILD_ENV]) {
       "streaming",
       "plan",
       "queued-plan",
+      "canonical-final-turn",
       "atlas",
       "manual-dismissal",
       "switch-replay",

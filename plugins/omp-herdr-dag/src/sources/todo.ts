@@ -3,7 +3,7 @@ import { getLatestTodoPhasesFromEntries, isTodoPhase } from "@oh-my-pi/pi-coding
 
 import { type Run, type TodoDependency, type TodoPhase, todoRun, validateTodoEdges } from "#src/model.ts";
 
-import type { PlanExecutionTracker } from "./plan-execution.ts";
+import { PLAN_EXECUTION_ENTRY, type PlanExecutionTracker } from "./plan-execution.ts";
 
 export const TODO_EDGES_ENTRY = "omp-herdr-dag:todo-edges";
 
@@ -140,6 +140,14 @@ export class TodoSource {
   #replay(entries: readonly SessionEntry[], leafId?: string | null, preserveProposal = false, liveAfter = entries.length): void {
     const oldRuns = new Map(this.runs.map((run) => [run.id, run]));
     this.#options.plan?.replay(entries, preserveProposal);
+    // Restoring the latest state must not retroactively approve earlier list writes.
+    const approvalIndex = entries.findLastIndex((raw) => {
+      const entry = record(raw);
+      const data = record(entry?.data);
+      return (
+        entry?.type === "custom" && entry.customType === PLAN_EXECUTION_ENTRY && data?.v === 1 && data.state === "executing" && !data.runId
+      );
+    });
     this.#phases = [];
     this.#generation = 0;
     let latestAt = this.#now();
@@ -159,7 +167,14 @@ export class TodoSource {
       const snapshot = snapshotEntry(raw);
       if (!snapshot) continue;
       latestAt = snapshot.at ?? this.#now();
-      this.#accept(snapshot.phases, snapshot.op === "init", latestAt, index > liveAfter, oldRuns, pendingGeneration);
+      this.#accept(
+        snapshot.phases,
+        snapshot.op === "init",
+        latestAt,
+        index > Math.max(liveAfter, approvalIndex),
+        oldRuns,
+        pendingGeneration,
+      );
       pendingGeneration = 0;
     }
     // The exported host helper is authoritative for the latest branch snapshot.

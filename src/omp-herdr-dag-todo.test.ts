@@ -244,6 +244,28 @@ if (process.env[CHILD_ENV]) {
       }
     });
 
+    test("a canonical list before approval stays blue when both arrive between polls", () => {
+      const entries: SessionEntry[] = [];
+      const plan = new PlanExecutionTracker({
+        persist: (data) => entries.push({ ...customEntry(PLAN_EXECUTION_ENTRY, data), id: `state-${entries.length}` }),
+      });
+      const source = new TodoSource({ sessionId: "session", plan });
+      source.replay(entries, null);
+      entries.push({ ...customEntry("user_todo_edit", { phases }), id: "before-approval" });
+      plan.observeResult({
+        toolName: "write",
+        details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
+      });
+      plan.beforeAgentStart(handoff, "local://approved.md");
+      source.poll({ getLeafId: () => entries.at(-1)?.id ?? null, getBranch: () => entries });
+      expect(source.current?.source).toBe("todo");
+      expect(plan.state.runId).toBeUndefined();
+      entries.push(messageEntry("after-approval"));
+      source.poll({ getLeafId: () => "after-approval", getBranch: () => entries });
+      expect(source.current?.source).toBe("plan");
+      expect(plan.state.runId).toBe(source.current?.id);
+    });
+
     test("Atlas mirrors are hidden only while bound, including an all-mirror list", () => {
       const source = new TodoSource({ sessionId: "session", now: () => 1_000 });
       const mirrored = ["Atlas tasks", "Atlas fixes", "Atlas final gates"].map(

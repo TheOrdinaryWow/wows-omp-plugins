@@ -415,6 +415,9 @@ class DagExtension {
 
   async agentEnd(willContinue?: boolean): Promise<void> {
     if (!this.#server) return;
+    const todoGeneration = this.#todo?.generation;
+    if (this.#ctx) this.#todo?.poll(this.#ctx.sessionManager);
+    if (this.#todo?.generation !== todoGeneration) this.#generation += 1;
     this.#plan.agentEnd(this.#todo?.current, willContinue);
     this.#publish();
     await this.#evaluate();

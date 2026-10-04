@@ -43,7 +43,7 @@ Subagent activity by itself doesn't open the pane. Pressing `q` in the viewer or
 
 Plan execution requires the recorded proposal, the host's matching plan reference, and its exact approval envelope. A user message saying `Plan approved.` or a bare new-session event isn't enough. The plan epoch ends once its list is completed or abandoned and the agent turn ends without continuation. A later list is an ordinary blue todo run.
 
-Queued synthetic developer approval messages use the same checks as a new turn's approval prompt. Canonical todo writes observed after the live polling baseline can claim the first plan list; historical lists replayed on startup, switching, or rewinding cannot.
+Queued synthetic developer approval messages use the same checks as a new turn's approval prompt. Canonical todo writes must be newer than both the live polling baseline and the recorded approval to claim the first plan list; historical lists replayed on startup, switching, or rewinding cannot. The final agent-turn boundary reconciles canonical todo writes before checking whether the plan list is terminal.
 
 While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fixes`, and `Atlas final gates` are hidden from the native todo view. They reappear as plain todos when Atlas releases or integration is disabled.
 
