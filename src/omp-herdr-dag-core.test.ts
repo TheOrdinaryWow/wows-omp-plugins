@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { crossingCount, layoutRun } from "../plugins/omp-herdr-dag/src/layout.ts";
+import { crossingCount, GRID, laneMargin, layoutRun, type RunLayout, rowSpan } from "../plugins/omp-herdr-dag/src/layout.ts";
 import {
   type AtlasRow,
   atlasRun,
@@ -458,5 +458,92 @@ describe("deterministic layered layout", () => {
       folded: [],
       edges: [],
     });
+  });
+
+  test("layers wider than the pane wrap into rows inside their band; wide panes keep one row per layer", () => {
+    const run = todoRun({
+      sessionId: "session",
+      generation: 1,
+      phases: [
+        { name: "Preflight", tasks: ["A", "B"].map((content) => ({ content, status: "completed" as const })) },
+        { name: "Upgrade", tasks: ["C", "D", "E"].map((content) => ({ content, status: "pending" as const })) },
+      ],
+      now: 100,
+    });
+    const ids = (layout: RunLayout): string[][] => layout.layers.map((layer) => layer.nodes.map((node) => node.id));
+    const wide = layoutRun(run, { foldCompleted: false, width: Number.POSITIVE_INFINITY });
+    expect(ids(wide)).toHaveLength(2);
+    const [preflight, upgrade] = ids(wide) as [string[], string[]];
+    expect(layoutRun(run, { foldCompleted: false, width: 100 })).toEqual(wide);
+    const narrow = layoutRun(run, { foldCompleted: false, width: 30 });
+    expect(ids(narrow)).toEqual([...preflight, ...upgrade].map((id) => [id]));
+    expect(narrow.layers.map((layer) => layer.bandName)).toEqual(["Preflight", "Preflight", "Upgrade", "Upgrade", "Upgrade"]);
+    expect(ids(layoutRun(run, { foldCompleted: false, width: 50 }))).toEqual([preflight, upgrade.slice(0, 2), upgrade.slice(2)]);
+    // A folded layer stays one summary row however narrow the pane is.
+    const folded = layoutRun(run, { foldCompleted: true, width: 30 });
+    expect(folded.folded).toEqual([{ layer: 0, band: 0, bandName: "Preflight", count: 2, nodeIds: preflight }]);
+    expect(folded.layers.map((layer) => layer.folded)).toEqual([true, false, false, false]);
+  });
+
+  test("wrapped rows keep every edge connected, add no false paths and fit the pane at the minimum node width", () => {
+    const leaves = ["L1", "L2", "L3", "L4"];
+    const run = todoRun({
+      sessionId: "session",
+      generation: 1,
+      phases: [
+        { name: "Plan", tasks: [{ content: "Root", status: "completed" }] },
+        { name: "Build", tasks: leaves.map((content) => ({ content, status: "pending" as const })) },
+        { name: "Ship", tasks: ["Sink", "Docs"].map((content) => ({ content, status: "pending" as const })) },
+      ],
+      edges: [...leaves.map((task) => ({ task, after: ["Root"] })), { task: "Sink", after: leaves }, { task: "Root", after: ["Docs"] }],
+      now: 100,
+    });
+    const id = (label: string): string => run.nodes.find((node) => node.label === label)?.id as string;
+    const wide = layoutRun(run, { foldCompleted: false, width: Number.POSITIVE_INFINITY });
+    for (const width of [30, 50]) {
+      const layout = layoutRun(run, { foldCompleted: false, width });
+      const real = (layer: RunLayout["layers"][number]) => layer.nodes.filter((node) => !node.dummy);
+      // Wrapping never reorders nodes: rows read left to right, then top to bottom, in the wide order.
+      expect(layout.layers.flatMap((layer) => real(layer).map((node) => node.id))).toEqual(
+        wide.layers.flatMap((layer) => real(layer).map((node) => node.id)),
+      );
+      expect(layout.layers.filter((layer) => layer.band === 1).map((layer) => real(layer).length)).toEqual(
+        width === 30 ? [1, 1, 1, 1] : [2, 2],
+      );
+      const available = width - laneMargin(layout.edges.filter((route) => route.backward).length);
+      for (const layer of layout.layers) {
+        expect(rowSpan(real(layer).length, layer.nodes.length - real(layer).length, GRID.minNode)).toBeLessThanOrEqual(available);
+      }
+      const level = new Map(layout.layers.flatMap((layer) => layer.nodes.map((node) => [node.id, layer.index] as const)));
+      const successors = new Map<string, Set<string>>();
+      for (const route of layout.edges) {
+        expect(route.points[0]).toBe(route.edge.from);
+        expect(route.points.at(-1)).toBe(route.edge.to);
+        if (route.backward) continue;
+        route.points.slice(1).forEach((point, index) => {
+          const previous = route.points[index] as string;
+          expect(level.get(point)).toBe((level.get(previous) as number) + 1);
+          successors.set(previous, (successors.get(previous) ?? new Set()).add(point));
+        });
+      }
+      // Shared connectors merge only fan-outs of one source or fan-ins to one target, so drawn paths match the edges.
+      for (const node of run.nodes) {
+        const reached = new Set<string>();
+        const queue = [...(successors.get(node.id) ?? [])];
+        while (queue.length) {
+          const next = queue.pop() as string;
+          if (next.startsWith("dummy:")) queue.push(...(successors.get(next) ?? []));
+          else reached.add(next);
+        }
+        const expected = layout.edges.filter((route) => !route.backward && route.edge.from === node.id).map((route) => route.edge.to);
+        expect([...reached].sort()).toEqual(expected.sort());
+      }
+      const back = layout.edges.filter((route) => route.backward);
+      expect(back.map((route) => [route.edge.from, route.edge.to])).toEqual([[id("Docs"), id("Root")]]);
+      expect(layout.layers.flatMap((layer) => layer.nodes).find((node) => node.id === id("Root"))?.backReferences).toEqual([
+        { from: id("Docs"), label: "Docs" },
+      ]);
+      expect(layout.criticalPath).toEqual(wide.criticalPath);
+    }
   });
 });

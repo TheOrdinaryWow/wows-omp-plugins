@@ -50,6 +50,8 @@ While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fi
 
 Forward dependencies use solid connectors. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted. The critical path uses observed node elapsed time, or unit weight for unstarted nodes, across explicit dependency edges only. Runs without those edges have no critical path. Completed layers can be folded.
 
+Node boxes are 20 to 30 columns wide. When a layer doesn't fit the pane even at 20 columns, its nodes wrap onto extra rows inside the same band, in their usual order: left to right, then top to bottom. A 30-column pane shows one node per row and a 50-column pane two. Edges to a later row run past the earlier rows. Several edges from one node, or into one node, share a connector there. Selection keys follow the drawn order. A folded layer stays a single summary row. In a pane narrower than 20 columns, nodes take the pane's width. The DAG scrolls sideways only when a row's connectors still need more width than the pane has.
+
 State colors come from the OMP theme, separately from source colors:
 
 | Icon | State | Color role |

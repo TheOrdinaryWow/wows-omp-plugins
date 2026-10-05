@@ -170,7 +170,7 @@ export function handleKey(context: KeyContext, key: Key): Effect[] {
     viewState.folded = viewState.folded.includes(run.id) ? viewState.folded.filter((id) => id !== run.id) : [...viewState.folded, run.id];
     return [{ type: "persist" }];
   }
-  const layout = runLayout(run, viewState, context.now);
+  const layout = runLayout(run, viewState, context.now, ui.bodyCols);
   const selected = selectedNode(run, layout, ui);
   const nodePage = Math.max(1, Math.floor(ui.bodyRows / 6));
   const delta = key === "up" ? -1 : key === "down" ? 1 : key === "pageup" ? -nodePage : key === "pagedown" ? nodePage : 0;

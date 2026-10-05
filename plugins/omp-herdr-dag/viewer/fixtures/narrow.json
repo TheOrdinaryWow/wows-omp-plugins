@@ -1,0 +1,99 @@
+{
+  "version": 2,
+  "sessionId": "01a1054d-3bd0-77c4",
+  "sessionName": "herdr-dag",
+  "generation": 1,
+  "connected": true,
+  "at": 1791101800000,
+  "runs": [
+    {
+      "id": "todo:01a1054d-3bd0-77c4:1",
+      "source": "todo",
+      "title": "Todos",
+      "generation": 1,
+      "nodes": [
+        {
+          "id": "todo:1:0:1a2f6c0d3e",
+          "label": "Check omp version",
+          "state": "done",
+          "band": 0,
+          "bandName": "Preflight",
+          "taskIds": [],
+          "finishedAt": 1791100300000
+        },
+        {
+          "id": "todo:1:0:2b7d41e9a0",
+          "label": "Back up settings",
+          "state": "done",
+          "band": 0,
+          "bandName": "Preflight",
+          "taskIds": [],
+          "finishedAt": 1791100600000
+        },
+        {
+          "id": "todo:1:1:3c18e5b2f4",
+          "label": "Upgrade omp packages",
+          "state": "running",
+          "band": 1,
+          "bandName": "Upgrade",
+          "taskIds": ["sub-upgrade"],
+          "startedAt": 1791100700000,
+          "agent": "deep-low"
+        },
+        {
+          "id": "todo:1:1:4e9a07c6d1",
+          "label": "Migrate plugin config",
+          "state": "pending",
+          "band": 1,
+          "bandName": "Upgrade",
+          "taskIds": []
+        },
+        {
+          "id": "todo:1:1:5f03b8a2e7",
+          "label": "Run smoke tests",
+          "state": "pending",
+          "band": 1,
+          "bandName": "Upgrade",
+          "taskIds": []
+        }
+      ],
+      "edges": [],
+      "createdAt": 1791100000000,
+      "updatedAt": 1791100700000,
+      "stats": { "done": 2, "total": 5, "elapsedMs": 1800000, "tokens": 18400, "costUsd": 0.072 }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "sub-upgrade",
+      "agent": "deep-low",
+      "status": "running",
+      "recentOutput": ["bun update @oh-my-pi/pi-coding-agent", "Resolving dependencies"],
+      "completed": { "durationMs": 0 },
+      "current": { "durationMs": 1100000, "tokens": 18400, "costUsd": 0.072 },
+      "activations": 1,
+      "startedAt": 1791100700000,
+      "depth": 1,
+      "activityAvailable": true,
+      "nodeId": "todo:1:1:3c18e5b2f4",
+      "currentTool": "bash",
+      "currentToolArgs": "bun update",
+      "model": "claude-sonnet-4-5",
+      "description": "Upgrade the omp packages"
+    }
+  ],
+  "theme": {
+    "text": "#e6edf3",
+    "muted": "#8b949e",
+    "dim": "#6e7681",
+    "accent": "#58a6ff",
+    "success": "#3fb950",
+    "error": "#f85149",
+    "warning": "#d29922",
+    "border": "#6e7681",
+    "borderAccent": "#58a6ff",
+    "borderMuted": "#30363d"
+  },
+  "sources": { "todo": "#4f8cff", "plan": "#a371f7", "atlas": "#3fb950" },
+  "atlasAvailable": true
+}

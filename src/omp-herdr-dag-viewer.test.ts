@@ -3,7 +3,7 @@ import { appendFile, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { NodeState, Run, Snapshot } from "../plugins/omp-herdr-dag/src/model.ts";
+import type { DagNode, NodeState, Run, Snapshot } from "../plugins/omp-herdr-dag/src/model.ts";
 import { DEFAULT_VIEW_STATE, readSnapshot, readViewState, type ViewState } from "../plugins/omp-herdr-dag/src/persisted.ts";
 import { encodeFrame, type Frame, FrameParser } from "../plugins/omp-herdr-dag/src/protocol.ts";
 import { handleKey, parseKeys } from "../plugins/omp-herdr-dag/viewer/keys.ts";
@@ -39,6 +39,128 @@ function frame(snapshot: Snapshot | undefined, options: Partial<RenderInput> & {
     finish: options.finish ?? "close-with-omp",
     ignored: options.ignored ?? 0,
   });
+}
+
+// ── Frame geometry ────────────────────────────────────────────────────────────
+
+const SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** Terminal cells of a frame; a wide grapheme is followed by an empty continuation cell. */
+function cells(lines: string[]): string[][] {
+  return lines.map((line) =>
+    Array.from(SEGMENTER.segment(strip(line)), ({ segment }) => segment).flatMap((segment) =>
+      Bun.stringWidth(segment) === 2 ? [segment, ""] : [segment],
+    ),
+  );
+}
+/** Cell content; a space outside the frame or on a wide grapheme's continuation. */
+const at = (grid: string[][], x: number, y: number): string => grid[y]?.[x] || " ";
+
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+/** The node box whose first label line starts with `label`, found by its complete border. */
+function boxOf(grid: string[][], label: string): Rect | undefined {
+  for (let y = 1; y < grid.length; y += 1) {
+    for (let x = 4; x < (grid[y]?.length ?? 0); x += 1) {
+      // A label starts after the left border, a space, the state icon and a space.
+      const left = x - 4;
+      if (grid[y]?.slice(x, x + label.length).join("") !== label) continue;
+      if (!"│║┃".includes(at(grid, left, y)) || !"╭╔┏".includes(at(grid, left, y - 1))) continue;
+      let right = left + 1;
+      while (right < (grid[y - 1]?.length ?? 0) && !"╮╗┓".includes(at(grid, right, y - 1))) right += 1;
+      let bottom = y;
+      while ("│║┃".includes(at(grid, left, bottom))) bottom += 1;
+      if ("╮╗┓".includes(at(grid, right, y - 1)) && "╰╚┗".includes(at(grid, left, bottom))) {
+        return { x: left, y: y - 1, w: right - left + 1, h: bottom - y + 2 };
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Directions each connector glyph joins: up 1, right 2, down 4, left 8 (light, heavy and dotted strokes). */
+const JOINS: Record<string, number> = {
+  "╵": 1,
+  "╷": 4,
+  "╴": 8,
+  "╶": 2,
+  "│": 5,
+  "─": 10,
+  "╰": 3,
+  "╯": 9,
+  "╭": 6,
+  "╮": 12,
+  "├": 7,
+  "┤": 13,
+  "┬": 14,
+  "┴": 11,
+  "┼": 15,
+  "╹": 1,
+  "╻": 4,
+  "╸": 8,
+  "╺": 2,
+  "┃": 5,
+  "━": 10,
+  "┗": 3,
+  "┛": 9,
+  "┏": 6,
+  "┓": 12,
+  "┣": 7,
+  "┫": 13,
+  "┳": 14,
+  "┻": 11,
+  "╋": 15,
+  "┆": 5,
+  "┄": 10,
+  "▼": 1,
+};
+const HEAVY = "╹╻╸╺┃━┗┛┏┓┣┫┳┻╋";
+
+/**
+ * Labels of the boxes whose entry arrow is reached from `from`'s outgoing tee by following joined connector glyphs
+ * around other boxes. Forward edges run only down and sideways; `upward` also follows backward lanes and `heavyOnly`
+ * only critical-path strokes.
+ */
+function reached(
+  grid: string[][],
+  boxes: Map<string, Rect>,
+  from: string,
+  options: { upward?: boolean; heavyOnly?: boolean } = {},
+): string[] {
+  const source = boxes.get(from) as Rect;
+  const bottom = source.y + source.h - 1;
+  const queue: Array<[number, number]> = [];
+  for (let x = source.x; x < source.x + source.w; x += 1) {
+    if ("┬╦┳".includes(at(grid, x, bottom)) && (JOINS[at(grid, x, bottom + 1)] ?? 0) & 1) queue.push([x, bottom + 1]);
+  }
+  const seen = new Set<string>();
+  const found = new Set<string>();
+  while (queue.length) {
+    const [x, y] = queue.pop() as [number, number];
+    if (seen.has(`${x},${y}`)) continue;
+    seen.add(`${x},${y}`);
+    const cell = at(grid, x, y);
+    if (cell === "▼") {
+      for (const [label, box] of boxes) if (box.y === y + 1 && x > box.x && x < box.x + box.w - 1) found.add(label);
+      continue;
+    }
+    if (options.heavyOnly && !HEAVY.includes(cell)) continue;
+    for (const [bit, dx, dy, back] of [
+      [1, 0, -1, 4],
+      [2, 1, 0, 8],
+      [4, 0, 1, 1],
+      [8, -1, 0, 2],
+    ] as const) {
+      const [nx, ny] = [x + dx, y + dy];
+      if (!((JOINS[cell] ?? 0) & bit) || (bit === 1 && !options.upward)) continue;
+      if ([...boxes.values()].some((box) => nx >= box.x && nx < box.x + box.w && ny >= box.y && ny < box.y + box.h)) continue;
+      if ((JOINS[at(grid, nx, ny)] ?? 0) & back) queue.push([nx, ny]);
+    }
+  }
+  return [...found].sort();
 }
 
 describe("omp-herdr-dag viewer rendering", () => {
@@ -238,6 +360,141 @@ describe("omp-herdr-dag viewer rendering", () => {
     const top = footer();
     expect(top).toContain("✔ T1. Scaffold the plugin package");
     expect(top).toContain("bun run check-catalog passed");
+  });
+
+  test("narrow panes wrap a band's nodes onto extra rows instead of scrolling sideways", async () => {
+    const snapshot = await fixture("narrow");
+    const labels = ["Check omp", "Back up", "Upgrade omp", "Migrate", "Run smoke"];
+    const boxesAt = (cols: number): Rect[] => {
+      const ui = createUi();
+      const lines = frame(snapshot, { cols, rows: 60, ui });
+      for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(cols);
+      expect(ui.scrollX).toBe(0);
+      // One titled separator per band; wrapped rows of a band get none between them.
+      expect(lines.map(strip).filter((line) => line.includes("╌"))).toEqual([
+        expect.stringContaining(" Preflight "),
+        expect.stringContaining(" Upgrade "),
+      ]);
+      const grid = cells(lines);
+      return labels.map((label) => {
+        const box = boxOf(grid, label);
+        if (!box) throw new Error(`${label} is not fully visible at ${cols} columns`);
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.w).toBeLessThanOrEqual(cols);
+        return box;
+      });
+    };
+    // 30 columns: one node per row, in order, down both bands.
+    const narrow = boxesAt(30).map((box) => box.y);
+    expect(new Set(narrow).size).toBe(5);
+    expect(narrow).toEqual([...narrow].sort((a, b) => a - b));
+    // 50 columns: two per row; the third Upgrade node starts a row below the first two.
+    const [p1, p2, u1, u2, u3] = boxesAt(50) as [Rect, Rect, Rect, Rect, Rect];
+    expect([p2.y, u2.y]).toEqual([p1.y, u1.y]);
+    expect(p1.x).toBeLessThan(p2.x);
+    expect(u1.x).toBeLessThan(u2.x);
+    expect(u3.y).toBeGreaterThanOrEqual(u1.y + u1.h);
+    // 100 columns: every layer stays a single row, as before wrapping existed.
+    const wide = boxesAt(100);
+    expect(new Set(wide.slice(0, 2).map((box) => box.y)).size).toBe(1);
+    expect(new Set(wide.slice(2).map((box) => box.y)).size).toBe(1);
+  });
+
+  test("wrapped layers keep dependency, backward and critical-path connectors attached to their boxes", async () => {
+    const base = await fixture("narrow");
+    const node = (label: string, band: number, bandName: string, state: NodeState = "pending"): DagNode => ({
+      id: label,
+      label,
+      state,
+      band,
+      bandName,
+      taskIds: [],
+    });
+    const leaves = ["Leaf 1", "Leaf 2", "Leaf 3", "Leaf 4"];
+    const run: Run = {
+      id: "todo:s:1",
+      source: "todo",
+      title: "Deps",
+      generation: 1,
+      nodes: [
+        { ...node("Root", 0, "Plan", "done"), startedAt: 0, finishedAt: 100 },
+        ...leaves.map((label) =>
+          label === "Leaf 2" ? { ...node(label, 1, "Build", "running"), startedAt: 100 } : node(label, 1, "Build"),
+        ),
+        node("Sink", 2, "Ship"),
+        node("Docs", 2, "Ship"),
+      ],
+      edges: [
+        ...leaves.map((label) => ({ from: "Root", to: label, kind: "depends" as const })),
+        ...leaves.map((label) => ({ from: label, to: "Sink", kind: "depends" as const })),
+        { from: "Docs", to: "Root", kind: "depends" },
+      ],
+      createdAt: 0,
+      updatedAt: 100,
+      stats: { done: 1, total: 7, elapsedMs: 1000 },
+    };
+    const snapshot: Snapshot = { ...base, at: 1000, runs: [run], tasks: [] };
+    for (const cols of [30, 50]) {
+      for (const criticalPath of [false, true]) {
+        const ui = createUi();
+        const lines = frame(snapshot, { cols, rows: 80, ui, viewState: { ...DEFAULT_VIEW_STATE, criticalPath } });
+        for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(cols);
+        expect(ui.scrollX).toBe(0);
+        const grid = cells(lines);
+        const boxes = new Map<string, Rect>();
+        for (const { label } of run.nodes) {
+          const box = boxOf(grid, label);
+          if (!box) throw new Error(`${label} is not fully visible at ${cols} columns`);
+          boxes.set(label, box);
+        }
+        // The 4-node layer stacks one per row at 30 columns and two per row at 50.
+        expect(new Set(leaves.map((label) => boxes.get(label)?.y)).size).toBe(cols === 30 ? 4 : 2);
+        for (const edge of run.edges.filter((item) => item.from !== "Docs")) expect(reached(grid, boxes, edge.from)).toContain(edge.to);
+        expect(reached(grid, boxes, "Docs", { upward: true })).toContain("Root");
+        const text = lines.map(strip).join("\n");
+        expect(text).toContain("↑ after Docs");
+        expect(lines.map(strip).filter((line) => line.includes("╌"))).toEqual(
+          ["Plan", "Build", "Ship"].map((band) => expect.stringContaining(` ${band} `)),
+        );
+        if (!criticalPath) {
+          expect(text).toContain("┆");
+          expect(text).not.toContain("━");
+          continue;
+        }
+        // Docs → Root → Leaf 2 → Sink: the heavy strokes join exactly those boxes.
+        expect(reached(grid, boxes, "Docs", { upward: true, heavyOnly: true })).toEqual(["Root"]);
+        expect(reached(grid, boxes, "Root", { heavyOnly: true })).toEqual(["Leaf 2"]);
+        expect(reached(grid, boxes, "Leaf 2", { heavyOnly: true })).toEqual(["Sink"]);
+      }
+    }
+  });
+
+  test("j/k selection walks wrapped rows left to right, then top to bottom", async () => {
+    const snapshot = await fixture("narrow");
+    const labels = ["Check omp", "Back up", "Upgrade omp", "Migrate", "Run smoke"];
+    for (const cols of [30, 50]) {
+      const ui = createUi();
+      const viewState: ViewState = { ...DEFAULT_VIEW_STATE, folded: [] };
+      const grid = (): string[][] => cells(frame(snapshot, { cols, rows: 60, ui, viewState }));
+      const first = grid();
+      const visual = [...labels].sort((a, b) => {
+        const [p, q] = [boxOf(first, a) as Rect, boxOf(first, b) as Rect];
+        return p.y - q.y || p.x - q.x;
+      });
+      for (let step = 0; step < labels.length; step += 1) handleKey({ snapshot, viewState, ui, now: snapshot.at }, "up");
+      const walked: Array<string | undefined> = [];
+      for (let step = 0; step < labels.length; step += 1) {
+        if (step) handleKey({ snapshot, viewState, ui, now: snapshot.at }, "down");
+        const current = grid();
+        walked.push(
+          labels.find((label) => {
+            const box = boxOf(current, label);
+            return box !== undefined && at(current, box.x, box.y) === "╔";
+          }),
+        );
+      }
+      expect(walked).toEqual(visual);
+    }
   });
 
   test("control sequences in user text are stripped before output", async () => {

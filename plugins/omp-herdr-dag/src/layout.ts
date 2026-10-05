@@ -1,12 +1,24 @@
 import { type DagEdge, type DagNode, isTerminal, type Run } from "./model.ts";
 
+/** Character-grid geometry of node boxes and connectors, shared by the wrap decision and the viewer. */
+export const GRID = { nodeGap: 2, dummyGap: 2, laneGap: 2, minNode: 20, maxNode: 30 } as const;
+
+/** Columns a row of `nodes` boxes `nodeWidth` wide plus `dummies` pass-through connectors needs. */
+export function rowSpan(nodes: number, dummies: number, nodeWidth: number): number {
+  return nodes * nodeWidth + (nodes - 1) * GRID.nodeGap + dummies * (1 + GRID.dummyGap);
+}
+
+/** Left margin taken by the vertical lanes of backward edges. */
+export function laneMargin(lanes: number): number {
+  return lanes ? lanes * GRID.laneGap + 1 : 0;
+}
+
 export interface LayoutNode {
   id: string;
   node?: DagNode;
   dummy: boolean;
   layer: number;
   order: number;
-  width: number;
   backReferences: Array<{ from: string; label: string }>;
 }
 export interface LayoutLayer {
@@ -37,6 +49,7 @@ export interface RunLayout {
 }
 export interface LayoutOptions {
   foldCompleted: boolean;
+  /** Columns available to the graph; a layer that does not fit at `GRID.minNode` wraps onto extra rows in its band. */
   width: number;
   now?: number;
 }
@@ -129,7 +142,8 @@ export function crossingCount(layers: LayoutLayer[], edges: RoutedEdge[]): numbe
   return count;
 }
 
-function minimizeCrossings(layers: LayoutLayer[], edges: RoutedEdge[]): void {
+/** With `pinned`, real nodes keep their relative order and only dummies move (rows of a wrapped layer). */
+function minimizeCrossings(layers: LayoutLayer[], edges: RoutedEdge[], pinned = false): void {
   const neighbors = new Map<string, { before: string[]; after: string[] }>();
   for (const route of edges) {
     if (route.backward) continue;
@@ -158,7 +172,12 @@ function minimizeCrossings(layers: LayoutLayer[], edges: RoutedEdge[]): void {
           : (positions.get(node.id) ?? 0);
       };
       const centers = new Map(layer.nodes.map((node) => [node.id, center(node)]));
+      const real = layer.nodes.filter((node) => !node.dummy);
       layer.nodes.sort((a, b) => (centers.get(a.id) ?? 0) - (centers.get(b.id) ?? 0) || a.id.localeCompare(b.id));
+      if (pinned) {
+        let next = 0;
+        layer.nodes = layer.nodes.map((node) => (node.dummy ? node : (real[next++] as LayoutNode)));
+      }
     }
     const count = crossingCount(layers, edges);
     if (count < bestCount) {
@@ -172,6 +191,154 @@ function minimizeCrossings(layers: LayoutLayer[], edges: RoutedEdge[]): void {
       node.order = order;
     });
   });
+}
+
+interface Placement {
+  layers: LayoutLayer[];
+  dummies: LayoutNode[];
+  edges: RoutedEdge[];
+}
+
+/** Puts nodes on their levels and routes forward edges through one dummy per skipped level; equal dummy keys share a dummy. */
+function place(run: Run, levels: Map<string, number>, dummyKey: (edge: DagEdge, level: number) => string): Placement {
+  const layers: LayoutLayer[] = [];
+  const placed = new Map<string, LayoutNode>();
+  for (const node of [...run.nodes].sort((a, b) => a.id.localeCompare(b.id))) {
+    const layer = levels.get(node.id) as number;
+    const item: LayoutNode = { id: node.id, node, layer, order: 0, dummy: false, backReferences: [] };
+    placed.set(node.id, item);
+    layers[layer] ??= { index: layer, band: node.band, bandName: node.bandName, nodes: [], folded: false };
+    layers[layer].nodes.push(item);
+  }
+  const dummies = new Map<string, LayoutNode>();
+  const edges: RoutedEdge[] = [];
+  for (const edge of [...run.edges].sort(
+    (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.kind.localeCompare(b.kind),
+  )) {
+    const source = placed.get(edge.from);
+    const target = placed.get(edge.to);
+    if (!source || !target) continue;
+    const backward = target.layer <= source.layer;
+    if (backward && edge.kind === "depends") target.backReferences.push({ from: source.id, label: source.node?.label ?? source.id });
+    const points = [source.id];
+    if (!backward) {
+      for (let layer = source.layer + 1; layer < target.layer; layer += 1) {
+        const id = `dummy:${dummyKey(edge, layer)}:${layer}`;
+        if (!dummies.has(id)) {
+          const dummy: LayoutNode = { id, dummy: true, layer, order: 0, backReferences: [] };
+          dummies.set(id, dummy);
+          layers[layer] ??= { index: layer, band: source.node?.band ?? 0, bandName: source.node?.bandName ?? "", nodes: [], folded: false };
+          (layers[layer] as LayoutLayer).nodes.push(dummy);
+        }
+        points.push(id);
+      }
+    }
+    points.push(target.id);
+    edges.push({ edge, points, backward });
+  }
+  return { layers: layers.filter(Boolean), dummies: [...dummies.values()], edges };
+}
+
+/** Wide layer of every node, its row inside that layer, and the row count of every wide layer. */
+interface Rows {
+  layer: Map<string, number>;
+  row: Map<string, number>;
+  count: Map<number, number>;
+}
+
+/**
+ * Connector key of a forward edge on row `at` of wide layer `layer`; undefined when the edge does not pass that row.
+ * Nodes without a row yet sit on a later row. An edge leaving a row that is not its layer's last joins the fan-in trunk
+ * of its target until it arrives; any other edge entering a wrapped layer joins the fan-out trunk of its source. A fan-in
+ * trunk never feeds a fan-out trunk, so every drawn path between two boxes is one of the run's edges.
+ */
+function rowKey(edge: DagEdge, layer: number, at: number, rows: Rows): string | undefined {
+  const from = rows.layer.get(edge.from) as number;
+  const to = rows.layer.get(edge.to) as number;
+  const fromRow = rows.row.get(edge.from) ?? Number.POSITIVE_INFINITY;
+  const toRow = rows.row.get(edge.to) ?? Number.POSITIVE_INFINITY;
+  const own = `${edge.kind}:${edge.from}:${edge.to}`;
+  if (from === to) return layer === from && fromRow < at && at < toRow ? own : undefined;
+  if (layer < from || layer > to || (layer === from && at <= fromRow) || (layer === to && at >= toRow)) return undefined;
+  if (layer === from || fromRow < (rows.count.get(from) ?? 1) - 1) return `${edge.kind}:*:${edge.to}`;
+  return layer === to ? `${edge.kind}:${edge.from}:*` : own;
+}
+
+/** Splits every unfolded layer that does not fit `width` at `GRID.minNode` into rows; undefined when every layer fits. */
+function wrapRows(wide: Placement, width: number): Rows | undefined {
+  const available = width - laneMargin(wide.edges.filter((route) => route.backward).length);
+  const rows: Rows = { layer: new Map(), row: new Map(), count: new Map() };
+  for (const layer of wide.layers) for (const item of layer.nodes) if (item.node) rows.layer.set(item.id, layer.index);
+  const edges = wide.edges.map((route) => route.edge);
+  let wrapped = false;
+  for (const layer of wide.layers) {
+    const nodes = layer.nodes.filter((item) => !item.dummy);
+    // Greedy rows of consecutive nodes, at most `cap` per row, counting the connectors each row must let through;
+    // a node too wide for the pane still gets a row of its own.
+    const fill = (cap: number): LayoutNode[][] => {
+      for (const item of nodes) rows.row.delete(item.id);
+      const result: LayoutNode[][] = [];
+      let start = 0;
+      while (start < nodes.length) {
+        const at = result.length;
+        let take = 1;
+        for (let count = 2; count <= Math.min(cap, nodes.length - start); count += 1) {
+          const candidate = nodes.slice(start, start + count);
+          for (const item of candidate) rows.row.set(item.id, at);
+          const dummies = new Set(edges.flatMap((edge) => rowKey(edge, layer.index, at, rows) ?? []));
+          if (rowSpan(count, dummies.size, GRID.minNode) <= available) take = count;
+          for (const item of candidate) rows.row.delete(item.id);
+        }
+        const row = nodes.slice(start, start + take);
+        for (const item of row) rows.row.set(item.id, at);
+        result.push(row);
+        start += take;
+      }
+      return result;
+    };
+    let chosen = layer.folded ? [nodes] : fill(Number.POSITIVE_INFINITY);
+    if (chosen.length > 1) {
+      wrapped = true;
+      // Same number of rows, spread as evenly as possible, so the widest row (and with it the node width) is the smallest.
+      for (let cap = Math.ceil(nodes.length / chosen.length); cap < Math.max(...chosen.map((row) => row.length)); cap += 1) {
+        const even = fill(cap);
+        if (even.length === chosen.length) {
+          chosen = even;
+          break;
+        }
+      }
+    }
+    chosen.forEach((row, at) => {
+      for (const item of row) rows.row.set(item.id, at);
+    });
+    rows.count.set(layer.index, chosen.length);
+  }
+  return wrapped ? rows : undefined;
+}
+
+/** Re-places the run with every wide layer split into its rows; wrapping reorders no node, only connectors. */
+function wrap(run: Run, wide: Placement, rows: Rows): Placement {
+  const levels = new Map<string, number>();
+  const rowAt: Array<{ layer: number; at: number }> = [];
+  for (const layer of wide.layers) {
+    for (const item of layer.nodes) if (item.node) levels.set(item.id, rowAt.length + (rows.row.get(item.id) as number));
+    for (let at = 0; at < (rows.count.get(layer.index) as number); at += 1) rowAt.push({ layer: layer.index, at });
+  }
+  // Every level strictly between the ends of a forward edge is a row that edge passes, so a key always exists.
+  const wrapped = place(run, levels, (edge, level) => {
+    const { layer, at } = rowAt[level] as { layer: number; at: number };
+    return rowKey(edge, layer, at, rows) as string;
+  });
+  const rank = new Map(
+    wide.layers.flatMap((layer) => layer.nodes.filter((item) => !item.dummy)).map((item, index) => [item.id, index] as const),
+  );
+  const folded = new Set(wide.layers.filter((layer) => layer.folded).flatMap((layer) => layer.nodes.map((item) => item.id)));
+  for (const layer of wrapped.layers) {
+    layer.nodes.sort((a, b) => Number(a.dummy) - Number(b.dummy) || (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+    layer.folded = layer.nodes.some((item) => folded.has(item.id));
+  }
+  minimizeCrossings(wrapped.layers, wrapped.edges, true);
+  return wrapped;
 }
 
 /** Bands constrain placement; backward dependencies remain semantic edges, never phase order. */
@@ -200,69 +367,19 @@ export function layoutRun(run: Run, options: LayoutOptions): RunLayout {
     }
     base = Math.max(...members.map((id) => levels.get(id) as number)) + 1;
   }
-  const layers: LayoutLayer[] = [];
-  const placed = new Map<string, LayoutNode>();
-  for (const node of [...run.nodes].sort((a, b) => a.id.localeCompare(b.id))) {
-    const layer = levels.get(node.id) as number;
-    const item: LayoutNode = {
-      id: node.id,
-      node,
-      layer,
-      order: 0,
-      dummy: false,
-      width: Math.max(1, Math.min(32, options.width)),
-      backReferences: [],
-    };
-    placed.set(node.id, item);
-    layers[layer] ??= { index: layer, band: node.band, bandName: node.bandName, nodes: [], folded: false };
-    layers[layer].nodes.push(item);
+  const wide = place(run, levels, (edge) => `${edge.kind}:${edge.from}:${edge.to}`);
+  minimizeCrossings(wide.layers, wide.edges);
+  for (const layer of wide.layers) {
+    const real = layer.nodes.flatMap((node) => (node.node ? [node.node] : []));
+    layer.folded = options.foldCompleted && real.length > 0 && real.every((node) => isTerminal(node.state));
   }
-  const dummies: LayoutNode[] = [];
-  const edges: RoutedEdge[] = [];
-  for (const edge of [...run.edges].sort(
-    (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.kind.localeCompare(b.kind),
-  )) {
-    const source = placed.get(edge.from);
-    const target = placed.get(edge.to);
-    if (!source || !target) continue;
-    const backward = target.layer <= source.layer;
-    if (backward && edge.kind === "depends") target.backReferences.push({ from: source.id, label: source.node?.label ?? source.id });
-    const points = [source.id];
-    if (!backward) {
-      for (let layer = source.layer + 1; layer < target.layer; layer += 1) {
-        const dummy: LayoutNode = {
-          id: `dummy:${edge.kind}:${edge.from}:${edge.to}:${layer}`,
-          dummy: true,
-          layer,
-          order: 0,
-          width: 1,
-          backReferences: [],
-        };
-        layers[layer] ??= { index: layer, band: source.node?.band ?? 0, bandName: source.node?.bandName ?? "", nodes: [], folded: false };
-        (layers[layer] as LayoutLayer).nodes.push(dummy);
-        dummies.push(dummy);
-        points.push(dummy.id);
-      }
-    }
-    points.push(target.id);
-    edges.push({ edge, points, backward });
-  }
-  const compact = layers.filter(Boolean);
-  minimizeCrossings(compact, edges);
-  const folded: FoldedLayer[] = [];
-  if (options.foldCompleted) {
-    for (const layer of compact) {
+  const rows = wrapRows(wide, options.width);
+  const { layers, dummies, edges } = rows ? wrap(run, wide, rows) : wide;
+  const folded: FoldedLayer[] = layers
+    .filter((layer) => layer.folded)
+    .map((layer) => {
       const real = layer.nodes.flatMap((node) => (node.node ? [node.node] : []));
-      if (!real.length || !real.every((node) => isTerminal(node.state))) continue;
-      layer.folded = true;
-      folded.push({
-        layer: layer.index,
-        band: layer.band,
-        bandName: layer.bandName,
-        count: real.length,
-        nodeIds: real.map((node) => node.id),
-      });
-    }
-  }
-  return { layers: compact, dummies, criticalPath: weightedPath(run.nodes, depends, options.now ?? Date.now()), folded, edges };
+      return { layer: layer.index, band: layer.band, bandName: layer.bandName, count: real.length, nodeIds: real.map((node) => node.id) };
+    });
+  return { layers, dummies, criticalPath: weightedPath(run.nodes, depends, options.now ?? Date.now()), folded, edges };
 }

@@ -1,3 +1,4 @@
+import { GRID } from "../src/layout.ts";
 import type { NodeState, Snapshot, Source, ThemeColors } from "../src/model.ts";
 
 /**
@@ -134,13 +135,9 @@ export function connectorGlyph(bits: number, kind: LineKind): string {
   return LIGHT[bits] ?? "┼";
 }
 
-/** Layout spacing on the character grid. */
+/** Layout spacing on the character grid; node and connector geometry is shared with the layout's wrap decision. */
 export const SPACING = {
-  nodeGap: 2,
-  dummyGap: 2,
-  laneGap: 2,
-  minNode: 20,
-  maxNode: 30,
+  ...GRID,
   outputLines: 3,
   labelLines: 3,
   detailLines: 6,

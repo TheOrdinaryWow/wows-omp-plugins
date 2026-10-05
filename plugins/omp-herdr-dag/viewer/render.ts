@@ -1,4 +1,4 @@
-import { type LayoutLayer, layoutRun, type RoutedEdge, type RunLayout } from "../src/layout.ts";
+import { type LayoutLayer, laneMargin, layoutRun, type RoutedEdge, type RunLayout, rowSpan } from "../src/layout.ts";
 import { type DagNode, isTerminal, type Run, runStats, type Snapshot, sanitizeText, type TaskCard, taskTotals } from "../src/model.ts";
 import type { ViewState } from "../src/persisted.ts";
 import {
@@ -178,6 +178,8 @@ export interface UiState {
   scrollX: number;
   /** Body height of the last frame; paging keys move by it. */
   bodyRows: number;
+  /** Width of the last frame; navigation lays the DAG out at the same width, so it walks the rows as drawn. */
+  bodyCols: number;
   transcript?: TranscriptView;
   returnView: "dag" | "tasks";
 }
@@ -189,6 +191,7 @@ export const createUi = (): UiState => ({
   scrollY: 0,
   scrollX: 0,
   bodyRows: 10,
+  bodyCols: 80,
   returnView: "dag",
 });
 
@@ -223,11 +226,12 @@ export function currentRun(snapshot: Snapshot | undefined, viewState: ViewState,
   return active[0] ?? runs[runs.length - 1];
 }
 
-export function runLayout(run: Run, viewState: ViewState, now: number, width = SPACING.maxNode): RunLayout {
+/** `width` is the pane's column count: layers that do not fit wrap onto extra rows inside their band. */
+export function runLayout(run: Run, viewState: ViewState, now: number, width: number): RunLayout {
   return layoutRun(run, { foldCompleted: viewState.folded.includes(run.id), width, now });
 }
 
-/** Selection order: layers top-down, nodes left-right; folded layers are not selectable. */
+/** Selection order: layers (and wrapped rows) top-down, nodes left-right; folded layers are not selectable. */
 export function nodeOrder(layout: RunLayout): string[] {
   return layout.layers.filter((layer) => !layer.folded).flatMap((layer) => layer.nodes.flatMap((item) => (item.node ? [item.id] : [])));
 }
@@ -538,10 +542,8 @@ function chooseNodeWidth(layout: RunLayout, cols: number, margin: number): numbe
   for (const layer of layout.layers) {
     if (layer.folded) continue;
     const real = layer.nodes.filter((item) => !item.dummy).length;
-    const dummies = layer.nodes.length - real;
     if (!real) continue;
-    const fixed = (real - 1) * SPACING.nodeGap + dummies * (1 + SPACING.dummyGap);
-    width = Math.min(width, Math.floor((cols - margin - fixed) / real));
+    width = Math.min(width, Math.floor((cols - margin - rowSpan(real, layer.nodes.length - real, 0)) / real));
   }
   return Math.max(Math.min(SPACING.minNode, cols - margin), Math.min(SPACING.maxNode, width), 8);
 }
@@ -568,7 +570,7 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
     .sort(
       (a, b) => b.span - a.span || a.route.edge.from.localeCompare(b.route.edge.from) || a.route.edge.to.localeCompare(b.route.edge.to),
     );
-  const margin = back.length ? back.length * SPACING.laneGap + 1 : 0;
+  const margin = laneMargin(back.length);
   const width = chooseNodeWidth(layout, options.cols, margin);
   const source = run.source;
   const sourceColor = ctx.pal.sources[source];
@@ -586,7 +588,15 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
     if (route.backward) return { kind: "dotted", style: fg(ctx.pal, "muted") };
     return { kind: "solid", style: fg(ctx.pal, "border") };
   };
-  const dummyRoutes = new Map(layout.edges.flatMap((route) => route.points.slice(1, -1).map((id) => [id, route] as const)));
+  // A dummy shared by bundled edges takes the strongest stroke among them, so a critical edge stays heavy along its trunk.
+  const dummyStyles = new Map<string, { kind: LineKind; style: Style }>();
+  for (const route of layout.edges) {
+    const stroke = edgeStyle(route);
+    for (const id of route.points.slice(1, -1)) {
+      const known = dummyStyles.get(id);
+      if (!known || LINE_RANK[stroke.kind] > LINE_RANK[known.kind]) dummyStyles.set(id, stroke);
+    }
+  }
   // Connectors are queued: plain strokes first, critical last so heavy strokes win shared cells.
   const draws: Array<{ heavy: boolean; draw: () => void }> = [];
   const arrows: Array<{ x: number; y: number; style: Style }> = [];
@@ -713,23 +723,60 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
       const to = route.points[index] as string;
       const target = position.get(to);
       if (target === undefined || position.get(from) !== target - 1) continue;
-      gaps[target]?.segments.push({ from, to, x1: anchor.get(from) as number, x2: anchor.get(to) as number, route });
+      const gap = gaps[target] as (typeof gaps)[number];
+      // Bundled edges repeat their shared segments; draw each once with its strongest stroke.
+      const known = gap.segments.find((segment) => segment.from === from && segment.to === to);
+      if (!known) gap.segments.push({ from, to, x1: anchor.get(from) as number, x2: anchor.get(to) as number, route });
+      else if (LINE_RANK[edgeStyle(route).kind] > LINE_RANK[edgeStyle(known.route).kind]) known.route = route;
     }
   }
+  // Edge sources reaching, and edge targets served by, every box and dummy along forward routes.
+  const upstream = new Map<string, Set<string>>();
+  const downstream = new Map<string, Set<string>>();
+  const linked = new Set<string>();
+  for (const route of layout.edges) {
+    if (route.backward) continue;
+    linked.add(`${route.edge.from}\n${route.edge.to}`);
+    for (const point of route.points) {
+      upstream.set(point, (upstream.get(point) ?? new Set()).add(route.edge.from));
+      downstream.set(point, (downstream.get(point) ?? new Set()).add(route.edge.to));
+    }
+  }
+  // A stroke leaving item `above` and one arriving at item `below` in the same column merge into one line (stacked rows
+  // share anchors). The merge is false unless every source reaching `above` has an edge to every target `below` serves.
+  const falseMerge = (above: string, below: string): boolean =>
+    [...(upstream.get(above) ?? [])].some((from) => [...(downstream.get(below) ?? [])].some((to) => !linked.has(`${from}\n${to}`)));
   for (const gap of gaps) {
     const tracks: Array<Array<{ min: number; max: number; x1: number; x2: number; kind: LineKind }>> = [];
-    for (const segment of gap.segments
+    const pending = gap.segments
       .filter((item) => item.x1 !== item.x2)
-      .sort((a, b) => Math.min(a.x1, a.x2) - Math.min(b.x1, b.x2) || a.x1 - b.x1 || a.x2 - b.x2)) {
+      .sort((a, b) => Math.min(a.x1, a.x2) - Math.min(b.x1, b.x2) || a.x1 - b.x1 || a.x2 - b.x2);
+    while (pending.length) {
+      // Keep such strokes apart: the leaver turns off on a track above the one the arrival comes down from.
+      const next = Math.max(
+        0,
+        pending.findIndex(
+          (segment) => !pending.some((other) => other !== segment && other.x1 === segment.x2 && falseMerge(other.from, segment.to)),
+        ),
+      );
+      const segment = pending.splice(next, 1)[0] as Segment2;
+      const floor = Math.max(
+        0,
+        ...gap.segments.flatMap((other) =>
+          other.track !== undefined && other.x1 === segment.x2 && falseMerge(other.from, segment.to) ? [other.track + 1] : [],
+        ),
+      );
       const min = Math.min(segment.x1, segment.x2);
       const max = Math.max(segment.x1, segment.x2);
       const { kind } = edgeStyle(segment.route);
       // Fan-in and fan-out may share a track only when the strokes look the same.
-      let track = tracks.findIndex((used) =>
-        used.every(
-          (other) =>
-            other.max + 1 < min || max + 1 < other.min || (other.kind === kind && (other.x1 === segment.x1 || other.x2 === segment.x2)),
-        ),
+      let track = tracks.findIndex(
+        (used, index) =>
+          index >= floor &&
+          used.every(
+            (other) =>
+              other.max + 1 < min || max + 1 < other.min || (other.kind === kind && (other.x1 === segment.x1 || other.x2 === segment.x2)),
+          ),
       );
       if (track < 0) {
         track = tracks.length;
@@ -786,8 +833,7 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
         continue;
       }
       if (item.kind === "dummy") {
-        const route = dummyRoutes.get(item.id);
-        const { kind, style } = route ? edgeStyle(route) : { kind: "solid" as const, style: fg(ctx.pal, "border") };
+        const { kind, style } = dummyStyles.get(item.id) ?? { kind: "solid" as const, style: fg(ctx.pal, "border") };
         const points: Array<[number, number]> = [
           [item.x, top],
           [item.x, top + height - 1],
@@ -884,18 +930,28 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
   return { canvas, boxes, headers };
 }
 
-/** Puts each band title in the first viewport span no connector crosses, so titles stay readable while scrolled. */
+/**
+ * Puts each band title in the first viewport span no connector crosses, so titles stay readable while scrolled. When no
+ * span holds the whole title (connectors crossing a narrow pane), the widest span gets it shortened.
+ */
 function placeBandTitles(scene: DagScene, left: number, cols: number, ctx: Ctx): void {
+  const end = Math.min(scene.canvas.width, left + cols);
   for (const header of scene.headers) {
-    const title = ` ${truncate(header.title, Math.max(1, cols - 6))} `;
-    const width = textWidth(title);
-    for (let x = left + 2; x + width <= Math.min(scene.canvas.width, left + cols); x += 1) {
-      let free = true;
-      for (let column = x - 1; column <= x + width && free; column += 1) if (header.crossings.has(column)) free = false;
-      if (!free) continue;
-      scene.canvas.text(x, header.y, title, fg(ctx.pal, "muted", { bold: true }));
-      break;
+    const title = truncate(header.title, Math.max(1, cols - 6));
+    // Spans between crossings; a rule cell stays between the title and any connector.
+    const spans: Array<{ x: number; room: number }> = [];
+    let free = left + 1;
+    for (let column = left + 1; column <= end; column += 1) {
+      if (column < end && !header.crossings.has(column)) continue;
+      const x = Math.max(free + 1, left + 2);
+      spans.push({ x, room: (header.crossings.has(column) ? column - 1 : column) - x });
+      free = column + 1;
     }
+    const width = textWidth(title) + 2;
+    const span =
+      spans.find((item) => item.room >= width) ?? spans.reduce((best, item) => (item.room > best.room ? item : best), { x: 0, room: 0 });
+    if (span.room < 4) continue;
+    scene.canvas.text(span.x, header.y, ` ${truncate(title, span.room - 2)} `, fg(ctx.pal, "muted", { bold: true }));
   }
 }
 
@@ -997,7 +1053,8 @@ function renderDag(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
   }
   const runs = visibleRuns(snapshot, ui.history);
   if (!runs.some((item) => item.id === run.id)) runs.push(run);
-  const layout = runLayout(run, viewState, ctx.now);
+  ui.bodyCols = cols;
+  const layout = runLayout(run, viewState, ctx.now, cols);
   const selected = selectedNode(run, layout, ui);
   const node = run.nodes.find((item) => item.id === selected);
   const header = [...top, ...runHeader(run, runs, input, ctx)];
