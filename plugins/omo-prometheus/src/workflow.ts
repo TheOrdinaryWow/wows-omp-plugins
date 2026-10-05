@@ -236,6 +236,12 @@ const MAGIC_CONTEXT_TOOLS: Record<string, true> = {
   ctx_search: true,
 };
 
+/**
+ * Built-ins whose extension shadows are trusted. Wrappers such as omp-herdr-dag's edge-aware `todo`
+ * delegate to the native tool through `ctx.invokeTool`, which never reaches the `tool_call` guard.
+ */
+const EXTENSION_WRAPPED_TOOLS: Record<string, true> = { todo: true };
+
 const READ_ONLY_LSP_ACTIONS: Record<string, true> = {
   capabilities: true,
   definition: true,
@@ -455,7 +461,7 @@ export function executionToolSourceBlockReason(
     return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
   }
   if (source === "builtin") return undefined;
-  if (MAGIC_CONTEXT_TOOLS[toolName] === true && source === "extension") return undefined;
+  if ((MAGIC_CONTEXT_TOOLS[toolName] === true || EXTENSION_WRAPPED_TOOLS[toolName] === true) && source === "extension") return undefined;
   return `\`${toolName}\` resolves to ${source ? `a ${source} tool` : "an unverified tool"}, not a trusted native/plugin tool`;
 }
 

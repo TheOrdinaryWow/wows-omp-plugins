@@ -66,6 +66,7 @@ Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file w
 |Integration|Admitted tools|
 |---|---|
 |[Magic Context](https://github.com/cortexkit/magic-context) (an extension, not part of OMP)|`ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, `ctx_note`, only when registered by an extension; same-named MCP tools stay blocked|
+|Extension wrappers of `todo`, such as [omp-herdr-dag](../omp-herdr-dag/README.md)'s edge-aware `todo`|`todo`, when an extension re-registers it; an MCP `todo` stays blocked|
 
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session. To survive that switch, the plugin writes a marker to `local://prometheus/<slug>.proposal.json` when the plan is proposed, and OMP copies it into the new session along with the plan. Plans approved in ordinary Plan Mode have no marker, and the plugin leaves them alone.
 
