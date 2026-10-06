@@ -16,7 +16,7 @@ This directory records structured build rounds, their stages and carry-over TODO
 
 The root README is the initialization marker and rounds index. Each NN-slug round directory contains its charter README, TODO.md and stages/NN-slug.md. Rounds use R1, R2 and so on; stages use S01, TODOs T001 and ADRs ADR-0001. Stage and TODO numbers are global across rounds, monotonic and never reused. ADR files use NNNN-slug.md. Slugs contain lowercase ASCII letters, digits and hyphens.
 
-Every managed file has format: 1 front matter and a managed-by comment. This README also carries roadmap: { format: 1 }. Front matter and fixed headings are structure. Tool-owned bodies allow plain paragraphs, flat plain-text lists and closed top-level fences, with same-line inline code spans; other Markdown or raw HTML syntax is refused. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages and Known limitations. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
+Every managed file has format: 1 front matter and a managed-by comment. This README also carries roadmap: { format: 1 }. Front matter and fixed headings are structure. Tool-owned bodies allow plain paragraphs, flat text lists and closed top-level fences, with ordinary punctuation, plain URLs, inline emphasis and same-line code spans; structural Markdown, Markdown links and raw HTML syntax are refused. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages and Known limitations. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
 
 Agents change managed files through roadmap_* tools. Body text can be edited by a user in an editor; malformed structure must be repaired before tools can write. Generated blocks are marked with \`<!-- roadmap:generated:<name> -->\` and \`<!-- /roadmap:generated -->\`. The tools own numbering, metadata, headings and generated indexes.
 
@@ -337,7 +337,8 @@ function plainBodyLine(line: string, number: number): void {
   if (/^#{1,6}(?:[ \t]|$)/.test(line)) invalid(`Unsupported body heading at line ${number}.`);
   if (/^(?:[-=]+|(?:[-*_] *)+) *$/.test(line)) invalid(`Unsupported body heading underline or thematic break at line ${number}.`);
   if (/^(?:>|[-+*](?: |$)|\d{1,9}[.)](?: |$)|`{3,}|~{3,})/.test(line)) invalid(`Unsupported body container or fence at line ${number}.`);
-  if (!inlineBodyAllowed(line, /[<>[\]\\|*_~]/)) invalid(`Unsupported body HTML, inline markup or multiline code span at line ${number}.`);
+  if (!inlineBodyAllowed(line, /<[a-z/!?]|[[\]\\|]/i))
+    invalid(`Unsupported body HTML, inline markup or multiline code span at line ${number}.`);
 }
 
 export function validateBody(body: string, options: { inlineOnly?: boolean; afterList?: boolean } = {}): void {
@@ -423,7 +424,7 @@ export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArra
           (line !== raw && /^#{1,6}(?: |$)/.test(line))
         )
           invalid(`Unsupported stored Markdown at line ${number}. ${repair}`);
-        if (!inlineBodyAllowed(raw, /[<>]/)) invalid(`Unsupported stored HTML or multiline code span at line ${number}. ${repair}`);
+        if (!inlineBodyAllowed(raw, /<[a-z/!?]/i)) invalid(`Unsupported stored HTML or multiline code span at line ${number}. ${repair}`);
         if (item) list = true;
         else if (raw.trim() && !raw.startsWith(" ")) {
           if (list && !blank && !/^#{1,6}(?: |$)/.test(raw)) invalid(`Ambiguous stored list continuation at line ${number}. ${repair}`);

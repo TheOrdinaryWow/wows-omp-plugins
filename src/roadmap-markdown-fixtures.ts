@@ -1,5 +1,5 @@
 // Unsafe historical bodies remain refusal fixtures; allowed examples use only
-// plain text, flat lists, same-line code spans and closed top-level fences.
+// nonstructural inline text, flat lists, same-line code spans and closed top-level fences.
 const markdownContainers = [
   { name: "bullet", first: "- ", next: "  " },
   { name: "star", first: "* ", next: "  " },
@@ -98,6 +98,7 @@ export const rejectedMarkdownBodies = [
   ...htmlBlankLineBlocks,
   "<!-- closed -->",
   "Inline <span>HTML</span>.",
+  ...["<a", "</", "<!", "<?", "<https://example.com", "<user@example.com>"].flatMap((opener) => [opener, `Prose ${opener}`]),
   "`multiline\n<script>\n`",
   "`inline` <script>",
   "- Plain item\n\n  ~~~md\n## Hidden\n  ~~~",
@@ -110,7 +111,20 @@ export const rejectedMarkdownBodies = [
   "- - -",
   "* * *",
   "___",
+  "*",
+  "-",
+  "+",
+  "_",
+  "_ _ _",
+  "Paragraph\n___",
+  "Paragraph\n***",
+  "~~~invalid info",
   "> Quoted text",
+  ">",
+  ">bare quote",
+  "Prose\n> continuation",
+  "Prose\n<script>",
+  "Prose <h3>Evidence</h3>",
   "| A | B |\n| --- | --- |",
   "Paragraph\n\n    Indented code",
   "Paragraph\n\n\tIndented code",
@@ -118,11 +132,32 @@ export const rejectedMarkdownBodies = [
   "~~~\nUnclosed",
   "````md\nText\n```",
   "~~~md\nText\n~~~info",
-  "**Emphasis**",
   "[Inline link](https://example.com)",
 ];
 
+export const literalMarkdownBodies = [
+  "Latency drops by ~20%.",
+  "95% of requests finish < 200 ms.",
+  "Read https://example.com/api/check_out before release.",
+  "Price = quantity * unit price.",
+  "Use snake_case and request_timeout_ms identifiers.",
+  "Keep a lone * inside prose.",
+  "Keep a lone _ inside prose.",
+  "Use ~ as an approximation in prose.",
+  "Bounds are 0 < value and value > 0.",
+  "Read https://example.com/~user/check_out?latency=20~ms.",
+  "The suffix is *",
+  "The suffix is _",
+  "The suffix is ~",
+  "The suffix is <",
+  "The suffix is >",
+];
+
 export const allowedMarkdownBodies = [
+  ...literalMarkdownBodies,
+  "**Emphasis**",
+  "_em_ and **bold across words** or ~~removed text~~.",
+  "Prose includes snake_case, a lone * and a lone _.\nThe suffix is ~\nBounds remain < 200 ms and > 100 ms.\nThe suffix is *\nThe suffix is _\nThe suffix is <\nThe suffix is >\nRead https://example.com/~user/check_out.",
   "Plain text.\n\nA second paragraph.",
   "- First item\n- Second item\n\n1. Ordered item\n2. Another item",
   "* Star item\n+ Plus item\n1) Ordered item\n12) Another item",
@@ -202,6 +237,7 @@ export function* randomizedMarkdownBodies(seed: number, count: number): Generato
     "| x | y |",
     "| --- | --- |",
   ];
+  atoms.push(...literalMarkdownBodies, "**bold**", "_em_", "text ~", "text *", "text _", "text <", "text >");
   const prefixes = ["", "", " ", "   ", "    ", "\t", " \t", "> ", ">\t", "> > ", "- ", "-\t", "1. ", "10) ", "> - ", "- > ", "1. > - "];
   const closed = [
     "~~~md\n## Hidden\n~~~",

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { parseHtml, proseText } from "../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
 import { check } from "../plugins/roadmap/src/check.ts";
 import {
   loadAll,
@@ -47,6 +48,7 @@ import { cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./road
 import {
   allowedMarkdownBodies,
   ambiguousMarkdownBodies,
+  literalMarkdownBodies,
   markdownStructureEscapes,
   rejectedMarkdownBodies,
 } from "./roadmap-markdown-fixtures.ts";
@@ -945,6 +947,189 @@ describe("roadmap tool-owned body boundaries", () => {
 });
 
 describe("roadmap body allowlist boundaries", () => {
+  test.each(literalMarkdownBodies)(
+    "ordinary punctuation survives every authored field and lifecycle write: %s",
+    async (body) => {
+      const repo = await emptyRepo();
+      const charterText: RoundInput = {
+        ...charter,
+        goal: body,
+        constraints: [body],
+        non_goals: [body],
+        principles: [{ text: body, adrs: ["ADR-0001"] }],
+      };
+      const stageText: StageInput = {
+        ...stageInput,
+        objective: body,
+        scope_in: [body],
+        scope_out: [body],
+        done_criteria: [{ id: "DC1", statement: body, verify: body }],
+        design_constraints: body,
+        risks: body,
+      };
+      const adrText = {
+        context: body,
+        drivers: body,
+        options: [body],
+        outcome: body,
+        consequences: body,
+        confirmation: body,
+        pros_cons: body,
+        more_info: body,
+      };
+      const date = new Date().toISOString().slice(0, 10);
+      const amended = new Set<string>();
+      const noted = new Set<string>();
+      function headings(content: string): string[] {
+        const result: string[] = [];
+        type HtmlNode = { tag: string; children: HtmlNode[] };
+        function visit(node: HtmlNode): void {
+          if (["pre", "code", "script", "style", "textarea", "svg"].includes(node.tag)) return;
+          if (/^h[1-6]$/.test(node.tag)) result.push(`${"#".repeat(Number(node.tag[1]))} ${proseText(node)}`);
+          for (const child of node.children) visit(child);
+        }
+        visit(parseHtml(Bun.markdown.html(content.replace(/^---\n[\s\S]*?\n---\n/, ""))));
+        return result;
+      }
+      async function wrote(receipt: Promise<Receipt>): Promise<Model> {
+        success(await receipt);
+        const model = await loadAll(repo);
+        expect(model.parseErrors ?? []).toEqual([]);
+        expect((await check(model)).filter((item) => item.severity === "error")).toEqual([]);
+        const content = (path: string): string => {
+          const bytes = model.files?.[path];
+          if (bytes === undefined) throw new Error(`Missing managed file ${path}`);
+          return Buffer.from(bytes).toString("utf8");
+        };
+        expect(headings(content(model.index.path))).toEqual(["# Shop", "## How this directory works", "## Rounds", "## Current status"]);
+        if (!model.adrIndex) throw new Error("Missing ADR index");
+        expect(headings(content(model.adrIndex.path))).toEqual(["# Architecture Decision Records", "## Decisions"]);
+        for (const doc of model.rounds) {
+          expect(headings(content(doc.path))).toEqual([
+            `# ${doc.id} — ${doc.title}`,
+            "## Goal",
+            "## Constraints",
+            "## Non-goals",
+            "## Principles",
+            "## Stages",
+            "## Known limitations",
+            ...(doc.known_limitations ? ["### T003 — Known limitation"] : []),
+          ]);
+        }
+        for (const doc of model.stages) {
+          expect(headings(content(doc.path))).toEqual([
+            `# ${doc.id} — ${doc.title}`,
+            "## Objective",
+            "## Scope",
+            "### In",
+            "### Out",
+            "## Done criteria",
+            "## Design constraints",
+            "## Risks",
+            "## Amendments",
+            ...(amended.has(doc.id) ? [`### ${date} — ${body}`] : []),
+            "## Free-work log",
+            ...(doc.outcome ? ["## Outcome", "### Delivered", "### Deviations"] : []),
+            ...(doc.status === "closed" ? ["### Evidence", "### TODO", "### ADRs"] : []),
+          ]);
+        }
+        for (const doc of model.todos) {
+          expect(headings(content(doc.path))).toEqual([
+            `# ${doc.round} — TODO`,
+            "## Open",
+            ...doc.items.filter((item) => item.status === "open").map((item) => `### ${item.id} — ${item.title}`),
+            "## Closed in this round",
+            ...doc.items.filter((item) => item.status !== "open").map((item) => `### ${item.id} — ${item.title}`),
+          ]);
+        }
+        for (const doc of model.adrs) {
+          expect(headings(content(doc.path))).toEqual([
+            `# ${doc.title}`,
+            "## Context and Problem Statement",
+            "## Decision Drivers",
+            "## Considered Options",
+            "## Decision Outcome",
+            "### Consequences",
+            "### Confirmation",
+            "## Pros and Cons of the Options",
+            "## More Information",
+            ...(noted.has(doc.id) ? [`### ${date}`] : []),
+          ]);
+        }
+        return model;
+      }
+      await wrote(
+        initProject(repo, main, {
+          project: { ...initInput.project, description: body },
+          round: charterText,
+          adrs: [
+            { title: "Host choice", status: "accepted", sections: adrText, decision_makers: [body], consulted: [body], informed: [body] },
+          ],
+          stages: [stageText],
+        }),
+      );
+      const edited = await wrote(stage(repo, main, { action: "edit", ...stageText, id: "S01" }));
+      expect(edited.stages[0]).toMatchObject({
+        objective: body,
+        scope_in: `- ${body}`,
+        scope_out: `- ${body}`,
+        design_constraints: body,
+        risks: body,
+      });
+      await wrote(stage(repo, main, { action: "add", ...stageText, title: "Deferred" }));
+      await wrote(stage(repo, main, { action: "drop", id: "S02", reason: body }));
+      await wrote(recordFreeWork(repo, main, { stage: "S01", intent: body }));
+      await wrote(todo(repo, main, { action: "add", title: "Resolved", severity: "normal", source: body, trigger: body, body }));
+      await wrote(todo(repo, main, { action: "update", id: "T001", source: body, trigger: body, body }));
+      await wrote(todo(repo, main, { action: "move", id: "T001", trigger: body }));
+      const resolved = await wrote(todo(repo, main, { action: "resolve", id: "T001", reference: body }));
+      expect(resolved.todos[0]?.items[0]).toMatchObject({ source: body, trigger: body, body, reference: body });
+      await wrote(todo(repo, main, { action: "add", title: "Close disposition", severity: "normal", source: body, target: "S01", body }));
+      await wrote(todo(repo, main, { action: "add", title: "Known limitation", severity: "low", source: body, trigger: body, body }));
+      await wrote(adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections: adrText }));
+      await wrote(adr(repo, main, { action: "revise", id: "ADR-0002", sections: adrText }));
+      noted.add("ADR-0001");
+      await wrote(adr(repo, main, { action: "note", id: "ADR-0001", text: body }));
+      await wrote(adr(repo, main, { action: "supersede", id: "ADR-0001", title: "Successor choice", sections: adrText }));
+      await wrote(stage(repo, main, { action: "start", id: "S01" }));
+      amended.add("S01");
+      await wrote(
+        stage(repo, main, {
+          action: "amend",
+          id: "S01",
+          reason: body,
+          amendments: {
+            modify: [{ id: "DC1", statement: body, verify: body }],
+            add: [{ statement: body, verify: body }],
+            scope: [{ op: "add", side: "in", item: `Additional ${body}` }],
+          },
+        }),
+      );
+      const closed = await wrote(
+        stage(repo, main, {
+          action: "close",
+          id: "S01",
+          delivered: body,
+          deviations: body,
+          evidence: ["DC1", "DC2"].map((criterion) => ({ criterion, result: "pass", method: body, summary: body, commit: body })),
+          todos: [{ id: "T002", disposition: "resolved", reference: body }],
+          adrs: [{ id: "ADR-0002", status: "accepted" }],
+        }),
+      );
+      expect(closed.stages[0]?.outcome).toContain(`### Delivered\n\n${body}\n\n### Deviations\n\n${body}`);
+      expect(closed.todos[0]?.items.find((item) => item.id === "T002")?.reference).toBe(body);
+      await wrote(
+        closeRound(repo, main, {
+          expected: await reviewedRound(repo),
+          dispositions: [{ id: "T003", disposition: "wontfix", reference: body }],
+        }),
+      );
+      const opened = await wrote(openRound(repo, main, { round: charterText, import_todos: [] }));
+      expect(opened.rounds.find((doc) => doc.id === "R2")).toMatchObject({ goal: body, constraints: `- ${body}`, non_goals: `- ${body}` });
+    },
+    120_000,
+  );
+
   test("unsupported bodies refuse delivery, deviations, objective, TODO and every ADR section without changing managed bytes", async () => {
     const repo = await initialized();
     success(await todo(repo, main, { action: "add", title: "Pending", severity: "normal", source: "Review", target: "S01" }));

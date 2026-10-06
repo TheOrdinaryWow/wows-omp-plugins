@@ -35,6 +35,7 @@ import {
   allowedMarkdownBodies,
   ambiguousMarkdownBodies,
   closedContainerFences,
+  literalMarkdownBodies,
   markdownStructureEscapes,
   randomizedMarkdownBodies,
   rejectedMarkdownBodies,
@@ -204,6 +205,27 @@ describe("roadmap managed documents", () => {
     expect(() => validateBody("Plain `inline` text", { inlineOnly: true })).not.toThrow();
     expect(() => validateBody("   ~~~md\nLiteral\n~~~", { afterList: true })).toThrow();
     expect(() => validateBody("Example:\n\n   ~~~md\nLiteral\n~~~", { afterList: true })).not.toThrow();
+  });
+
+  test("literal punctuation remains plain text in block and single-line bodies", () => {
+    for (const body of literalMarkdownBodies) {
+      for (const options of [{}, { inlineOnly: true }, { afterList: true }]) {
+        expect(() => validateBody(body, options), body).not.toThrow();
+      }
+      const stage = renderStage(stageFixture({ objective: body, design_constraints: body, risks: body }));
+      expect(renderStage(parseStage(stage)), body).toBe(stage);
+      const round = renderRound(roundFixture({ goal: body }));
+      expect(renderRound(parseRound(round)), body).toBe(round);
+      const todo = renderTodo({
+        ...todoFixture(),
+        items: [{ id: "T001", title: "Punctuation", status: "open", severity: "normal", source: "Review", trigger: "Later", body }],
+      });
+      expect(renderTodo(parseTodo(todo)), body).toBe(todo);
+      const decision = adrFixture();
+      decision.body = buildAdrBody(decision.title, { context: body, options: [body], outcome: body });
+      const adr = renderAdr(decision);
+      expect(renderAdr(parseAdr(adr)), body).toBe(adr);
+    }
   });
 
   test("seeded body grammar never accepts text that changes any rendered fixed heading", () => {
