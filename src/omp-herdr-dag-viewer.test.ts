@@ -1089,6 +1089,60 @@ describe("omp-herdr-dag viewer navigation", () => {
     viewer.stop();
   });
 
+  test("f cycles through the running nodes in drawn order and does nothing when none runs", async () => {
+    const large = await fixture("large-plan");
+    const running = (ids: string[]): Snapshot => ({
+      ...large,
+      runs: large.runs.map((run) => ({
+        ...run,
+        nodes: run.nodes.map((node) => ({
+          ...node,
+          state: ids.includes(node.id) ? "running" : node.state === "running" ? "pending" : node.state,
+        })),
+      })),
+    });
+    const { viewer, type } = await liveViewer(running(["atlas:T4", "atlas:T7", "atlas:F3"]), 50, 30);
+    expect(drawnSelection(viewer).id).toBe("atlas:T4");
+    const visits: string[] = [];
+    for (let press = 0; press < 3; press += 1) {
+      await type("f");
+      const next = drawnSelection(viewer);
+      expect(next.visible).toBe(true);
+      visits.push(next.id);
+    }
+    expect(visits).toEqual(["atlas:T7", "atlas:F3", "atlas:T4"]);
+    viewer.stop();
+
+    const idle = await liveViewer(running([]), 50, 30);
+    await idle.type("\x1b[A");
+    const before = drawnSelection(idle.viewer);
+    await idle.type("f");
+    const after = drawnSelection(idle.viewer);
+    expect(after.id).toBe(before.id);
+    expect(after.frame.scrollY).toBe(before.frame.scrollY);
+    idle.viewer.stop();
+  });
+
+  test("the footer wraps a long selected title in full instead of truncating it", async () => {
+    const large = await fixture("large-plan");
+    const run = large.runs[0] as Run;
+    const title = clean(run.nodes.find((node) => node.id === "atlas:T4")?.label);
+    const { viewer } = await liveViewer(large, 40, 40);
+    const lines = viewer.frame().map((line) => strip(line).trimEnd());
+    const start = lines.findIndex((line) => line.startsWith("◐ T4."));
+    expect(start).toBeGreaterThan(-1);
+    const shown = [
+      lines[start]?.slice(2),
+      ...lines
+        .slice(start + 1)
+        .filter((line) => line.startsWith("  "))
+        .map((line) => line.trim()),
+    ];
+    expect(title.length).toBeGreaterThan(38);
+    expect(shown.join(" ").replace(/\s+/g, " ").slice(0, title.length)).toBe(title);
+    viewer.stop();
+  });
+
   test("Tab switches the arrows to panning, and a pan survives live re-renders until a node is selected again", async () => {
     const snapshot = await fixture("large-plan");
     const { viewer, peer, type } = await liveViewer(snapshot, 50, 30);

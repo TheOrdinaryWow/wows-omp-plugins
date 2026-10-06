@@ -153,6 +153,7 @@ Pressing `q` always closes the viewer's own pane, regardless of finish behavior.
 | `c` | Toggle folding of completed layers for the selected run. |
 | `p` | Toggle critical-path highlighting. |
 | `e` | Show every direct dependency edge. By default, an edge whose order a longer path already shows is hidden; the footer still lists the selected node's direct dependencies. |
+| `f` | Select the next running node and scroll to it; repeated presses cycle through all running nodes. Does nothing when no node is running. |
 | `o` | Open the selected task's transcript, or a child transcript attached to the selected node. |
 | Esc | Return from transcript or dismiss help. |
 | `?` | Toggle help. |

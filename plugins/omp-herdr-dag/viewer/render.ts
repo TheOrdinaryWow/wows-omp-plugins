@@ -1149,7 +1149,13 @@ function dagFooter(run: Run, node: DagNode | undefined, layout: RunLayout, input
   const { cols } = input;
   const lines: Line[] = [ruleLine(ctx, cols)];
   if (node) {
-    lines.push([stateIcon(node, ctx), { text: ` ${clean(node.label)}`, style: fg(ctx.pal, "text", { bold: true }) }]);
+    // The title wraps in full under the icon, so a long label is never cut off.
+    const icon = stateIcon(node, ctx);
+    const indent = textWidth(icon.text) + 1;
+    wrap(clean(node.label), Math.max(1, cols - indent)).forEach((text, index) => {
+      const title: Segment = { text, style: fg(ctx.pal, "text", { bold: true }) };
+      lines.push(index ? [{ text: " ".repeat(indent) }, title] : [icon, { text: " " }, title]);
+    });
     const elapsed = node.startedAt === undefined ? undefined : (node.finishedAt ?? ctx.now) - node.startedAt;
     const meta = [
       node.state + (node.stalled && node.state === "running" ? " (stalled)" : ""),
@@ -1181,6 +1187,7 @@ function dagFooter(run: Run, node: DagNode | undefined, layout: RunLayout, input
   items.push(viewState.folded.includes(run.id) ? "c unfold" : "c fold");
   if (layout.criticalPath.length) items.push(viewState.criticalPath ? "p hide path" : "p path");
   items.push("e edges");
+  if (run.nodes.some((item) => item.state === "running")) items.push("f running");
   lines.push(hints(ctx, cols, items, badge));
   return lines;
 }
@@ -1475,6 +1482,7 @@ const HELP: Array<[string, string]> = [
   ["c", "fold / unfold completed layers"],
   ["p", "toggle critical-path highlight"],
   ["e", "show / hide edges implied by a path"],
+  ["f", "jump to the next running node"],
   ["o", "open the selected child's transcript"],
   ["wheel", "scroll; shift+wheel scrolls sideways"],
   ["click", "select node; double-click opens it"],

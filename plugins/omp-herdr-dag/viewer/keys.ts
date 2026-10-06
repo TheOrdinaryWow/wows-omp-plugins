@@ -31,6 +31,7 @@ export type Key =
   | "mode"
   | "previousRun"
   | "nextRun"
+  | "running"
   | "open"
   | "escape"
   | "help";
@@ -61,6 +62,7 @@ const CHARS: Record<string, Key> = {
   c: "fold",
   p: "critical",
   e: "edges",
+  f: "running",
   "\t": "mode",
   "[": "previousRun",
   "]": "nextRun",
@@ -317,6 +319,16 @@ export function handleKey(context: InputContext, key: Key): Effect[] {
         ? spatialTarget(frame.boxes, selected, key)
         : moveSelection(nodeOrder(layout), selected, key === "up" || key === "left" ? -1 : 1);
     if (next) ui.selected.set(run.id, next);
+    ui.follow = true;
+    return [];
+  }
+  if (key === "running") {
+    // Cycles through running nodes in drawn order, starting after the current selection; nothing runs, nothing moves.
+    const states = new Map(run.nodes.map((node) => [node.id, node.state]));
+    const running = nodeOrder(layout).filter((id) => states.get(id) === "running");
+    if (!running.length) return [];
+    const next = running[(running.indexOf(selected ?? "") + 1) % running.length] as string;
+    ui.selected.set(run.id, next);
     ui.follow = true;
     return [];
   }
