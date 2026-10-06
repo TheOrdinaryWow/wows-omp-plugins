@@ -44,7 +44,7 @@ import {
   todo,
 } from "../plugins/roadmap/src/operations.ts";
 import { cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
-import { closedMarkdownBodies, markdownStructureEscapes } from "./roadmap-markdown-fixtures.ts";
+import { ambiguousMarkdownBodies, closedMarkdownBodies, markdownStructureEscapes } from "./roadmap-markdown-fixtures.ts";
 
 const main: Actor = { sessionId: "main-session", kind: "main" };
 const sub: Actor = { sessionId: "sub-session", kind: "sub" };
@@ -945,7 +945,7 @@ describe("roadmap CommonMark container boundaries", () => {
     success(await todo(repo, main, { action: "add", title: "Pending", severity: "normal", source: "Review", target: "S01" }));
     success(await adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections }));
     const planned = await managedBytes(repo);
-    for (const { body } of markdownStructureEscapes) {
+    for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
       const peer = body.replace("### Evidence", "## Evidence");
       refused(await stage(repo, main, { action: "edit", id: "S01", objective: peer }), "structure");
       expect(await managedBytes(repo)).toEqual(planned);
@@ -984,7 +984,7 @@ describe("roadmap CommonMark container boundaries", () => {
       todos: [{ id: "T001", disposition: "resolved", reference: "Verified" }],
       adrs: [{ id: "ADR-0002", status: "accepted" }],
     };
-    for (const { body } of markdownStructureEscapes) {
+    for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
       for (const field of ["delivered", "deviations"] as const) {
         refused(await stage(repo, main, { ...close, [field]: body }), "structure");
         expect(await managedBytes(repo)).toEqual(active);
@@ -1003,7 +1003,7 @@ describe("roadmap CommonMark container boundaries", () => {
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
     success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
     const before = await managedBytes(repo);
-    for (const { body } of markdownStructureEscapes) {
+    for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
       refused(
         await openRound(repo, main, { round: { ...charter, goal: body.replace("### Evidence", "## Evidence") }, import_todos: [] }),
         "structure",
@@ -1081,7 +1081,7 @@ describe("roadmap CommonMark container boundaries", () => {
     const todos = model.todos[0];
     const decision = model.adrs[0];
     if (!current || !round || !todos || !decision) throw new Error("Missing fixtures");
-    for (const { body } of markdownStructureEscapes) {
+    for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
       const peer = body.replace("### Evidence", "## Evidence");
       for (const [path, content] of [
         [current.path, renderStage({ ...current, objective: peer })],

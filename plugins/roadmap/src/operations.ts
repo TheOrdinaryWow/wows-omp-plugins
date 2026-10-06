@@ -173,7 +173,7 @@ class Refusal extends Error {
 
 const preparedModels = new WeakMap<PreparedOperation, Model>();
 const BODY_REPAIR_HINT =
-  "Escape structural headings or HTML openers in body text, or put examples inside fenced code blocks; close every code fence and HTML block before retrying.";
+  "Escape structural headings or HTML openers, or put examples inside fully closed fenced code blocks; close every fence and HTML construct in its original container. Keep link reference definitions and titles single-line, and separate ambiguous continuations with a blank line before retrying.";
 
 function required(value: string | undefined, field: string, multiline = false): string {
   if (typeof value !== "string" || !value.trim() || (!multiline && /[\r\n]/.test(value))) {

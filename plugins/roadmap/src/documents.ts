@@ -316,7 +316,7 @@ function section(heading: string, body: string): string {
 }
 
 type MarkdownContainer = { kind: "quote" } | { kind: "list"; indent: number; empty: boolean };
-type MarkdownHtml = { end?: RegExp; opener: string; line: number };
+type MarkdownHtml = { end?: RegExp; opener: string; line: number; inline?: boolean };
 
 const HTML_BLOCK_TAG =
   /^ {0,3}(<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?=[ \t/>]|$))/i;
@@ -327,9 +327,15 @@ const MARKDOWN_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
 const MARKDOWN_THEMATIC = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const MARKDOWN_ATX = /^ {0,3}#{1,6}(?:[ \t]|$)/;
 const MARKDOWN_LIST = /^( {0,3})([*+-]|\d{1,9}[.)])( +|$)/;
+const MARKDOWN_REFERENCE_START = /^ {0,3}\[(?:\\.|[^[\]\\])+\]:/;
+const MARKDOWN_REFERENCE =
+  /^ {0,3}\[(?:\\.|[^[\]\\]){1,999}\]:[ \t]*(?:<[^<>\n]+>|[^\s<>]+)(?:[ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\((?:\\.|[^()\\])*\)))?[ \t]*$/;
 
 function markdownHtml(line: string, paragraph: boolean, number: number): MarkdownHtml | undefined {
-  const opener = /^ {0,3}(<(?:script|pre|style|textarea)(?=[ \t>]|$))/i.exec(line) ?? /^ {0,3}(<!--|<\?|<![A-Z]|<!\[CDATA\[)/.exec(line);
+  // Paragraph continuation indentation does not make a raw HTML opener code.
+  const content = paragraph ? line.trimStart() : line;
+  const opener =
+    /^ {0,3}(<(?:script|pre|style|textarea)(?=[ \t>]|$))/i.exec(content) ?? /^ {0,3}(<!--|<\?|<![A-Z]|<!\[CDATA\[)/.exec(content);
   if (opener) {
     const start = opener[1] as string;
     const end =
@@ -346,6 +352,61 @@ function markdownHtml(line: string, paragraph: boolean, number: number): Markdow
   }
   const tag = HTML_BLOCK_TAG.exec(line) ?? (!paragraph ? HTML_COMPLETE_TAG.exec(line) : null);
   return tag ? { opener: tag[1] as string, line: number } : undefined;
+}
+
+function markdownInlineText(line: string): string {
+  let text = "";
+  for (let cursor = 0; cursor < line.length; ) {
+    if (line[cursor] === "\\" && line[cursor + 1]) {
+      text += "  ";
+      cursor += 2;
+    } else if (line[cursor] === "`") {
+      let end = cursor + 1;
+      while (line[end] === "`") end++;
+      const marker = line.slice(cursor, end);
+      let close = line.indexOf(marker, end);
+      while (close >= 0 && (line[close - 1] === "`" || line[close + marker.length] === "`"))
+        close = line.indexOf(marker, close + marker.length);
+      if (close >= 0) {
+        const length = close + marker.length - cursor;
+        text += " ".repeat(length);
+        cursor += length;
+      } else {
+        text += marker;
+        cursor = end;
+      }
+    } else text += line[cursor++];
+  }
+  return text;
+}
+
+// Raw HTML ignores Markdown escapes and can keep comments/raw-text elements open
+// after the Markdown block itself ends at a blank line or container boundary.
+function markdownRawHtml(line: string, state: MarkdownHtml | undefined, number: number, inline = false): MarkdownHtml | undefined {
+  const text = inline ? markdownInlineText(line) : line;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const rest = text.slice(cursor);
+    if (state) {
+      const closing = state.end?.exec(rest);
+      if (!closing) return state;
+      cursor += closing.index + closing[0].length;
+      state = undefined;
+    } else {
+      const special = inline ? null : /<!--|<\?|<![A-Z]|<!\[CDATA\[/.exec(rest);
+      const tag = /<(script|pre|style|textarea)(?=[ \t/>]|$)/i.exec(rest);
+      const opening = special && (!tag || special.index < tag.index) ? special : tag;
+      if (!opening) return undefined;
+      if (opening === tag && /^<(?:script|pre|style|textarea)\b[^>]*\/>/i.test(rest.slice(opening.index)))
+        invalid("Ambiguous self-closing raw-text HTML element; use an explicit opening and closing tag before retrying.");
+      state = markdownHtml(rest.slice(opening.index), false, number);
+      if (state) state.inline = inline;
+      if (opening === tag && tag && state) state.end = new RegExp(`</${tag[1]}>`, "i");
+      else if (state?.opener === "<?" || state?.opener === "<![CDATA[") state.end = />/;
+      cursor += opening.index + opening[0].length;
+    }
+  }
+  return state;
 }
 
 function markdownFence(line: string): RegExpExecArray | null {
@@ -388,8 +449,10 @@ export function markdownHeadings(
   const containers: MarkdownContainer[] = [];
   let fence: { character: string; length: number } | undefined;
   let html: MarkdownHtml | undefined;
+  let rawHtml: MarkdownHtml | undefined;
   let indented = false;
   let paragraph: { offset: number; lines: string[] } | undefined;
+  let reference = false;
   let offset = 0;
   let number = 0;
   for (const raw of body.split("\n")) {
@@ -416,6 +479,18 @@ export function markdownHeadings(
       continued++;
     }
     let content = line.text.slice(cursor);
+    if (options.requireClosedFences && reference && /^ {4}/.test(content) && content.trim())
+      invalid("Ambiguous indented link reference continuation; add a blank line after the complete definition before retrying.");
+    if (options.requireClosedFences && (paragraph || reference) && /^ {4}/.test(content) && markdownHtml(content.trimStart(), true, number))
+      invalid("Ambiguous indented HTML continuation; escape the opener or put the example in a closed fenced code block before retrying.");
+    if (
+      options.requireClosedFences &&
+      continued < containers.length &&
+      paragraph &&
+      markdownList(content, false) &&
+      !markdownList(content, true)
+    )
+      invalid("Ambiguous list marker on a lazy container continuation; add a blank line before the list before retrying.");
     const lazy =
       continued < containers.length &&
       paragraph &&
@@ -428,11 +503,16 @@ export function markdownHeadings(
       !markdownFence(content) &&
       !markdownHtml(content, true, number);
     if (continued < containers.length && !lazy) {
-      // A fence/HTML leaf belongs to its containers. Dedenting out of an item or
-      // omitting a required quote marker ends it implicitly, as in CommonMark.
+      if (html?.end)
+        invalid(`Unterminated HTML block (${html.opener}) at line ${html.line}; close it inside its container before retrying.`);
+      if (reference && content.trim() && options.requireClosedFences)
+        invalid(
+          "Ambiguous link reference continuation across a container boundary; add a blank line after the definition before retrying.",
+        );
       if (fence && options.requireClosedFences) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
       containers.length = continued;
       fence = html = paragraph = undefined;
+      reference = false;
       indented = false;
     }
     if (!fence && !html && !lazy) {
@@ -451,13 +531,16 @@ export function markdownHeadings(
           cursor += indent;
         }
         paragraph = undefined;
+        reference = false;
         indented = false;
         content = line.text.slice(cursor);
       }
     }
     let masked = false;
+    let rawHtmlLine = false;
     if (html) {
       masked = true;
+      rawHtmlLine = true;
       if (html.end ? html.end.test(content) : !content.trim()) html = undefined;
     } else if (fence) {
       masked = true;
@@ -472,6 +555,7 @@ export function markdownHeadings(
         const openingFence = opener ? null : markdownFence(content);
         if (opener) {
           masked = true;
+          rawHtmlLine = true;
           if (!opener.end?.test(content)) html = opener;
         } else if (openingFence) {
           masked = true;
@@ -479,8 +563,15 @@ export function markdownHeadings(
         }
       }
     }
-    if (masked) paragraph = undefined;
-    else {
+    if (rawHtmlLine && options.requireClosedFences) rawHtml = markdownRawHtml(content, rawHtml, number);
+    else if (rawHtml && !rawHtml.inline)
+      invalid(`Unterminated raw HTML (${rawHtml.opener}) leaves its Markdown block; close it before the blank line or container exit.`);
+    else if (!masked && options.requireClosedFences && (rawHtml || /<(?:script|pre|style|textarea)(?=[ \t/>]|$)/i.test(content)))
+      rawHtml = markdownRawHtml(content, rawHtml, number, true);
+    if (masked) {
+      paragraph = undefined;
+      reference = false;
+    } else {
       const underline = MARKDOWN_UNDERLINE.exec(content);
       if (underline && paragraph && !lazy) {
         const prefix = underline[1]?.startsWith("=") ? "#" : "##";
@@ -506,9 +597,19 @@ export function markdownHeadings(
           }
         }
         paragraph = undefined;
-      } else if (!content.trim() || MARKDOWN_THEMATIC.test(content) || (!paragraph && /^ {0,3}\[[^\]]+\]:[ \t]*\S/.test(content))) {
+      } else if (!content.trim() || MARKDOWN_THEMATIC.test(content)) {
         paragraph = undefined;
+        reference = false;
+      } else if (!paragraph && MARKDOWN_REFERENCE_START.test(content)) {
+        if (!MARKDOWN_REFERENCE.test(content)) {
+          if (options.requireClosedFences)
+            invalid("Ambiguous link reference definition; use a complete single-line definition before retrying.");
+          paragraph = { offset, lines: [content.trim()] };
+        } else reference = true;
       } else {
+        if (reference && options.requireClosedFences && /^ {0,3}["'(]/.test(content))
+          invalid("Ambiguous multiline link reference title; keep the definition and its title on one line before retrying.");
+        reference = false;
         paragraph ??= { offset, lines: [] };
         paragraph.lines.push(content.trim());
       }
@@ -516,6 +617,7 @@ export function markdownHeadings(
     offset += raw.length + 1;
   }
   if (html?.end) invalid(`Unterminated HTML block (${html.opener}) at line ${html.line}; close the HTML block before retrying.`);
+  if (rawHtml) invalid(`Unterminated raw HTML (${rawHtml.opener}) at line ${rawHtml.line}; close the HTML construct before retrying.`);
   if (options.requireClosedFences && fence) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
   return headings;
 }

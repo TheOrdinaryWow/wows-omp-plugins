@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { parseHtml, proseText } from "../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
 import {
   buildAdrBody,
   HOW_THIS_DIRECTORY_WORKS,
@@ -28,7 +29,14 @@ import {
   stageSha256,
 } from "../plugins/roadmap/src/documents.ts";
 import { adrFixture, cleanupFixtures, diskFixture, modelFixture, roundFixture, stageFixture, todoFixture } from "./roadmap-fixtures.ts";
-import { closedMarkdownBodies, htmlBlankLineBlocks, markdownContainers, markdownStructureEscapes } from "./roadmap-markdown-fixtures.ts";
+import {
+  ambiguousMarkdownBodies,
+  closedMarkdownBodies,
+  htmlBlankLineBlocks,
+  markdownContainers,
+  markdownStructureEscapes,
+  randomizedMarkdownBodies,
+} from "./roadmap-markdown-fixtures.ts";
 
 afterEach(cleanupFixtures);
 
@@ -222,6 +230,73 @@ describe("roadmap managed documents", () => {
       ]);
       expect({ source, headings: scanned }).toEqual({ source, headings: rendered });
     }
+  });
+
+  test("ambiguous references, indented HTML and container exits cannot swallow fixed sections", () => {
+    for (const { name, body } of ambiguousMarkdownBodies) {
+      expect(() => markdownHeadings(body, /^(#{1,6})(?:[ \t]+(.*))?$/gm, { requireClosedFences: true }), name).toThrow();
+      expect(() => parseStage(renderStage(stageFixture({ objective: body }))), name).toThrow();
+      expect(() => parseRound(renderRound(roundFixture({ goal: body }))), name).toThrow();
+      const todos = todoFixture();
+      if (todos.items[0]) todos.items[0].body = body;
+      expect(() => parseTodo(renderTodo(todos)), name).toThrow();
+      const adr = adrFixture();
+      adr.body = buildAdrBody(adr.title, { context: body, options: ["X"], outcome: "Choose X." });
+      expect(() => parseAdr(renderAdr(adr)), name).toThrow();
+    }
+  });
+
+  test("seeded block grammar never accepts a body that hides rendered fixed headings", () => {
+    const seed = 0x6e7d9411;
+    const profiles = [
+      ["### Delivered", "### Deviations", "### Evidence", "### TODO", "### ADRs"],
+      ["## Goal", "## Constraints", "## Non-goals", "## Principles", "## Stages"],
+      ["## Context and Problem Statement", "## Considered Options", "## Decision Outcome", "## More Information"],
+      ["### T001 — First", "### T002 — Second", "## Closed in this round"],
+    ];
+    let accepted = 0;
+    let rejected = 0;
+    const bodies = new Set(randomizedMarkdownBodies(seed, 12_000));
+    const pattern = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/gm;
+    for (const body of bodies) {
+      let outline: RegExpMatchArray[];
+      try {
+        outline = markdownHeadings(body, pattern, { requireClosedFences: true, topLevelOnly: true });
+      } catch {
+        rejected++;
+        continue;
+      }
+      if (outline.some((heading) => (heading[1] as string).length <= 3)) {
+        rejected++;
+        continue;
+      }
+      accepted++;
+      for (const headings of profiles) {
+        const source = `${headings[0]}\n\n${body}\n\n${headings
+          .slice(1)
+          .map((heading) => `${heading}\n\nFixed text.`)
+          .join("\n\n")}\n`;
+        const html = Bun.markdown.html(source);
+        const rendered: string[] = [];
+        type HtmlNode = { tag: string; children: HtmlNode[] };
+        function visit(node: HtmlNode): void {
+          if (["pre", "code", "script", "style", "textarea", "svg"].includes(node.tag)) return;
+          if (/^h[1-6]$/.test(node.tag)) rendered.push(`${"#".repeat(Number(node.tag[1]))} ${proseText(node)}`);
+          for (const child of node.children) visit(child);
+        }
+        visit(parseHtml(html));
+        const fixed = rendered.filter((heading) => headings.includes(heading));
+        if (fixed.join("\n") !== headings.join("\n"))
+          throw new Error(
+            `Markdown differential mismatch ${JSON.stringify({ seed: `0x${seed.toString(16)}`, body, source, html, fixed, expected: headings })}`,
+          );
+        expect(fixed).toEqual(headings);
+      }
+    }
+    expect(bodies.size).toBeGreaterThan(8_000);
+    expect(accepted).toBeGreaterThan(1_000);
+    expect(rejected).toBeGreaterThan(1_000);
+    console.log(`Markdown differential seed=0x${seed.toString(16)} cases=${bodies.size} accepted=${accepted} rejected=${rejected}`);
   });
 
   test("closed container and HTML bodies round-trip through every managed document", () => {
