@@ -80,8 +80,8 @@ export function managedTargets(toolName: string, input: Record<string, unknown>,
         .filter((path) => path && (!/^[a-z][a-z\d+.-]*:\/\//i.test(path) || path.startsWith("file://")))
         .map((path) => {
           if (path.startsWith("file://")) return fileURLToPath(path);
-          // A directory/glob ancestor may cover managed files even when they are not named individually.
-          const base = path.split(/[*?[\]{}]/, 1)[0] || ".";
+          // Only glob-aware tools project a pattern to its directory ancestor.
+          const base = toolName === "ast_edit" || toolName === "bash" ? path.split(/[*?[\]{}]/, 1)[0] || "." : path;
           return resolve(cwd, base);
         }),
     ),

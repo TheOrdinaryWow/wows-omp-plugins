@@ -16,6 +16,7 @@ import {
   markdownHeadings,
   parseDoneCriteria,
   parseRoadmapIndex,
+  parseTodo,
   type Repo,
   type RoundDoc,
   renderAdr,
@@ -732,7 +733,18 @@ export async function todo(repo: Repo, actor: Actor, input: TodoOperationInput, 
           }
         } else throw new Refusal("Unknown TODO action.");
       }
-      mutation.put(doc.path, renderTodo(doc));
+      const content = renderTodo(doc);
+      const hint = "Escape item-boundary headings in TODO bodies, or put Markdown examples inside fenced code blocks.";
+      let candidate: TodoDoc;
+      try {
+        candidate = parseTodo(content, doc.path);
+      } catch (error) {
+        if (error instanceof DocumentError) throw new Refusal(`TODO body changes the document structure: ${error.message}`, [hint]);
+        throw error;
+      }
+      if (candidate.items.length !== doc.items.length) throw new Refusal("TODO body introduces an item-boundary heading.", [hint]);
+      Object.assign(doc, candidate);
+      mutation.put(doc.path, content);
       return `TODO ${item.id}: ${input.action} recorded.`;
     },
     options,

@@ -401,6 +401,45 @@ describe("roadmap stage lifecycle and close gate", () => {
   });
 });
 
+describe("roadmap TODO body structure", () => {
+  test("add and update refuse injected item headings without writes, but preserve fenced examples", async () => {
+    const repo = await initialized();
+    const duplicate = "### T001 — Injected item\n- Severity: normal\n- Source: injected\n- Target: S01\n\nInjected body.";
+    const initial = await managedBytes(repo);
+    const addition = await todo(repo, main, {
+      action: "add",
+      title: "Legitimate item",
+      source: "S01 review",
+      severity: "normal",
+      target: "S01",
+      body: duplicate,
+    });
+    expect(addition.ok).toBe(false);
+    if (addition.ok) throw new Error("Injected TODO heading was written.");
+    expect(addition.hints.length).toBeGreaterThan(0);
+    expect(await managedBytes(repo)).toEqual(initial);
+
+    const fenced = `Example:\n\n\`\`\`markdown\n${duplicate}\n\`\`\``;
+    success(await todo(repo, main, { action: "add", title: "Example", source: "Review", severity: "normal", target: "S01", body: fenced }));
+    let model = await loadAll(repo);
+    const item = model.todos[0]?.items[0];
+    expect(item?.body).toBe(fenced);
+    const beforeUpdate = await managedBytes(repo);
+    const update = await todo(repo, main, { action: "update", id: item?.id, body: duplicate.replace("T001", item?.id as string) });
+    expect(update.ok).toBe(false);
+    if (update.ok) throw new Error("Injected TODO heading replaced the body.");
+    expect(update.hints.length).toBeGreaterThan(0);
+    expect(await managedBytes(repo)).toEqual(beforeUpdate);
+
+    const updatedExample = `~~~markdown\n${duplicate}\n~~~`;
+    success(await todo(repo, main, { action: "update", id: item?.id, body: updatedExample }));
+    model = await loadAll(repo);
+    expect(model.todos[0]?.items).toHaveLength(1);
+    expect(model.todos[0]?.items[0]?.body).toBe(updatedExample);
+    expect((await check(model)).filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
+  });
+});
+
 describe("roadmap ADR operations", () => {
   test("dated notes ignore fenced More Information examples and stay in the real section", async () => {
     const repo = await initialized();

@@ -69,7 +69,15 @@ export function registerCommands(pi: ExtensionAPI, ses: RoadmapSession, uiFor: U
         action = choice.action;
         selectedStage = choice.stage;
       }
-      if (action === "close") return;
+      if (action === "close") {
+        if (selectedStage) {
+          ui.notify(
+            `To close ${selectedStage}, call roadmap_stage with action: "close", id: "${selectedStage}", delivered, passing evidence for every done criterion, and TODO/ADR dispositions. This menu does not close the stage.`,
+            "info",
+          );
+        }
+        return;
+      }
       if (action === "stage") {
         if (!selectedStage || words.length > 2) throw new Error("Usage: /roadmap stage <id>");
         const result = toolResult(await statusReceipt(repo, selectedStage));

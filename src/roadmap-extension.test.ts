@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
@@ -231,6 +231,7 @@ const CASES: Record<string, string> = {
   "round-close-stale": "round-close dialogs cannot authorize closing a replacement round",
   rebuild: "session start, switch, branch and tree rebuild from the active branch",
   pending: "pending-close reminders retain evidence and remain bounded",
+  menu: "status-menu stage close gives tool guidance without writing files",
   preflight: "init command preflight rejects existing directories and non-git roots",
 };
 
@@ -259,6 +260,22 @@ async function acceptance(name: string, root: string): Promise<void> {
         }
         const write = h.session.getToolByName("write");
         assert(write);
+        const adrPath = join(repo.adrDir, "README.md");
+        const adrBefore = await readFile(adrPath, "utf8");
+        const edit = h.session.getToolByName("edit");
+        assert(edit);
+        for (const prefix of ["scratch[old]", "scratch*old", "scratch?old", "scratch{old}"]) {
+          for (const path of [current.path, adrPath]) {
+            const literal = `${prefix}/../${relative(root, path)}`;
+            await assert.rejects(write.execute(`literal-write-${crypto.randomUUID()}`, { path: literal, content: "bad" }), /roadmap_stage/);
+            await assert.rejects(
+              edit.execute(`literal-edit-${crypto.randomUUID()}`, { input: `[${literal}#ABCD]\nPUT <1:\n+bad` }),
+              /roadmap_stage/,
+            );
+          }
+        }
+        assert.equal(await readFile(current.path, "utf8"), before);
+        assert.equal(await readFile(adrPath, "utf8"), adrBefore);
         await write.execute("allow-other", { path: "docs/other.md", content: "allowed\n" });
         assert.equal(await readFile(join(root, "docs/other.md"), "utf8"), "allowed\n");
         for (const input of [
@@ -281,6 +298,15 @@ async function acceptance(name: string, root: string): Promise<void> {
           }),
           /roadmap_stage/,
         );
+        for (const prefix of ["scratch[old]", "scratch*old", "scratch?old", "scratch{old}"]) {
+          const path = `${prefix}/../${relative(root, current.path)}`;
+          await assert.rejects(
+            edit.execute(`literal-patch-${crypto.randomUUID()}`, {
+              input: `*** Begin Patch\n*** Update File: ${path}\n@@\n-# Checkout\n+# Bad\n*** End Patch`,
+            }),
+            /roadmap_stage/,
+          );
+        }
         const result = await h.runner.emitToolCall({
           type: "tool_call",
           toolName: "apply_patch",
@@ -393,6 +419,20 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.match(overlap.reason, /no answer available/);
         assert.equal(h.ui.overlapCalls.length, 0);
       }
+    } else if (name === "menu") {
+      const repo = await initialized(root);
+      assert((await stage(repo, main, { action: "start", id: "S01" })).ok);
+      const before = (await loadAll(repo)).files;
+      h.ui.menu = { action: "close", stage: "S01" };
+      await command(h, "roadmap");
+      const message = h.ui.notifications.at(-1)?.message ?? "";
+      assert.match(message, /roadmap_stage/);
+      assert.match(message, /S01/);
+      assert.match(message, /evidence/);
+      assert.equal(h.kickoffs.length, 0);
+      assert.equal(h.messages.length, 0);
+      assert.deepEqual((await loadAll(repo)).files, before);
+      assert.equal((await loadAll(repo)).stages[0]?.status, "active");
     } else if (name === "preflight") {
       await mkdir(join(root, "docs/adr"), { recursive: true });
       await writeFile(join(root, "docs/adr/existing.md"), "user's ADR");

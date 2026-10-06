@@ -66,7 +66,7 @@ All commands below require the main session. Stage ids have argument completions
 | Command | Behavior |
 | --- | --- |
 | `/init-project` | Check initialization prerequisites, arm initialization and start the interview. |
-| `/roadmap` | Open the status menu with stages, TODO counts and valid actions. The menu's Close action only dismisses the menu. |
+| `/roadmap` | Open the status menu with stages, TODO counts and valid actions. Close stage shows guidance for the evidence-gated `roadmap_stage` close tool; it doesn't write files. |
 | `/roadmap stage <id>` | Show the full stage document and planning handoff; doesn't start or bind it. |
 | `/roadmap check` | Check document consistency. |
 | `/roadmap check --fix` | Regenerate eligible generated blocks, never authored bodies or frozen rounds. |
