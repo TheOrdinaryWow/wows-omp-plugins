@@ -936,7 +936,7 @@ export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, op
       } else if (input.action === "note") {
         const note = required(input.text, "ADR note", true);
         assertBody(note);
-        const information = markdownHeadings(current.body, /^## More Information$/gm, { requireClosedFences: true, topLevelOnly: true });
+        const information = markdownHeadings(current.body, /^## More Information$/gm);
         current.body += current.body.endsWith("\n\n") ? "" : current.body.endsWith("\n") ? "\n" : "\n\n";
         if (!information.length) current.body += "## More Information\n\n";
         current.body += `### ${new Date().toISOString().slice(0, 10)}\n\n${note}\n\n`;
@@ -1237,9 +1237,9 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
       round.stages = generatedBlock("stages", renderStageTable(model.stages.filter((stage) => stage.round === round.id)));
       round.status = "closed";
       round.closed = new Date().toISOString().slice(0, 10);
-      mutation.put(round.path, renderRound(round));
-      round.frozen_sha256 = roundSha256(roundFiles(model, round));
-      mutation.put(round.path, renderRound(round));
+      const content = renderRound(round);
+      round.frozen_sha256 = roundSha256({ ...roundFiles(model, round), "README.md": content });
+      mutation.put(round.path, content.replace(/^frozen_sha256:.*$/m, `frozen_sha256: "${round.frozen_sha256}"`));
       return `Closed and froze ${round.id} — ${round.title}. ADR management remains available.`;
     },
     options,

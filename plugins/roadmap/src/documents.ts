@@ -6,11 +6,11 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { discoverRepo } from "./git.ts";
 import { parseFrontmatter } from "./host.ts";
 
-export const FORMAT = 1;
+const FORMAT = 1;
 export const MANAGED_COMMENT =
   "<!-- Managed by the roadmap OMP plugin (format v1). Change it through roadmap_* tools. Format: docs/roadmap/README.md -->";
 
-export const HOW_THIS_DIRECTORY_WORKS = `## How this directory works
+const HOW_THIS_DIRECTORY_WORKS = `## How this directory works
 
 This directory records structured build rounds, their stages and carry-over TODOs. ADRs in docs/adr/ record decisions and outlive rounds. Plans describe implementation steps and do not live here.
 
@@ -18,7 +18,7 @@ The root README is the initialization marker and rounds index. Each NN-slug roun
 
 Every managed file has format: 1 front matter and a managed-by comment. This README also carries roadmap: { format: 1 }. Front matter and fixed headings are structure. Tool-owned bodies allow plain paragraphs, flat plain-text lists and closed top-level fences, with same-line inline code spans; other Markdown or raw HTML syntax is refused. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages and Known limitations. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
 
-Agents change managed files through roadmap_* tools. Body text can be edited by a user in an editor; malformed structure must be repaired before tools can write. Generated blocks are marked with <!-- roadmap:generated:<name> --> and <!-- /roadmap:generated -->. The tools own numbering, metadata, headings and generated indexes.
+Agents change managed files through roadmap_* tools. Body text can be edited by a user in an editor; malformed structure must be repaired before tools can write. Generated blocks are marked with \`<!-- roadmap:generated:<name> -->\` and \`<!-- /roadmap:generated -->\`. The tools own numbering, metadata, headings and generated indexes.
 
 Rounds are active or closed. Stages are planned, active, closed or dropped. Closed stages never reopen; corrective work uses a new stage with follows. Dependencies must be closed before a stage starts. Done criteria state what must pass and how to verify it; closing records evidence, TODO dispositions and ADR dispositions. Open TODOs need severity, source and either an unclosed target stage or a trigger. Charter principles cite ADRs rather than restating decisions. Accepted ADRs change through status transitions, supersession and dated append-only notes.
 
@@ -30,8 +30,8 @@ Check verifies document consistency. It cannot determine whether code implements
 `;
 
 export type StageStatus = "planned" | "active" | "closed" | "dropped";
-export type TodoStatus = "open" | "resolved" | "moved" | "wontfix" | "carried";
-export type AdrStatus = "proposed" | "accepted" | "rejected" | "deprecated" | "superseded";
+type TodoStatus = "open" | "resolved" | "moved" | "wontfix" | "carried";
+type AdrStatus = "proposed" | "accepted" | "rejected" | "deprecated" | "superseded";
 export interface Repo {
   repoRoot: string;
   commonDir: string;
@@ -128,7 +128,7 @@ export interface AdrIndexDoc extends Document {
   body: string;
 }
 
-export interface DocumentIssue {
+interface DocumentIssue {
   rule: "structure" | "format";
   path: string;
   message: string;
@@ -315,40 +315,44 @@ function section(heading: string, body: string): string {
   return `${heading}\n${body ? `${lf(body)}\n` : ""}\n`;
 }
 
-function plainBodyLine(line: string, number: number): void {
-  if (/^#{1,6}(?:[ \t]|$)/.test(line)) invalid(`Unsupported body heading at line ${number}.`);
-  if (/^(?:[-=]+|(?:[-*_] *)+) *$/.test(line)) invalid(`Unsupported body heading underline or thematic break at line ${number}.`);
-  if (/^(?:>|[-+*](?: |$)|\d{1,9}[.)](?: |$)|`{3,}|~{3,})/.test(line)) invalid(`Unsupported body container or fence at line ${number}.`);
-  const plain = (text: string): void => {
-    if (/[<>[\]\\|*_~]/.test(text)) invalid(`Unsupported body HTML or inline markup at line ${number}.`);
-  };
+const BODY_FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})(?:[ \t]*[a-zA-Z0-9][a-zA-Z0-9_+.-]*)?[ \t]*$/;
+const BODY_FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+
+function inlineBodyAllowed(line: string, forbidden: RegExp): boolean {
   let start = 0;
   let code: string | undefined;
   for (const run of line.matchAll(/`+/g)) {
     if (code === undefined) {
-      plain(line.slice(start, run.index));
+      if (line[run.index - 1] === "\\" || forbidden.test(line.slice(start, run.index))) return false;
       code = run[0];
     } else if (run[0] === code) {
       start = run.index + run[0].length;
       code = undefined;
     }
   }
-  if (code !== undefined) invalid(`Inline code spans must close on the same line (${number}).`);
-  plain(line.slice(start));
+  return code === undefined && !forbidden.test(line.slice(start));
+}
+
+function plainBodyLine(line: string, number: number): void {
+  if (/^#{1,6}(?:[ \t]|$)/.test(line)) invalid(`Unsupported body heading at line ${number}.`);
+  if (/^(?:[-=]+|(?:[-*_] *)+) *$/.test(line)) invalid(`Unsupported body heading underline or thematic break at line ${number}.`);
+  if (/^(?:>|[-+*](?: |$)|\d{1,9}[.)](?: |$)|`{3,}|~{3,})/.test(line)) invalid(`Unsupported body container or fence at line ${number}.`);
+  if (!inlineBodyAllowed(line, /[<>[\]\\|*_~]/)) invalid(`Unsupported body HTML, inline markup or multiline code span at line ${number}.`);
 }
 
 export function validateBody(body: string, options: { inlineOnly?: boolean; afterList?: boolean } = {}): void {
   let fence: { marker: string; length: number } | undefined;
   let list = options.afterList ?? false;
+  let blank = options.afterList ?? false;
   let number = 0;
   for (const raw of lf(body).split("\n")) {
     number++;
     if (fence) {
-      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(raw)?.[1];
+      const closing = BODY_FENCE_CLOSE.exec(raw)?.[1];
       if (closing?.[0] === fence.marker && closing.length >= fence.length) fence = undefined;
       continue;
     }
-    const opening = /^( {0,3})(`{3,}|~{3,})(?:[ \t]*[a-zA-Z0-9][a-zA-Z0-9_+.-]*)?[ \t]*$/.exec(raw);
+    const opening = BODY_FENCE_OPEN.exec(raw);
     if (opening && !options.inlineOnly) {
       if (list && opening[1]) invalid(`A body fence must be top-level, not a list continuation (line ${number}).`);
       const marker = opening[2] as string;
@@ -360,7 +364,10 @@ export function validateBody(body: string, options: { inlineOnly?: boolean; afte
       if (character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
         invalid(`Body heading indentation, tabs or control characters are unsupported outside fences (line ${number}).`);
     }
-    if (!raw.trim()) continue;
+    if (!raw.trim()) {
+      blank = true;
+      continue;
+    }
     if (/^ {4}/.test(raw)) invalid(`Indented body code is unsupported (line ${number}).`);
     const line = raw.trimStart();
     const item = options.inlineOnly ? null : /^(?:[-+*]|\d{1,9}[.)]) (\S.*)$/.exec(line);
@@ -369,329 +376,78 @@ export function validateBody(body: string, options: { inlineOnly?: boolean; afte
       plainBodyLine(item[1] as string, number);
       list = true;
     } else {
-      if (list && raw.startsWith(" ")) invalid(`Indented body list continuations are unsupported (line ${number}).`);
+      if (list && (!blank || raw.startsWith(" ")))
+        invalid(`Body list continuations are unsupported; separate a new plain paragraph with a blank line (line ${number}).`);
       plainBodyLine(line, number);
       list = false;
     }
+    blank = false;
   }
   if (fence) invalid("Unterminated body fence; close the top-level fenced code block.");
 }
 
-type MarkdownContainer = { kind: "quote" } | { kind: "list"; indent: number; empty: boolean };
-type MarkdownHtml = { end?: RegExp; opener: string; line: number; inline?: boolean };
-
-const HTML_BLOCK_TAG =
-  /^ {0,3}(<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?=[ \t/>]|$))/i;
-const HTML_COMPLETE_TAG =
-  /^ {0,3}(<[a-z][a-z\d-]*(?:[ \t]+[a-z_:][a-z\d_.:-]*(?:[ \t]*=[ \t]*(?:"[^"]*"|'[^']*'|[^ \t"'=<>`]+))?)*[ \t]*\/?>|<\/[a-z][a-z\d-]*[ \t]*>)[ \t]*$/i;
-const MARKDOWN_FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-const MARKDOWN_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
-const MARKDOWN_THEMATIC = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
-const MARKDOWN_ATX = /^ {0,3}#{1,6}(?:[ \t]|$)/;
-const MARKDOWN_LIST = /^( {0,3})([*+-]|\d{1,9}[.)])( +|$)/;
-const MARKDOWN_REFERENCE_START = /^ {0,3}\[(?:\\.|[^[\]\\])+\]:/;
-const MARKDOWN_REFERENCE =
-  /^ {0,3}\[(?:\\.|[^[\]\\]){1,999}\]:[ \t]*(?:<[^<>\n]+>|[^\s<>]+)(?:[ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\((?:\\.|[^()\\])*\)))?[ \t]*$/;
-
-function markdownHtml(line: string, paragraph: boolean, number: number): MarkdownHtml | undefined {
-  // Paragraph continuation indentation does not make a raw HTML opener code.
-  const content = paragraph ? line.trimStart() : line;
-  const opener =
-    /^ {0,3}(<(?:script|pre|style|textarea)(?=[ \t>]|$))/i.exec(content) ?? /^ {0,3}(<!--|<\?|<![A-Z]|<!\[CDATA\[)/.exec(content);
-  if (opener) {
-    const start = opener[1] as string;
-    const end =
-      start === "<!--"
-        ? /-->/
-        : start === "<?"
-          ? /\?>/
-          : start === "<![CDATA["
-            ? /\]\]>/
-            : /^<![A-Z]/.test(start)
-              ? />/
-              : /<\/(?:script|pre|style|textarea)>/i;
-    return { end, opener: start, line: number };
-  }
-  const tag = HTML_BLOCK_TAG.exec(line) ?? (!paragraph ? HTML_COMPLETE_TAG.exec(line) : null);
-  return tag ? { opener: tag[1] as string, line: number } : undefined;
-}
-
-function markdownInlineText(line: string): string {
-  let text = "";
-  for (let cursor = 0; cursor < line.length; ) {
-    if (line[cursor] === "\\" && line[cursor + 1]) {
-      text += "  ";
-      cursor += 2;
-    } else if (line[cursor] === "`") {
-      let end = cursor + 1;
-      while (line[end] === "`") end++;
-      const marker = line.slice(cursor, end);
-      let close = line.indexOf(marker, end);
-      while (close >= 0 && (line[close - 1] === "`" || line[close + marker.length] === "`"))
-        close = line.indexOf(marker, close + marker.length);
-      if (close >= 0) {
-        const length = close + marker.length - cursor;
-        text += " ".repeat(length);
-        cursor += length;
-      } else {
-        text += marker;
-        cursor = end;
-      }
-    } else text += line[cursor++];
-  }
-  return text;
-}
-
-// Raw HTML ignores Markdown escapes and can keep comments/raw-text elements open
-// after the Markdown block itself ends at a blank line or container boundary.
-function markdownRawHtml(line: string, state: MarkdownHtml | undefined, number: number, inline = false): MarkdownHtml | undefined {
-  const text = inline ? markdownInlineText(line) : line;
-  let cursor = 0;
-  while (cursor < text.length) {
-    const rest = text.slice(cursor);
-    if (state) {
-      const closing = state.end?.exec(rest);
-      if (!closing) return state;
-      cursor += closing.index + closing[0].length;
-      state = undefined;
-    } else {
-      const special = inline ? null : /<!--|<\?|<![A-Z]|<!\[CDATA\[/.exec(rest);
-      const tag = /<(script|pre|style|textarea)(?=[ \t/>]|$)/i.exec(rest);
-      const opening = special && (!tag || special.index < tag.index) ? special : tag;
-      if (!opening) return undefined;
-      if (opening === tag && /^<(?:script|pre|style|textarea)\b[^>]*\/>/i.test(rest.slice(opening.index)))
-        invalid("Ambiguous self-closing raw-text HTML element; use an explicit opening and closing tag before retrying.");
-      state = markdownHtml(rest.slice(opening.index), false, number);
-      if (state) state.inline = inline;
-      if (opening === tag && tag && state) state.end = new RegExp(`</${tag[1]}>`, "i");
-      else if (state?.opener === "<?" || state?.opener === "<![CDATA[") state.end = />/;
-      cursor += opening.index + opening[0].length;
-    }
-  }
-  return state;
-}
-
-function markdownFence(line: string): RegExpExecArray | null {
-  const fence = MARKDOWN_FENCE.exec(line);
-  return fence && (fence[1]?.[0] !== "`" || !fence[2]?.includes("`")) ? fence : null;
-}
-
-function markdownList(line: string, paragraph: boolean): RegExpExecArray | null {
-  if (MARKDOWN_THEMATIC.test(line)) return null;
-  const marker = MARKDOWN_LIST.exec(line);
-  if (
-    paragraph &&
-    marker &&
-    (!line.slice(marker[0].length).trim() || (/\d/.test(marker[2] as string) && !/^1[.)]$/.test(marker[2] as string)))
-  )
-    return null;
-  return marker;
-}
-
-// Tabs advance to four-column stops, including after list and quote markers.
-// The source map keeps all heading spans in the original, unexpanded Markdown.
-function markdownLine(raw: string): { text: string; source: number[] } {
-  let text = "";
-  const source: number[] = [];
-  for (let index = 0; index < raw.length; index++) {
-    const width = raw[index] === "\t" ? 4 - (text.length % 4) : 1;
-    text += raw[index] === "\t" ? " ".repeat(width) : raw[index];
-    for (let column = 0; column < width; column++) source.push(index);
-  }
-  source.push(raw.length);
-  return { text, source };
-}
-
-export function markdownHeadings(
-  body: string,
-  pattern: RegExp,
-  options: { requireClosedFences?: boolean; topLevelOnly?: boolean } = {},
-): RegExpMatchArray[] {
+export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
   const headings: RegExpMatchArray[] = [];
-  const containers: MarkdownContainer[] = [];
-  let fence: { character: string; length: number } | undefined;
-  let html: MarkdownHtml | undefined;
-  let rawHtml: MarkdownHtml | undefined;
-  let indented = false;
-  let paragraph: { offset: number; lines: string[] } | undefined;
-  let reference = false;
+  let fence: { marker: string; length: number } | undefined;
+  let list = false;
+  let blank = false;
   let offset = 0;
   let number = 0;
+  const repair = "Edit the stored file to use plain paragraphs, flat lists and closed top-level fences.";
   for (const raw of body.split("\n")) {
     number++;
-    const line = markdownLine(raw);
-    let cursor = 0;
-    let continued = 0;
-    for (const container of containers) {
-      const rest = line.text.slice(cursor);
-      if (container.kind === "quote") {
-        const marker = /^ {0,3}> ?/.exec(rest);
-        if (!marker) break;
-        cursor += marker[0].length;
-      } else if (!rest.trim()) {
-        // An empty item can begin with only its marker's blank line.
-        if (container.empty) break;
-        cursor = line.text.length;
-      } else {
-        const indent = /^ */.exec(rest)?.[0].length ?? 0;
-        if (indent < container.indent) break;
-        cursor += container.indent;
-        container.empty = false;
-      }
-      continued++;
-    }
-    let content = line.text.slice(cursor);
-    if (options.requireClosedFences && reference && /^ {4}/.test(content) && content.trim())
-      invalid("Ambiguous indented link reference continuation; add a blank line after the complete definition before retrying.");
-    if (options.requireClosedFences && (paragraph || reference) && /^ {4}/.test(content) && markdownHtml(content.trimStart(), true, number))
-      invalid("Ambiguous indented HTML continuation; escape the opener or put the example in a closed fenced code block before retrying.");
-    if (
-      options.requireClosedFences &&
-      continued < containers.length &&
-      paragraph &&
-      markdownList(content, false) &&
-      !markdownList(content, true) &&
-      /<|\]:/.test(markdownInlineText(content))
-    )
-      invalid("Ambiguous list marker on a lazy container continuation; add a blank line before the list before retrying.");
-    const lazy =
-      continued < containers.length &&
-      paragraph &&
-      content.trim() &&
-      !MARKDOWN_ATX.test(content) &&
-      !MARKDOWN_UNDERLINE.test(content) &&
-      !MARKDOWN_THEMATIC.test(content) &&
-      !/^ {0,3}>/.test(content) &&
-      !markdownList(content, true) &&
-      !markdownFence(content) &&
-      !markdownHtml(content, true, number);
-    if (continued < containers.length && !lazy) {
-      if (html?.end)
-        invalid(`Unterminated HTML block (${html.opener}) at line ${html.line}; close it inside its container before retrying.`);
-      if (reference && content.trim() && options.requireClosedFences)
-        invalid(
-          "Ambiguous link reference continuation across a container boundary; add a blank line after the definition before retrying.",
-        );
-      if (fence && options.requireClosedFences) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
-      containers.length = continued;
-      fence = html = paragraph = undefined;
-      reference = false;
-      indented = false;
-    }
-    if (!fence && !html && !lazy) {
-      for (;;) {
-        const quote = /^ {0,3}> ?/.exec(content);
-        const item = quote ? null : markdownList(content, Boolean(paragraph));
-        if (!quote && !item) break;
-        if (quote) {
-          containers.push({ kind: "quote" });
-          cursor += quote[0].length;
-        } else if (item) {
-          const empty = !content.slice(item[0].length).trim();
-          const padding = (item[3] as string).length;
-          const indent = (item[1] as string).length + (item[2] as string).length + (!empty && padding >= 1 && padding <= 4 ? padding : 1);
-          containers.push({ kind: "list", indent, empty });
-          cursor += indent;
-        }
-        paragraph = undefined;
-        reference = false;
-        indented = false;
-        content = line.text.slice(cursor);
-      }
-    }
-    let masked = false;
-    let rawHtmlLine = false;
-    if (html) {
-      masked = true;
-      rawHtmlLine = true;
-      if (html.end ? html.end.test(content) : !content.trim()) html = undefined;
-    } else if (fence) {
-      masked = true;
-      const closing = /^ {0,3}(`{3,}|~{3,}) *$/.exec(content);
-      if (closing?.[1]?.[0] === fence.character && closing[1].length >= fence.length) fence = undefined;
+    if (fence) {
+      const closing = BODY_FENCE_CLOSE.exec(raw)?.[1];
+      if (closing?.[0] === fence.marker && closing.length >= fence.length) fence = undefined;
     } else {
-      if (indented && content.trim() && !/^ {4}/.test(content)) indented = false;
-      if (!paragraph && /^ {4}/.test(content)) indented = true;
-      if (indented) masked = true;
-      else {
-        const opener = markdownHtml(content, Boolean(paragraph), number);
-        const openingFence = opener ? null : markdownFence(content);
-        if (opener) {
-          masked = true;
-          rawHtmlLine = true;
-          if (!opener.end?.test(content)) html = opener;
-        } else if (openingFence) {
-          masked = true;
-          fence = { character: openingFence[1]?.[0] as string, length: (openingFence[1] as string).length };
+      const opening = BODY_FENCE_OPEN.exec(raw);
+      if (opening) {
+        if (list && opening[1]) invalid(`Unsupported stored container fence at line ${number}. ${repair}`);
+        const marker = opening[2] as string;
+        fence = { marker: marker[0] as string, length: marker.length };
+        list = false;
+      } else if (
+        raw !== MANAGED_COMMENT &&
+        !/^<!-- roadmap:generated:(?:stages|rounds|status|adrs) -->$/.test(raw) &&
+        raw !== "<!-- /roadmap:generated -->"
+      ) {
+        const line = raw.trimStart();
+        const item = /^(?:[-+*]|\d{1,9}[.)]) +/.exec(line);
+        const content = item ? line.slice(item[0].length) : line;
+        if (
+          (raw.trim() && /^ {4}/.test(raw)) ||
+          raw.includes("\t") ||
+          /^(?:>|`{3,}|~{3,}|\[.*\]:)/.test(content) ||
+          /^(?:[-=]+|(?:[-*_] *)+) *$/.test(content) ||
+          (item && /^(?:#|[-+*] |\d{1,9}[.)] )/.test(content)) ||
+          (line !== raw && /^#{1,6}(?: |$)/.test(line))
+        )
+          invalid(`Unsupported stored Markdown at line ${number}. ${repair}`);
+        if (!inlineBodyAllowed(raw, /[<>]/)) invalid(`Unsupported stored HTML or multiline code span at line ${number}. ${repair}`);
+        if (item) list = true;
+        else if (raw.trim() && !raw.startsWith(" ")) {
+          if (list && !blank && !/^#{1,6}(?: |$)/.test(raw)) invalid(`Ambiguous stored list continuation at line ${number}. ${repair}`);
+          list = false;
         }
-      }
-    }
-    if (rawHtmlLine && options.requireClosedFences) rawHtml = markdownRawHtml(content, rawHtml, number);
-    else if (rawHtml && !rawHtml.inline)
-      invalid(`Unterminated raw HTML (${rawHtml.opener}) leaves its Markdown block; close it before the blank line or container exit.`);
-    else if (!masked && options.requireClosedFences && (rawHtml || /<(?:script|pre|style|textarea)(?=[ \t/>]|$)/i.test(content)))
-      rawHtml = markdownRawHtml(content, rawHtml, number, true);
-    if (masked) {
-      paragraph = undefined;
-      reference = false;
-    } else {
-      const underline = MARKDOWN_UNDERLINE.exec(content);
-      if (underline && paragraph && !lazy) {
-        const prefix = underline[1]?.startsWith("=") ? "#" : "##";
-        const match = [...`${prefix} ${paragraph.lines.join(" ")}`.matchAll(pattern)][0];
-        if (match && (!options.topLevelOnly || !containers.length)) {
-          match[0] = body.slice(paragraph.offset, offset + raw.length);
-          match.index = paragraph.offset;
+        const match = [...raw.matchAll(pattern)][0];
+        if (match) {
+          match.index = offset + (match.index ?? 0);
           match.input = body;
           headings.push(match);
         }
-        paragraph = undefined;
-      } else if (MARKDOWN_ATX.test(content)) {
-        if (!options.topLevelOnly || !containers.length) {
-          const match = [...content.matchAll(pattern)][0];
-          if (match) {
-            const start = cursor + (match.index ?? 0);
-            const sourceStart = line.source[start] ?? raw.length;
-            const sourceEnd = line.source[start + match[0].length] ?? raw.length;
-            match[0] = raw.slice(sourceStart, sourceEnd);
-            match.index = offset + sourceStart;
-            match.input = body;
-            headings.push(match);
-          }
-        }
-        paragraph = undefined;
-      } else if (!content.trim() || MARKDOWN_THEMATIC.test(content)) {
-        paragraph = undefined;
-        reference = false;
-      } else if (!paragraph && MARKDOWN_REFERENCE_START.test(content)) {
-        if (!MARKDOWN_REFERENCE.test(content)) {
-          if (options.requireClosedFences)
-            invalid("Ambiguous link reference definition; use a complete single-line definition before retrying.");
-          paragraph = { offset, lines: [content.trim()] };
-        } else reference = true;
-      } else {
-        if (reference && options.requireClosedFences && /^ {0,3}["'(]/.test(content))
-          invalid("Ambiguous multiline link reference title; keep the definition and its title on one line before retrying.");
-        reference = false;
-        paragraph ??= { offset, lines: [] };
-        paragraph.lines.push(content.trim());
       }
     }
     offset += raw.length + 1;
+    blank = !raw.trim();
   }
-  if (html?.end) invalid(`Unterminated HTML block (${html.opener}) at line ${html.line}; close the HTML block before retrying.`);
-  if (rawHtml) invalid(`Unterminated raw HTML (${rawHtml.opener}) at line ${rawHtml.line}; close the HTML construct before retrying.`);
-  if (options.requireClosedFences && fence) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
+  if (fence) invalid("Unterminated Markdown fence; edit the stored file to close the top-level fenced code block.");
   return headings;
 }
 
 function sections(body: string, title: string, headings: readonly string[], optional: readonly string[] = []): Record<string, string> {
   if (!body.startsWith(`${title}\n\n`)) invalid(`Expected fixed title ${title}.`);
   const rest = body.slice(title.length + 2);
-  const matches = markdownHeadings(rest, headings.includes("### In") ? /^## .+$|^### (?:In|Out)$/gm : /^## .+$/gm, {
-    topLevelOnly: true,
-    requireClosedFences: true,
-  });
+  const matches = markdownHeadings(rest, headings.includes("### In") ? /^## .+$|^### (?:In|Out)$/gm : /^## .+$/gm);
   if (matches[0]?.index !== 0) invalid("Unexpected text before the first fixed heading.");
   const actual = matches.map((match) => match[0]);
   const expected = headings.filter((heading) => !optional.includes(heading) || actual.includes(heading));
@@ -830,7 +586,7 @@ export function parseTodo(content: string, path = ""): TodoDoc {
   const rest = body.slice(`# ${round} — TODO\n\n`.length);
   const openHeader = "## Open\n\n";
   const closedHeader = "## Closed in this round\n\n";
-  const headings = markdownHeadings(rest, /^## .+$/gm, { topLevelOnly: true, requireClosedFences: true });
+  const headings = markdownHeadings(rest, /^## .+$/gm);
   if (!rest.startsWith(openHeader) || headings.length !== 2 || headings[1]?.[0] !== "## Closed in this round") {
     invalid("TODO fixed headings must be Open and Closed in this round.");
   }
@@ -841,7 +597,7 @@ export function parseTodo(content: string, path = ""): TodoDoc {
 }
 
 function todoItems(body: string, open: boolean): TodoItem[] {
-  const outline = markdownHeadings(body, /^### .+$/gm, { topLevelOnly: true, requireClosedFences: true });
+  const outline = markdownHeadings(body, /^### .+$/gm);
   const headings = outline.map((heading) => {
     const item = /^### (T\d{3,}) — (.+)$/.exec(heading[0]);
     if (!item) invalid("Malformed TODO item heading.");
@@ -950,10 +706,7 @@ export function buildAdrBody(title: string, input: AdrSections): string {
 function validateAdrBody(body: string): string {
   const title = /^# (.+)\n\n/.exec(body)?.[1];
   if (!title) invalid("ADR requires a MADR title.");
-  const headings = markdownHeadings(body, /^## .+$|^### (?:Consequences|Confirmation)$/gm, {
-    topLevelOnly: true,
-    requireClosedFences: true,
-  }).map((match) => match[0]);
+  const headings = markdownHeadings(body, /^## .+$|^### (?:Consequences|Confirmation)$/gm).map((match) => match[0]);
   const templateHeadings = [...MADR_BODY_TEMPLATE.matchAll(/^## .+$|^### (?:Consequences|Confirmation)$/gm)].map((match) => match[0]);
   let previous = -1;
   for (const heading of headings) {
@@ -1074,7 +827,7 @@ export function renderCurrentStatus(rounds: readonly RoundDoc[], stages: readonl
 export function parseRoadmapIndex(content: string, path = ""): RoadmapIndexDoc {
   const { fm, body } = header(content, ["format", "roadmap", "title"], true);
   const title = text(fm.title, "title");
-  const headings = markdownHeadings(body, /^## .+$/gm, { topLevelOnly: true, requireClosedFences: true }).map((heading) => heading[0]);
+  const headings = markdownHeadings(body, /^## .+$/gm).map((heading) => heading[0]);
   if (!body.startsWith(`# ${title}\n\n`) || headings.join("\n") !== "## How this directory works\n## Rounds\n## Current status") {
     invalid("Roadmap index missing or altered fixed title, How this directory works, Rounds or Current status headings.");
   }
@@ -1094,7 +847,7 @@ export function renderRoadmapIndex(doc: RoadmapIndexDoc, rounds?: readonly Round
   return frontmatter({ format: doc.format, roadmap: { format: 1 }, title: doc.title }, true) + lf(body);
 }
 
-export const ADR_INDEX_CONVENTIONS = `# Architecture Decision Records
+const ADR_INDEX_CONVENTIONS = `# Architecture Decision Records
 
 ADRs use the vendored MADR 4.0 body and format: 1 metadata. Files are NNNN-slug.md with ids ADR-NNNN. Create and revise proposed records through roadmap_adr; accepted records change through status transitions, supersession or dated notes under More Information. Confirmation describes verification; implementation steps belong to the plan. ADRs outlive roadmap rounds.
 
@@ -1116,7 +869,7 @@ export function parseAdrIndex(content: string, path = ""): AdrIndexDoc {
   const { body } = header(content, ["format"]);
   if (
     !body.startsWith("# Architecture Decision Records\n\n") ||
-    markdownHeadings(body, /^## .+$/gm, { topLevelOnly: true, requireClosedFences: true })
+    markdownHeadings(body, /^## .+$/gm)
       .map((heading) => heading[0])
       .join("\n") !== "## Decisions"
   )
@@ -1142,7 +895,7 @@ export function stageSha256(doc: StageDoc): string {
   return sha256(lf(content).replace(/^closed_sha256:[^\n]*\n/m, ""));
 }
 
-export type RoundFiles = ReadonlyMap<string, string | Uint8Array> | Record<string, string | Uint8Array>;
+type RoundFiles = ReadonlyMap<string, string | Uint8Array> | Record<string, string | Uint8Array>;
 export function roundSha256(files: RoundFiles): string {
   const entries: Array<[string, string | Uint8Array]> = files instanceof Map ? [...files] : Object.entries(files);
   const manifest = entries

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { parseHtml, proseText } from "../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
 import {
   buildAdrBody,
-  HOW_THIS_DIRECTORY_WORKS,
+  DocumentError,
   loadAll,
   loadRepo,
   MADR_BODY_TEMPLATE,
@@ -29,16 +29,16 @@ import {
   stageSha256,
   validateBody,
 } from "../plugins/roadmap/src/documents.ts";
+import { stage } from "../plugins/roadmap/src/operations.ts";
 import { adrFixture, cleanupFixtures, diskFixture, modelFixture, roundFixture, stageFixture, todoFixture } from "./roadmap-fixtures.ts";
 import {
   allowedMarkdownBodies,
   ambiguousMarkdownBodies,
-  closedMarkdownBodies,
-  htmlBlankLineBlocks,
-  markdownContainers,
+  closedContainerFences,
   markdownStructureEscapes,
   randomizedMarkdownBodies,
   rejectedMarkdownBodies,
+  reportedMarkdownBodies,
 } from "./roadmap-markdown-fixtures.ts";
 
 afterEach(cleanupFixtures);
@@ -142,110 +142,54 @@ describe("roadmap managed documents", () => {
     expect(renderAdr(parseAdr(adrText))).toBe(adrText);
   });
 
-  test("fence masking follows CommonMark opener info, marker, length and zero-to-three-space indentation rules", () => {
+  test("stored-document scan masks only closed top-level fences and retains source offsets", () => {
     for (const indent of ["", " ", "  ", "   "]) {
-      for (const opener of ["````markdown", "~~~~lang`valid"]) {
+      for (const opener of ["````markdown", "~~~~markdown"]) {
         const marker = opener[0] as string;
-        const source = `${indent}${opener}\n## Hidden\nEvidence\n--------\n${marker.repeat(3)}\n${marker.repeat(5)} \t\n## Visible`;
-        expect(markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual(["## Visible"]);
+        const source = `${indent}${opener}\n## Hidden\n<script>\nEvidence\n--------\n${marker.repeat(3)}\n${marker.repeat(5)} \t\n## Visible`;
+        const headings = markdownHeadings(source, /^## .+$/gm);
+        expect(headings.map((heading) => heading[0])).toEqual(["## Visible"]);
+        expect(headings[0]?.index).toBe(source.indexOf("## Visible"));
+        expect(headings[0]?.input).toBe(source);
       }
     }
-    for (const opener of ["```lang`invalid", "   ```lang`invalid", "    ```markdown"]) {
-      expect(markdownHeadings(`${opener}\n## Visible`, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual([
-        "## Visible",
-      ]);
+    for (const opener of ["```lang`invalid", "   ```lang`invalid", "    ```markdown", "\t~~~markdown"]) {
+      expect(() => markdownHeadings(`${opener}\n## Visible`, /^## .+$/gm)).toThrow();
     }
     for (const closing of ["```", "~~~~", "```` comment", "    ````", "````\u00a0"]) {
-      expect(() => markdownHeadings(`\`\`\`\`markdown\n## Hidden\n${closing}`, /^## .+$/gm, { requireClosedFences: true })).toThrow(
-        "Unterminated Markdown fence",
-      );
+      expect(() => markdownHeadings(`\`\`\`\`markdown\n## Hidden\n${closing}`, /^## .+$/gm)).toThrow();
     }
   });
 
-  test("list and quote fences close in their own containers without masking later fixed headings", () => {
-    for (const example of closedMarkdownBodies) {
-      const source = `${example}\n\n## After`;
-      const headings = markdownHeadings(source, /^(#{1,6})[ \t]+(.+)$/gm, { requireClosedFences: true });
-      expect(headings.map((heading) => [heading[1], heading[2]])).toEqual([["##", "After"]]);
-      expect(headings[0]?.index).toBe(source.indexOf("## After"));
-    }
-    for (const { first, next } of markdownContainers) {
-      const source = `${first}~~~md\n${next}example\n## Outside`;
-      expect(markdownHeadings(source, /^## .+$/gm).map((heading) => heading[0])).toEqual(["## Outside"]);
-      expect(() => markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true })).toThrow("Unterminated Markdown fence");
-    }
-  });
-
-  test("HTML types 6 and 7 terminate only at blank lines and type 7 cannot interrupt a paragraph", () => {
-    for (const opener of htmlBlankLineBlocks) {
-      const source = `${opener}\n~~~\n## Hidden\n</div>\n## Still hidden\n\n## After`;
-      expect(markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual(["## After"]);
-    }
-    for (const opener of ["<custom-element>", "<x attr='value' />", "</x>"]) {
-      const source = `Paragraph\n${opener}\n~~~\n## Hidden in code\n~~~\n\n## After`;
-      expect(markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual(["## After"]);
-    }
-    for (const opener of ["<x> trailing text", "<x invalid@attr>", '<x attr="unfinished>', "<x / >", "<x:y>"]) {
-      const source = `${opener}\n~~~\n## Hidden in code\n~~~\n\n## After`;
-      expect(markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual(["## After"]);
-    }
-  });
-
-  test("scanner heading levels and text agree with Bun Markdown over the container, Setext, fence and HTML corpus", () => {
-    const corpus = [
-      ...closedMarkdownBodies,
+  test("unsupported stored HTML, references, Setext and container fences are structural errors, not emulated blocks", () => {
+    for (const body of [
+      ...reportedMarkdownBodies,
       ...markdownStructureEscapes.map(({ body }) => body),
-      ...markdownContainers.flatMap(({ first, next }) => [
-        `${first}### Nested heading\n\n## Outside`,
-        `${first}Nested Setext\n${next}--------\n\n## Outside`,
-        `${first}paragraph\ncontinued lazily\n---\n## Outside`,
-      ]),
-      "## Before\n\n````md\n## Hidden\n```\n`````\n## After",
-      "   ~~~~lang`valid\nEvidence\n--------\n~~~\n~~~~~\n## After",
-      "```lang`invalid\n## Visible\n\nFinal paragraph\n---",
-      "Paragraph line\nEvidence\n---\n\n## After",
-      "Paragraph\n2. continuation\n---",
-      "    Indented code\n    ## Hidden\n\n## After",
-      "- paragraph\n    ~~~\n    ## Hidden\n    ~~~\n## After",
-      "- \t    code\n  \t    ## Hidden\n  \t\n  \t## After\n\n## Final",
-      "> \t<div>\n> \t~~~\n> \t## Hidden\n> \t</div>\n> \t\n> \t## After\n\n## Final",
-      "> \t<custom-element>\n> \t~~~\n> \t## Hidden\n> \t</custom-element>\n> \t\n> \t## After\n\n## Final",
-      "[ref]: https://example.com\n---\n\n## After",
-      "Paragraph\n<custom-element>\n~~~\n## Hidden\n~~~\n\n## After",
-      "Paragraph\n<div>\n~~~\n## Hidden\n\n## After",
-      "<!--\n## Hidden\n~~~\n-->\n## After",
-      "<script>\n## Hidden\n~~~\n</script>\n## After",
-      "<?probe\n## Hidden\n?>\n## After",
-      "<![CDATA[\n## Hidden\n]]>\n## After",
-      "<!DOCTYPE example\n## Hidden\n>\n## After",
-    ];
-    for (const source of corpus) {
-      const scanned = markdownHeadings(source, /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/gm).map((heading) => [
-        (heading[1] as string).length,
-        (heading[2] ?? "")
-          .replace(/[ \t]+#+[ \t]*$/, "")
-          .replace(/\s+/g, " ")
-          .trim(),
-      ]);
-      const rendered = [...Bun.markdown.html(source).matchAll(/<h([1-6])>([\s\S]*?)<\/h\1>/g)].map((heading) => [
-        Number(heading[1]),
-        (heading[2] as string).replace(/\s+/g, " ").trim(),
-      ]);
-      expect({ source, headings: scanned }).toEqual({ source, headings: rendered });
-    }
-  });
-
-  test("ambiguous references, indented HTML and container exits cannot swallow fixed sections", () => {
-    for (const { name, body } of ambiguousMarkdownBodies) {
-      expect(() => markdownHeadings(body, /^(#{1,6})(?:[ \t]+(.*))?$/gm, { requireClosedFences: true }), name).toThrow();
-      expect(() => parseStage(renderStage(stageFixture({ objective: body }))), name).toThrow();
-      expect(() => parseRound(renderRound(roundFixture({ goal: body }))), name).toThrow();
+      ...ambiguousMarkdownBodies.map(({ body }) => body),
+      ...closedContainerFences.map(({ body }) => body),
+      "<!-- closed comment -->",
+      "Inline <span>HTML</span>.",
+      "Paragraph\n---",
+      "===",
+      "- - -",
+      "* * *",
+      "___",
+      "- ## Nested heading",
+      "> ## Quoted heading",
+      "1. Nested Setext\n   --------",
+      "- Item\nlazy paragraph\n  ```md\n## Hidden\n  ```",
+      "- Item\nlazy paragraph\n  ~~~md\n## Hidden\n  ~~~",
+      "\\`<script>`",
+    ]) {
+      expect(() => markdownHeadings(body, /^## .+$/gm), body).toThrow();
+      expect(() => parseStage(renderStage(stageFixture({ objective: body }))), body).toThrow();
+      expect(() => parseRound(renderRound(roundFixture({ goal: body }))), body).toThrow();
       const todos = todoFixture();
       if (todos.items[0]) todos.items[0].body = body;
-      expect(() => parseTodo(renderTodo(todos)), name).toThrow();
-      const adr = adrFixture();
-      adr.body = buildAdrBody(adr.title, { context: body, options: ["X"], outcome: "Choose X." });
-      expect(() => parseAdr(renderAdr(adr)), name).toThrow();
+      expect(() => parseTodo(renderTodo(todos)), body).toThrow();
+      const decision = adrFixture();
+      decision.body = buildAdrBody(decision.title, { context: body, options: ["Host"], outcome: "Choose Host." });
+      expect(() => parseAdr(renderAdr(decision)), body).toThrow();
     }
   });
 
@@ -348,7 +292,8 @@ describe("roadmap managed documents", () => {
       for (const profile of profiles) {
         try {
           validateBody(body, { afterList: profile.afterList });
-        } catch {
+        } catch (error) {
+          if (!(error instanceof DocumentError)) throw error;
           rejected++;
           continue;
         }
@@ -384,8 +329,8 @@ describe("roadmap managed documents", () => {
     console.log(`Markdown differential seed=0x${seed.toString(16)} cases=${bodies.size} accepted=${accepted} rejected=${rejected}`);
   });
 
-  test("closed container and HTML bodies round-trip through every managed document", () => {
-    for (const body of closedMarkdownBodies) {
+  test("allowed prose, lists, inline code and top-level fences round-trip through every managed document", () => {
+    for (const body of allowedMarkdownBodies) {
       const stage = renderStage(stageFixture({ objective: body }));
       expect(renderStage(parseStage(stage))).toBe(stage);
       const round = renderRound(roundFixture({ goal: body }));
@@ -401,162 +346,19 @@ describe("roadmap managed documents", () => {
     }
   });
 
-  test("headings nested in lists and quotes remain free Markdown in every document and both indexes", () => {
-    for (const body of ["- ## List heading", "> ## Quoted heading", "1. Nested Setext\n   --------"]) {
-      const stage = renderStage(stageFixture({ objective: body }));
-      expect(renderStage(parseStage(stage))).toBe(stage);
-      const round = renderRound(roundFixture({ goal: body }));
-      expect(renderRound(parseRound(round))).toBe(round);
-      const todos = todoFixture();
-      if (todos.items[0]) todos.items[0].body = body;
-      const todo = renderTodo(todos);
-      expect(renderTodo(parseTodo(todo))).toBe(todo);
-      const decision = adrFixture();
-      decision.body = buildAdrBody(decision.title, { context: body, options: ["X"], outcome: body });
-      const adr = renderAdr(decision);
-      expect(renderAdr(parseAdr(adr))).toBe(adr);
+  test("indexes refuse stored quote, HTML and reference syntax without modifying their input", () => {
+    for (const body of ["> ## Quoted heading", "<div>\n## Hidden\n</div>", "[reference]: /url"]) {
       const root = modelFixture();
       const index = renderRoadmapIndex(root.index, root.rounds, root.stages).replace(
         "## How this directory works",
         `${body}\n\n## How this directory works`,
       );
-      expect(renderRoadmapIndex(parseRoadmapIndex(index))).toBe(index);
       const decisions = renderAdrIndex(root.adrIndex as NonNullable<typeof root.adrIndex>, root.adrs).replace(
         "## Decisions",
         `${body}\n\n## Decisions`,
       );
-      expect(renderAdrIndex(parseAdrIndex(decisions))).toBe(decisions);
-    }
-  });
-
-  const htmlBlocks = [
-    ["<ScRiPt>", "</sCrIpT>"],
-    ["<pre class=example>", "</PRE>"],
-    ["<STYLE>", "</style>"],
-    ["<TeXtArEa>", "</TEXTAREA>"],
-    ["<!--", "-->"],
-    ["<?probe", "?>"],
-    ["<!DOCTYPE example", ">"],
-    ["<![CDATA[", "]]>"],
-  ] as const;
-
-  test("HTML block types 1-5 mask ATX, Setext and fence examples while retaining visible source offsets", () => {
-    for (const [opener, closer] of htmlBlocks) {
-      for (const indent of ["", " ", "  ", "   "]) {
-        const source = `## Before\n\n${indent}${opener}\n## Hidden\nEvidence\n--------\n\n~~~markdown\n${closer}\n## After`;
-        const headings = markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true });
-        expect(headings.map((heading) => heading[0])).toEqual(["## Before", "## After"]);
-        expect(headings[1]?.index).toBe(source.indexOf("## After"));
-        expect(Bun.markdown.html(source)).toContain("<h2>After</h2>");
-        expect(Bun.markdown.html(source)).not.toContain("<h2>Hidden</h2>");
-        const sameLine = `${opener} example ${closer}\n## After`;
-        expect(markdownHeadings(sameLine, /^## .+$/gm).map((heading) => heading[0])).toEqual(["## After"]);
-      }
-    }
-    // CommonMark raw-text blocks end on any of the four closing tags, even a different tag.
-    expect(markdownHeadings("<script\n## Hidden\n</textarea>\n## After", /^## .+$/gm).map((heading) => heading[0])).toEqual(["## After"]);
-    expect(markdownHeadings("Paragraph\n<!--\nEvidence\n---\n-->\n---", /^## .+$/gm)).toEqual([]);
-  });
-
-  test("unterminated HTML blocks are structural escapes even after blank lines, Markdown fences or fixed headings", () => {
-    for (const [opener] of htmlBlocks) {
-      for (const indent of ["", "   "]) {
-        const source = `Authored text.\n\n${indent}${opener}\n\n~~~\n## Hidden\n~~~\n\n## Later`;
-        expect(() => markdownHeadings(source, /^## .+$/gm)).toThrow("Unterminated HTML block");
-        expect(() => markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true })).toThrow("Unterminated HTML block");
-      }
-    }
-    expect(() => markdownHeadings("<script>\n</script >\n## Hidden", /^## .+$/gm)).toThrow("Unterminated HTML block");
-    expect(() => markdownHeadings("<?probe\n>\n## Hidden", /^## .+$/gm)).toThrow("Unterminated HTML block");
-  });
-
-  test("inline HTML, escaped openers, non-block tag names and HTML examples in code do not swallow headings", () => {
-    for (const source of [
-      "Inline <span>text</span> and <script>example</script>.",
-      "Inline <!-- incomplete comment is plain text.",
-      "\\<!--",
-      "<!doctype example",
-      "<scripture>",
-      "<script-example>",
-      "    <!--",
-      "\t<script>",
-      ...htmlBlocks.map(([opener]) => `~~~markdown\n${opener}\n## Example\n~~~`),
-    ]) {
-      expect(markdownHeadings(`${source}\n\n## After`, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual([
-        "## After",
-      ]);
-    }
-  });
-
-  test("closed HTML examples round-trip inside every managed body while preserving fixed headings and TODO identities", () => {
-    for (const [opener, closer] of htmlBlocks) {
-      const example = `${opener}\n## Example\n### In\n### T999 — Example\n## Closed in this round\n${closer}`;
-      const stage = renderStage(stageFixture({ objective: example }));
-      expect(renderStage(parseStage(stage))).toBe(stage);
-      const round = renderRound(roundFixture({ goal: example }));
-      expect(renderRound(parseRound(round))).toBe(round);
-      const todos = todoFixture();
-      if (todos.items[0]) todos.items[0].body = example;
-      todos.items.push({ id: "T002", title: "Later item", status: "resolved", reference: "Verified", body: example });
-      const todo = renderTodo(todos);
-      expect(parseTodo(todo).items.map((item) => item.id)).toEqual(["T001", "T002"]);
-      expect(renderTodo(parseTodo(todo))).toBe(todo);
-      const adr = adrFixture();
-      adr.body = buildAdrBody(adr.title, { context: example, options: ["X"], outcome: example, more_info: example });
-      const decision = renderAdr(adr);
-      expect(renderAdr(parseAdr(decision))).toBe(decision);
-    }
-  });
-
-  test("parsing stored stage, round, TODO and ADR documents rejects headings hidden in unclosed HTML", () => {
-    for (const [opener] of htmlBlocks) {
-      const body = `Authored text.\n\n${opener}`;
-      expect(() => parseStage(renderStage(stageFixture({ objective: body })))).toThrow();
-      expect(() => parseStage(renderStage(stageFixture({ outcome: `### Delivered\n\n${body}\n\n### Evidence\nHidden.` })))).toThrow();
-      expect(() => parseRound(renderRound(roundFixture({ goal: body })))).toThrow();
-      const todos = todoFixture();
-      if (todos.items[0]) todos.items[0].body = body;
-      expect(() => parseTodo(renderTodo(todos))).toThrow();
-      const adr = adrFixture();
-      adr.body = buildAdrBody(adr.title, { context: body, options: ["X"], outcome: "Choose X." });
-      expect(() => parseAdr(renderAdr(adr))).toThrow();
-    }
-  });
-
-  test("Setext headings preserve source spans and include their preceding paragraph lines", () => {
-    for (const indent of ["", " ", "  ", "   "]) {
-      for (const [underline, level] of [
-        ["=", 1],
-        ["--", 2],
-      ] as const) {
-        const title = `${indent}Paragraph line\n${indent}Evidence\n${indent}${underline} \t`;
-        const source = `Before.\n\n${title}\n\nAfter.`;
-        const headings = markdownHeadings(source, /^(#{1,6})(?:[ \t]+(.*))?$/gm, { requireClosedFences: true });
-        expect(headings).toHaveLength(1);
-        const heading = headings[0];
-        expect(heading?.[0]).toBe(title);
-        expect(heading?.[1]).toBe("#".repeat(level));
-        expect(heading?.[2]).toBe("Paragraph line Evidence");
-        expect(heading?.index).toBe(source.indexOf(title));
-      }
-    }
-    expect(markdownHeadings("Paragraph\n2. continuation\n---", /^(#{1,6})(?:[ \t]+(.*))?$/gm)[0]?.[1]).toBe("##");
-  });
-
-  test("horizontal rules without paragraph context are not Setext headings", () => {
-    for (const source of [
-      "---\n\nText.",
-      "Text.\n\n---",
-      "#### Details\n---",
-      "Text.\n- A list item\n---",
-      "Text.\n1. A list item\n---",
-      "Text.\n\n    Indented code\n---",
-      "Text.\n- - -",
-      "Text.\n* * *",
-      "Text.\n___",
-      "~~~markdown\nEvidence\n---\n~~~\n---",
-    ]) {
-      expect(markdownHeadings(source, /^(#{1,2})(?:[ \t]+(.*))?$/gm, { requireClosedFences: true })).toEqual([]);
+      expect(() => parseRoadmapIndex(index)).toThrow();
+      expect(() => parseAdrIndex(decisions)).toThrow();
     }
   });
 
@@ -590,7 +392,7 @@ describe("roadmap managed documents", () => {
   test("MADR body and headings come from the vendored template, without its optional front matter", async () => {
     const template = await readFile(new URL("../plugins/roadmap/assets/madr/adr-template.md", import.meta.url), "utf8");
     expect(MADR_BODY_TEMPLATE).toBe(template.slice(template.indexOf("\n---\n") + 6));
-    expect(parseAdr(renderAdr({ ...adrFixture(), body: MADR_BODY_TEMPLATE }))).toBeDefined();
+    expect(() => parseAdr(renderAdr({ ...adrFixture(), body: MADR_BODY_TEMPLATE }))).toThrow();
     const body = buildAdrBody("Choose X", {
       context: "Problem.",
       options: ["X", "Y"],
@@ -606,20 +408,15 @@ describe("roadmap managed documents", () => {
     expect(() => parseAdr(renderAdr({ ...adrFixture(), body: body.replace("## Decision Outcome", "## Decision") }))).toThrow("MADR");
   });
 
-  test("directory explanation carries the format, freeze, managed write, recovery and semantic limits", () => {
-    for (const phrase of [
-      "format: 1",
-      "roadmap_*",
-      "check --fix",
-      "closed_sha256",
-      "frozen_sha256",
-      "per-file atomic",
-      "Restore other damage with git",
-      "cannot determine whether code",
-    ]) {
-      expect(HOW_THIS_DIRECTORY_WORKS).toContain(phrase);
+  test("refused authored syntax leaves stage and generated index bytes unchanged", async () => {
+    const { repo } = await diskFixture();
+    const before = (await loadAll(repo)).files;
+    for (const body of reportedMarkdownBodies) {
+      const receipt = await stage(repo, { kind: "main", sessionId: "body-boundary" }, { action: "edit", id: "S01", objective: body });
+      expect(receipt.ok).toBe(false);
+      if (!receipt.ok) expect(receipt.hints.length).toBeGreaterThan(0);
+      expect((await loadAll(repo)).files).toEqual(before);
     }
-    expect(renderRoadmapIndex(model.index)).toContain(HOW_THIS_DIRECTORY_WORKS);
   });
 });
 

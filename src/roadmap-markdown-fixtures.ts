@@ -1,6 +1,6 @@
-// Markdown bodies used by scanner and operation regressions; all headings in the
-// closed examples belong to code/HTML, while escapes expose a real peer heading.
-export const markdownContainers = [
+// Unsafe historical bodies remain refusal fixtures; allowed examples use only
+// plain text, flat lists, same-line code spans and closed top-level fences.
+const markdownContainers = [
   { name: "bullet", first: "- ", next: "  " },
   { name: "star", first: "* ", next: "  " },
   { name: "plus", first: "+ ", next: "  " },
@@ -31,7 +31,7 @@ export const closedContainerFences = markdownContainers.flatMap(({ name, first, 
   ),
 );
 
-export const htmlBlankLineBlocks = [
+const htmlBlankLineBlocks = [
   "<div>",
   "<DIV class='example'> trailing text",
   "</table> trailing text",
@@ -76,17 +76,6 @@ export const ambiguousMarkdownBodies = [
   { name: "self-closing-script", body: "<script/>" },
 ] as const;
 
-export const closedMarkdownBodies = [
-  ...closedContainerFences.map(({ body }) => body),
-  ...htmlBlankLineBlocks.map((opener) => `${opener}\n\`\`\`\n## Hidden\n</div>\n\nCompleted HTML example.`),
-  ...markdownContainers.map(({ first, next }) => `${first}<custom-element>\n${next}~~~\n${next}## Hidden\n\nCompleted HTML example.`),
-  "<div>\n<!--\n## Hidden\n-->\n</div>\n\nCompleted nested HTML example.",
-  "<div>\n<script>\n## Hidden\n</script>\n</div>\n\nCompleted nested HTML example.",
-  "Literal `<script>` and \\<script> openers.",
-  '[x]: /url "Title"\n\n- [x]: <url>\n\nCompleted reference definitions.',
-  ...ambiguousMarkdownBodies.map(({ body }) => `\`\`\`\`\`\`md\n${body}\n\`\`\`\`\`\``),
-];
-
 export const reportedMarkdownBodies = [
   "[x]: /url\n</custom>\n```",
   "   [x]: /url\n  </custom>\n ~~~md",
@@ -112,6 +101,10 @@ export const rejectedMarkdownBodies = [
   "`multiline\n<script>\n`",
   "`inline` <script>",
   "- Plain item\n\n  ~~~md\n## Hidden\n  ~~~",
+  "- Item\nlazy paragraph\n  ```md\n## Hidden\n  ```",
+  "- Item\nlazy paragraph\n  ~~~md\n## Hidden\n  ~~~",
+  "- Item\n1. Item\ncontinued paragraph\n   ~~~md\n## Hidden\n   ~~~",
+  "\\`<script>`",
   "Paragraph\n---",
   "===",
   "- - -",

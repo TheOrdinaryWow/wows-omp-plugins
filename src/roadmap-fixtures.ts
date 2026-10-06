@@ -56,7 +56,7 @@ export function roundFixture(overrides: Partial<RoundDoc> = {}): RoundDoc {
     opened: "2026-10-06",
     closed: null,
     frozen_sha256: null,
-    goal: "A working launch.  \n\n> Measurable and usable.",
+    goal: "A working launch.  \n\nMeasurable and usable.",
     constraints: "- Keep the host floor",
     non_goals: "- No new storage engine",
     principles: "- Use the documented choice (ADR-0001).",

@@ -812,7 +812,7 @@ describe("roadmap tool-owned body boundaries", () => {
       const parsed = parseStage(await readFile(closed.path, "utf8"), closed.path);
       expect(parsed.status).toBe("closed");
       expect(parsed.outcome).toContain(example.replaceAll("\r\n", "\n"));
-      expect(markdownHeadings(parsed.outcome as string, /^### .+$/gm, { requireClosedFences: true }).map((match) => match[0])).toEqual([
+      expect(markdownHeadings(parsed.outcome as string, /^### .+$/gm).map((match) => match[0])).toEqual([
         "### Delivered",
         "### Deviations",
         "### Evidence",
@@ -1499,7 +1499,7 @@ describe("roadmap ADR operations", () => {
         success(
           await adr(repo, main, {
             action: "create",
-            title: `Fenced example ${fence} ${Boolean(more_info)}`,
+            title: `Fenced ${fence === "~~~" ? "tilde" : "backtick"} example ${Boolean(more_info)}`,
             status: "accepted",
             sections: { ...sections, context, more_info },
           }),
