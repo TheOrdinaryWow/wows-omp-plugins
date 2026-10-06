@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { scheduler } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { AgentSession, AgentToolResult, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
@@ -224,6 +226,24 @@ function holdOverlap(h: Harness, stageId = "S01") {
   return { shown: shown.promise, resolve: answer.resolve, reject: answer.reject };
 }
 
+function observeLockWaits() {
+  const original = scheduler.wait;
+  const requests = new AsyncLocalStorage<() => void>();
+  let active = 0;
+  const observed = (...args: Parameters<typeof scheduler.wait>) => {
+    requests.getStore()?.();
+    return original.call(scheduler, ...args);
+  };
+  return <T>(operation: () => Promise<T>) => {
+    const waiting = Promise.withResolvers<void>();
+    if (active++ === 0) scheduler.wait = observed;
+    const pending = requests.run(waiting.resolve, operation).finally(() => {
+      if (--active === 0) scheduler.wait = original;
+    });
+    return { pending, waiting: waiting.promise };
+  };
+}
+
 const CASES: Record<string, string> = {
   interception: "initialized repositories block native mutators and allow other files",
   patch: "the real apply_patch edit mode is intercepted",
@@ -260,6 +280,9 @@ const CASES: Record<string, string> = {
   "overlap-flight-cancel": "cancelled shared overlap dialogs can be retried without duplicating free work",
   "overlap-flight-error": "failed shared overlap dialogs can be retried without duplicating free work",
   "overlap-flight-isolated": "pending overlap dialogs are isolated by stage and session",
+  "overlap-lock-rebuild": "answered overlap mutations queued behind a lock cannot write after branch or tree rebuilds",
+  "overlap-lock-start": "a queued native start binds before a late free-work answer can write",
+  "overlap-lock-terminal": "a queued terminal transition invalidates a late overlap mutation under the lock",
   binding: "roadmap overlap starts, binds and returns its handoff",
   headless: "headless overlap and previews report no answer available",
   "bound-start": "started stages bypass the overlap dialog and free-work log",
@@ -970,6 +993,104 @@ async function acceptance(name: string, root: string): Promise<void> {
               await other.session.dispose();
             }
           } else throw new Error(`Unknown overlap case: ${name}`);
+        }
+      } else if (name.startsWith("overlap-lock-")) {
+        const observe = observeLockWaits();
+        const answers = () =>
+          h.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === `${ENTRY_PREFIX}overlap`);
+        if (name === "overlap-lock-rebuild") {
+          for (const answer of ["free", "roadmap"] as const) {
+            for (const type of ["session_branch", "session_tree"] as const) {
+              const before = (await loadAll(repo)).files;
+              const held = holdOverlap(h);
+              let settled = false;
+              const queued = observe(() => call(h, "roadmap_overlap", { stage: "S01", intent: `Locked ${answer} ${type}` }));
+              const pending = queued.pending.finally(() => {
+                settled = true;
+              });
+              await held.shown;
+              const locked = Promise.withResolvers<void>();
+              const release = Promise.withResolvers<void>();
+              const holding = withRepoLock(repo, async () => {
+                locked.resolve();
+                await release.promise;
+              });
+              await locked.promise;
+              try {
+                held.resolve(answer);
+                await queued.waiting;
+                assert.equal(settled, false, "the answered overlap must still be waiting for the repository lock");
+                assert.deepEqual((await loadAll(repo)).files, before);
+                const leaf = h.session.sessionManager.appendCustomEntry("roadmap-regression", { type, answer });
+                if (type === "session_branch") await h.runner.emit({ type, previousSessionFile: undefined });
+                else await h.runner.emit({ type, oldLeafId: leaf, newLeafId: leaf });
+              } finally {
+                release.resolve();
+                await holding;
+              }
+              const receipt = await pending;
+              assert(!receipt.ok, JSON.stringify(receipt));
+              assert.match(receipt.reason, /stale/i);
+              assert.equal(receipt.answer, undefined);
+              assert.deepEqual((await loadAll(repo)).files, before, "a stale locked answer must leave every managed byte unchanged");
+              assert.equal(answers().length, 0);
+              assert.equal(
+                h.session.sessionManager
+                  .getBranch()
+                  .filter((entry) => entry.type === "custom" && entry.customType === `${ENTRY_PREFIX}binding`).length,
+                0,
+              );
+            }
+          }
+          assert.equal(h.ui.overlapCalls.length, 4);
+        } else {
+          const held = holdOverlap(h);
+          const queued = observe(() => call(h, "roadmap_overlap", { stage: "S01", intent: "Late locked free work" }));
+          const pending = queued.pending;
+          await held.shown;
+          const locked = Promise.withResolvers<void>();
+          const release = Promise.withResolvers<void>();
+          const holding = withRepoLock(repo, async () => {
+            locked.resolve();
+            await release.promise;
+          });
+          await locked.promise;
+          let preceding: Promise<ToolReceipt>;
+          try {
+            const earlier = observe(() =>
+              call(
+                h,
+                "roadmap_stage",
+                name === "overlap-lock-start" ? { action: "start", id: "S01" } : { action: "drop", id: "S01", reason: "Deferred" },
+              ),
+            );
+            preceding = earlier.pending;
+            await earlier.waiting;
+            held.resolve("free");
+            await queued.waiting;
+          } finally {
+            release.resolve();
+            await holding;
+          }
+          const started = await preceding;
+          assert(started.ok, JSON.stringify(started));
+          const receipt = await pending;
+          if (name === "overlap-lock-start") {
+            assert(receipt.ok, JSON.stringify(receipt));
+            assert.equal(receipt.answer, "roadmap");
+            assert.match(receipt.summary, /already working in-system/);
+            assert.match(receipt.handoff ?? "", /DC1/);
+            assert.deepEqual(receipt.changedFiles, []);
+            assert.match(await injection(h), /Bound stage: S01/);
+          } else {
+            assert(!receipt.ok, JSON.stringify(receipt));
+            assert.match(receipt.reason, /stale/i);
+            assert.equal(receipt.answer, undefined);
+          }
+          const current = (await loadAll(repo)).stages[0];
+          assert.equal(current?.free_work_log, "");
+          assert.equal(current?.status, name === "overlap-lock-start" ? "active" : "dropped");
+          assert.equal(answers().length, 0);
         }
       } else if (name === "binding" || name === "external") {
         h.ui.answer = "roadmap";

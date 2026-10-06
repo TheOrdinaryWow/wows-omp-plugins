@@ -3,9 +3,10 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { check, type Diagnostics } from "#src/check.ts";
-import { loadAll, loadRepo, type Repo, renderStage } from "#src/documents.ts";
+import { loadAll, loadRepo, type Model, type Repo, renderStage } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import { renderHandoff, renderInjection } from "#src/handoff.ts";
+import { withRepoLock } from "#src/numbering.ts";
 import {
   type Actor,
   adr,
@@ -241,14 +242,16 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     parameters: stageParameters,
     approval: "write",
     async execute(_id, params: typeof stageParameters.infer, _signal, _onUpdate, ctx) {
-      return run(ctx, async (repo, owner) => {
-        const receipt = await stage(repo, owner, params);
-        if (receipt.ok && params.id) {
-          if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
-          if (params.action === "close" || params.action === "drop") ses.clearStage(ctx, repo.repoRoot, params.id);
-        }
-        return receipt;
-      });
+      const generation = ses.currentGeneration(ctx);
+      return run(ctx, (repo, owner) =>
+        stage(repo, owner, params, {
+          onSuccess() {
+            if (!params.id || !ses.isCurrent(ctx, generation)) return;
+            if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
+            if (params.action === "close" || params.action === "drop") ses.clearStage(ctx, repo.repoRoot, params.id);
+          },
+        }),
+      );
     },
   });
   pi.registerTool({
@@ -305,10 +308,10 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
           hints: ["Call roadmap_overlap again to review the current session and stage."],
         });
         const resolve = async (): Promise<ToolReceipt> => {
-          let model = await loadAll(repo);
+          const model = await loadAll(repo);
           if (!ses.isCurrent(ctx, generation)) return stale();
           ses.validateBinding(ctx, repo.repoRoot, model);
-          let current = model.stages.find((candidate) => candidate.id === params.stage);
+          const current = model.stages.find((candidate) => candidate.id === params.stage);
           const roundId = current?.round;
           if (
             !current ||
@@ -321,46 +324,56 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
           let answer = stored;
           if (ses.getBinding(repo.repoRoot)?.stage !== current.id && !stored) {
             answer = await uiFor(ctx).overlap({ stage: current, intent: params.intent });
+          }
+          const guard = (latest: Model): ToolReceipt | undefined => {
             if (!ses.isCurrent(ctx, generation)) return stale();
-            model = await loadAll(repo);
-            if (!ses.isCurrent(ctx, generation)) return stale();
-            current = model.stages.find((candidate) => candidate.id === params.stage);
-            const latestRoundId = current?.round;
+            const candidate = latest.stages.find((entry) => entry.id === params.stage);
             if (
-              !current ||
-              (current.status !== "planned" && current.status !== "active") ||
-              !model.rounds.some((candidate) => candidate.id === latestRoundId && candidate.status === "active")
+              !candidate ||
+              candidate.round !== roundId ||
+              (candidate.status !== "planned" && candidate.status !== "active") ||
+              !latest.rounds.some((entry) => entry.id === roundId && entry.status === "active")
             )
               return stale();
-            ses.validateBinding(ctx, repo.repoRoot, model);
-            stored = ses.overlapAnswer(ctx, repo.repoRoot, current.id);
+            ses.validateBinding(ctx, repo.repoRoot, latest);
+            stored = ses.overlapAnswer(ctx, repo.repoRoot, candidate.id);
             answer = stored ?? answer;
-          }
-          if (ses.getBinding(repo.repoRoot)?.stage === current.id)
-            return {
-              ok: true,
-              summary: `This session is already working in-system on ${current.id}.`,
-              answer: "roadmap",
-              handoff: renderHandoff(model, current),
-              changedFiles: [],
-              warnings: [],
-            };
-          if (!answer)
-            return {
-              ok: false,
-              reason: "Roadmap overlap: no answer available.",
-              hints: ["Ask the user in an interactive session before beginning overlapping work."],
-            };
-          let receipt: Receipt = { ok: true, summary: `Overlap answer for ${current.id}: ${answer}.`, changedFiles: [], warnings: [] };
-          if (!stored && answer === "free") receipt = await recordFreeWork(repo, owner, params);
-          if (!ses.isCurrent(ctx, generation)) return stale();
-          if (answer === "roadmap") {
-            receipt = await stage(repo, owner, { action: "start", id: current.id });
-            if (!ses.isCurrent(ctx, generation)) return stale();
-            if (receipt.ok) ses.bind(ctx, repo.repoRoot, current.id);
-          }
-          if (receipt.ok && !stored) ses.answerOverlap(ctx, repo.repoRoot, current.id, answer);
-          return { ...receipt, answer };
+            if (ses.getBinding(repo.repoRoot)?.stage === candidate.id) {
+              answer = "roadmap";
+              return {
+                ok: true,
+                summary: `This session is already working in-system on ${candidate.id}.`,
+                answer,
+                handoff: renderHandoff(latest, candidate),
+                changedFiles: [],
+                warnings: [],
+              };
+            }
+            if (!answer)
+              return {
+                ok: false,
+                reason: "Roadmap overlap: no answer available.",
+                hints: ["Ask the user in an interactive session before beginning overlapping work."],
+              };
+            if (stored && answer !== "roadmap")
+              return { ok: true, summary: `Overlap answer for ${candidate.id}: ${answer}.`, answer, changedFiles: [], warnings: [] };
+          };
+          const onSuccess = (): void => {
+            if (!ses.isCurrent(ctx, generation) || !answer) return;
+            if (answer === "roadmap") ses.bind(ctx, repo.repoRoot, current.id);
+            if (!stored) ses.answerOverlap(ctx, repo.repoRoot, current.id, answer);
+          };
+          let receipt: Receipt;
+          if (answer === "free" && !stored) receipt = await recordFreeWork(repo, owner, params, { guard, onSuccess });
+          else if (answer === "roadmap") receipt = await stage(repo, owner, { action: "start", id: current.id }, { guard, onSuccess });
+          else
+            receipt = await withRepoLock(repo, async () => {
+              const guarded = guard(await loadAll(repo));
+              if (guarded) return guarded;
+              onSuccess();
+              return { ok: true, summary: `Overlap answer for ${current.id}: ${answer}.`, changedFiles: [], warnings: [] };
+            });
+          return receipt.ok ? { ...receipt, answer } : receipt;
         };
         const flight = resolve().finally(() => overlapFlights.delete(key));
         overlapFlights.set(key, flight);

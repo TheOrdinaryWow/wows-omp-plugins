@@ -143,6 +143,11 @@ export interface OperationOptions {
   writeFile?: (path: string, content: string) => Promise<void>;
 }
 
+interface MutationOptions extends OperationOptions {
+  guard?: (model: Model) => Receipt | undefined;
+  onSuccess?: () => void;
+}
+
 export interface PreparedOperation {
   repoRoot: string;
   snapshot: string;
@@ -445,7 +450,7 @@ async function mutate(
   repo: Repo,
   actor: Actor,
   change: (mutation: Mutation) => Promise<string>,
-  options: OperationOptions,
+  options: MutationOptions,
 ): Promise<Receipt> {
   try {
     actorValid(actor);
@@ -456,11 +461,17 @@ async function mutate(
           "Managed documents could not be loaded.",
           model.parseErrors.map((issue) => issue.message),
         );
+      const guarded = options.guard?.(model);
+      if (guarded) return guarded;
       const mutation = new Mutation(model);
       const summary = await change(mutation);
       if (!mutation.readOnly) mutation.indexes();
       mutation.warnings.push(...(await checked(model)));
-      return mutation.write(repo, summary, options);
+      const beforeWrite = options.guard?.(model);
+      if (beforeWrite) return beforeWrite;
+      const receipt = await mutation.write(repo, summary, options);
+      if (receipt.ok) options.onSuccess?.();
+      return receipt;
     });
   } catch (error) {
     return failure(error);
@@ -731,7 +742,7 @@ async function renumberStage(repo: Repo, mutation: Mutation, stage: StageDoc, ne
   mutation.remove(oldPath);
 }
 
-export async function stage(repo: Repo, actor: Actor, input: StageOperationInput, options: OperationOptions = {}): Promise<Receipt> {
+export async function stage(repo: Repo, actor: Actor, input: StageOperationInput, options: MutationOptions = {}): Promise<Receipt> {
   return mutate(
     repo,
     actor,
@@ -1233,7 +1244,7 @@ export async function recordFreeWork(
   repo: Repo,
   actor: Actor,
   input: { stage: string; intent: string },
-  options: OperationOptions = {},
+  options: MutationOptions = {},
 ): Promise<Receipt> {
   return mutate(
     repo,
