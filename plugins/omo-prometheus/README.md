@@ -1,5 +1,7 @@
 # omo-prometheus
 
+English | [简体中文](README.zh.md)
+
 Ports the Prometheus planning workflow and Atlas execution model from [oh-my-openagent (OmO)](https://github.com/code-yeongyu/oh-my-openagent) to OMP. It is a modified adaptation of OmO, not an independent reimplementation.
 
 It keeps OMP's native Plan Mode and approval flow and adds:
@@ -44,30 +46,30 @@ In ordinary `/plan` mode, small and well-defined requests stay on the normal OMP
 
 After approval the main session becomes Atlas. For this plan, the execution prompt overrides OMP's delegation preference, and the extension blocks direct implementation tools in the parent session, so all work goes to child agents through `task`. `/prometheus` does not exit Atlas; use `/atlas exit`.
 
-The guard admits only tools that observe or touch host-owned state, never the workspace. A tool missing from your session (for example, a memory tool while no memory backend is configured) is simply absent; nothing here enables it.
+The guard admits only tools that observe the session or change host-owned state; none of them writes to the workspace. The table enables nothing: a tool missing from your session (for example, a memory tool while no memory backend is configured) stays unavailable.
 
-|Tool|Allowed in the Atlas parent|
-|---|---|
-|`task`, `wait`, `todo`, `ask`, `think`, `web_search`, `atlas_ledger`, `atlas_release`|always|
-|`read`, `find`, `glob`, `grep`, `ast_grep`|always; `read` refuses `ssh://`|
-|`lsp`|read-only actions, and `code_actions` without `apply`|
-|`github`|`repo_view`, `file_read`, `search_*`, `run_watch`|
-|`debug`|state inspection only (`threads`, `stack_trace`, `scopes`, `variables`, `output`, …), never `launch`, `continue`, or breakpoints|
-|`ida`|`list`|
-|`recall`, `reflect`, `retain`, `memory_edit`, `learn`, `manage_skill`|always: they write memory backends and managed skills, not the workspace|
-|`goal`, `context_notes`, `new_context`|always|
-|`write`|`agent://` peer messages, `proc://<id>/kill`, and `xd://` dispatch of any admitted tool|
-|`hub`|observing ops and `send` to agents, never process input|
+| Tool | Allowed in the Atlas parent |
+| --- | --- |
+| `task`, `wait`, `todo`, `ask`, `think`, `web_search`, `atlas_ledger`, `atlas_release` | always |
+| `read`, `find`, `glob`, `grep`, `ast_grep` | always; `read` refuses `ssh://` |
+| `lsp` | read-only actions, and `code_actions` without `apply` |
+| `github` | `repo_view`, `file_read`, `search_*`, `run_watch` |
+| `debug` | state inspection only (`threads`, `stack_trace`, `scopes`, `variables`, `output`, …), never `launch`, `continue`, or breakpoints |
+| `ida` | `list` |
+| `recall`, `reflect`, `retain`, `memory_edit`, `learn`, `manage_skill` | always: they write memory backends and managed skills, not the workspace |
+| `goal`, `context_notes`, `new_context` | always |
+| `write` | `agent://` peer messages, `proc://<id>/kill`, and `xd://` dispatch of any admitted tool |
+| `hub` | observing ops and `send` to agents, never process input |
 
 Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file writes, `security_scan`, and `checkpoint`/`rewind`. Rewind branches the session tree away from the task receipts that prove completed ledger rows. Tools registered by other extensions or MCP servers are blocked, even when they share a native tool's name, unless listed under third-party integrations below.
 
 #### Third-party integrations
 
-|Integration|Admitted tools|
-|---|---|
-|[Magic Context](https://github.com/cortexkit/magic-context) (an extension, not part of OMP)|`ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, `ctx_note`, only when registered by an extension; same-named MCP tools stay blocked|
-|Extension wrappers of `todo`, such as [omp-herdr-dag](../omp-herdr-dag/README.md)'s edge-aware `todo`|`todo`, when an extension re-registers it; an MCP `todo` stays blocked|
-|[roadmap](../roadmap/README.md)|`roadmap_*`, only from the extension source path verified by the synchronous roadmap binding handshake; shadows from other extensions or MCP servers stay blocked|
+| Integration | Admitted tools |
+| --- | --- |
+| [Magic Context](https://github.com/cortexkit/magic-context) (an extension, not part of OMP) | `ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, `ctx_note`, only when registered by an extension; same-named MCP tools stay blocked |
+| Extension wrappers of `todo`, such as [omp-herdr-dag](../omp-herdr-dag/README.md)'s edge-aware `todo` | `todo`, when an extension re-registers it; an MCP `todo` stays blocked |
+| [roadmap](../roadmap/README.md) | `roadmap_*`, only from the extension source path verified by the synchronous roadmap binding handshake; shadows from other extensions or MCP servers stay blocked |
 
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session. To survive that switch, the plugin writes a marker to `local://prometheus/<slug>.proposal.json` when the plan is proposed, and OMP copies it into the new session along with the plan. Plans approved in ordinary Plan Mode have no marker, and the plugin leaves them alone.
 
@@ -80,10 +82,10 @@ Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execu
 /atlas exit              # while active: exit (asks first if the plan is unfinished)
 ```
 
-Plans come from Prometheus; Atlas Dispatch is where you hand one to Atlas. It opens on unfinished plans in the current workspace. Tab switches to All, which adds complete, invalid, and other-workspace plans; All is display-only, so start and resume work only from the Unfinished view. The menu shows each plan's progress and the highlighted plan's T/F rows.
+Atlas Dispatch is the menu for handing a Prometheus plan to Atlas. It opens on unfinished plans in the current workspace. Tab switches to All, which adds complete, invalid, and other-workspace plans. All is display-only, so start and resume work only from the Unfinished view. The menu shows each plan's progress and the highlighted plan's T/F rows.
 
 | Key | Action |
-| --- | ------ |
+| --- | --- |
 | type | fuzzy-search names, IDs, or status |
 | Enter | start the highlighted plan and begin executing right away |
 | Space, Shift+I | open the fullscreen plan view |
@@ -95,17 +97,19 @@ Plans come from Prometheus; Atlas Dispatch is where you hand one to Atlas. It op
 
 A plan runs in one session at a time, so Enter and Shift+R refuse a plan that another live session holds.
 
-**Start (Enter).** In an empty session Atlas enters the plan here. Otherwise a prompt offers a new session, this session, or cancel. Atlas then sends the first execution message itself, the same way native plan approval starts work, so you do not need to type anything. Started plans can be started again in another session; shared progress and evidence carry over.
+Enter starts a plan. In an empty session Atlas enters the plan here. Otherwise a prompt offers a new session, this session, or cancel. Atlas then sends the first execution message itself, the same way native plan approval starts work, so you do not need to type anything. A started plan can be started again in another session, and its shared progress and evidence carry over.
 
-**Resume (Shift+R).** Only plans that have started can be resumed. The plugin scans this project's session files for sessions that executed the plan. With one match it switches there; with several it lists them, most recently used first. The session comes back in Atlas mode but does not continue on its own; send a message when you are ready. Resume is refused during planning.
+Shift+R resumes a plan that has already started. The plugin scans this project's session files for sessions that executed the plan. With one match it switches there; with several it lists them, most recently used first. The session comes back in Atlas mode but does not continue on its own; send a message when you are ready. Resume is refused during planning.
 
-**Plan view (Space, Shift+I).** The fullscreen inspector keeps its row selection and scroll when progress changes. Tab switches its body between the selected row and a newest-first timeline; derived events from older bundles are marked. Space still reveals archived child output. Up/Down select rows, PgUp/PgDn scroll, Enter and Shift+R start or resume as in the list, and Esc returns to the list.
+Space or Shift+I opens the fullscreen plan view, which keeps its row selection and scroll when progress changes. Tab switches its body between the selected row and a newest-first timeline; derived events from older bundles are marked. Space reveals archived child output. Up/Down select rows, PgUp/PgDn scroll, Enter and Shift+R start or resume as in the list, and Esc returns to the list.
 
 Deleting asks for confirmation and permanently removes the plan and its evidence. It is refused while a live session owns the plan or native work is pending. Without an interactive UI, bare `/atlas` prints the plan list.
 
 A plan can be selected by its display label, its original name, or either name without the `-plan` suffix, so `checkout` and `checkout-plan` match the same plan. If several plans share a name, use the full ID from the list.
 
-While Atlas is active, bare `/atlas` opens the same fullscreen inspector as a live, read-only observation page: committed ledger changes, child lifecycle, and host progress update without reopening it. The header reports running children and plan elapsed time; in-progress rows show elapsed time in the sidebar and a Live section with child identity, model/thinking, tool and arguments, intent, usage, cost, retries, and recent activity when the host supplies it. Tab switches to the persisted timeline. Start, resume, delete, and rename are unavailable. Shift+X exits Atlas as `/atlas exit` does, and Esc closes the page. If the host has no progress channel, ledger and lifecycle details still work. Without an interactive UI, bare `/atlas` only says which plan is running. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`; it never falls back to prompt-only execution.
+While Atlas is active, bare `/atlas` opens the same fullscreen inspector as a live, read-only observation page. Committed ledger changes, child lifecycle, and host progress update without reopening it. The header reports running children and plan elapsed time. In-progress rows show elapsed time in the sidebar and a Live section with child identity, model/thinking, tool and arguments, intent, usage, cost, retries, and recent activity when the host supplies it. Tab switches to the persisted timeline. Start, resume, delete, and rename are unavailable. Shift+X exits Atlas as `/atlas exit` does, and Esc closes the page. If the host has no progress channel, ledger and lifecycle details still work.
+
+Without an interactive UI, bare `/atlas` only says which plan is running. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`, and Atlas never falls back to prompt-only execution.
 
 During execution an above-editor Atlas widget shows the plan bar, done/total and gate counts, running children, and compact live per-row usage. It remains visible while you use the normal editor and disappears on exit, session switch, or shutdown. Disable it with `atlasWidget`; the `/atlas` observation page remains available.
 
@@ -126,11 +130,11 @@ omp plugin config list wows-omp-plugin-omo-prometheus
 omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 ```
 
-| Setting | Values | Default | Effect |
-| ------- | ------ | ------- | ------ |
+| Setting | Type | Default | Effect |
+| --- | --- | --- | --- |
 | `reviewLevel` | `off` \| `ask` \| `standard` \| `high-accuracy` | `ask` | Controls plan review before the proposal. |
-| `atlasWidget` | `true` \| `false` | `true` | Show the live progress widget above the editor while this session executes Atlas. |
-| `herdrDag` | `true` \| `false` | `true` | Publish the versioned Atlas event contract for the Herdr DAG viewer; false disables all contract emissions, including hello replies. |
+| `atlasWidget` | boolean | `true` | Show the live progress widget above the editor while this session executes Atlas. |
+| `herdrDag` | boolean | `true` | Publish the versioned Atlas event contract for the Herdr DAG viewer; false disables all contract emissions, including hello replies. |
 
 - `ask`: Momus reviews every plan. Momus and Oracle together review when you ask for high accuracy or the work is nontrivial and unclear; for clear work you get a one-time choice.
 - `standard`: Momus reviews every plan without offering high accuracy, but an explicit request still adds Oracle.
@@ -147,15 +151,15 @@ Binding emits `atlas:hello` and `atlas:snapshot`. Live updates publish the plan 
 
 An enabled producer also announces availability without a plan after an unbound session starts or switches, so a viewer that starts first does not need to retry its initial handshake.
 
-Detaching emits `atlas:released` with `reason: "exit"`, `"session-switch"`, or `"shutdown"`, followed by a hello without a plan. Release means detached from the view, not finished execution or cancelled children. With `herdrDag: false`, no contract events are emitted, including hello replies; ledger, todo mirror, ownership, and UI behavior remain unchanged. No viewer or runtime dependency is required by this producer.
+Detaching emits `atlas:released` with `reason: "exit"`, `"session-switch"`, or `"shutdown"`, followed by a hello without a plan. A release only detaches the plan from the view; execution may still be unfinished and children may still be running. With `herdrDag: false`, no contract events are emitted, including hello replies; ledger, todo mirror, ownership, and UI behavior remain unchanged. The producer needs no viewer and adds no runtime dependency.
 
 ## Roadmap contract
 
 With [roadmap](../roadmap/README.md) installed, Prometheus uses a versioned `pi.events` contract independent of `herdrDag`. At proposal time it emits `roadmap:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `roadmap:binding` reply matching that session and request. The reply includes `repoRoot`, `toolSourcePath` and an optional bound active stage. New Atlas bundles write approval version 2 with optional `roadmapStage: {repoRoot, id}`; version 1 approvals still resume without rewriting their bytes or requiring fresh approval. Atlas admits `roadmap_*` tools only with extension provenance whose path exactly matches the handshake's `toolSourcePath`; the guard can request that binding lazily on its first roadmap tool call.
 
-After the ledger write that first makes a stage-bound plan complete, Prometheus emits `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, at}` with verified gate verdicts and summaries. Roadmap records a pending-close reminder for the executing session's next turn. The session must still map and verify that evidence against the stage criteria and call the normal stage-close tool with TODO/ADR dispositions; completion doesn't close a stage automatically. Check the bundle's `approval.json` for `roadmapStage` to confirm the plan carries this integration.
+After the ledger write that first makes a stage-bound plan complete, Prometheus emits `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, at}` with verified gate verdicts and summaries. Roadmap records a pending-close reminder for the executing session's next turn. The session must still map and verify that evidence against the stage criteria and call the normal stage-close tool with TODO/ADR dispositions; completion does not close a stage automatically. Check the bundle's `approval.json` for `roadmapStage` to confirm the plan carries this integration.
 
-Completion deduplication is per producer instance, not durable exactly-once delivery. A producer restart followed by reopening and recompleting a plan can emit again. Roadmap deduplicates pending-close entries by `planId` within the same receiving session's retained state; another session may receive its own reminder.
+Completion events are deduplicated per producer instance only, which does not give durable exactly-once delivery. A producer restart followed by reopening and recompleting a plan can emit again. Roadmap deduplicates pending-close entries by `planId` within the same receiving session's retained state; another session may receive its own reminder.
 
 ## Plan format
 
@@ -183,15 +187,15 @@ Prometheus plans against the agents the `task` tool actually lists in the sessio
 
 At dispatch, the requested agent is tried first, then its fallbacks in order, choosing only agents in the live list:
 
-|Requested agent|Fallback chain|
-|---|---|
-|`deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing`|`task`|
-|`librarian`|`scout` → `task`|
-|`metis`, `momus`, `oracle`|`reviewer` → `task`|
-|`sonic`, `scout`, `reviewer`, `security-reviewer`|`task`|
-|`task`|none|
+| Requested agent | Fallback chain |
+| --- | --- |
+| `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, `writing` | `task` |
+| `librarian` | `scout` → `task` |
+| `metis`, `momus`, `oracle` | `reviewer` → `task` |
+| `sonic`, `scout`, `reviewer`, `security-reviewer` | `task` |
+| `task` | none |
 
-This table swaps agents, not models; each agent's model-role chain is documented in the [omo-toolkit README](../omo-toolkit/README.md#agents). If nothing in a chain can be spawned, the ledger shows `unavailable` and Atlas reports a blocker.
+Fallbacks change the agent only. Each agent's model-role chain is documented in the [omo-toolkit README](../omo-toolkit/README.md#agents). If nothing in a chain can be spawned, the ledger shows `unavailable` and Atlas reports a blocker.
 
 ## Execution ledger
 
@@ -212,11 +216,11 @@ The ledger tracks each T and F row's acceptance criteria, dependencies, status, 
 
 Atlas drives the ledger with `atlas_ledger` (`status`, `start`, `done`, `block`, `reopen`, `fix`). A row is marked done only with proof from the child's real final result, so a failed, foreign, or still-running child, or a hand-written reference, cannot complete work. Blocking or reopening a row affects only that row: completed work that depends on it keeps its proof, and the final gates judge the finished result. `atlas_release` needs a valid receipt for every row plus your explicit confirmation.
 
-If the ledger or plan artifacts are missing, corrupt, or no longer match the approved plan, Atlas pauses instead of carrying on without one, and nothing is silently rebuilt. Restore the approved artifacts, or exit with `/atlas` and get a changed plan approved again.
+If the ledger or plan artifacts are missing, corrupt, or no longer match the approved plan, Atlas pauses and rebuilds nothing. Restore the approved artifacts, or exit with `/atlas` and get a changed plan approved again.
 
 When Atlas stops with unfinished rows, the plugin continues it with a hidden `<atlas-continuation>` message containing the ledger summary. OMP allows at most eight chained continuations per user turn. Two continuations in a row without progress stop the loop and notify you; exit with `/atlas` or send new instructions. Any message from you resets the count.
 
-Progress lives in the shared bundle, not in the session. Child outputs are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the original session. `atlas_ledger status` shows where those outputs are. Only the child's own output is kept; files it merely links to are not copied. If a row's proof goes missing or changes, that row reopens, and an old session branch cannot roll shared progress back.
+Progress is stored in the shared bundle. Child outputs are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the original session. `atlas_ledger status` shows where those outputs are. Only the child's own output is kept; files it merely links to are not copied. If a row's proof goes missing or changes, that row reopens, and an old session branch cannot roll shared progress back.
 
 Updating the plugin keeps existing plans runnable. A ledger written by an earlier release is upgraded when it is loaded, keeping its verified progress, and needs no fresh approval.
 
@@ -226,16 +230,16 @@ Plans run with older versions of the plugin kept their ledger inside the session
 
 ## Final gates
 
-Once every T row is done, Atlas sends F1–F4 together to four separate fresh verification children, none of which did implementation work or already reviewed.
+Once every T row is done, Atlas sends F1 to F4 together to four separate fresh verification children. None of them did implementation work or reviewed earlier.
 
-|Gate|Agent|Fallback|Checks|
-|---|---|---|---|
-|F1. Plan compliance review|`momus` (`review_kind: compliance`)|`reviewer`|executed changes match the approved plan, using the ledger summary and `git diff --stat`|
-|F2. Code quality review|`deep-high`|`task`|maintainability, scope, test value, and evidence-backed blockers|
-|F3. Real-surface QA|`deep-low`|`task`|every scenario in the plan's Verification section run on the real surface with command and observed result|
-|F4. Success-criteria fidelity|`deep-high`|`task`|every named success criterion and adversarial case, tied to evidence|
+| Gate | Agent | Fallback | Checks |
+| --- | --- | --- | --- |
+| F1. Plan compliance review | `momus` (`review_kind: compliance`) | `reviewer` | executed changes match the approved plan, using the ledger summary and `git diff --stat` |
+| F2. Code quality review | `deep-high` | `task` | maintainability, scope, test value, and evidence-backed blockers |
+| F3. Real-surface QA | `deep-low` | `task` | every scenario in the plan's Verification section run on the real surface with command and observed result |
+| F4. Success-criteria fidelity | `deep-high` | `task` | every named success criterion and adversarial case, tied to evidence |
 
-Each gate returns a strict structured verdict (`PASS`, `FAIL`, or `INCONCLUSIVE`) with a summary and evidence. Only a matching structured `PASS` counts, never a passing word in prose.
+Each gate returns a strict structured verdict (`PASS`, `FAIL`, or `INCONCLUSIVE`) with a summary and evidence. Only a matching structured `PASS` counts; a passing word in prose does not.
 
 When a gate rejects the work, Atlas records each correction as an X row (`atlas_ledger fix`), dispatches it like any task, and then reruns only the gate that rejected. Completed T rows and gates that already passed are not reopened.
 
@@ -243,7 +247,7 @@ When a gate rejects the work, Atlas records each correction as an X row (`atlas_
 
 Metis, Oracle, and Momus run as child agents on OMP's `@slow` role, which resolves through your OMP model configuration. The plugin hard-codes no provider or model.
 
-Atlas is the main session after approval, not a child agent. The plugin registers an `atlas` model role, shown in `/model` as **Atlas**, that you can assign like any other role. It is not part of the Ctrl+P cycle. While a Prometheus proposal waits for approval, `atlas` is temporarily added to the front of `cycleOrder`, so the approval slider offers it next to `smol`, `default`, and `slow`, while Ctrl+P still skips it. The slider still starts on `default`; move it to `atlas` to execute with that role. The change to `cycleOrder` is undone at the next input or agent turn, or when planning ends. Ordinary Plan Mode approvals never show `atlas`, and roles without an available model never appear on the slider.
+Atlas is the main session after approval, not a child agent. The plugin registers an `atlas` model role, shown in `/model` as Atlas, that you can assign like any other role. It is not part of the Ctrl+P cycle. While a Prometheus proposal waits for approval, `atlas` is temporarily added to the front of `cycleOrder`, so the approval slider offers it next to `smol`, `default`, and `slow`, while Ctrl+P still skips it. The slider still starts on `default`; move it to `atlas` to execute with that role. The change to `cycleOrder` is undone at the next input or agent turn, or when planning ends. Ordinary Plan Mode approvals never show `atlas`, and roles without an available model never appear on the slider.
 
 `/atlas <plan>` switches to the `atlas` role when it is assigned and keeps the current model otherwise. If the assigned model cannot be resolved, Atlas still starts and reports that it kept the current model.
 
