@@ -550,13 +550,10 @@ async function acceptance(name: string, root: string): Promise<void> {
         };
         await command(h, "roadmap", "close-round");
         const model = await loadAll(repo);
-        assert.deepEqual(
-          model.rounds.map((round) => [round.id, round.status]).sort(),
-          [
-            ["R1", "closed"],
-            ["R2", "active"],
-          ],
-        );
+        assert.deepEqual(model.rounds.map((round) => [round.id, round.status]).sort(), [
+          ["R1", "closed"],
+          ["R2", "active"],
+        ]);
         assert(before);
         assert.deepEqual(model.files, before);
         assert.match(h.messages.at(-1) ?? "", /stale/);
