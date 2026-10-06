@@ -171,7 +171,7 @@ class Refusal extends Error {
 
 const preparedModels = new WeakMap<PreparedOperation, Model>();
 const BODY_REPAIR_HINT =
-  "Escape structural headings in body text or put examples inside fenced code blocks, and close every code fence before retrying.";
+  "Escape structural headings or HTML openers in body text, or put examples inside fenced code blocks; close every code fence and HTML block before retrying.";
 
 function required(value: string | undefined, field: string, multiline = false): string {
   if (typeof value !== "string" || !value.trim() || (!multiline && /[\r\n]/.test(value))) {
@@ -185,7 +185,7 @@ function required(value: string | undefined, field: string, multiline = false): 
 
 function lines(values: string[] | undefined, field: string): string {
   if (!Array.isArray(values)) throw new Refusal(`${field} must be a list.`);
-  return values.map((value) => `- ${required(value, field)}`).join("\n");
+  return values.map((value) => `- ${requiredBody(value, field)}`).join("\n");
 }
 
 function normalizedFields(doc: object): Record<string, unknown> {
@@ -212,13 +212,20 @@ function sameFields(actual: object, intended: object): boolean {
   );
 }
 
-function bodyHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
+function bodyHeadings(body: string, pattern: RegExp, requireClosedFences = true): RegExpMatchArray[] {
   try {
-    return markdownHeadings(lf(body), pattern, { requireClosedFences: true });
+    return markdownHeadings(lf(body), pattern, { requireClosedFences });
   } catch (error) {
     if (error instanceof DocumentError) throw new Refusal(`Body changes the document structure: ${error.message}`, [BODY_REPAIR_HINT]);
     throw error;
   }
+}
+
+function requiredBody(value: string | undefined, field: string): string {
+  const body = required(value, field);
+  // Validate the authored input before list labels turn a block opener into inline text.
+  bodyHeadings(body, /^#{1,6} .+$/gm, false);
+  return body;
 }
 
 function assertBody(body: string, headingLevel = 2, reservedHeadings: readonly string[] = []): void {
@@ -271,7 +278,7 @@ function highest(model: Model, kind: IdKind): number {
 function failure(error: unknown): Extract<Receipt, { ok: false }> {
   if (error instanceof Refusal) return { ok: false, reason: error.message, hints: error.hints };
   if (error instanceof DocumentError)
-    return { ok: false, reason: error.message, hints: ["Run roadmap_check and repair the document structure."] };
+    return { ok: false, reason: error.message, hints: ["Run roadmap_check and repair the document structure.", BODY_REPAIR_HINT] };
   return {
     ok: false,
     reason: error instanceof Error ? error.message : String(error),
@@ -490,8 +497,8 @@ function criteria(inputs: CriterionInput[] | undefined, reserved: string[] = [])
   let next = Math.max(0, ...[...used].map((id) => Number(id.slice(2))));
   return inputs.map((input) => ({
     id: input.id ?? `DC${++next}`,
-    statement: required(input.statement, "criterion statement"),
-    verify: required(input.verify, "criterion verify method"),
+    statement: requiredBody(input.statement, "criterion statement"),
+    verify: requiredBody(input.verify, "criterion verify method"),
   }));
 }
 
@@ -534,7 +541,7 @@ async function newStage(repo: Repo, model: Model, input: Partial<StageInput>): P
 }
 
 function amend(stage: StageDoc, input: StageOperationInput): void {
-  const reason = required(input.reason, "amendment reason");
+  const reason = requiredBody(input.reason, "amendment reason");
   const changes = input.amendments;
   if (!changes || ![changes.add, changes.modify, changes.remove, changes.scope].some((entries) => entries?.length)) {
     throw new Refusal("An amendment needs at least one criterion or scope change.");
@@ -547,8 +554,8 @@ function amend(stage: StageDoc, input: StageOperationInput): void {
     if (!criterion || touched.has(modification.id)) throw new Refusal(`Unknown or repeated criterion ${modification.id}.`);
     touched.add(modification.id);
     const old = criterion.statement;
-    criterion.statement = required(modification.statement, "criterion statement");
-    criterion.verify = required(modification.verify, "criterion verify method");
+    criterion.statement = requiredBody(modification.statement, "criterion statement");
+    criterion.verify = requiredBody(modification.verify, "criterion verify method");
     log.push(`- MODIFIED ${criterion.id} — ${criterion.statement} (was: ${old}) · Verify: ${criterion.verify}`);
   }
   for (const id of changes.remove ?? []) {
@@ -568,7 +575,7 @@ function amend(stage: StageDoc, input: StageOperationInput): void {
   for (const scope of changes.scope ?? []) {
     const field = scope.side === "in" ? "scope_in" : scope.side === "out" ? "scope_out" : undefined;
     if (!field || (scope.op !== "add" && scope.op !== "remove")) throw new Refusal("Invalid scope amendment.");
-    const item = required(scope.item, "scope item");
+    const item = requiredBody(scope.item, "scope item");
     const bullet = `- ${item}`;
     const entries = stage[field] ? stage[field].split("\n") : [];
     if (scope.op === "add") {
@@ -597,9 +604,9 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
       throw new Refusal(`Unknown or repeated evidence criterion ${item.criterion}.`);
     }
     seen.add(item.criterion);
-    required(item.method, "evidence method");
-    required(item.summary, "evidence summary");
-    if (item.commit !== undefined) required(item.commit, "evidence commit");
+    requiredBody(item.method, "evidence method");
+    requiredBody(item.summary, "evidence summary");
+    if (item.commit !== undefined) requiredBody(item.commit, "evidence commit");
   }
   for (const criterion of current) {
     if (!evidence.some((item) => item.criterion === criterion.id && item.result === "pass")) {
@@ -623,7 +630,7 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
     if (!item || disposed.has(item.id)) throw new Refusal(`Unknown or repeated pending TODO ${disposition.id}.`);
     disposed.add(item.id);
     if (disposition.disposition === "resolved") {
-      item.reference = required(disposition.reference, "TODO resolution reference");
+      item.reference = requiredBody(disposition.reference, "TODO resolution reference");
       item.status = "resolved";
       todoLog.push(`- ${item.id} resolved · ${item.reference}`);
     } else if (disposition.disposition === "moved") {
@@ -842,7 +849,7 @@ export async function todo(repo: Repo, actor: Actor, input: TodoOperationInput, 
         if (existing?.status !== "open") throw new Refusal(`TODO ${input.id} is not open in the active round.`);
         item = existing;
         if (input.action === "resolve") {
-          item.reference = required(input.reference, "TODO resolution reference");
+          item.reference = requiredBody(input.reference, "TODO resolution reference");
           item.status = "resolved";
         } else if (input.action === "update" || input.action === "move") {
           if (input.action === "move" || input.target !== undefined || input.trigger !== undefined) {
@@ -958,7 +965,7 @@ async function newRound(repo: Repo, model: Model, input: RoundInput): Promise<Ro
     .map((principle) => {
       if (!principle.adrs?.length) throw new Refusal("Every round principle must cite at least one ADR.");
       for (const id of principle.adrs) findAdr(model, id);
-      return `- ${required(principle.text, "principle")} (${principle.adrs.join(", ")}).`;
+      return `- ${requiredBody(principle.text, "principle")} (${principle.adrs.join(", ")}).`;
     })
     .join("\n");
   const n = await allocate(repo, "round", highest(model, "round"));

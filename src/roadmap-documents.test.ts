@@ -150,6 +150,100 @@ describe("roadmap managed documents", () => {
     }
   });
 
+  const htmlBlocks = [
+    ["<ScRiPt>", "</sCrIpT>"],
+    ["<pre class=example>", "</PRE>"],
+    ["<STYLE>", "</style>"],
+    ["<TeXtArEa>", "</TEXTAREA>"],
+    ["<!--", "-->"],
+    ["<?probe", "?>"],
+    ["<!DOCTYPE example", ">"],
+    ["<![CDATA[", "]]>"],
+  ] as const;
+
+  test("HTML block types 1-5 mask ATX, Setext and fence examples while retaining visible source offsets", () => {
+    for (const [opener, closer] of htmlBlocks) {
+      for (const indent of ["", " ", "  ", "   "]) {
+        const source = `## Before\n\n${indent}${opener}\n## Hidden\nEvidence\n--------\n\n~~~markdown\n${closer}\n## After`;
+        const headings = markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true });
+        expect(headings.map((heading) => heading[0])).toEqual(["## Before", "## After"]);
+        expect(headings[1]?.index).toBe(source.indexOf("## After"));
+        expect(Bun.markdown.html(source)).toContain("<h2>After</h2>");
+        expect(Bun.markdown.html(source)).not.toContain("<h2>Hidden</h2>");
+        const sameLine = `${opener} example ${closer}\n## After`;
+        expect(markdownHeadings(sameLine, /^## .+$/gm).map((heading) => heading[0])).toEqual(["## After"]);
+      }
+    }
+    // CommonMark raw-text blocks end on any of the four closing tags, even a different tag.
+    expect(markdownHeadings("<script\n## Hidden\n</textarea>\n## After", /^## .+$/gm).map((heading) => heading[0])).toEqual(["## After"]);
+    expect(markdownHeadings("Paragraph\n<!--\nEvidence\n---\n-->\n---", /^## .+$/gm)).toEqual([]);
+  });
+
+  test("unterminated HTML blocks are structural escapes even after blank lines, Markdown fences or fixed headings", () => {
+    for (const [opener] of htmlBlocks) {
+      for (const indent of ["", "   "]) {
+        const source = `Authored text.\n\n${indent}${opener}\n\n~~~\n## Hidden\n~~~\n\n## Later`;
+        expect(() => markdownHeadings(source, /^## .+$/gm)).toThrow("Unterminated HTML block");
+        expect(() => markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true })).toThrow("Unterminated HTML block");
+      }
+    }
+    expect(() => markdownHeadings("<script>\n</script >\n## Hidden", /^## .+$/gm)).toThrow("Unterminated HTML block");
+    expect(() => markdownHeadings("<?probe\n>\n## Hidden", /^## .+$/gm)).toThrow("Unterminated HTML block");
+  });
+
+  test("inline HTML, escaped openers, non-block tag names and HTML examples in code do not swallow headings", () => {
+    for (const source of [
+      "Inline <span>text</span> and <script>example</script>.",
+      "Inline <!-- incomplete comment is plain text.",
+      "\\<!--",
+      "<!doctype example",
+      "<scripture>",
+      "<script-example>",
+      "    <!--",
+      "\t<script>",
+      ...htmlBlocks.map(([opener]) => `~~~markdown\n${opener}\n## Example\n~~~`),
+    ]) {
+      expect(markdownHeadings(`${source}\n\n## After`, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual([
+        "## After",
+      ]);
+    }
+  });
+
+  test("closed HTML examples round-trip inside every managed body while preserving fixed headings and TODO identities", () => {
+    for (const [opener, closer] of htmlBlocks) {
+      const example = `${opener}\n## Example\n### In\n### T999 — Example\n## Closed in this round\n${closer}`;
+      const stage = renderStage(stageFixture({ objective: example }));
+      expect(renderStage(parseStage(stage))).toBe(stage);
+      const round = renderRound(roundFixture({ goal: example }));
+      expect(renderRound(parseRound(round))).toBe(round);
+      const todos = todoFixture();
+      if (todos.items[0]) todos.items[0].body = example;
+      todos.items.push({ id: "T002", title: "Later item", status: "resolved", reference: "Verified", body: example });
+      const todo = renderTodo(todos);
+      expect(parseTodo(todo).items.map((item) => item.id)).toEqual(["T001", "T002"]);
+      expect(renderTodo(parseTodo(todo))).toBe(todo);
+      const adr = adrFixture();
+      adr.body = buildAdrBody(adr.title, { context: example, options: ["X"], outcome: example, more_info: example });
+      const decision = renderAdr(adr);
+      expect(renderAdr(parseAdr(decision))).toBe(decision);
+    }
+  });
+
+  test("parsing stored stage, round, TODO and ADR documents rejects headings hidden in unclosed HTML", () => {
+    for (const [opener] of htmlBlocks) {
+      const body = `Authored text.\n\n${opener}`;
+      expect(() => parseStage(renderStage(stageFixture({ objective: body })))).toThrow();
+      expect(() => parseStage(renderStage(stageFixture({ outcome: `### Delivered\n\n${body}\n\n### Evidence\nHidden.` })))).toThrow();
+      expect(() => parseRound(renderRound(roundFixture({ goal: body })))).toThrow();
+      const todos = todoFixture();
+      if (todos.items[0]) todos.items[0].body = body;
+      expect(() => parseTodo(renderTodo(todos))).toThrow();
+      const adr = adrFixture();
+      adr.body = buildAdrBody(adr.title, { context: body, options: ["X"], outcome: "Choose X." });
+      expect(() => parseAdr(renderAdr(adr))).toThrow();
+    }
+  });
+
   test("Setext headings preserve source spans and include their preceding paragraph lines", () => {
     for (const indent of ["", " ", "  ", "   "]) {
       for (const [underline, level] of [

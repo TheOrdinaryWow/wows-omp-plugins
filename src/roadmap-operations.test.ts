@@ -933,6 +933,382 @@ describe("roadmap tool-owned body boundaries", () => {
   });
 });
 
+describe("roadmap HTML body boundaries", () => {
+  const htmlBlocks = [
+    ["<!--", "-->"],
+    ["<ScRiPt>", "</sCrIpT>"],
+    ["<style>", "</style>"],
+    ["<pre>", "</pre>"],
+    ["<![CDATA[", "]]>"],
+    ["<?probe", "?>"],
+    ["<TeXtArEa>", "</TEXTAREA>"],
+    ["<!DOCTYPE example", ">"],
+  ] as const;
+
+  async function rejectsHtml(repo: Repo, receipt: Receipt | PreparationReceipt, before: Record<string, string>): Promise<void> {
+    const rejection = refused(receipt, "HTML");
+    expect(rejection.hints.join("\n")).toContain("close");
+    expect(await managedBytes(repo)).toEqual(before);
+  }
+
+  async function intact(repo: Repo): Promise<Model> {
+    const model = await loadAll(repo);
+    expect(model.parseErrors ?? []).toEqual([]);
+    expect(await check(model)).toEqual([]);
+    for (const round of model.rounds) {
+      const body = (await readFile(round.path, "utf8")).replace(/^---\n[\s\S]*?\n---\n/, "");
+      expect(markdownHeadings(body, /^## .+$/gm).map((heading) => heading[0])).toEqual([
+        "## Goal",
+        "## Constraints",
+        "## Non-goals",
+        "## Principles",
+        "## Stages",
+        "## Known limitations",
+      ]);
+    }
+    for (const doc of model.stages) {
+      const body = (await readFile(doc.path, "utf8")).replace(/^---\n[\s\S]*?\n---\n/, "");
+      expect(markdownHeadings(body, /^## .+$|^### (?:In|Out)$/gm).map((heading) => heading[0])).toEqual([
+        "## Objective",
+        "## Scope",
+        "### In",
+        "### Out",
+        "## Done criteria",
+        ...(doc.design_constraints === undefined ? [] : ["## Design constraints"]),
+        ...(doc.risks === undefined ? [] : ["## Risks"]),
+        "## Amendments",
+        "## Free-work log",
+        ...(doc.outcome === undefined ? [] : ["## Outcome"]),
+      ]);
+    }
+    for (const doc of model.todos) {
+      const body = (await readFile(doc.path, "utf8")).replace(/^---\n[\s\S]*?\n---\n/, "");
+      expect(markdownHeadings(body, /^## .+$/gm).map((heading) => heading[0])).toEqual(["## Open", "## Closed in this round"]);
+    }
+    for (const doc of model.adrs) {
+      const headings = markdownHeadings(doc.body, /^## .+$/gm).map((heading) => heading[0]);
+      for (const heading of ["## Context and Problem Statement", "## Considered Options", "## Decision Outcome"])
+        expect(headings.filter((value) => value === heading)).toHaveLength(1);
+    }
+    return model;
+  }
+
+  test("stage objective, optional bodies, scope and criterion text refuse unclosed HTML without changing managed bytes", async () => {
+    const repo = await initialized();
+    const before = await managedBytes(repo);
+    for (const [opener] of htmlBlocks) {
+      const body = `Authored text.\n\n${opener}`;
+      const candidates: StageOperationInput[] = [
+        ...(["objective", "design_constraints", "risks"] as const).map((field) => ({ action: "edit" as const, id: "S01", [field]: body })),
+        ...(["scope_in", "scope_out"] as const).map((field) => ({ action: "edit" as const, id: "S01", [field]: [opener] })),
+        ...(["statement", "verify"] as const).map((field) => ({
+          action: "edit" as const,
+          id: "S01",
+          done_criteria: [{ statement: "Works", verify: "Check", [field]: opener }],
+        })),
+        { action: "add", ...stageInput, objective: body },
+      ];
+      for (const input of candidates) await rejectsHtml(repo, await stage(repo, main, input), before);
+    }
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("delivery and deviations refuse all six reported HTML escapes before freezing or writing dispositions", async () => {
+    const repo = await initialized();
+    success(await todo(repo, main, { action: "add", title: "Pending", severity: "normal", source: "Review", target: "S01" }));
+    success(await adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections }));
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    const before = await managedBytes(repo);
+    const close: StageOperationInput = {
+      ...evidence(),
+      todos: [{ id: "T001", disposition: "resolved", reference: "Verified" }],
+      adrs: [{ id: "ADR-0002", status: "accepted" }],
+    };
+    for (const [opener] of htmlBlocks) {
+      for (const field of ["delivered", "deviations"] as const)
+        await rejectsHtml(repo, await stage(repo, main, { ...close, [field]: `Delivered.\n\n${opener}` }), before);
+    }
+    const model = await intact(repo);
+    expect(model.stages[0]?.status).toBe("active");
+    expect(model.stages[0]?.closed_sha256).toBeNull();
+    expect(model.todos[0]?.items[0]?.status).toBe("open");
+    expect(model.adrs.find((doc) => doc.id === "ADR-0002")?.status).toBe("proposed");
+  });
+
+  test("TODO add and update cannot hide the next item or the closed section inside open HTML", async () => {
+    const repo = await initialized();
+    for (const title of ["First concern", "Second concern"])
+      success(await todo(repo, main, { action: "add", title, severity: "normal", source: "Review", trigger: "Later" }));
+    const before = await managedBytes(repo);
+    for (const [opener] of htmlBlocks) {
+      const body = `Body.\n\n${opener}`;
+      await rejectsHtml(repo, await todo(repo, main, { action: "update", id: "T001", body }), before);
+      await rejectsHtml(
+        repo,
+        await todo(repo, main, {
+          action: "add",
+          title: "Unfinished example",
+          severity: "normal",
+          source: "Review",
+          trigger: "Later",
+          body,
+        }),
+        before,
+      );
+    }
+    expect((await intact(repo)).todos[0]?.items.map((item) => item.id)).toEqual(["T001", "T002"]);
+  });
+
+  test("all ADR sections and options reject open HTML before create, revise or supersede writes", async () => {
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    success(await adr(repo, main, { action: "create", title: "Proposed choice", stage: "S01", sections }));
+    const before = await managedBytes(repo);
+    for (const [opener] of htmlBlocks) {
+      for (const field of ["context", "drivers", "options", "outcome", "consequences", "confirmation", "pros_cons", "more_info"] as const) {
+        const candidate = { ...sections, [field]: field === "options" ? [opener] : `Authored text.\n\n${opener}` };
+        for (const input of [
+          { action: "create", title: "Unfinished choice", status: "accepted" },
+          { action: "revise", id: "ADR-0002" },
+          { action: "supersede", id: "ADR-0001", title: "Unfinished successor" },
+        ] as const)
+          await rejectsHtml(repo, await adr(repo, main, { ...input, sections: candidate }), before);
+      }
+    }
+    expect((await intact(repo)).adrs.map((doc) => [doc.id, doc.status])).toEqual([
+      ["ADR-0001", "accepted"],
+      ["ADR-0002", "proposed"],
+    ]);
+  });
+
+  test("ADR notes refuse new unclosed HTML and report an existing unclosed accepted body without rewriting it", async () => {
+    const repo = await initialized();
+    const before = await managedBytes(repo);
+    const current = (await loadAll(repo)).adrs[0];
+    if (!current) throw new Error("Missing ADR");
+    const original = await readFile(current.path, "utf8");
+    for (const [opener] of htmlBlocks) {
+      await rejectsHtml(repo, await adr(repo, main, { action: "note", id: current.id, text: `Note.\n\n${opener}` }), before);
+      const broken = `${original}\n${opener}\n`;
+      await writeFile(current.path, broken);
+      const receipt = refused(await adr(repo, main, { action: "note", id: current.id, text: "A visible dated note." }), "HTML");
+      expect(receipt.hints.join("\n")).toContain("close");
+      expect(await readFile(current.path, "utf8")).toBe(broken);
+      expect((await check(await loadAll(repo))).some((issue) => issue.path === current.path && issue.rule === "structure")).toBe(true);
+      await writeFile(current.path, original);
+    }
+    await intact(repo);
+  });
+
+  test("initialization and round reopening refuse unclosed goal, constraint, non-goal and principle inputs", async () => {
+    const empty = await emptyRepo();
+    const entries = await readdir(empty.repoRoot);
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    const before = await managedBytes(repo);
+    for (const [opener] of htmlBlocks) {
+      for (const field of ["goal", "constraints", "non_goals", "principles"] as const) {
+        const round: RoundInput = {
+          ...charter,
+          [field]: field === "goal" ? `Goal.\n\n${opener}` : field === "principles" ? [{ text: opener, adrs: ["ADR-0001"] }] : [opener],
+        };
+        const receipt = refused(await prepareInit(empty, main, { ...initInput, round }), "HTML");
+        expect(receipt.hints.join("\n")).toContain("close");
+        expect(await readdir(empty.repoRoot)).toEqual(entries);
+        await rejectsHtml(repo, await prepareRoundOpen(repo, main, { round, import_todos: [] }), before);
+      }
+      const receipt = refused(
+        await prepareInit(empty, main, {
+          ...initInput,
+          project: { ...initInput.project, description: `Description.\n\n${opener}` },
+        }),
+        "HTML",
+      );
+      expect(receipt.hints.join("\n")).toContain("close");
+      expect(await readdir(empty.repoRoot)).toEqual(entries);
+    }
+    await intact(repo);
+  });
+
+  test("drop and amendment bodies refuse unclosed HTML through reasons, scope and criterion changes", async () => {
+    const repo = await initialized();
+    let before = await managedBytes(repo);
+    for (const [opener] of htmlBlocks)
+      await rejectsHtml(repo, await stage(repo, main, { action: "drop", id: "S01", reason: `Deferred.\n\n${opener}` }), before);
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    before = await managedBytes(repo);
+    for (const [opener] of htmlBlocks) {
+      const inputs: StageOperationInput[] = [
+        { action: "amend", id: "S01", reason: opener, amendments: { remove: ["DC2"] } },
+        { action: "amend", id: "S01", reason: "Reviewed", amendments: { scope: [{ op: "add", side: "in", item: opener }] } },
+        ...(["statement", "verify"] as const).flatMap((field): StageOperationInput[] => [
+          {
+            action: "amend",
+            id: "S01",
+            reason: "Reviewed",
+            amendments: { add: [{ statement: "Works", verify: "Check", [field]: opener }] },
+          },
+          {
+            action: "amend",
+            id: "S01",
+            reason: "Reviewed",
+            amendments: { modify: [{ id: "DC1", statement: "Works", verify: "Check", [field]: opener }] },
+          },
+        ]),
+      ];
+      for (const input of inputs) await rejectsHtml(repo, await stage(repo, main, input), before);
+    }
+    await intact(repo);
+  });
+
+  test("limitation references cannot hide subsequent limitations or freeze the round with open HTML", async () => {
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+    for (const title of ["First limitation", "Second limitation"])
+      success(await todo(repo, main, { action: "add", title, severity: "low", source: "Review", trigger: "Later" }));
+    const expected = await reviewedRound(repo);
+    const before = await managedBytes(repo);
+    for (const [opener] of htmlBlocks) {
+      await rejectsHtml(
+        repo,
+        await closeRound(repo, main, {
+          expected,
+          dispositions: [
+            { id: "T001", disposition: "wontfix", reference: `Documented.\n\n${opener}` },
+            { id: "T002", disposition: "wontfix", reference: "Later work" },
+          ],
+        }),
+        before,
+      );
+    }
+    expect((await intact(repo)).rounds[0]?.status).toBe("active");
+  });
+
+  test("stored-file check reports HTML-hidden headings and refuses automatic repair of authored bytes", async () => {
+    const repo = await initialized();
+    success(await todo(repo, main, { action: "add", title: "First", severity: "normal", source: "Review", trigger: "Later" }));
+    success(await todo(repo, main, { action: "add", title: "Second", severity: "normal", source: "Review", trigger: "Later" }));
+    const model = await loadAll(repo);
+    const documents = [
+      [model.stages[0]?.path, "## Objective"],
+      [model.rounds[0]?.path, "## Goal"],
+      [model.todos[0]?.path, "### T001 — First"],
+      [model.adrs[0]?.path, "## Context and Problem Statement"],
+    ];
+    for (const [path, heading] of documents) {
+      if (!path || !heading) throw new Error("Missing document");
+      const original = await readFile(path, "utf8");
+      for (const [opener] of htmlBlocks) {
+        const broken = original.replace(`${heading}\n`, `${heading}\nAuthored text.\n\n${opener}\n`);
+        await writeFile(path, broken);
+        for (const fix of [false, true]) {
+          const diagnostics = await check(await loadAll(repo), { fix });
+          expect(diagnostics.some((issue) => issue.path === path && issue.rule === "structure" && !issue.fixable)).toBe(true);
+          expect(await readFile(path, "utf8")).toBe(broken);
+        }
+        await writeFile(path, original);
+      }
+    }
+    await intact(repo);
+  });
+
+  test("closed HTML blocks and inline HTML preserve fixed headings, later items and dated notes after every accepted write", async () => {
+    for (const [opener, closer] of htmlBlocks) {
+      const repo = await initialized();
+      const example = `${opener}\n## Example section\n### Evidence\n### T999 — Example\n${closer}`;
+      const inline = `${opener} example ${closer}`;
+      const prose = "Inline <span>example</span> and <!-- closed comment -->.";
+      success(
+        await stage(repo, main, {
+          action: "edit",
+          id: "S01",
+          objective: example,
+          design_constraints: example,
+          risks: example,
+          scope_in: [inline],
+          scope_out: [prose],
+          done_criteria: stageInput.done_criteria.map((criterion) => ({ ...criterion, statement: inline, verify: prose })),
+        }),
+      );
+      await intact(repo);
+      for (const title of ["First", "Second"]) {
+        success(await todo(repo, main, { action: "add", title, severity: "normal", source: "Review", trigger: "Later", body: example }));
+        await intact(repo);
+      }
+      success(await todo(repo, main, { action: "update", id: "T001", body: `${example}\n\n${prose}` }));
+      expect((await intact(repo)).todos[0]?.items.map((item) => item.id)).toEqual(["T001", "T002"]);
+      success(
+        await adr(repo, main, {
+          action: "create",
+          title: "HTML examples",
+          status: "accepted",
+          sections: {
+            context: example,
+            drivers: example,
+            options: [inline, prose],
+            outcome: example,
+            consequences: example,
+            confirmation: example,
+            pros_cons: example,
+            more_info: example,
+          },
+        }),
+      );
+      await intact(repo);
+      for (const text of [example, prose]) {
+        success(await adr(repo, main, { action: "note", id: "ADR-0002", text }));
+        await intact(repo);
+      }
+      const decision = (await loadAll(repo)).adrs.find((doc) => doc.id === "ADR-0002");
+      expect(markdownHeadings(decision?.body as string, /^### \d{4}-\d{2}-\d{2}$/gm)).toHaveLength(2);
+      success(await stage(repo, main, { action: "start", id: "S01" }));
+      await intact(repo);
+      success(await stage(repo, main, { ...evidence(), delivered: example, deviations: `${example}\n\n${prose}` }));
+      const closed = (await intact(repo)).stages[0];
+      expect(closed?.outcome).toContain(example);
+      expect(markdownHeadings(closed?.outcome as string, /^### .+$/gm).map((heading) => heading[0])).toEqual([
+        "### Delivered",
+        "### Deviations",
+        "### Evidence",
+        "### TODO",
+        "### ADRs",
+      ]);
+      expect(Bun.markdown.html(closed?.outcome as string).match(/<h3>[^<]+<\/h3>/g)).toEqual([
+        "<h3>Delivered</h3>",
+        "<h3>Deviations</h3>",
+        "<h3>Evidence</h3>",
+        "<h3>TODO</h3>",
+        "<h3>ADRs</h3>",
+      ]);
+      success(
+        await closeRound(repo, main, {
+          expected: await reviewedRound(repo),
+          dispositions: [
+            { id: "T001", disposition: "wontfix", reference: inline },
+            { id: "T002", disposition: "wontfix", reference: prose },
+          ],
+        }),
+      );
+      const frozen = await intact(repo);
+      expect(markdownHeadings(frozen.rounds[0]?.known_limitations as string, /^### T\d+ .+$/gm)).toHaveLength(2);
+      success(
+        await openRound(repo, main, {
+          round: {
+            ...charter,
+            goal: example,
+            constraints: [inline],
+            non_goals: [prose],
+            principles: [{ text: inline, adrs: ["ADR-0001"] }],
+          },
+          import_todos: [],
+        }),
+      );
+      expect((await intact(repo)).rounds.find((round) => round.id === "R2")?.goal).toBe(example);
+    }
+  });
+});
+
 describe("roadmap ADR operations", () => {
   test("dated notes ignore fenced More Information examples and stay in the real section", async () => {
     const repo = await initialized();

@@ -318,22 +318,45 @@ function section(heading: string, body: string): string {
 export function markdownHeadings(body: string, pattern: RegExp, options: { requireClosedFences?: boolean } = {}): RegExpMatchArray[] {
   let fenceCharacter = "";
   let fenceLength = 0;
+  let html: { end: RegExp; opener: string; line: number } | undefined;
   let offset = 0;
   let paragraph: { offset: number; lines: string[] } | undefined;
   const lines: string[] = [];
   const setext: RegExpMatchArray[] = [];
   for (const line of body.split("\n")) {
-    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    let masked = Boolean(fenceCharacter);
-    if (fence) {
-      const delimiter = fence[1] as string;
-      const info = fence[2] as string;
-      if (!fenceCharacter && (delimiter[0] !== "`" || !info.includes("`"))) {
-        fenceCharacter = delimiter[0] as string;
-        fenceLength = delimiter.length;
+    let masked = Boolean(fenceCharacter || html);
+    if (html) {
+      if (html.end.test(line)) html = undefined;
+    } else if (fenceCharacter) {
+      const fence = /^ {0,3}(`{3,}|~{3,})([ \t]*)$/.exec(line);
+      if (fence?.[1]?.[0] === fenceCharacter && fence[1].length >= fenceLength) fenceCharacter = "";
+    } else {
+      // CommonMark HTML block types 1-5 interrupt paragraphs and end on a delimiter,
+      // never a blank line. Fence-looking text inside HTML is still raw HTML.
+      const opener =
+        /^ {0,3}(<(?:script|pre|style|textarea)(?:[ \t>]|$))/i.exec(line) ?? /^ {0,3}(<!--|<\?|<![A-Z]|<!\[CDATA\[)/.exec(line);
+      if (opener) {
+        const start = opener[1] as string;
+        const end =
+          start === "<!--"
+            ? /-->/
+            : start === "<?"
+              ? /\?>/
+              : start === "<![CDATA["
+                ? /\]\]>/
+                : /^<![A-Z]/.test(start)
+                  ? />/
+                  : /<\/(?:script|pre|style|textarea)>/i;
         masked = true;
-      } else if (delimiter[0] === fenceCharacter && delimiter.length >= fenceLength && /^[ \t]*$/.test(info)) {
-        fenceCharacter = "";
+        if (!end.test(line)) html = { end, opener: start.trimEnd(), line: lines.length + 1 };
+      }
+      if (!masked) {
+        const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+        if (fence && (fence[1]?.[0] !== "`" || !fence[2]?.includes("`"))) {
+          fenceCharacter = fence[1]?.[0] as string;
+          fenceLength = (fence[1] as string).length;
+          masked = true;
+        }
       }
     }
     if (masked) paragraph = undefined;
@@ -367,6 +390,7 @@ export function markdownHeadings(body: string, pattern: RegExp, options: { requi
     lines.push(masked ? " ".repeat(line.length) : line);
     offset += line.length + 1;
   }
+  if (html) invalid(`Unterminated HTML block (${html.opener}) at line ${html.line}; close the HTML block before retrying.`);
   if (options.requireClosedFences && fenceCharacter) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
   return [...lines.join("\n").matchAll(pattern), ...setext].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
 }

@@ -104,13 +104,13 @@ These are agent tools, not slash commands. Mutating tools use write approval; `r
 
 TODO `add` requires `title`, `source`, `severity`, and either `target` or `trigger`; `body` is optional. `update` changes supplied fields of an open item in the active round. `resolve` requires a `reference`. `move` replaces its target or trigger and refuses a closed target stage.
 
-Tools reparse rendered documents and refuse body text that changes the intended item ids, order, metadata, bodies or section boundaries. Escape structural headings or keep Markdown examples inside fully closed fenced code blocks; a body cannot leave a fence open across later items or sections. Stage bodies and ADR sections follow the same boundary rules; criterion statements and verification methods remain single-line text.
+Tools reparse rendered documents and refuse body text that changes the intended item ids, order, metadata, bodies or section boundaries. Escape structural headings or HTML openers, or keep Markdown examples inside fully closed fenced code blocks. A body cannot leave a code fence or HTML block open across later items or sections: close comments, processing instructions, declarations, CDATA and `script`/`pre`/`style`/`textarea` blocks before retrying. Closed HTML blocks and inline HTML remain accepted. Stage bodies and ADR sections follow the same boundary rules; criterion statements and verification methods remain single-line text.
 
 ADR `create` requires `title` and `sections` with `context`, nonempty `options` and `outcome`. Optional sections include `drivers`, `consequences`, `confirmation`, `pros_cons` and `more_info`; participant lists and a stage association are also supported. The vendored MADR 4.0 template uses Confirmation, not an implementation checklist.
 
 `revise` replaces the whole body of a proposed ADR while retaining its metadata; it can also change the title. Accepted ADRs aren't rewritten through `revise`. The main session can use `set_status` for `accepted`, `rejected` or `deprecated`, or `supersede` an accepted/deprecated ADR with a newly accepted successor and reciprocal links. `note` appends dated `text` under More Information. Subagents create proposed ADRs regardless of a requested final status, and cannot set status or supersede.
 
-If an existing ADR or the new note ends inside an unterminated fenced block, `note` refuses without changing the document. Close the fence in your editor or correct the note input, then retry; the tool never rewrites an accepted body to repair it.
+If an existing ADR or the new note ends inside an unterminated fenced or HTML block, `note` refuses without changing the document. Close the block in your editor or correct the note input, then retry; the tool never rewrites an accepted body to repair it.
 
 ## Managed-file protection
 
