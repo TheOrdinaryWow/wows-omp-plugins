@@ -27,15 +27,18 @@ import {
   renderTodo,
   roundSha256,
   stageSha256,
+  validateBody,
 } from "../plugins/roadmap/src/documents.ts";
 import { adrFixture, cleanupFixtures, diskFixture, modelFixture, roundFixture, stageFixture, todoFixture } from "./roadmap-fixtures.ts";
 import {
+  allowedMarkdownBodies,
   ambiguousMarkdownBodies,
   closedMarkdownBodies,
   htmlBlankLineBlocks,
   markdownContainers,
   markdownStructureEscapes,
   randomizedMarkdownBodies,
+  rejectedMarkdownBodies,
 } from "./roadmap-markdown-fixtures.ts";
 
 afterEach(cleanupFixtures);
@@ -246,36 +249,111 @@ describe("roadmap managed documents", () => {
     }
   });
 
-  test("seeded block grammar never accepts a body that hides rendered fixed headings", () => {
+  test("tool-owned bodies accept only plain text, flat lists and closed top-level fences", () => {
+    for (const body of allowedMarkdownBodies) expect(() => validateBody(body), body).not.toThrow();
+    for (const body of rejectedMarkdownBodies) expect(() => validateBody(body), body).toThrow();
+    for (const body of ["<script>", "## Heading", "[x]: /url", "~~~"]) {
+      expect(() => validateBody(`Literal \`${body}\` text.`)).not.toThrow();
+      expect(() => validateBody(`\`open\n${body}\n\``)).toThrow();
+    }
+    expect(() => validateBody("- List item", { inlineOnly: true })).toThrow();
+    expect(() => validateBody("Plain `inline` text", { inlineOnly: true })).not.toThrow();
+    expect(() => validateBody("   ~~~md\nLiteral\n~~~", { afterList: true })).toThrow();
+    expect(() => validateBody("Example:\n\n   ~~~md\nLiteral\n~~~", { afterList: true })).not.toThrow();
+  });
+
+  test("seeded body grammar never accepts text that changes any rendered fixed heading", () => {
     const seed = 0x6e7d9411;
     const profiles = [
-      ["### Delivered", "### Deviations", "### Evidence", "### TODO", "### ADRs"],
-      ["## Goal", "## Constraints", "## Non-goals", "## Principles", "## Stages"],
-      ["## Context and Problem Statement", "## Considered Options", "## Decision Outcome", "## More Information"],
-      ["### T001 — First", "### T002 — Second", "## Closed in this round"],
+      {
+        name: "stage",
+        afterList: false,
+        render: (body: string) =>
+          renderStage(stageFixture({ title: "Body fixture", objective: body, risks: "Plain risk.", amendments: "" })),
+        headings: [
+          "# S01 — Body fixture",
+          "## Objective",
+          "## Scope",
+          "### In",
+          "### Out",
+          "## Done criteria",
+          "## Design constraints",
+          "## Risks",
+          "## Amendments",
+          "## Free-work log",
+        ],
+      },
+      {
+        name: "round",
+        afterList: false,
+        render: (body: string) => renderRound(roundFixture({ title: "Body fixture", goal: body })),
+        headings: [
+          "# R1 — Body fixture",
+          "## Goal",
+          "## Constraints",
+          "## Non-goals",
+          "## Principles",
+          "## Stages",
+          "## Known limitations",
+        ],
+      },
+      {
+        name: "todo",
+        afterList: true,
+        render: (body: string) =>
+          renderTodo({
+            ...todoFixture(),
+            items: [
+              { id: "T001", title: "First", status: "open", severity: "normal", source: "Review", trigger: "Later", body },
+              { id: "T002", title: "Second", status: "open", severity: "normal", source: "Review", trigger: "Later", body: "Plain text." },
+            ],
+          }),
+        headings: ["# R1 — TODO", "## Open", "### T001 — First", "### T002 — Second", "## Closed in this round"],
+      },
+      {
+        name: "adr",
+        afterList: false,
+        render: (body: string) =>
+          renderAdr({
+            ...adrFixture(),
+            title: "Body fixture",
+            body: buildAdrBody("Body fixture", {
+              context: body,
+              drivers: "Plain drivers.",
+              options: ["Host"],
+              outcome: "Plain outcome.",
+              consequences: "Plain effects.",
+              confirmation: "Plain verification.",
+              pros_cons: "Plain tradeoffs.",
+              more_info: "Plain information.",
+            }),
+          }),
+        headings: [
+          "# Body fixture",
+          "## Context and Problem Statement",
+          "## Decision Drivers",
+          "## Considered Options",
+          "## Decision Outcome",
+          "### Consequences",
+          "### Confirmation",
+          "## Pros and Cons of the Options",
+          "## More Information",
+        ],
+      },
     ];
     let accepted = 0;
     let rejected = 0;
-    const bodies = new Set(randomizedMarkdownBodies(seed, 12_000));
-    const pattern = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/gm;
+    const bodies = new Set([...allowedMarkdownBodies, ...rejectedMarkdownBodies, ...randomizedMarkdownBodies(seed, 12_000)]);
     for (const body of bodies) {
-      let outline: RegExpMatchArray[];
-      try {
-        outline = markdownHeadings(body, pattern, { requireClosedFences: true, topLevelOnly: true });
-      } catch {
-        rejected++;
-        continue;
-      }
-      if (outline.some((heading) => (heading[1] as string).length <= 3)) {
-        rejected++;
-        continue;
-      }
-      accepted++;
-      for (const headings of profiles) {
-        const source = `${headings[0]}\n\n${body}\n\n${headings
-          .slice(1)
-          .map((heading) => `${heading}\n\nFixed text.`)
-          .join("\n\n")}\n`;
+      for (const profile of profiles) {
+        try {
+          validateBody(body, { afterList: profile.afterList });
+        } catch {
+          rejected++;
+          continue;
+        }
+        accepted++;
+        const source = profile.render(body).replace(/^---\n[\s\S]*?\n---\n/, "");
         const html = Bun.markdown.html(source);
         const rendered: string[] = [];
         type HtmlNode = { tag: string; children: HtmlNode[] };
@@ -285,17 +363,24 @@ describe("roadmap managed documents", () => {
           for (const child of node.children) visit(child);
         }
         visit(parseHtml(html));
-        const fixed = rendered.filter((heading) => headings.includes(heading));
-        if (fixed.join("\n") !== headings.join("\n"))
+        if (rendered.join("\n") !== profile.headings.join("\n"))
           throw new Error(
-            `Markdown differential mismatch ${JSON.stringify({ seed: `0x${seed.toString(16)}`, body, source, html, fixed, expected: headings })}`,
+            `Markdown differential mismatch ${JSON.stringify({
+              seed: `0x${seed.toString(16)}`,
+              profile: profile.name,
+              body,
+              source,
+              html,
+              rendered,
+              expected: profile.headings,
+            })}`,
           );
-        expect(fixed).toEqual(headings);
+        expect(rendered).toEqual(profile.headings);
       }
     }
     expect(bodies.size).toBeGreaterThan(8_000);
-    expect(accepted).toBeGreaterThan(1_000);
-    expect(rejected).toBeGreaterThan(1_000);
+    expect(accepted).toBeGreaterThan(4_000);
+    expect(rejected).toBeGreaterThan(4_000);
     console.log(`Markdown differential seed=0x${seed.toString(16)} cases=${bodies.size} accepted=${accepted} rejected=${rejected}`);
   });
 

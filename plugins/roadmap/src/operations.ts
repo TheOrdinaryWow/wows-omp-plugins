@@ -37,6 +37,7 @@ import {
   stageSha256,
   type TodoDoc,
   type TodoItem,
+  validateBody,
 } from "./documents.ts";
 import { renderHandoff } from "./handoff.ts";
 import { guardMutation } from "./mutation-guard.ts";
@@ -173,7 +174,7 @@ class Refusal extends Error {
 
 const preparedModels = new WeakMap<PreparedOperation, Model>();
 const BODY_REPAIR_HINT =
-  "Escape structural headings or HTML openers, or put examples inside fully closed fenced code blocks; close every fence and HTML construct in its original container. Keep link reference definitions and titles single-line, and separate ambiguous continuations with a blank line before retrying.";
+  "Use plain paragraphs or flat lists with plain-text items. Keep inline code on one line; put literal Markdown or HTML inside a fully closed top-level fenced code block. Use spaces, not tabs, outside fences; single-line fields accept only plain text and same-line code spans.";
 
 function required(value: string | undefined, field: string, multiline = false): string {
   if (typeof value !== "string" || !value.trim() || (!multiline && /[\r\n]/.test(value))) {
@@ -214,40 +215,33 @@ function sameFields(actual: object, intended: object): boolean {
   );
 }
 
-function bodyHeadings(body: string, pattern: RegExp, requireClosedFences = true): RegExpMatchArray[] {
+function requiredBody(value: string | undefined, field: string): string {
+  const body = required(value, field);
+  assertBody(body, { inlineOnly: true });
+  return body;
+}
+
+function assertBody(body: string, options: Parameters<typeof validateBody>[1] = {}): void {
   try {
-    return markdownHeadings(lf(body), pattern, { requireClosedFences, topLevelOnly: true });
+    validateBody(body, options);
   } catch (error) {
     if (error instanceof DocumentError) throw new Refusal(`Body changes the document structure: ${error.message}`, [BODY_REPAIR_HINT]);
     throw error;
   }
 }
 
-function requiredBody(value: string | undefined, field: string): string {
-  const body = required(value, field);
-  // Validate the authored input before list labels turn a block opener into inline text.
-  bodyHeadings(body, /^#{1,6} .+$/gm, false);
-  return body;
-}
-
-function assertBody(body: string, headingLevel = 2, reservedHeadings: readonly string[] = []): void {
-  if (
-    bodyHeadings(body, /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/gm).some((match) => {
-      const prefix = match[1] as string;
-      const title = (match[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
-      return prefix.length <= headingLevel || reservedHeadings.includes(`${prefix} ${title}`);
-    })
-  )
-    throw new Refusal("Body changes the document structure by introducing a reserved heading.", [BODY_REPAIR_HINT]);
-}
-
 function adrBody(title: string, sections: AdrSections): string {
-  for (const option of sections.options) required(option, "ADR option");
-  for (const body of [sections.context, sections.drivers, ...sections.options, sections.outcome, sections.pros_cons, sections.more_info]) {
-    if (body !== undefined) assertBody(body, 2, ["### Consequences", "### Confirmation"]);
-  }
-  for (const body of [sections.consequences, sections.confirmation]) {
-    if (body !== undefined) assertBody(body, 3);
+  for (const option of sections.options) requiredBody(option, "ADR option");
+  for (const body of [
+    sections.context,
+    sections.drivers,
+    sections.outcome,
+    sections.consequences,
+    sections.confirmation,
+    sections.pros_cons,
+    sections.more_info,
+  ]) {
+    if (body !== undefined) assertBody(body);
   }
   return buildAdrBody(title, sections);
 }
@@ -390,7 +384,6 @@ class Mutation {
         candidate.items.some((item, index) => !sameFields(item, expected[index] as TodoItem))
       )
         throw new Refusal("TODO body changes intended item ids, order, metadata or bodies in the document structure.", [BODY_REPAIR_HINT]);
-      for (const item of todo.items) assertBody(item.body, 3);
       Object.assign(todo, candidate);
     }
     const stage = this.model.stages.find((doc) => doc.path === path);
@@ -398,25 +391,11 @@ class Mutation {
       const candidate = parseStage(content, path);
       if (!sameFields(candidate, stage))
         throw new Refusal("Stage body changes intended metadata or sections in the document structure.", [BODY_REPAIR_HINT]);
-      for (const body of [
-        stage.objective,
-        stage.scope_in,
-        stage.scope_out,
-        stage.done_criteria,
-        stage.design_constraints,
-        stage.risks,
-        stage.amendments,
-        stage.free_work_log,
-        stage.outcome,
-      ]) {
-        if (body !== undefined) assertBody(body, 2, ["### In", "### Out"]);
-      }
     }
     const round = this.model.rounds.find((doc) => doc.path === path);
     if (round) {
       if (!sameFields(parseRound(content, path), round))
         throw new Refusal("Round body changes intended metadata or sections in the document structure.", [BODY_REPAIR_HINT]);
-      for (const body of [round.goal, round.constraints, round.non_goals, round.principles, round.known_limitations]) assertBody(body);
     }
     const adr = this.model.adrs.find((doc) => doc.path === path);
     if (adr && !sameFields(parseAdr(content, path), adr))
@@ -512,6 +491,9 @@ async function newStage(repo: Repo, model: Model, input: Partial<StageInput>): P
   const round = activeRound(model);
   const title = required(input.title, "stage title");
   const objective = required(input.objective, "objective", true);
+  assertBody(objective);
+  if (input.design_constraints !== undefined) assertBody(input.design_constraints);
+  if (input.risks !== undefined) assertBody(input.risks);
   const scopeIn = lines(input.scope_in, "scope_in");
   const scopeOut = lines(input.scope_out, "scope_out");
   const doneCriteria = renderCriteria(criteria(input.done_criteria));
@@ -616,8 +598,8 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
     }
   }
   const delivered = required(input.delivered, "delivered", true);
-  assertBody(delivered, 3);
-  if (input.deviations !== undefined) assertBody(input.deviations, 3);
+  assertBody(delivered);
+  if (input.deviations !== undefined) assertBody(input.deviations);
   const todoDoc = roundTodo(model, activeRound(model));
   const pendingTodos = todoDoc.items.filter((item) => item.status === "open" && item.target === stage.id);
   const todoDispositions = input.todos ?? [];
@@ -784,14 +766,23 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
       if (input.action === "edit") {
         if (current.status !== "planned") throw new Refusal("Only planned stages can be edited; use amend for an active stage.");
         if (input.title !== undefined) current.title = required(input.title, "stage title");
-        if (input.objective !== undefined) current.objective = required(input.objective, "objective", true);
+        if (input.objective !== undefined) {
+          assertBody(input.objective);
+          current.objective = required(input.objective, "objective", true);
+        }
         if (input.scope_in !== undefined) current.scope_in = lines(input.scope_in, "scope_in");
         if (input.scope_out !== undefined) current.scope_out = lines(input.scope_out, "scope_out");
         if (input.done_criteria !== undefined) current.done_criteria = renderCriteria(criteria(input.done_criteria));
         if (input.depends_on !== undefined) current.depends_on = input.depends_on;
         if (input.follows !== undefined) current.follows = input.follows;
-        if (input.design_constraints !== undefined) current.design_constraints = input.design_constraints;
-        if (input.risks !== undefined) current.risks = input.risks;
+        if (input.design_constraints !== undefined) {
+          assertBody(input.design_constraints);
+          current.design_constraints = input.design_constraints;
+        }
+        if (input.risks !== undefined) {
+          assertBody(input.risks);
+          current.risks = input.risks;
+        }
       } else if (input.action === "amend") {
         if (current.status !== "active") throw new Refusal("Only an active stage can be amended.");
         amend(current, input);
@@ -807,7 +798,7 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
           throw new Refusal("Move or resolve every open TODO targeting this stage before dropping it.");
         }
         const reason = required(input.reason, "drop reason", true);
-        assertBody(reason, 3);
+        assertBody(reason);
         current.status = "dropped";
         current.closed = new Date().toISOString().slice(0, 10);
         current.outcome = `### Delivered\n\nNot delivered; stage dropped.\n\n### Deviations\n\n${reason}`;
@@ -829,6 +820,7 @@ export async function todo(repo: Repo, actor: Actor, input: TodoOperationInput, 
     actor,
     async (mutation) => {
       const doc = roundTodo(mutation.model, activeRound(mutation.model));
+      if (input.body !== undefined) assertBody(input.body, { afterList: true });
       let item: TodoItem;
       if (input.action === "add") {
         const title = required(input.title, "TODO title");
@@ -943,8 +935,8 @@ export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, op
         return `${current.id} superseded by ${successor.id} — ${successor.title}.`;
       } else if (input.action === "note") {
         const note = required(input.text, "ADR note", true);
-        assertBody(note, 3);
-        const information = bodyHeadings(current.body, /^## More Information$/gm);
+        assertBody(note);
+        const information = markdownHeadings(current.body, /^## More Information$/gm, { requireClosedFences: true, topLevelOnly: true });
         current.body += current.body.endsWith("\n\n") ? "" : current.body.endsWith("\n") ? "\n" : "\n\n";
         if (!information.length) current.body += "## More Information\n\n";
         current.body += `### ${new Date().toISOString().slice(0, 10)}\n\n${note}\n\n`;
@@ -1227,7 +1219,7 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
         if (!item || seen.has(item.id)) throw new Refusal(`Unknown or repeated open TODO ${disposition.id}.`);
         seen.add(item.id);
         if (!["resolved", "wontfix", "carried"].includes(disposition.disposition)) throw new Refusal("Unknown round TODO disposition.");
-        if (disposition.reference !== undefined) assertBody(disposition.reference, 3);
+        if (disposition.reference !== undefined) assertBody(disposition.reference);
         item.status = disposition.disposition;
         item.reference =
           disposition.disposition === "resolved"
@@ -1268,6 +1260,7 @@ export async function recordFreeWork(
       if (current.status !== "planned" && current.status !== "active")
         throw new Refusal("Free work can only be recorded on an unclosed stage.");
       const intent = required(input.intent, "free-work intent", true).replace(/\s+/g, " ").trim();
+      assertBody(intent, { inlineOnly: true });
       const entry = `- ${new Date().toISOString().slice(0, 10)} · session ${actor.sessionId} · ${JSON.stringify(intent)}`;
       current.free_work_log = [current.free_work_log, entry].filter(Boolean).join("\n");
       mutation.put(current.path, renderStage(current));

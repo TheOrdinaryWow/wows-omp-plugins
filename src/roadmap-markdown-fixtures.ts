@@ -87,6 +87,65 @@ export const closedMarkdownBodies = [
   ...ambiguousMarkdownBodies.map(({ body }) => `\`\`\`\`\`\`md\n${body}\n\`\`\`\`\`\``),
 ];
 
+export const reportedMarkdownBodies = [
+  "[x]: /url\n</custom>\n```",
+  "   [x]: /url\n  </custom>\n ~~~md",
+  "   [x]: /url\n  </custom>\n ```md",
+  '<script data-example="</script>">',
+  '<div><textarea title="</textarea>">',
+  "<xmp>",
+  "<plaintext>",
+  "<iframe>",
+  "```a`b\n`<script>`",
+  "<h3>Evidence</h3>",
+  "' [x]: /url\n </script>\n~~~md\n## Hidden\n~~~\n```",
+];
+
+export const rejectedMarkdownBodies = [
+  ...reportedMarkdownBodies,
+  ...markdownStructureEscapes.map(({ body }) => body),
+  ...ambiguousMarkdownBodies.map(({ body }) => body),
+  ...closedContainerFences.map(({ body }) => body),
+  ...htmlBlankLineBlocks,
+  "<!-- closed -->",
+  "Inline <span>HTML</span>.",
+  "`multiline\n<script>\n`",
+  "`inline` <script>",
+  "- Plain item\n\n  ~~~md\n## Hidden\n  ~~~",
+  "Paragraph\n---",
+  "===",
+  "- - -",
+  "* * *",
+  "___",
+  "> Quoted text",
+  "| A | B |\n| --- | --- |",
+  "Paragraph\n\n    Indented code",
+  "Paragraph\n\n\tIndented code",
+  "```\nUnclosed",
+  "~~~\nUnclosed",
+  "````md\nText\n```",
+  "~~~md\nText\n~~~info",
+  "**Emphasis**",
+  "[Inline link](https://example.com)",
+];
+
+export const allowedMarkdownBodies = [
+  "Plain text.\n\nA second paragraph.",
+  "- First item\n- Second item\n\n1. Ordered item\n2. Another item",
+  "* Star item\n+ Plus item\n1) Ordered item\n12) Another item",
+  "Literal `<script>` and ``a `backtick` inside code``.",
+  "Escaped &lt;script&gt; text.",
+  ...["", " ", "  ", "   "].flatMap((indent) =>
+    ["`", "~"].flatMap((marker) =>
+      [3, 5].map(
+        (length) =>
+          `Example:\n\n${indent}${marker.repeat(length)}md\n## Hidden\n<script>\n${marker.repeat(length - 1)}\n${indent}${marker.repeat(length + 1)} \t`,
+      ),
+    ),
+  ),
+  ...reportedMarkdownBodies.map((body) => `Example:\n\n~~~~~~~~~~~~md\n${body}\n~~~~~~~~~~~~`),
+];
+
 export function* randomizedMarkdownBodies(seed: number, count: number): Generator<string> {
   let state = seed >>> 0;
   const random = (length: number): number => {
@@ -115,6 +174,15 @@ export function* randomizedMarkdownBodies(seed: number, count: number): Generato
     "<textarea/>",
     "<pre/>",
     "Inline <script>",
+    '<script data-example="</script>">',
+    '<div><textarea title="</textarea>">',
+    "<xmp>",
+    "<plaintext>",
+    "<iframe>",
+    "<h3>Evidence</h3>",
+    "' [x]: /url",
+    "`multiline",
+    "`",
     "`<script>`",
     "\\<script>",
     "<?pi",
@@ -153,6 +221,11 @@ export function* randomizedMarkdownBodies(seed: number, count: number): Generato
     "    <!--\n    ## Code\n\ntext",
   ];
   for (let index = 0; index < count; index++) {
+    if (index % 3 === 0) {
+      const safe = ["Plain paragraph.", "- First item\n- Second item", "1. Ordered item\n2. Next item", ...allowedMarkdownBodies];
+      yield `${Array.from({ length: 1 + random(4) }, () => safe[random(safe.length)]).join("\n\n")}\n\nPlain example ${index}.`;
+      continue;
+    }
     const chunks: string[] = [];
     for (let remaining = 1 + random(8); remaining > 0; remaining--) {
       if (random(4) === 0) {

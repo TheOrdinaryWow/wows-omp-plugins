@@ -16,7 +16,7 @@ This directory records structured build rounds, their stages and carry-over TODO
 
 The root README is the initialization marker and rounds index. Each NN-slug round directory contains its charter README, TODO.md and stages/NN-slug.md. Rounds use R1, R2 and so on; stages use S01, TODOs T001 and ADRs ADR-0001. Stage and TODO numbers are global across rounds, monotonic and never reused. ADR files use NNNN-slug.md. Slugs contain lowercase ASCII letters, digits and hyphens.
 
-Every managed file has format: 1 front matter and a managed-by comment. This README also carries roadmap: { format: 1 }. Front matter and fixed headings are structure; section bodies are free Markdown. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages and Known limitations. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
+Every managed file has format: 1 front matter and a managed-by comment. This README also carries roadmap: { format: 1 }. Front matter and fixed headings are structure. Tool-owned bodies allow plain paragraphs, flat plain-text lists and closed top-level fences, with same-line inline code spans; other Markdown or raw HTML syntax is refused. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages and Known limitations. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
 
 Agents change managed files through roadmap_* tools. Body text can be edited by a user in an editor; malformed structure must be repaired before tools can write. Generated blocks are marked with <!-- roadmap:generated:<name> --> and <!-- /roadmap:generated -->. The tools own numbering, metadata, headings and generated indexes.
 
@@ -315,6 +315,68 @@ function section(heading: string, body: string): string {
   return `${heading}\n${body ? `${lf(body)}\n` : ""}\n`;
 }
 
+function plainBodyLine(line: string, number: number): void {
+  if (/^#{1,6}(?:[ \t]|$)/.test(line)) invalid(`Unsupported body heading at line ${number}.`);
+  if (/^(?:[-=]+|(?:[-*_] *)+) *$/.test(line)) invalid(`Unsupported body heading underline or thematic break at line ${number}.`);
+  if (/^(?:>|[-+*](?: |$)|\d{1,9}[.)](?: |$)|`{3,}|~{3,})/.test(line)) invalid(`Unsupported body container or fence at line ${number}.`);
+  const plain = (text: string): void => {
+    if (/[<>[\]\\|*_~]/.test(text)) invalid(`Unsupported body HTML or inline markup at line ${number}.`);
+  };
+  let start = 0;
+  let code: string | undefined;
+  for (const run of line.matchAll(/`+/g)) {
+    if (code === undefined) {
+      plain(line.slice(start, run.index));
+      code = run[0];
+    } else if (run[0] === code) {
+      start = run.index + run[0].length;
+      code = undefined;
+    }
+  }
+  if (code !== undefined) invalid(`Inline code spans must close on the same line (${number}).`);
+  plain(line.slice(start));
+}
+
+export function validateBody(body: string, options: { inlineOnly?: boolean; afterList?: boolean } = {}): void {
+  let fence: { marker: string; length: number } | undefined;
+  let list = options.afterList ?? false;
+  let number = 0;
+  for (const raw of lf(body).split("\n")) {
+    number++;
+    if (fence) {
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(raw)?.[1];
+      if (closing?.[0] === fence.marker && closing.length >= fence.length) fence = undefined;
+      continue;
+    }
+    const opening = /^( {0,3})(`{3,}|~{3,})(?:[ \t]*[a-zA-Z0-9][a-zA-Z0-9_+.-]*)?[ \t]*$/.exec(raw);
+    if (opening && !options.inlineOnly) {
+      if (list && opening[1]) invalid(`A body fence must be top-level, not a list continuation (line ${number}).`);
+      const marker = opening[2] as string;
+      fence = { marker: marker[0] as string, length: marker.length };
+      list = false;
+      continue;
+    }
+    for (const character of raw) {
+      if (character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+        invalid(`Body heading indentation, tabs or control characters are unsupported outside fences (line ${number}).`);
+    }
+    if (!raw.trim()) continue;
+    if (/^ {4}/.test(raw)) invalid(`Indented body code is unsupported (line ${number}).`);
+    const line = raw.trimStart();
+    const item = options.inlineOnly ? null : /^(?:[-+*]|\d{1,9}[.)]) (\S.*)$/.exec(line);
+    if (item) {
+      if (list && raw.startsWith(" ")) invalid(`Nested body lists are unsupported (line ${number}).`);
+      plainBodyLine(item[1] as string, number);
+      list = true;
+    } else {
+      if (list && raw.startsWith(" ")) invalid(`Indented body list continuations are unsupported (line ${number}).`);
+      plainBodyLine(line, number);
+      list = false;
+    }
+  }
+  if (fence) invalid("Unterminated body fence; close the top-level fenced code block.");
+}
+
 type MarkdownContainer = { kind: "quote" } | { kind: "list"; indent: number; empty: boolean };
 type MarkdownHtml = { end?: RegExp; opener: string; line: number; inline?: boolean };
 
@@ -488,7 +550,8 @@ export function markdownHeadings(
       continued < containers.length &&
       paragraph &&
       markdownList(content, false) &&
-      !markdownList(content, true)
+      !markdownList(content, true) &&
+      /<|\]:/.test(markdownInlineText(content))
     )
       invalid("Ambiguous list marker on a lazy container continuation; add a blank line before the list before retrying.");
     const lazy =

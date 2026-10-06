@@ -44,7 +44,12 @@ import {
   todo,
 } from "../plugins/roadmap/src/operations.ts";
 import { cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
-import { ambiguousMarkdownBodies, closedMarkdownBodies, markdownStructureEscapes } from "./roadmap-markdown-fixtures.ts";
+import {
+  allowedMarkdownBodies,
+  ambiguousMarkdownBodies,
+  markdownStructureEscapes,
+  rejectedMarkdownBodies,
+} from "./roadmap-markdown-fixtures.ts";
 
 const main: Actor = { sessionId: "main-session", kind: "main" };
 const sub: Actor = { sessionId: "sub-session", kind: "sub" };
@@ -74,7 +79,7 @@ const sections = {
   confirmation: "Exercise the real loader.",
 };
 const initInput: InitInput = {
-  project: { name: "Shop", description: "A small shop with **real checkout**." },
+  project: { name: "Shop", description: "A small shop with real checkout." },
   round: charter,
   adrs: [{ title: "Host choice", status: "accepted", sections }],
   stages: [stageInput],
@@ -592,7 +597,7 @@ describe("roadmap tool-owned body boundaries", () => {
       "heading",
     );
     expect(await managedBytes(repo)).toEqual(before);
-    const example = "Authored text.\n\n~~~md\n### Consequences\n### Confirmation\n### 2026-01-01\n~~~\n\n#### Details\nWithin the section.";
+    const example = "Authored text.\n\n~~~md\n### Consequences\n### Confirmation\n### 2026-01-01\n~~~\n\nDetails within the section.";
     success(
       await adr(repo, main, {
         action: "create",
@@ -748,7 +753,7 @@ describe("roadmap tool-owned body boundaries", () => {
         expect(await managedBytes(repo)).toEqual(closed);
       }
     }
-    const example = "A documented example.\n\n~~~~lang`valid\nEvidence\n--------\n```lang`invalid\n## Example\n~~~~\n\n---";
+    const example = "A documented example.\n\n~~~~markdown\nEvidence\n--------\n```lang`invalid\n## Example\n~~~~";
     success(await openRound(repo, main, { round: { ...charter, goal: example }, import_todos: [] }));
     success(
       await todo(repo, main, { action: "add", title: "Example", severity: "normal", source: "Review", trigger: "Later", body: example }),
@@ -788,16 +793,16 @@ describe("roadmap tool-owned body boundaries", () => {
       `~~~~md\n${headings}\n~~~~`,
       `\`\`\`\`md\n${headings}\n\`\`\`\n\`\`\`\``,
       `   ~~~~md\r\n${headings.replaceAll("\n", "\r\n")}\r\n   ~~~~~`,
-      `~~~~lang\`valid\n${headings}\nEvidence\n--------\n\`\`\`lang\`invalid\n~~~\n~~~~`,
+      `~~~~markdown\n${headings}\nEvidence\n--------\n\`\`\`lang\`invalid\n~~~\n~~~~`,
       "~~~markdown\nEvidence\n========\n## Example\n~~~",
-      "Implementation.\n\n---\n\n#### Details\n---\n\n- List item\n---\n\n* * *",
+      "Implementation.\n\n- List item\n- Another item",
     ]) {
       const repo = await initialized();
       success(await stage(repo, main, { action: "start", id: "S01" }));
       success(
         await stage(repo, main, {
           ...evidence(),
-          delivered: `Delivered implementation.\n\n${example}\n\n#### Delivery details\nStill within Delivered.`,
+          delivered: `Delivered implementation.\n\n${example}\n\nDelivery details stay within Delivered.`,
           deviations: `Documented example:\n\n${example}`,
         }),
       );
@@ -939,13 +944,13 @@ describe("roadmap tool-owned body boundaries", () => {
   });
 });
 
-describe("roadmap CommonMark container boundaries", () => {
-  test("list and HTML escapes refuse delivery, deviations, objective, TODO and every ADR body without changing managed bytes", async () => {
+describe("roadmap body allowlist boundaries", () => {
+  test("unsupported bodies refuse delivery, deviations, objective, TODO and every ADR section without changing managed bytes", async () => {
     const repo = await initialized();
     success(await todo(repo, main, { action: "add", title: "Pending", severity: "normal", source: "Review", target: "S01" }));
     success(await adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections }));
     const planned = await managedBytes(repo);
-    for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
+    for (const body of rejectedMarkdownBodies) {
       const peer = body.replace("### Evidence", "## Evidence");
       refused(await stage(repo, main, { action: "edit", id: "S01", objective: peer }), "structure");
       expect(await managedBytes(repo)).toEqual(planned);
@@ -984,7 +989,7 @@ describe("roadmap CommonMark container boundaries", () => {
       todos: [{ id: "T001", disposition: "resolved", reference: "Verified" }],
       adrs: [{ id: "ADR-0002", status: "accepted" }],
     };
-    for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
+    for (const body of rejectedMarkdownBodies) {
       for (const field of ["delivered", "deviations"] as const) {
         refused(await stage(repo, main, { ...close, [field]: body }), "structure");
         expect(await managedBytes(repo)).toEqual(active);
@@ -1003,7 +1008,7 @@ describe("roadmap CommonMark container boundaries", () => {
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
     success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
     const before = await managedBytes(repo);
-    for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
+    for (const body of rejectedMarkdownBodies) {
       refused(
         await openRound(repo, main, { round: { ...charter, goal: body.replace("### Evidence", "## Evidence") }, import_todos: [] }),
         "structure",
@@ -1012,9 +1017,9 @@ describe("roadmap CommonMark container boundaries", () => {
     }
   });
 
-  test("accepted list fences, quote fences and HTML blocks retain the same rendered and scanned headings after every write", async () => {
+  test("plain lists and top-level fences retain the same rendered and scanned headings after every write", async () => {
     const repo = await initialized();
-    const examples = [...closedMarkdownBodies, "> ## Quoted heading", "- ## List heading", "1. Nested Setext\n   --------"].join("\n\n");
+    const examples = allowedMarkdownBodies.join("\n\n");
     async function intact(): Promise<void> {
       const model = await loadAll(repo);
       expect(await check(model)).toEqual([]);
@@ -1389,12 +1394,12 @@ describe("roadmap HTML body boundaries", () => {
     await intact(repo);
   });
 
-  test("closed HTML blocks and inline HTML preserve fixed headings, later items and dated notes after every accepted write", async () => {
+  test("HTML literals inside top-level fences and same-line spans preserve headings, later items and dated notes", async () => {
     for (const [opener, closer] of htmlBlocks) {
       const repo = await initialized();
-      const example = `${opener}\n## Example section\n### Evidence\n### T999 — Example\n${closer}`;
-      const inline = `${opener} example ${closer}`;
-      const prose = "Inline <span>example</span> and <!-- closed comment -->.";
+      const example = `~~~markdown\n${opener}\n## Example section\n### Evidence\n### T999 — Example\n${closer}\n~~~`;
+      const inline = `Literal \`${opener} example ${closer}\``;
+      const prose = "Inline `<span>example</span>` and `<!-- closed comment -->`.";
       success(
         await stage(repo, main, {
           action: "edit",
