@@ -1,5 +1,7 @@
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 
+import type { LayoutAlign } from "./model.ts";
+
 export interface PluginSettings {
   displayTiming: "never" | "any-todo" | "plan-execution" | "atlas-only";
   finishBehavior: "close-with-omp" | "keep-open";
@@ -17,6 +19,7 @@ export interface PluginSettings {
   colorPlan: string;
   colorAtlas: string;
   retentionDays: number;
+  layoutAlign: LayoutAlign;
   viewerRuntime: string;
 }
 
@@ -37,6 +40,7 @@ export const DEFAULT_SETTINGS: Readonly<PluginSettings> = {
   colorPlan: "#a371f7",
   colorAtlas: "#3fb950",
   retentionDays: 14,
+  layoutAlign: "centered",
   viewerRuntime: "",
 };
 
@@ -57,6 +61,7 @@ const validators: Record<keyof PluginSettings, (value: unknown) => boolean> = {
   colorPlan: (value: unknown) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value),
   colorAtlas: (value: unknown) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value),
   retentionDays: (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 365,
+  layoutAlign: (value: unknown) => value === "centered" || value === "left",
   viewerRuntime: (value: unknown) => typeof value === "string",
 };
 

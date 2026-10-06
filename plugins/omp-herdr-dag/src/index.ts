@@ -164,6 +164,7 @@ class DagExtension {
       theme: this.#theme,
       sources: { todo: this.#settings.colorTodo, plan: this.#settings.colorPlan, atlas: this.#settings.colorAtlas },
       atlasAvailable: this.#atlas?.state.available === true,
+      layoutAlign: this.#settings.layoutAlign,
     };
   }
 
@@ -184,8 +185,10 @@ class DagExtension {
       if (previous.atlasAvailable !== next.atlasAvailable) ops.push({ op: "atlas", available: next.atlasAvailable });
     }
     this.#snapshot = next;
-    const colorsChanged = !previous || JSON.stringify(previous.sources) !== JSON.stringify(next.sources);
-    if (colorsChanged || ops.length) this.#server.publish(next, colorsChanged ? [] : ops);
+    // Colors and alignment have no delta op: a settings change resends the whole snapshot.
+    const restyled =
+      !previous || JSON.stringify(previous.sources) !== JSON.stringify(next.sources) || previous.layoutAlign !== next.layoutAlign;
+    if (restyled || ops.length) this.#server.publish(next, restyled ? [] : ops);
     this.#writer?.schedule(next);
   }
 

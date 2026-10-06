@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { crossingCount, GRID, laneMargin, layoutRun, type RunLayout, rowSpan } from "../plugins/omp-herdr-dag/src/layout.ts";
+import { crossingCount, GRID, laneMargin, layoutRun, type RunLayout, rowBudget, rowSpan } from "../plugins/omp-herdr-dag/src/layout.ts";
 import {
   type AtlasRow,
   atlasRun,
@@ -347,11 +347,16 @@ describe("deterministic layered layout", () => {
       ["C"],
       ["D"],
     ]);
-    expect(layout.dummies).toHaveLength(2);
-    expect(layout.edges.find((route) => route.edge.from === run.nodes[0]?.id && route.edge.to === run.nodes[3]?.id)?.points).toHaveLength(
-      4,
-    );
+    // A → D is implied by A → B → C → D: the reduced graph leaves it out, every edge routes it through two dummies.
+    const isAD = (route: RunLayout["edges"][number]): boolean => route.edge.from === run.nodes[0]?.id && route.edge.to === run.nodes[3]?.id;
+    expect(layout.dummies).toHaveLength(0);
+    expect(layout.edges.some(isAD)).toBe(false);
+    const all = layoutRun(run, { foldCompleted: false, width: 80, now: 200, allEdges: true });
+    expect(all.dummies).toHaveLength(2);
+    expect(all.edges.find(isAD)?.points).toHaveLength(4);
+    // The critical path weighs every dependency, drawn or not.
     expect(layout.criticalPath).toEqual(run.nodes.map((node) => node.id));
+    expect(all.criticalPath).toEqual(layout.criticalPath);
     run.nodes.forEach((node, index) => {
       node.startedAt = 100;
       node.finishedAt = 100 + (index + 1) * 10;
@@ -457,16 +462,18 @@ describe("deterministic layered layout", () => {
       criticalPath: [],
       folded: [],
       edges: [],
+      align: "centered",
     });
   });
 
-  test("layers wider than the pane wrap into rows inside their band; wide panes keep one row per layer", () => {
+  test("only layers wider than the overflow budget wrap into rows inside their band; others stay one row and scroll", () => {
+    const upgrades = ["C", "D", "E", "F", "G", "H", "I", "J"];
     const run = todoRun({
       sessionId: "session",
       generation: 1,
       phases: [
         { name: "Preflight", tasks: ["A", "B"].map((content) => ({ content, status: "completed" as const })) },
-        { name: "Upgrade", tasks: ["C", "D", "E"].map((content) => ({ content, status: "pending" as const })) },
+        { name: "Upgrade", tasks: upgrades.map((content) => ({ content, status: "pending" as const })) },
       ],
       now: 100,
     });
@@ -474,19 +481,31 @@ describe("deterministic layered layout", () => {
     const wide = layoutRun(run, { foldCompleted: false, width: Number.POSITIVE_INFINITY });
     expect(ids(wide)).toHaveLength(2);
     const [preflight, upgrade] = ids(wide) as [string[], string[]];
+    // Eight boxes need 174 columns: they fit a 100-column pane's budget of 200, so the layer pans instead of wrapping.
+    expect(rowSpan(8, 0, GRID.minNode)).toBe(174);
+    expect(rowBudget(100)).toBe(200);
     expect(layoutRun(run, { foldCompleted: false, width: 100 })).toEqual(wide);
+    // A 30-column pane still allows 120 columns, five boxes; the eight wrap into two even rows of four.
+    expect(rowBudget(30)).toBe(120);
     const narrow = layoutRun(run, { foldCompleted: false, width: 30 });
-    expect(ids(narrow)).toEqual([...preflight, ...upgrade].map((id) => [id]));
-    expect(narrow.layers.map((layer) => layer.bandName)).toEqual(["Preflight", "Preflight", "Upgrade", "Upgrade", "Upgrade"]);
-    expect(ids(layoutRun(run, { foldCompleted: false, width: 50 }))).toEqual([preflight, upgrade.slice(0, 2), upgrade.slice(2)]);
+    expect(ids(narrow)).toEqual([preflight, upgrade.slice(0, 4), upgrade.slice(4)]);
+    expect(narrow.layers.map((layer) => layer.bandName)).toEqual(["Preflight", "Upgrade", "Upgrade"]);
+    // Small layers never wrap, however narrow the pane.
+    const few = todoRun({
+      sessionId: "few",
+      generation: 1,
+      phases: [{ name: "Gates", tasks: upgrades.slice(0, 4).map((content) => ({ content, status: "pending" as const })) }],
+      now: 100,
+    });
+    expect(layoutRun(few, { foldCompleted: false, width: 30 }).layers).toHaveLength(1);
     // A folded layer stays one summary row however narrow the pane is.
     const folded = layoutRun(run, { foldCompleted: true, width: 30 });
     expect(folded.folded).toEqual([{ layer: 0, band: 0, bandName: "Preflight", count: 2, nodeIds: preflight }]);
-    expect(folded.layers.map((layer) => layer.folded)).toEqual([true, false, false, false]);
+    expect(folded.layers.map((layer) => layer.folded)).toEqual([true, false, false]);
   });
 
   test("wrapped rows keep every edge connected, add no false paths and fit the pane at the minimum node width", () => {
-    const leaves = ["L1", "L2", "L3", "L4"];
+    const leaves = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"];
     const run = todoRun({
       sessionId: "session",
       generation: 1,
@@ -500,17 +519,15 @@ describe("deterministic layered layout", () => {
     });
     const id = (label: string): string => run.nodes.find((node) => node.label === label)?.id as string;
     const wide = layoutRun(run, { foldCompleted: false, width: Number.POSITIVE_INFINITY });
-    for (const width of [30, 50]) {
+    for (const width of [30, 120]) {
       const layout = layoutRun(run, { foldCompleted: false, width });
       const real = (layer: RunLayout["layers"][number]) => layer.nodes.filter((node) => !node.dummy);
       // Wrapping never reorders nodes: rows read left to right, then top to bottom, in the wide order.
       expect(layout.layers.flatMap((layer) => real(layer).map((node) => node.id))).toEqual(
         wide.layers.flatMap((layer) => real(layer).map((node) => node.id)),
       );
-      expect(layout.layers.filter((layer) => layer.band === 1).map((layer) => real(layer).length)).toEqual(
-        width === 30 ? [1, 1, 1, 1] : [2, 2],
-      );
-      const available = width - laneMargin(layout.edges.filter((route) => route.backward).length);
+      expect(layout.layers.filter((layer) => layer.band === 1).map((layer) => real(layer).length)).toEqual(width === 30 ? [4, 4] : [8]);
+      const available = rowBudget(width) - laneMargin(layout.edges.filter((route) => route.backward).length);
       for (const layer of layout.layers) {
         expect(rowSpan(real(layer).length, layer.nodes.length - real(layer).length, GRID.minNode)).toBeLessThanOrEqual(available);
       }

@@ -73,6 +73,8 @@ export interface ThemeColors {
   borderMuted: string;
   background?: string;
 }
+/** Horizontal placement of the DAG: a tree centred on a common axis, or a compact tree anchored at the left margin. */
+export type LayoutAlign = "centered" | "left";
 export interface Snapshot {
   version: 2;
   sessionId: string;
@@ -85,6 +87,8 @@ export interface Snapshot {
   theme: ThemeColors;
   sources: { todo: string; plan: string; atlas: string };
   atlasAvailable: boolean;
+  /** Absent in snapshots written before the setting existed; the viewer then centres the graph. */
+  layoutAlign?: LayoutAlign;
 }
 
 export interface TodoPhase {

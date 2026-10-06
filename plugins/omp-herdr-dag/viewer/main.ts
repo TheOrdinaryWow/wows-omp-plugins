@@ -1,7 +1,7 @@
 import type { Snapshot } from "../src/model.ts";
 import { DEFAULT_VIEW_STATE, readSnapshot, readViewState, type ViewState, writeViewState } from "../src/persisted.ts";
 import { applyOps, encodeFrame, type Frame, FrameParser, type SessionPaths } from "../src/protocol.ts";
-import { handleKey, type Key, parseKeys } from "./keys.ts";
+import { handleInput, type Input, InputReader } from "./keys.ts";
 import { createUi, type LinkState, render, type UiState } from "./render.ts";
 import { type ColorMode, detectColorMode } from "./theme.ts";
 import { TranscriptReader, transcriptLines } from "./transcript.ts";
@@ -195,8 +195,9 @@ export class Viewer {
     this.#schedule();
   }
 
-  async key(key: Key): Promise<void> {
-    for (const effect of handleKey({ snapshot: this.snapshot, viewState: this.viewState, ui: this.ui, now: this.#clock.now() }, key)) {
+  /** One key press or mouse event from the terminal. */
+  async input(input: Input): Promise<void> {
+    for (const effect of handleInput({ snapshot: this.snapshot, viewState: this.viewState, ui: this.ui, now: this.#clock.now() }, input)) {
       if (effect.type === "quit") return this.quit();
       if (effect.type === "persist") this.#persist();
       if (effect.type === "transcript") {
@@ -484,10 +485,17 @@ export async function renderOnce(options: CliOptions): Promise<string[]> {
   });
 }
 
+/** Alternate screen, hidden cursor and SGR mouse reporting (presses and wheel); the restore sequence undoes them in reverse. */
+const TERMINAL_ENTER = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h";
+const TERMINAL_RESTORE = "\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l";
+
 async function runLive(options: CliOptions): Promise<void> {
   const stdout = process.stdout;
+  let restored = false;
   const restore = (): void => {
-    stdout.write("\x1b[?25h\x1b[?1049l");
+    if (restored) return;
+    restored = true;
+    stdout.write(TERMINAL_RESTORE);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
   };
   const viewer = new Viewer(options, {
@@ -505,11 +513,14 @@ async function runLive(options: CliOptions): Promise<void> {
       process.exit(code);
     },
   });
-  stdout.write("\x1b[?1049h\x1b[?25l");
+  stdout.write(TERMINAL_ENTER);
+  // A crash must not leave the shell in the alternate screen with mouse reporting on.
+  process.on("exit", restore);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding("utf8");
+  const reader = new InputReader();
   process.stdin.on("data", (chunk: string) => {
-    for (const key of parseKeys(chunk)) void viewer.key(key);
+    for (const input of reader.feed(chunk)) void viewer.input(input);
   });
   stdout.on("resize", () => viewer.resize());
   for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {

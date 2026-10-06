@@ -1,5 +1,15 @@
 import { type LayoutLayer, laneMargin, layoutRun, type RoutedEdge, type RunLayout, rowSpan } from "../src/layout.ts";
-import { type DagNode, isTerminal, type Run, runStats, type Snapshot, sanitizeText, type TaskCard, taskTotals } from "../src/model.ts";
+import {
+  type DagNode,
+  isTerminal,
+  type LayoutAlign,
+  type Run,
+  runStats,
+  type Snapshot,
+  sanitizeText,
+  type TaskCard,
+  taskTotals,
+} from "../src/model.ts";
 import type { ViewState } from "../src/persisted.ts";
 import {
   BOXES,
@@ -7,6 +17,8 @@ import {
   type ColorMode,
   connectorGlyph,
   DOWN,
+  EDGE_ROLES,
+  type EdgeRole,
   GLYPHS,
   LEFT,
   LINE_RANK,
@@ -167,6 +179,20 @@ export interface TranscriptView {
   scroll: number;
   follow: boolean;
 }
+/** Geometry of the last drawn DAG frame in canvas cells; arrow keys and clicks act on exactly what is on screen. */
+export interface DagFrame {
+  runId: string;
+  boxes: ReadonlyMap<string, { x: number; y: number; w: number; h: number }>;
+  /** Canvas size. */
+  width: number;
+  height: number;
+  /** Screen row of the body's first line, the body's size and the scroll offsets it was drawn with. */
+  top: number;
+  rows: number;
+  cols: number;
+  scrollX: number;
+  scrollY: number;
+}
 export interface UiState {
   history: boolean;
   help: boolean;
@@ -176,10 +202,21 @@ export interface UiState {
   expanded: Set<string>;
   scrollY: number;
   scrollX: number;
+  /** DAG arrow keys select the nearest drawn node, or pan the viewport. */
+  dagMode: "nodes" | "pan";
+  /** The viewport keeps the selected node (or task card) in view; panning and the wheel detach it until the next selection. */
+  follow: boolean;
+  /** Draw every dependency edge instead of the reduced set. */
+  allEdges: boolean;
   /** Body height of the last frame; paging keys move by it. */
   bodyRows: number;
+  /** Screen row where the last frame's body starts. */
+  bodyTop: number;
   /** Width of the last frame; navigation lays the DAG out at the same width, so it walks the rows as drawn. */
   bodyCols: number;
+  dagFrame?: DagFrame;
+  /** Last node click, for double-click detection. */
+  lastClick?: { id: string; at: number };
   transcript?: TranscriptView;
   returnView: "dag" | "tasks";
 }
@@ -190,7 +227,11 @@ export const createUi = (): UiState => ({
   expanded: new Set(),
   scrollY: 0,
   scrollX: 0,
+  dagMode: "nodes",
+  follow: true,
+  allEdges: false,
   bodyRows: 10,
+  bodyTop: 0,
   bodyCols: 80,
   returnView: "dag",
 });
@@ -226,9 +267,20 @@ export function currentRun(snapshot: Snapshot | undefined, viewState: ViewState,
   return active[0] ?? runs[runs.length - 1];
 }
 
-/** `width` is the pane's column count: layers that do not fit wrap onto extra rows inside their band. */
-export function runLayout(run: Run, viewState: ViewState, now: number, width: number): RunLayout {
-  return layoutRun(run, { foldCompleted: viewState.folded.includes(run.id), width, now });
+export interface RunLayoutOptions {
+  /** Draw every dependency edge instead of the transitively reduced set. */
+  allEdges: boolean;
+  align: LayoutAlign;
+}
+
+/** The viewer's layout options: the edge toggle lives in the UI, alignment comes from the plugin setting in the snapshot. */
+export function layoutOptions(snapshot: Snapshot | undefined, ui: UiState): RunLayoutOptions {
+  return { allEdges: ui.allEdges, align: snapshot?.layoutAlign === "left" ? "left" : "centered" };
+}
+
+/** `width` is the pane's column count: only a layer wider than `rowBudget(width)` wraps onto extra rows inside its band. */
+export function runLayout(run: Run, viewState: ViewState, now: number, width: number, options: RunLayoutOptions): RunLayout {
+  return layoutRun(run, { foldCompleted: viewState.folded.includes(run.id), width, now, allEdges: options.allEdges, align: options.align });
 }
 
 /** Selection order: layers (and wrapped rows) top-down, nodes left-right; folded layers are not selectable. */
@@ -291,10 +343,20 @@ interface Cell {
   ch: string;
   style?: Style;
 }
+/** How a connector is drawn: its line kind and its edge role's rank and color. */
+interface Stroke {
+  kind: LineKind;
+  rank: number;
+  style: Style;
+}
+/** Connector arms meeting in one cell; heavy arms are tracked apart so a critical stroke stays heavy only where it runs. */
 interface Link {
   bits: number;
-  kind: LineKind;
-  style?: Style;
+  heavy: number;
+  /** Line kind of the non-heavy arms: solid wins over dotted. */
+  light: LineKind;
+  rank: number;
+  style: Style;
 }
 
 /** A character grid with box-drawing connector merging; wide graphemes occupy a lead cell plus an empty continuation. */
@@ -335,18 +397,23 @@ class Canvas {
   touch(y: number): void {
     this.#row(y);
   }
-  link(x: number, y: number, bits: number, kind: LineKind, style?: Style): void {
+  /** Joins connector arms in one cell: each arm keeps its own weight, and the highest-ranked role's color wins. */
+  link(x: number, y: number, bits: number, stroke: Stroke): void {
     if (x < 0 || y < 0 || x >= this.width) return;
     const key = y * this.width + x;
+    const heavy = stroke.kind === "heavy" ? bits : 0;
+    const light = stroke.kind === "heavy" ? "dotted" : stroke.kind;
     const old = this.#links.get(key);
     if (!old) {
-      this.#links.set(key, { bits, kind, style });
+      this.#links.set(key, { bits, heavy, light, rank: stroke.rank, style: stroke.style });
       return;
     }
     old.bits |= bits;
-    if (LINE_RANK[kind] > LINE_RANK[old.kind]) {
-      old.kind = kind;
-      old.style = style;
+    old.heavy |= heavy;
+    if (LINE_RANK[light] > LINE_RANK[old.light]) old.light = light;
+    if (stroke.rank > old.rank) {
+      old.rank = stroke.rank;
+      old.style = stroke.style;
     }
   }
   linkColumns(y: number): Set<number> {
@@ -355,25 +422,25 @@ class Canvas {
     return columns;
   }
   /** Axis-aligned polyline; `cap` connects the first cell upward into a box border tee. */
-  path(points: Array<[number, number]>, kind: LineKind, style: Style | undefined, cap = false): void {
+  path(points: Array<[number, number]>, stroke: Stroke, cap = false): void {
     const first = points[0];
-    if (first && cap) this.link(first[0], first[1], UP, kind, style);
+    if (first && cap) this.link(first[0], first[1], UP, stroke);
     for (let index = 1; index < points.length; index += 1) {
       let [x, y] = points[index - 1] as [number, number];
       const [tx, ty] = points[index] as [number, number];
       while (x !== tx || y !== ty) {
         const dx = Math.sign(tx - x);
         const dy = dx === 0 ? Math.sign(ty - y) : 0;
-        this.link(x, y, dx > 0 ? RIGHT : dx < 0 ? LEFT : dy > 0 ? DOWN : UP, kind, style);
+        this.link(x, y, dx > 0 ? RIGHT : dx < 0 ? LEFT : dy > 0 ? DOWN : UP, stroke);
         x += dx;
         y += dy;
-        this.link(x, y, dx > 0 ? LEFT : dx < 0 ? RIGHT : dy > 0 ? UP : DOWN, kind, style);
+        this.link(x, y, dx > 0 ? LEFT : dx < 0 ? RIGHT : dy > 0 ? UP : DOWN, stroke);
       }
     }
   }
   flush(): void {
     for (const [key, link] of this.#links) {
-      this.set(key % this.width, Math.floor(key / this.width), connectorGlyph(link.bits, link.kind), link.style);
+      this.set(key % this.width, Math.floor(key / this.width), connectorGlyph(link.bits, link.heavy, link.light), link.style);
     }
     this.#links.clear();
   }
@@ -454,8 +521,19 @@ function banners(input: RenderInput, ctx: Ctx): Line[] {
   return lines;
 }
 
-function hints(ctx: Ctx, text: string): Line {
-  return [{ text, style: fg(ctx.pal, "dim") }];
+/** Key hints in priority order; a hint that does not fit ends the line (the help screen lists every key). */
+function hints(ctx: Ctx, cols: number, items: string[], badge?: Segment): Line {
+  const line: Line = badge ? [badge, { text: " " }] : [];
+  let used = lineWidth(line);
+  const shown: string[] = [];
+  for (const item of items) {
+    const width = textWidth(item) + (shown.length ? textWidth(GLYPHS.separator) : 0);
+    if (used + width > cols) break;
+    shown.push(item);
+    used += width;
+  }
+  line.push({ text: shown.join(GLYPHS.separator), style: fg(ctx.pal, "dim") });
+  return line;
 }
 
 function progressBar(done: number, total: number, width: number, color: string, ctx: Ctx): Line {
@@ -537,6 +615,11 @@ function drawBox(canvas: Canvas, box: Box, content: Line[], glyphs: BoxGlyphs, b
   canvas.text(box.x, box.y + box.h - 1, `${glyphs.bl}${glyphs.h.repeat(box.w - 2)}${glyphs.br}`, border);
 }
 
+/**
+ * Boxes shrink from `maxNode` towards `minNode` while that lets the widest layer fit the pane; both read comfortably. A
+ * layer that still does not fit scrolls sideways (the viewport pans and follows the selection) rather than shrinking
+ * boxes further, until the layout wraps it.
+ */
 function chooseNodeWidth(layout: RunLayout, cols: number, margin: number): number {
   let width: number = SPACING.maxNode;
   for (const layer of layout.layers) {
@@ -545,7 +628,29 @@ function chooseNodeWidth(layout: RunLayout, cols: number, margin: number): numbe
     if (!real) continue;
     width = Math.min(width, Math.floor((cols - margin - rowSpan(real, layer.nodes.length - real, 0)) / real));
   }
-  return Math.max(Math.min(SPACING.minNode, cols - margin), Math.min(SPACING.maxNode, width), 8);
+  return Math.max(SPACING.minNode, width);
+}
+
+/**
+ * Weighted least-squares non-decreasing fit (pool adjacent violators): neighbours that want to overlap meet at their
+ * weighted mean, so heavier items move less.
+ */
+function poolAdjacent(values: number[], weights: number[]): number[] {
+  const blocks: Array<{ sum: number; weight: number; count: number }> = [];
+  values.forEach((value, index) => {
+    const weight = weights[index] ?? 1;
+    blocks.push({ sum: value * weight, weight, count: 1 });
+    while (blocks.length > 1) {
+      const last = blocks[blocks.length - 1] as { sum: number; weight: number; count: number };
+      const previous = blocks[blocks.length - 2] as { sum: number; weight: number; count: number };
+      if (previous.sum / previous.weight <= last.sum / last.weight) break;
+      previous.sum += last.sum;
+      previous.weight += last.weight;
+      previous.count += last.count;
+      blocks.pop();
+    }
+  });
+  return blocks.flatMap((block) => Array.from({ length: block.count }, () => block.sum / block.weight));
 }
 
 function foldedSummary(layer: LayoutLayer, ctx: Ctx): Line {
@@ -581,27 +686,34 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
       criticalPairs.add(`${layout.criticalPath[index - 1]}\n${layout.criticalPath[index]}`);
     }
   }
-  const edgeStyle = (route: RoutedEdge): { kind: LineKind; style: Style } => {
-    if (criticalPairs.has(`${route.edge.from}\n${route.edge.to}`) && route.edge.kind === "depends")
-      return { kind: "heavy", style: fg(ctx.pal, "accent", { bold: true }) };
-    if (route.edge.kind === "fix") return { kind: "dotted", style: fg(ctx.pal, "warning") };
-    if (route.backward) return { kind: "dotted", style: fg(ctx.pal, "muted") };
-    return { kind: "solid", style: fg(ctx.pal, "border") };
+  const roleOf = (route: RoutedEdge): EdgeRole => {
+    if (route.edge.kind === "depends" && criticalPairs.has(`${route.edge.from}\n${route.edge.to}`)) return "critical";
+    if (options.selected !== undefined && (route.edge.from === options.selected || route.edge.to === options.selected)) return "selected";
+    if (route.edge.kind === "fix") return "fix";
+    return route.backward ? "backward" : "plain";
   };
-  // A dummy shared by bundled edges takes the strongest stroke among them, so a critical edge stays heavy along its trunk.
-  const dummyStyles = new Map<string, { kind: LineKind; style: Style }>();
+  const edgeStyle = (route: RoutedEdge): Stroke => {
+    const role = roleOf(route);
+    const { rank, token, bold } = EDGE_ROLES[role];
+    const kind: LineKind = role === "critical" ? "heavy" : route.edge.kind === "fix" || route.backward ? "dotted" : "solid";
+    return { kind, rank, style: token ? fg(ctx.pal, token, { bold }) : { fg: sourceColor, bold } };
+  };
+  const stronger = (a: Stroke, b: Stroke): boolean => a.rank > b.rank || (a.rank === b.rank && LINE_RANK[a.kind] > LINE_RANK[b.kind]);
+  // A trunk shared by bundled edges takes the strongest stroke among them, so a critical or selected edge stays marked along it.
+  const dummyStyles = new Map<string, Stroke>();
   for (const route of layout.edges) {
     const stroke = edgeStyle(route);
     for (const id of route.points.slice(1, -1)) {
       const known = dummyStyles.get(id);
-      if (!known || LINE_RANK[stroke.kind] > LINE_RANK[known.kind]) dummyStyles.set(id, stroke);
+      if (!known || stronger(stroke, known)) dummyStyles.set(id, stroke);
     }
   }
-  // Connectors are queued: plain strokes first, critical last so heavy strokes win shared cells.
-  const draws: Array<{ heavy: boolean; draw: () => void }> = [];
-  const arrows: Array<{ x: number; y: number; style: Style }> = [];
+  // Cells joined by several strokes keep the heaviest line and the strongest role's color, whatever the drawing order.
+  const arrows: Array<{ x: number; y: number; stroke: Stroke }> = [];
 
-  // Horizontal placement, centred per layer.
+  // Horizontal placement. Every item aims at the median anchor of its predecessors so chains run straight. Centred rows
+  // resolve overlaps by least squares, so siblings spread evenly on both sides of their parent, and the finished graph is
+  // centred on the pane's axis; left rows push overlapping items rightwards and the graph hugs the left margin.
   interface Item {
     id: string;
     x: number;
@@ -609,30 +721,29 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
     kind: "node" | "dummy" | "summary";
   }
   const layerItems: Item[][] = layers.map((layer) => {
-    const items: Item[] = [];
-    let x = 0;
-    if (layer.folded) {
-      const summaryWidth = lineWidth(foldedSummary(layer, ctx));
-      items.push({ id: `summary:${layer.index}`, x, w: summaryWidth, kind: "summary" });
-      x += summaryWidth + SPACING.dummyGap;
-      for (const item of layer.nodes.filter((entry) => entry.dummy)) {
-        items.push({ id: item.id, x, w: 1, kind: "dummy" });
-        x += 1 + SPACING.dummyGap;
-      }
-      return items;
-    }
-    layer.nodes.forEach((item, index) => {
-      const previous = layer.nodes[index - 1];
-      if (previous) x += previous.dummy || item.dummy ? SPACING.dummyGap : SPACING.nodeGap;
-      items.push({ id: item.id, x, w: item.dummy ? 1 : width, kind: item.dummy ? "dummy" : "node" });
-      x += item.dummy ? 1 : width;
-    });
-    return items;
+    const dummies = layer.nodes.filter((entry) => entry.dummy).map((item): Item => ({ id: item.id, x: 0, w: 1, kind: "dummy" }));
+    if (layer.folded) return [{ id: `summary:${layer.index}`, x: 0, w: lineWidth(foldedSummary(layer, ctx)), kind: "summary" }, ...dummies];
+    return layer.nodes.map((item): Item => ({ id: item.id, x: 0, w: item.dummy ? 1 : width, kind: item.dummy ? "dummy" : "node" }));
   });
-  const layerWidths = layerItems.map((items) => Math.max(0, ...items.map((item) => item.x + item.w)));
-  const content = Math.max(0, ...layerWidths);
+  const spacing = (left: Item, right: Item): number => (left.kind === "node" && right.kind === "node" ? SPACING.nodeGap : SPACING.dummyGap);
+  // Offset of every item from its row's start when the row is packed tight.
+  const packed = layerItems.map((items) => {
+    let x = 0;
+    return items.map((item, index) => {
+      const previous = items[index - 1];
+      if (previous) x += previous.w + spacing(previous, item);
+      return x;
+    });
+  });
+  const rowWidth = (index: number): number => {
+    const items = layerItems[index] as Item[];
+    const last = items[items.length - 1];
+    return last ? ((packed[index] as number[])[items.length - 1] as number) + last.w : 0;
+  };
+  const content = Math.max(0, ...layerItems.map((_, index) => rowWidth(index)));
   const area = Math.max(content, options.cols - margin);
   const areaEnd = margin + area;
+  const centered = layout.align === "centered";
   const predecessors = new Map<string, string[]>();
   for (const route of layout.edges) {
     if (route.backward) continue;
@@ -641,21 +752,48 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
       predecessors.set(target, [...(predecessors.get(target) ?? []), route.points[index - 1] as string]);
     }
   }
-  const spacing = (left: Item, right: Item): number => (left.kind === "node" && right.kind === "node" ? SPACING.nodeGap : SPACING.dummyGap);
-  // Centre each layer, then pull items under the median of their predecessors so chains run straight.
   const anchor = new Map<string, number>();
+  const setAnchors = (items: Item[], layer: LayoutLayer): void => {
+    for (const item of items) {
+      if (item.kind === "summary") {
+        for (const entry of layer.nodes) if (entry.node) anchor.set(entry.id, item.x);
+      } else anchor.set(item.id, item.kind === "dummy" ? item.x : item.x + Math.floor(item.w / 2));
+    }
+  };
   layerItems.forEach((items, index) => {
     const layer = layers[index] as LayoutLayer;
-    const offset = margin + Math.floor((area - (layerWidths[index] as number)) / 2);
-    for (const item of items) item.x += offset;
-    for (const item of items) {
+    const offsets = packed[index] as number[];
+    // A row nothing pulls sits on the axis (centred) or at the margin (left).
+    const start = centered ? margin + Math.floor((area - rowWidth(index)) / 2) : margin;
+    // Wanted shift of each item off its packed offset; items stay apart while the shifts never decrease along the row.
+    const wanted = items.map((item, position) => {
       const sources =
         item.kind === "summary"
           ? layer.nodes.flatMap((entry) => (entry.node ? (predecessors.get(entry.id) ?? []) : []))
           : (predecessors.get(item.id) ?? []);
       const above = sources.flatMap((id) => (anchor.has(id) ? [anchor.get(id) as number] : [])).sort((a, b) => a - b);
-      const median = above[Math.floor((above.length - 1) / 2)];
-      if (median !== undefined) item.x = median - (item.kind === "node" ? Math.floor(item.w / 2) : 0);
+      const offset = offsets[position] as number;
+      if (!above.length) return start;
+      // Even counts aim between the two middle anchors, so a node joining two parents sits centred under them.
+      const median = ((above[Math.floor((above.length - 1) / 2)] as number) + (above[Math.floor(above.length / 2)] as number)) / 2;
+      return median - (item.kind === "node" ? Math.floor(item.w / 2) : 0) - offset;
+    });
+    // Trunks weigh more than boxes, so pass-through lines stay straight and the boxes beside them make room.
+    const weights = items.map((item) => (item.kind === "dummy" ? 4 : 1));
+    const shifts = centered
+      ? poolAdjacent(wanted, weights)
+      : wanted.map((shift, position) => Math.max(shift, ...wanted.slice(0, position)));
+    items.forEach((item, position) => {
+      item.x = Math.round(shifts[position] as number) + (offsets[position] as number);
+    });
+    // Rows stay inside the pane: items pushed past either edge close up the gaps on that side, so a row that fits packed
+    // never scrolls.
+    let max = areaEnd;
+    for (let position = items.length - 1; position >= 0; position -= 1) {
+      const item = items[position] as Item;
+      item.x = Math.min(item.x, max - item.w);
+      const previous = items[position - 1];
+      if (previous) max = item.x - spacing(previous, item);
     }
     let min = margin;
     items.forEach((item, position) => {
@@ -663,20 +801,19 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
       const next = items[position + 1];
       if (next) min = item.x + item.w + spacing(item, next);
     });
-    let max = areaEnd;
-    for (let position = items.length - 1; position >= 0; position -= 1) {
-      const item = items[position] as Item;
-      item.x = Math.max(margin, Math.min(item.x, max - item.w));
-      const previous = items[position - 1];
-      if (previous) max = item.x - spacing(previous, item);
-    }
-    for (const item of items) {
-      if (item.kind === "summary") {
-        for (const entry of layer.nodes) if (entry.node) anchor.set(entry.id, item.x);
-      } else anchor.set(item.id, item.kind === "dummy" ? item.x : item.x + Math.floor(item.w / 2));
-    }
+    setAnchors(items, layer);
   });
-  const canvas = new Canvas(Math.max(options.cols, areaEnd, ...layerItems.flat().map((item) => item.x + item.w)));
+  // The whole graph then moves onto the pane's axis, or against the left margin, keeping every chain straight.
+  const all = layerItems.flat();
+  const minX = Math.min(...all.map((item) => item.x));
+  const maxX = Math.max(...all.map((item) => item.x + item.w));
+  // A graph wider than the pane starts at the margin and scrolls; nothing is ever drawn left of it.
+  const move = all.length ? (centered ? margin + Math.max(0, Math.floor((area - (maxX - minX)) / 2)) : margin) - minX : 0;
+  for (const item of all) item.x += move;
+  layerItems.forEach((items, index) => {
+    setAnchors(items, layers[index] as LayoutLayer);
+  });
+  const canvas = new Canvas(Math.max(options.cols, areaEnd, ...all.map((item) => item.x + item.w)));
 
   // Vertical extents.
   const contents = new Map<string, Line[]>();
@@ -727,7 +864,7 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
       // Bundled edges repeat their shared segments; draw each once with its strongest stroke.
       const known = gap.segments.find((segment) => segment.from === from && segment.to === to);
       if (!known) gap.segments.push({ from, to, x1: anchor.get(from) as number, x2: anchor.get(to) as number, route });
-      else if (LINE_RANK[edgeStyle(route).kind] > LINE_RANK[edgeStyle(known.route).kind]) known.route = route;
+      else if (stronger(edgeStyle(route), edgeStyle(known.route))) known.route = route;
     }
   }
   // Edge sources reaching, and edge targets served by, every box and dummy along forward routes.
@@ -833,12 +970,14 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
         continue;
       }
       if (item.kind === "dummy") {
-        const { kind, style } = dummyStyles.get(item.id) ?? { kind: "solid" as const, style: fg(ctx.pal, "border") };
-        const points: Array<[number, number]> = [
-          [item.x, top],
-          [item.x, top + height - 1],
-        ];
-        draws.push({ heavy: kind === "heavy", draw: () => canvas.path(points, kind, style) });
+        const stroke = dummyStyles.get(item.id) as Stroke;
+        canvas.path(
+          [
+            [item.x, top],
+            [item.x, top + height - 1],
+          ],
+          stroke,
+        );
         exitY.set(item.id, top + height - 1);
         entryY.set(item.id, top);
         continue;
@@ -857,28 +996,21 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
     }
   });
 
-  gaps.forEach((gap) => {
+  for (const gap of gaps) {
     for (const segment of gap.segments) {
-      const { kind, style } = edgeStyle(segment.route);
+      const stroke = edgeStyle(segment.route);
       const start = exitY.get(segment.from) as number;
       const end = entryY.get(segment.to) as number;
-      const isDummyTarget = segment.to.startsWith("dummy:");
-      const isDummySource = segment.from.startsWith("dummy:");
       const points: Array<[number, number]> = [[segment.x1, start]];
       if (segment.track !== undefined) {
         const trackY = gap.trackY + segment.track;
         points.push([segment.x1, trackY], [segment.x2, trackY]);
       }
       points.push([segment.x2, end]);
-      draws.push({
-        heavy: kind === "heavy",
-        draw: () => {
-          canvas.path(points, kind, style, !isDummySource);
-          if (!isDummyTarget) arrows.push({ x: segment.x2, y: end, style });
-        },
-      });
+      canvas.path(points, stroke, !segment.from.startsWith("dummy:"));
+      if (!segment.to.startsWith("dummy:")) arrows.push({ x: segment.x2, y: end, stroke });
     }
-  });
+  }
   back.forEach(({ route }, index) => {
     const out = gaps[(position.get(route.edge.from) as number) + 1];
     const into = gaps[position.get(route.edge.to) as number];
@@ -889,29 +1021,21 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
     const xs = anchor.get(route.edge.from) as number;
     const xt = anchor.get(route.edge.to) as number;
     const end = entryY.get(route.edge.to) as number;
-    const { kind, style } = edgeStyle(route);
-    draws.push({
-      heavy: kind === "heavy",
-      draw: () => {
-        canvas.path(
-          [
-            [xs, exitY.get(route.edge.from) as number],
-            [xs, outY],
-            [lane, outY],
-            [lane, inY],
-            [xt, inY],
-            [xt, end],
-          ],
-          kind,
-          style,
-          true,
-        );
-        arrows.push({ x: xt, y: end, style });
-      },
-    });
+    const stroke = edgeStyle(route);
+    canvas.path(
+      [
+        [xs, exitY.get(route.edge.from) as number],
+        [xs, outY],
+        [lane, outY],
+        [lane, inY],
+        [xt, inY],
+        [xt, end],
+      ],
+      stroke,
+      true,
+    );
+    arrows.push({ x: xt, y: end, stroke });
   });
-  for (const item of draws.filter((entry) => !entry.heavy)) item.draw();
-  for (const item of draws.filter((entry) => entry.heavy)) item.draw();
 
   // Band rules skip the columns connectors cross; titles are placed once the viewport is known.
   const headers: BandHeader[] = [];
@@ -926,7 +1050,9 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
   });
 
   canvas.flush();
-  for (const arrow of arrows) canvas.set(arrow.x, arrow.y, GLYPHS.arrow, arrow.style);
+  // Edges converging on one port share its arrowhead, which takes the strongest stroke's color.
+  arrows.sort((a, b) => a.stroke.rank - b.stroke.rank);
+  for (const arrow of arrows) canvas.set(arrow.x, arrow.y, GLYPHS.arrow, arrow.stroke.style);
   return { canvas, boxes, headers };
 }
 
@@ -1034,11 +1160,28 @@ function dagFooter(run: Run, node: DagNode | undefined, layout: RunLayout, input
     if (agent) meta.push(agent);
     if (layout.criticalPath.includes(node.id) && input.viewState.criticalPath) meta.push("critical path");
     lines.push([{ text: meta.filter(Boolean).join(GLYPHS.separator), style: fg(ctx.pal, "muted") }]);
+    // Every direct dependency, including the ones the reduced graph leaves to a longer path; "T4. Title" shows as T4.
+    const deps = run.edges
+      .filter((edge) => edge.kind === "depends" && edge.to === node.id)
+      .map((edge) => {
+        const label = clean(run.nodes.find((item) => item.id === edge.from)?.label) || edge.from;
+        return /^([\w-]+)\.\s/.exec(label)?.[1] ?? label;
+      });
+    if (deps.length) lines.push(clip([{ text: `deps: ${[...new Set(deps)].join(", ")}`, style: fg(ctx.pal, "muted") }], cols));
     for (const text of wrap(clean(node.detail), cols, SPACING.footerDetailLines)) lines.push([{ text, style: fg(ctx.pal, "text") }]);
   }
-  const fold = input.viewState.folded.includes(run.id) ? "c unfold" : "c fold";
-  const path = layout.criticalPath.length ? (input.viewState.criticalPath ? " · p hide path" : " · p path") : "";
-  lines.push(hints(ctx, `? help · t tasks · ←→ runs · ${fold}${path}`));
+  // Hints: a fixed-width badge names what the arrow keys do, so toggling it never shifts the hints.
+  const { ui, viewState } = input;
+  const badge: Segment =
+    ui.dagMode === "pan"
+      ? { text: "  PAN  ", style: fg(ctx.pal, "accent", { inverse: true, bold: true }) }
+      : { text: " NODES ", style: fg(ctx.pal, "muted", { inverse: true, bold: true }) };
+  const items = ["? help", "t tasks", ui.dagMode === "pan" ? "tab nodes" : "tab pan"];
+  if (visibleRuns(input.snapshot, ui.history).length > 1) items.push("[ ] runs");
+  items.push(viewState.folded.includes(run.id) ? "c unfold" : "c fold");
+  if (layout.criticalPath.length) items.push(viewState.criticalPath ? "p hide path" : "p path");
+  items.push("e edges");
+  lines.push(hints(ctx, cols, items, badge));
   return lines;
 }
 
@@ -1049,12 +1192,12 @@ function renderDag(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
     const body: Line[] = [[], [{ text: "waiting for todos or Atlas", style: fg(ctx.pal, "muted", { italic: true }) }]];
     if (snapshot && !snapshot.atlasAvailable) body.push([{ text: "Atlas integration: not available", style: fg(ctx.pal, "dim") }]);
     if (snapshot?.tasks.length) body.push([{ text: `${snapshot.tasks.length} subagent task(s) · press t`, style: fg(ctx.pal, "dim") }]);
-    return compose(top, body, [ruleLine(ctx, cols), hints(ctx, "? help · t tasks · q quit")], rows, ui, 0);
+    return compose(top, body, [ruleLine(ctx, cols), hints(ctx, cols, ["? help", "t tasks", "q quit"])], rows, ui, 0);
   }
   const runs = visibleRuns(snapshot, ui.history);
   if (!runs.some((item) => item.id === run.id)) runs.push(run);
   ui.bodyCols = cols;
-  const layout = runLayout(run, viewState, ctx.now, cols);
+  const layout = runLayout(run, viewState, ctx.now, cols, layoutOptions(snapshot, ui));
   const selected = selectedNode(run, layout, ui);
   const node = run.nodes.find((item) => item.id === selected);
   const header = [...top, ...runHeader(run, runs, input, ctx)];
@@ -1071,9 +1214,10 @@ function renderDag(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
     },
     ctx,
   );
-  const height = Math.max(1, rows - header.length - footer.length);
-  const box = selected ? scene.boxes.get(selected) : undefined;
+  const { height } = fit(header, footer, rows);
   const total = scene.canvas.rows.length;
+  // Only a followed selection moves the viewport; after a pan, live re-renders keep the panned position.
+  const box = selected && ui.follow ? scene.boxes.get(selected) : undefined;
   if (box) {
     if (box.y < ui.scrollY) ui.scrollY = Math.max(0, box.y - 1);
     if (box.y + box.h > ui.scrollY + height) ui.scrollY = Math.min(box.y, box.y + box.h - height + 1);
@@ -1084,19 +1228,37 @@ function renderDag(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
   ui.scrollX = Math.max(0, Math.min(ui.scrollX, scene.canvas.width - cols));
   placeBandTitles(scene, ui.scrollX, cols, ctx);
   const body = scene.canvas.slice(ui.scrollX, cols, ui.scrollY, height);
-  return compose(header, body, footer, rows, ui, 0);
+  const lines = compose(header, body, footer, rows, ui, 0);
+  ui.dagFrame = {
+    runId: run.id,
+    boxes: scene.boxes,
+    width: scene.canvas.width,
+    height: total,
+    top: ui.bodyTop,
+    rows: height,
+    cols,
+    scrollX: ui.scrollX,
+    scrollY: ui.scrollY,
+  };
+  return lines;
 }
 
-/** Header and footer are kept; the body fills (and is clipped to) the remaining rows. */
-function compose(header: Line[], body: Line[], footer: Line[], rows: number, ui: UiState, bodyTop: number): Line[] {
+/** Short of rows, the footer drops the lines below its rule, top first, then the rule; the header keeps all but the last row. */
+function fit(header: Line[], footer: Line[], rows: number): { head: Line[]; foot: Line[]; height: number } {
   let foot = footer;
   let head = header;
   while (head.length + foot.length + 1 > rows && foot.length > 1) foot = [...foot.slice(0, 1), ...foot.slice(2)];
   while (head.length + foot.length + 1 > rows && foot.length) foot = foot.slice(1);
   if (head.length + 1 > rows) head = head.slice(0, Math.max(0, rows - 1));
-  const height = Math.max(0, rows - head.length - foot.length);
+  return { head, foot, height: Math.max(0, rows - head.length - foot.length) };
+}
+
+/** Header and footer are kept; the body fills (and is clipped to) the remaining rows, starting at its line `offset`. */
+function compose(header: Line[], body: Line[], footer: Line[], rows: number, ui: UiState, offset: number): Line[] {
+  const { head, foot, height } = fit(header, footer, rows);
   ui.bodyRows = height;
-  const visible = body.slice(bodyTop, bodyTop + height);
+  ui.bodyTop = head.length;
+  const visible = body.slice(offset, offset + height);
   while (visible.length < height) visible.push([]);
   return [...head, ...visible, ...foot].slice(0, rows);
 }
@@ -1238,7 +1400,7 @@ function renderTasks(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
     [{ text: `tok ${formatTokens(tokens)}${GLYPHS.separator}${formatCost(cost)}`, style: fg(ctx.pal, "muted") }],
     ruleLine(ctx, cols),
   ];
-  const footer: Line[] = [ruleLine(ctx, cols), hints(ctx, "? help · t dag · o transcript · enter expand")];
+  const footer: Line[] = [ruleLine(ctx, cols), hints(ctx, cols, ["? help", "t dag", "o transcript", "enter expand"])];
   if (!ordered.length) {
     return compose(header, [[], [{ text: "no subagent tasks yet", style: fg(ctx.pal, "muted", { italic: true }) }]], footer, rows, ui, 0);
   }
@@ -1253,9 +1415,12 @@ function renderTasks(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
     for (const line of taskCard(task, input, ctx, width, isSelected)) body.push(indent ? [{ text: " ".repeat(indent) }, ...line] : line);
     if (isSelected) selectedEnd = body.length;
   }
-  const height = Math.max(1, rows - header.length - footer.length);
-  if (selectedStart < ui.scrollY) ui.scrollY = selectedStart;
-  if (selectedEnd > ui.scrollY + height) ui.scrollY = Math.min(selectedStart, selectedEnd - height);
+  const { height } = fit(header, footer, rows);
+  // The wheel detaches the list from the selected card until the selection moves again.
+  if (ui.follow) {
+    if (selectedStart < ui.scrollY) ui.scrollY = selectedStart;
+    if (selectedEnd > ui.scrollY + height) ui.scrollY = Math.min(selectedStart, selectedEnd - height);
+  }
   ui.scrollY = Math.max(0, Math.min(ui.scrollY, body.length - height));
   return compose(header, body, footer, rows, ui, ui.scrollY);
 }
@@ -1276,7 +1441,7 @@ function renderTranscript(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
     [{ text: view?.follow === false ? "paused · scroll to the end to follow" : "following", style: fg(ctx.pal, "muted") }],
     ruleLine(ctx, cols),
   ];
-  const footer: Line[] = [ruleLine(ctx, cols), hints(ctx, "esc back · j/k scroll · PgUp/PgDn page")];
+  const footer: Line[] = [ruleLine(ctx, cols), hints(ctx, cols, ["esc back", "j/k scroll", "PgUp/PgDn page"])];
   const body: Line[] = [];
   if (!view?.file) body.push([{ text: "transcript unavailable for this task", style: fg(ctx.pal, "muted", { italic: true }) }]);
   else if (!view.lines.length) body.push([{ text: "waiting for transcript entries…", style: fg(ctx.pal, "muted", { italic: true }) }]);
@@ -1286,7 +1451,7 @@ function renderTranscript(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
       for (const text of wrap(line.text, cols)) body.push([{ text, style: fg(ctx.pal, token) }]);
     } else body.push([{ text: truncate(line.text, cols), style: fg(ctx.pal, token) }]);
   }
-  const height = Math.max(1, rows - header.length - footer.length);
+  const { height } = fit(header, footer, rows);
   const maxScroll = Math.max(0, body.length - height);
   if (view) {
     if (view.follow) view.scroll = maxScroll;
@@ -1302,13 +1467,17 @@ const HELP: Array<[string, string]> = [
   ["q", "quit and close this pane"],
   ["t", "toggle DAG / Tasks"],
   ["h", "show previous todo generations"],
-  ["← →", "previous / next run"],
-  ["j k ↑ ↓", "move selection"],
-  ["PgUp PgDn", "page"],
+  ["[ ]", "previous / next run"],
+  ["tab", "arrows select nodes / pan the view"],
+  ["←↑↓→ j k", "select nearest node; pan in pan mode"],
+  ["PgUp PgDn", "page nodes; half a screen in pan mode"],
   ["enter", "expand / collapse details"],
   ["c", "fold / unfold completed layers"],
   ["p", "toggle critical-path highlight"],
+  ["e", "show / hide edges implied by a path"],
   ["o", "open the selected child's transcript"],
+  ["wheel", "scroll; shift+wheel scrolls sideways"],
+  ["click", "select node; double-click opens it"],
   ["esc", "back"],
   ["?", "this help"],
 ];
@@ -1334,7 +1503,7 @@ function renderHelp(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
   for (const source of ["todo", "plan", "atlas"] as const) {
     body.push([{ text: `${GLYPHS.tabMark} ${SOURCE_LABELS[source]}`.padEnd(11), style: { fg: ctx.pal.sources[source], bold: true } }]);
   }
-  return compose(header, body, [ruleLine(ctx, input.cols), hints(ctx, "esc / ? close")], input.rows, input.ui, 0);
+  return compose(header, body, [ruleLine(ctx, input.cols), hints(ctx, input.cols, ["esc / ? close"])], input.rows, input.ui, 0);
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

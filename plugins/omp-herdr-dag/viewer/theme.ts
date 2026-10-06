@@ -94,6 +94,20 @@ export const DOWN = 4;
 export const LEFT = 8;
 export type LineKind = "dotted" | "solid" | "heavy";
 export const LINE_RANK: Record<LineKind, number> = { dotted: 0, solid: 1, heavy: 2 };
+
+/**
+ * Edge roles, by precedence. Plain dependencies stay subdued so the boxes carry the picture; the selected node's edges
+ * take the run's source color (`token` absent); the critical path outranks everything. A cell several roles share takes
+ * the color of the highest rank, and the heaviest stroke drawn through it.
+ */
+export type EdgeRole = "plain" | "backward" | "fix" | "selected" | "critical";
+export const EDGE_ROLES: Record<EdgeRole, { rank: number; token?: ThemeToken; bold: boolean }> = {
+  plain: { rank: 0, token: "dim", bold: false },
+  backward: { rank: 1, token: "muted", bold: false },
+  fix: { rank: 2, token: "warning", bold: false },
+  selected: { rank: 3, bold: true },
+  critical: { rank: 4, token: "accent", bold: true },
+};
 const LIGHT: Record<number, string> = {
   [UP]: "╵",
   [DOWN]: "╷",
@@ -128,10 +142,33 @@ const HEAVY: Record<number, string> = {
   [LEFT | RIGHT | UP]: "┻",
   [UP | RIGHT | DOWN | LEFT]: "╋",
 };
-export function connectorGlyph(bits: number, kind: LineKind): string {
-  if (kind === "heavy") return HEAVY[bits] ?? "╋";
-  if (kind === "dotted" && bits === (UP | DOWN)) return "┆";
-  if (kind === "dotted" && bits === (LEFT | RIGHT)) return "┄";
+/**
+ * Junctions joining heavy and light arms, keyed by `bits:heavyBits`, so a critical stroke crossing a plain one stays
+ * heavy only along its own arms. Each entry lists the glyph, then its up, right, down and left arm: "." none, "l" light,
+ * "h" heavy.
+ */
+const MIXED: Record<string, string> = Object.fromEntries(
+  (
+    "╽l.h. ╿h.l. ╼.h.l ╾.l.h ┍.hl. ┎.lh. ┑..lh ┒..hl ┕lh.. ┖hl.. ┙l..h ┚h..l " +
+    "┝lhl. ┞hll. ┟llh. ┠hlh. ┡hhl. ┢lhh. ┥l.lh ┦h.ll ┧l.hl ┨h.hl ┩h.lh ┪l.hh " +
+    "┭.llh ┮.hll ┯.hlh ┰.lhl ┱.lhh ┲.hhl ┵ll.h ┶lh.l ┷lh.h ┸hl.l ┹hl.h ┺hh.l " +
+    "┽lllh ┾lhll ┿lhlh ╀hlll ╁llhl ╂hlhl ╃hllh ╄hhll ╅llhh ╆lhhl ╇hhlh ╈lhhh ╉hlhh ╊hhhl"
+  )
+    .split(" ")
+    .map((entry) => {
+      const arms = [...entry.slice(1)];
+      const mask = (wanted: (arm: string) => boolean): number =>
+        [UP, RIGHT, DOWN, LEFT].reduce((sum, bit, index) => (wanted(arms[index] as string) ? sum | bit : sum), 0);
+      return [`${mask((arm) => arm !== ".")}:${mask((arm) => arm === "h")}`, entry.slice(0, 1)];
+    }),
+);
+
+/** The glyph joining `bits`, of which `heavy` are heavy; the remaining arms are drawn as `light` (solid or dotted). */
+export function connectorGlyph(bits: number, heavy: number, light: LineKind): string {
+  if (heavy === bits) return HEAVY[bits] ?? "╋";
+  if (heavy) return MIXED[`${bits}:${heavy}`] ?? HEAVY[bits] ?? "╋";
+  if (light === "dotted" && bits === (UP | DOWN)) return "┆";
+  if (light === "dotted" && bits === (LEFT | RIGHT)) return "┄";
   return LIGHT[bits] ?? "┼";
 }
 

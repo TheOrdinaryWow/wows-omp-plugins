@@ -48,9 +48,13 @@ Trusted queued handoffs are identified by their host timestamp and approval text
 
 While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fixes`, and `Atlas final gates` are hidden from the native todo view. An all-mirror list cannot claim or consume an armed native plan approval. The mirrors reappear as plain blue todos when Atlas releases or integration is disabled; a later new native list can still claim the approval.
 
-Forward dependencies use solid connectors. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted. The critical path uses observed node elapsed time, or unit weight for unstarted nodes, across explicit dependency edges only. Runs without those edges have no critical path. Completed layers can be folded.
+Forward dependencies use solid connectors in a subdued color, so the boxes carry the picture. The selected node's incoming and outgoing edges switch to the run's source color in bold. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted. The critical path uses observed node elapsed time, or unit weight for unstarted nodes, across explicit dependency edges only. It's drawn heavy, stays heavy only along its own arms where it crosses other connectors, and outranks the selection where the two share a stroke. Runs without those edges have no critical path. Completed layers can be folded.
 
-Node boxes are 20 to 30 columns wide. When a layer doesn't fit the pane even at 20 columns, its nodes wrap onto extra rows inside the same band, in their usual order: left to right, then top to bottom. A 30-column pane shows one node per row and a 50-column pane two. Edges to a later row run past the earlier rows. Several edges from one node, or into one node, share a connector there. Selection keys follow the drawn order. A folded layer stays a single summary row. In a pane narrower than 20 columns, nodes take the pane's width. The DAG scrolls sideways only when a row's connectors still need more width than the pane has.
+By default the graph shows the transitive reduction of the forward dependencies. When a longer forward path already orders two nodes, the direct edge between them isn't drawn. For example, final gates that depend on every task hang off the last task as one fan-out. Fix and backward edges are always drawn, and the critical path still weighs every dependency. `e` draws every dependency, and the footer always lists the selected node's direct dependencies (`deps: T4, T6, T7`). A long edge runs as one vertical trunk per source through the layers it skips and branches off at each target. Edges converging on one node share a single arrowhead.
+
+Node boxes are 30 columns wide, shrinking to no less than 20 when that lets the widest layer fit the pane. The viewer pans and follows the selection, so a layer wider than the pane stays a single row as long as it fits twice the pane's width, or 120 columns in narrower panes. Four boxes need 86 columns, so a 50-column pane keeps four final gates in one row and scrolls sideways to the selected one. Only a wider layer wraps onto extra rows inside its band, spread evenly and kept in their usual order: left to right, then top to bottom. Eight boxes in a 50-column pane, for example, make two rows of four. The trunks feeding later rows run down the middle of the earlier rows, never around the outside. Several edges from one node, or into one node, share a connector there. Arrow keys move between the drawn boxes, and paging follows the drawn order. A folded layer stays a single summary row.
+
+Each node sits under the median of its parents, so chains run straight down. With `layoutAlign` set to `centered` (the default), siblings that would overlap spread evenly on both sides of their parent, and the whole graph is centered on the canvas axis, which is the pane's axis when the graph fits. With `left`, overlapping siblings move only rightwards and the graph sits against the left edge.
 
 State colors come from the OMP theme, separately from source colors:
 
@@ -115,6 +119,7 @@ Settings are read for the session's working directory on startup, session switch
 | `colorPlan` | string: `#rrggbb` | `#a371f7` | Plan headers and borders; next snapshot publication after reload. |
 | `colorAtlas` | string: `#rrggbb` | `#3fb950` | Atlas headers and borders; next snapshot publication after reload. |
 | `retentionDays` | number: 1 to 365 | `14` | Age cutoff for plugin-owned session files; pruning runs at session startup. |
+| `layoutAlign` | enum: `centered`, `left` | `centered` | DAG placement: a tree centered on the pane's axis, or compact against the left edge; next snapshot publication after reload. |
 | `viewerRuntime` | string: executable path, or empty for discovery | `""` | Bun executable; next viewer launch. |
 
 ## Placement and finish behavior
@@ -140,15 +145,19 @@ Pressing `q` always closes the viewer's own pane, regardless of finish behavior.
 | `q`, Ctrl+C | Quit and close the viewer's own pane. |
 | `t` | Toggle DAG and Tasks; from transcript, switch to the other main view. |
 | `h` | Toggle visibility of the retained previous todo generation; only one previous generation is kept. |
-| Left / Right | Select previous / next run in the DAG view. |
-| `j` / `k`, Down / Up | Move selection, or scroll the transcript. |
-| PgUp / PgDn | Page through nodes, tasks, or transcript. |
+| `[` / `]` | Select previous / next run in the DAG view. |
+| Tab | Switch the DAG's arrow keys between node mode (default, footer badge `NODES`) and pan mode (`PAN`). |
+| Arrows, `j` / `k` | Node mode: select the nearest drawn node. Up / Down pick the box closest by centre in the row above or below; Left / Right pick the next box in the same row. The view follows the selection. Pan mode: move the view a few rows or columns; the selection stays. Tasks: move the selection. Transcript: scroll. |
+| PgUp / PgDn | Page through nodes (half a screen in pan mode), tasks, or transcript. |
 | Enter | Expand or collapse selected node or task details. |
 | `c` | Toggle folding of completed layers for the selected run. |
 | `p` | Toggle critical-path highlighting. |
+| `e` | Show every direct dependency edge. By default, an edge whose order a longer path already shows is hidden; the footer still lists the selected node's direct dependencies. |
 | `o` | Open the selected task's transcript, or a child transcript attached to the selected node. |
 | Esc | Return from transcript or dismiss help. |
 | `?` | Toggle help. |
+
+The viewer turns terminal mouse reporting on while it runs and off again on every exit path, including signals. The wheel scrolls the DAG in either mode, the Tasks list, and transcripts; Shift+wheel or a horizontal wheel scrolls the DAG sideways. Clicking a node selects it, and double-clicking opens its transcript like `o`. Panning or scrolling detaches the DAG from the selection, so live updates keep the scrolled position until a node-mode arrow key, paging, or a click selects a node again. Switching runs or views starts at the top, following the selection. The keyboard alone reaches everything, and the mode, the scroll position and the edge toggle aren't persisted. While mouse reporting is on, a plain drag no longer selects text in the pane; most terminals still select while Shift is held.
 
 Transcript drill-down reads the existing child session file incrementally, showing assistant text, tool calls, and short result previews. It doesn't open a writable host session. User text and output have terminal control sequences stripped; labels use display-width-aware wrapping.
 
@@ -173,7 +182,7 @@ Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionI
 
 | File | Stored fields |
 | --- | --- |
-| `snapshot.json` | `version`, session ID/name, generation, connection flag, timestamp, runs, task cards, theme palette, three source colors, and Atlas availability. |
+| `snapshot.json` | `version`, session ID/name, generation, connection flag, timestamp, runs, task cards, theme palette, three source colors, Atlas availability, and the optional `layoutAlign` setting (absent in older snapshots, which render centered). |
 | Run objects | ID, source, title, generation, nodes, edges, creation/update/finish timestamps, and done/total/elapsed/token/cost stats. |
 | Node objects | ID, label, state, band/name, detail, start/finish timestamps, agent, linked task IDs, and stalled flag. Edges contain `from`, `to`, and `kind`. |
 | Task cards | ID, parent task/node IDs, agent, status, optional stalled flag, description, current tool/arguments, recent output, completed/current activation totals, activation count, model, retry attempt/limit/error, transcript path, start/finish timestamps, detached flag, depth, and activity-availability flag. Activation totals contain tokens, cost, and duration. |

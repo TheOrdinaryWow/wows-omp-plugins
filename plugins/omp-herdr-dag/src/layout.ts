@@ -1,7 +1,17 @@
-import { type DagEdge, type DagNode, isTerminal, type Run } from "./model.ts";
+import { type DagEdge, type DagNode, isTerminal, type LayoutAlign, type Run } from "./model.ts";
 
 /** Character-grid geometry of node boxes and connectors, shared by the wrap decision and the viewer. */
 export const GRID = { nodeGap: 2, dummyGap: 2, laneGap: 2, minNode: 20, maxNode: 30 } as const;
+
+/**
+ * How far a layer may outgrow the pane before it wraps. The viewer pans and follows the selection, so a layer up to
+ * twice the pane's width (or 120 columns, whichever is wider) stays one readable row, with boxes shrunk no further than
+ * `GRID.minNode`: four 20-column boxes need 86 columns, so a 50-column pane keeps them in one row, and a 30-column pane
+ * keeps three. Only a wider layer wraps, which keeps every row's sideways scroll to about one pane.
+ */
+export const OVERFLOW = { factor: 2, minimum: 120 } as const;
+/** Columns a single row of the graph may span in a pane `width` columns wide. */
+export const rowBudget = (width: number): number => Math.max(width * OVERFLOW.factor, OVERFLOW.minimum);
 
 /** Columns a row of `nodes` boxes `nodeWidth` wide plus `dummies` pass-through connectors needs. */
 export function rowSpan(nodes: number, dummies: number, nodeWidth: number): number {
@@ -45,13 +55,19 @@ export interface RunLayout {
   dummies: LayoutNode[];
   criticalPath: string[];
   folded: FoldedLayer[];
+  /** Drawn edges: every edge with `allEdges`, otherwise dependencies implied by a longer forward path are left out. */
   edges: RoutedEdge[];
+  /** Horizontal placement the renderer applies to the layers. */
+  align: LayoutAlign;
 }
 export interface LayoutOptions {
   foldCompleted: boolean;
-  /** Columns available to the graph; a layer that does not fit at `GRID.minNode` wraps onto extra rows in its band. */
+  /** Pane columns; a layer that does not fit `rowBudget(width)` at `GRID.minNode` wraps onto extra rows in its band. */
   width: number;
   now?: number;
+  /** Draw every dependency instead of the transitive reduction; the critical path always uses every dependency. */
+  allEdges?: boolean;
+  align?: LayoutAlign;
 }
 
 /** Stable Kahn ordering deliberately leaves invalid cyclic nodes for a finite fallback. */
@@ -239,6 +255,9 @@ function place(run: Run, levels: Map<string, number>, dummyKey: (edge: DagEdge, 
   return { layers: layers.filter(Boolean), dummies: [...dummies.values()], edges };
 }
 
+/** Long edges of one source share a single trunk: one pass-through connector per layer, branching off at each target. */
+const trunkKey = (edge: DagEdge): string => `${edge.kind}:${edge.from}:*`;
+
 /** Wide layer of every node, its row inside that layer, and the row count of every wide layer. */
 interface Rows {
   layer: Map<string, number>;
@@ -249,24 +268,23 @@ interface Rows {
 /**
  * Connector key of a forward edge on row `at` of wide layer `layer`; undefined when the edge does not pass that row.
  * Nodes without a row yet sit on a later row. An edge leaving a row that is not its layer's last joins the fan-in trunk
- * of its target until it arrives; any other edge entering a wrapped layer joins the fan-out trunk of its source. A fan-in
- * trunk never feeds a fan-out trunk, so every drawn path between two boxes is one of the run's edges.
+ * of its target until it arrives; any other edge joins its source's trunk. A fan-in trunk never feeds a fan-out trunk,
+ * so every drawn path between two boxes is one of the run's edges.
  */
 function rowKey(edge: DagEdge, layer: number, at: number, rows: Rows): string | undefined {
   const from = rows.layer.get(edge.from) as number;
   const to = rows.layer.get(edge.to) as number;
   const fromRow = rows.row.get(edge.from) ?? Number.POSITIVE_INFINITY;
   const toRow = rows.row.get(edge.to) ?? Number.POSITIVE_INFINITY;
-  const own = `${edge.kind}:${edge.from}:${edge.to}`;
-  if (from === to) return layer === from && fromRow < at && at < toRow ? own : undefined;
+  if (from === to) return layer === from && fromRow < at && at < toRow ? trunkKey(edge) : undefined;
   if (layer < from || layer > to || (layer === from && at <= fromRow) || (layer === to && at >= toRow)) return undefined;
   if (layer === from || fromRow < (rows.count.get(from) ?? 1) - 1) return `${edge.kind}:*:${edge.to}`;
-  return layer === to ? `${edge.kind}:${edge.from}:*` : own;
+  return trunkKey(edge);
 }
 
-/** Splits every unfolded layer that does not fit `width` at `GRID.minNode` into rows; undefined when every layer fits. */
+/** Splits every unfolded layer wider than the row budget at `GRID.minNode` into rows; undefined when every layer fits. */
 function wrapRows(wide: Placement, width: number): Rows | undefined {
-  const available = width - laneMargin(wide.edges.filter((route) => route.backward).length);
+  const available = rowBudget(width) - laneMargin(wide.edges.filter((route) => route.backward).length);
   const rows: Rows = { layer: new Map(), row: new Map(), count: new Map() };
   for (const layer of wide.layers) for (const item of layer.nodes) if (item.node) rows.layer.set(item.id, layer.index);
   const edges = wide.edges.map((route) => route.edge);
@@ -274,7 +292,7 @@ function wrapRows(wide: Placement, width: number): Rows | undefined {
   for (const layer of wide.layers) {
     const nodes = layer.nodes.filter((item) => !item.dummy);
     // Greedy rows of consecutive nodes, at most `cap` per row, counting the connectors each row must let through;
-    // a node too wide for the pane still gets a row of its own.
+    // a node too wide for the budget still gets a row of its own.
     const fill = (cap: number): LayoutNode[][] => {
       for (const item of nodes) rows.row.delete(item.id);
       const result: LayoutNode[][] = [];
@@ -316,7 +334,10 @@ function wrapRows(wide: Placement, width: number): Rows | undefined {
   return wrapped ? rows : undefined;
 }
 
-/** Re-places the run with every wide layer split into its rows; wrapping reorders no node, only connectors. */
+/**
+ * Re-places the run with every wide layer split into its rows; wrapping reorders no node, only connectors. A connector
+ * that passes a row runs through the middle of it, so later rows are fed down the centre rather than around the sides.
+ */
 function wrap(run: Run, wide: Placement, rows: Rows): Placement {
   const levels = new Map<string, number>();
   const rowAt: Array<{ layer: number; at: number }> = [];
@@ -334,11 +355,36 @@ function wrap(run: Run, wide: Placement, rows: Rows): Placement {
   );
   const folded = new Set(wide.layers.filter((layer) => layer.folded).flatMap((layer) => layer.nodes.map((item) => item.id)));
   for (const layer of wrapped.layers) {
-    layer.nodes.sort((a, b) => Number(a.dummy) - Number(b.dummy) || (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+    const real = layer.nodes.filter((item) => !item.dummy).sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+    const dummies = layer.nodes.filter((item) => item.dummy);
+    const middle = Math.ceil(real.length / 2);
+    layer.nodes = [...real.slice(0, middle), ...dummies, ...real.slice(middle)];
     layer.folded = layer.nodes.some((item) => folded.has(item.id));
   }
   minimizeCrossings(wrapped.layers, wrapped.edges, true);
   return wrapped;
+}
+
+/** Forward dependencies another forward path already implies; drawing them adds lines without adding information. */
+function impliedEdges(forward: DagEdge[]): Set<DagEdge> {
+  const next = new Map<string, string[]>();
+  for (const edge of forward) next.set(edge.from, [...(next.get(edge.from) ?? []), edge.to]);
+  const implied = new Set<DagEdge>();
+  for (const edge of forward) {
+    const stack = (next.get(edge.from) ?? []).filter((id) => id !== edge.to);
+    const seen = new Set<string>();
+    while (stack.length) {
+      const id = stack.pop() as string;
+      if (id === edge.to) {
+        implied.add(edge);
+        break;
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      stack.push(...(next.get(id) ?? []));
+    }
+  }
+  return implied;
 }
 
 /** Bands constrain placement; backward dependencies remain semantic edges, never phase order. */
@@ -367,19 +413,26 @@ export function layoutRun(run: Run, options: LayoutOptions): RunLayout {
     }
     base = Math.max(...members.map((id) => levels.get(id) as number)) + 1;
   }
-  const wide = place(run, levels, (edge) => `${edge.kind}:${edge.from}:${edge.to}`);
+  // Drawn edges: dependencies implied by a longer path are dropped unless every edge is requested; the critical path
+  // below still weighs every dependency.
+  const implied = options.allEdges
+    ? new Set<DagEdge>()
+    : impliedEdges(forward.filter((edge) => (levels.get(edge.to) as number) > (levels.get(edge.from) as number)));
+  const drawn: Run = { ...run, edges: run.edges.filter((edge) => !implied.has(edge)) };
+  const wide = place(drawn, levels, trunkKey);
   minimizeCrossings(wide.layers, wide.edges);
   for (const layer of wide.layers) {
     const real = layer.nodes.flatMap((node) => (node.node ? [node.node] : []));
     layer.folded = options.foldCompleted && real.length > 0 && real.every((node) => isTerminal(node.state));
   }
   const rows = wrapRows(wide, options.width);
-  const { layers, dummies, edges } = rows ? wrap(run, wide, rows) : wide;
+  const { layers, dummies, edges } = rows ? wrap(drawn, wide, rows) : wide;
   const folded: FoldedLayer[] = layers
     .filter((layer) => layer.folded)
     .map((layer) => {
       const real = layer.nodes.flatMap((node) => (node.node ? [node.node] : []));
       return { layer: layer.index, band: layer.band, bandName: layer.bandName, count: real.length, nodeIds: real.map((node) => node.id) };
     });
-  return { layers, dummies, criticalPath: weightedPath(run.nodes, depends, options.now ?? Date.now()), folded, edges };
+  const criticalPath = weightedPath(run.nodes, depends, options.now ?? Date.now());
+  return { layers, dummies, criticalPath, folded, edges, align: options.align ?? "centered" };
 }
