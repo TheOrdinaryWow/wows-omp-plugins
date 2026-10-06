@@ -1,0 +1,160 @@
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+
+import type { Model } from "#src/documents.ts";
+import type { Actor } from "#src/operations.ts";
+import type { OverlapAnswer, RoadmapUi } from "#src/ui.ts";
+
+export type UiFactory = (ctx: ExtensionContext) => RoadmapUi;
+export const ENTRY_PREFIX = "wows-omp-roadmap.";
+
+export interface Binding {
+  v: 1;
+  repoRoot: string;
+  stage: string;
+  at: string;
+}
+
+export interface PendingClose extends Binding {
+  planId: string;
+  gates: Array<{ gateId: string; verdict: string; summary: string }>;
+}
+
+type ArmedKind = "init" | "round";
+interface RepoState {
+  binding?: Binding;
+  armed?: ArmedKind;
+  overlaps: Map<string, OverlapAnswer>;
+  pending: Map<string, PendingClose>;
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function actor(ctx: ExtensionContext): Actor {
+  return { sessionId: ctx.sessionManager.getSessionId(), kind: ctx.agent.kind };
+}
+
+/** One instance per extension factory; the current branch is the durable source of truth. */
+export class RoadmapSession {
+  private sessionId?: string;
+  private repos = new Map<string, RepoState>();
+
+  constructor(private readonly pi: Pick<ExtensionAPI, "appendEntry">) {}
+
+  private state(repoRoot: string): RepoState {
+    let state = this.repos.get(repoRoot);
+    if (!state) {
+      state = { overlaps: new Map(), pending: new Map() };
+      this.repos.set(repoRoot, state);
+    }
+    return state;
+  }
+
+  ensure(ctx: ExtensionContext): void {
+    if (this.sessionId !== ctx.sessionManager.getSessionId()) this.rebuild(ctx);
+  }
+
+  rebuild(ctx: ExtensionContext): void {
+    this.sessionId = ctx.sessionManager.getSessionId();
+    this.repos.clear();
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || !entry.customType.startsWith(ENTRY_PREFIX)) continue;
+      this.restore(entry.customType.slice(ENTRY_PREFIX.length), entry.data);
+    }
+  }
+
+  private restore(type: string, data: unknown): void {
+    if (!object(data) || data.v !== 1 || typeof data.repoRoot !== "string" || !data.repoRoot || typeof data.at !== "string") return;
+    const state = this.state(data.repoRoot);
+    if (type === "armed" && (data.kind === "init" || data.kind === "round")) state.armed = data.kind;
+    if (type === "disarmed") delete state.armed;
+    if (typeof data.stage !== "string" || !/^S\d+$/.test(data.stage)) return;
+    const binding: Binding = { v: 1, repoRoot: data.repoRoot, stage: data.stage, at: data.at };
+    if (type === "binding") state.binding = binding;
+    if (type === "unbound" && state.binding?.stage === data.stage) delete state.binding;
+    if (type === "overlap" && (data.answer === "roadmap" || data.answer === "free" || data.answer === "unrelated")) {
+      state.overlaps.set(data.stage, data.answer);
+    }
+    if (type === "pending-close" && typeof data.planId === "string" && data.planId && Array.isArray(data.gates)) {
+      const gates: PendingClose["gates"] = [];
+      for (const gate of data.gates) {
+        if (!object(gate) || typeof gate.gateId !== "string" || typeof gate.verdict !== "string" || typeof gate.summary !== "string")
+          return;
+        gates.push({ gateId: gate.gateId, verdict: gate.verdict, summary: gate.summary });
+      }
+      state.pending.set(data.planId, { ...binding, planId: data.planId, gates });
+    }
+    if (type === "pending-close-cleared") {
+      for (const [id, pending] of state.pending) if (pending.stage === data.stage) state.pending.delete(id);
+    }
+  }
+
+  private append(ctx: ExtensionContext, type: string, data: { repoRoot: string; [key: string]: unknown }): void {
+    this.ensure(ctx);
+    const payload = { ...data, v: 1, at: new Date().toISOString() };
+    this.pi.appendEntry(`${ENTRY_PREFIX}${type}`, payload);
+    this.restore(type, payload);
+  }
+
+  isArmed(ctx: ExtensionContext, repoRoot: string, kind: ArmedKind): boolean {
+    this.ensure(ctx);
+    return ctx.agent.kind === "main" && this.state(repoRoot).armed === kind;
+  }
+
+  arm(ctx: ExtensionContext, repoRoot: string, kind: ArmedKind): void {
+    this.append(ctx, "armed", { repoRoot, kind });
+  }
+
+  disarm(ctx: ExtensionContext, repoRoot: string): void {
+    this.append(ctx, "disarmed", { repoRoot });
+  }
+
+  bind(ctx: ExtensionContext, repoRoot: string, stage: string): void {
+    this.append(ctx, "binding", { repoRoot, stage });
+  }
+
+  /** Synchronous lookup for the optional Prometheus binding listener. */
+  getBinding(repoRoot: string): Binding | undefined {
+    return this.repos.get(repoRoot)?.binding;
+  }
+
+  dropBinding(ctx: ExtensionContext, repoRoot: string, stage: string): void {
+    this.append(ctx, "unbound", { repoRoot, stage });
+    this.append(ctx, "pending-close-cleared", { repoRoot, stage });
+  }
+
+  validateBinding(ctx: ExtensionContext, repoRoot: string, model: Model): string | undefined {
+    this.ensure(ctx);
+    const binding = this.getBinding(repoRoot);
+    if (!binding || model.stages.some((stage) => stage.id === binding.stage && stage.status === "active")) return;
+    this.dropBinding(ctx, repoRoot, binding.stage);
+    return `Previous binding ${binding.stage} is no longer active on disk; dropped this session's binding.`;
+  }
+
+  overlapAnswer(ctx: ExtensionContext, repoRoot: string, stage: string): OverlapAnswer | undefined {
+    this.ensure(ctx);
+    return this.state(repoRoot).overlaps.get(stage);
+  }
+
+  answerOverlap(ctx: ExtensionContext, repoRoot: string, stage: string, answer: OverlapAnswer): void {
+    this.append(ctx, "overlap", { repoRoot, stage, answer });
+  }
+
+  recordPendingClose(ctx: ExtensionContext, pending: Omit<PendingClose, "v" | "at">): void {
+    this.ensure(ctx);
+    if (this.state(pending.repoRoot).pending.has(pending.planId)) return;
+    this.append(ctx, "pending-close", pending);
+  }
+
+  pendingClose(ctx: ExtensionContext, repoRoot: string): PendingClose[] {
+    this.ensure(ctx);
+    return [...this.state(repoRoot).pending.values()];
+  }
+
+  clearStage(ctx: ExtensionContext, repoRoot: string, stage: string): void {
+    this.ensure(ctx);
+    if (this.getBinding(repoRoot)?.stage === stage) this.dropBinding(ctx, repoRoot, stage);
+    else this.append(ctx, "pending-close-cleared", { repoRoot, stage });
+  }
+}

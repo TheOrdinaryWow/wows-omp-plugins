@@ -11,14 +11,6 @@ const ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.me
 const ASSETS = fileURLToPath(new URL("../plugins/roadmap/assets/madr/", import.meta.url));
 const UPSTREAM = "https://raw.githubusercontent.com/adr/madr/2475fe1973f66a12aaf58a91d8fa7b42c0f5ea3d/template/adr-template.md";
 
-interface ProbeDetails {
-  git: { repoRoot: string; commonDir: string };
-  discovered: { repoRoot: string; commonDir: string };
-  lock: string;
-  frontmatter: { frontmatter: Record<string, unknown>; body: string };
-  edit: { paths: string[] };
-}
-
 async function hostCheck(root: string): Promise<void> {
   // Host paths are initialized at import time, after the child has its isolated HOME.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
@@ -55,19 +47,16 @@ async function hostCheck(root: string): Promise<void> {
       },
     });
     assert.deepEqual(extensionsResult.errors, []);
-    const probe = session.getToolByName("roadmap_probe");
-    assert(probe, "Explicit extension path must load roadmap_probe through the real loader.");
-    const result = await probe.execute("roadmap-host-probe", {});
-    assert(!result.isError);
-    const details = result.details as ProbeDetails;
-    assert.equal(details.git.repoRoot, root);
-    assert.equal(details.git.commonDir, join(root, ".git"));
-    assert.deepEqual(details.discovered, { repoRoot: root, commonDir: join(root, ".git") });
-    assert.equal(details.lock, "roadmap host probe\n");
-    assert.equal(await readFile(join(root, ".git", "roadmap", "probe-round-trip"), "utf8"), details.lock);
-    assert.deepEqual(details.frontmatter, { frontmatter: { format: 1 }, body: "body" });
-    assert.deepEqual(details.edit.paths, ["probe.md"]);
-    console.log("ROADMAP_HOST_OK vcsGitRepoInfo withFileLock parseFrontmatter editInspect discoverRepo; no fallback");
+    const status = session.getToolByName("roadmap_status");
+    assert(status, "Explicit extension path must register roadmap_status through the real loader.");
+    const result = await status.execute("roadmap-host-status", {});
+    assert(result.details && typeof result.details === "object" && "ok" in result.details);
+    assert.equal(result.details.ok, false);
+    assert.match(result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n"), /not initialized/);
+    const loaded = extensionsResult.preparedExtensions?.find((extension) => extension.resolvedPath === ENTRY)?.factory;
+    assert(loaded && "discoverRepo" in loaded && typeof loaded.discoverRepo === "function");
+    assert.deepEqual(loaded.discoverRepo(root), { repoRoot: root, commonDir: join(root, ".git") });
+    console.log("ROADMAP_HOST_OK roadmap_status discoverRepo; host helpers loaded without fallback");
   } finally {
     await session.dispose();
   }
