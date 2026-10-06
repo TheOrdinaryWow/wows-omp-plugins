@@ -66,7 +66,7 @@ The plugin asks once per stage per session, and remembers the answer across comp
 - **Free work** leaves the session outside that stage and appends a line to its Free-work log. When the stage is later started, verify in code what already exists before planning duplicate work. The log isn't completion evidence.
 - **Unrelated** records the false positive without binding the session.
 
-Don't re-ask after a stored answer. Without a UI, no answer is recorded; don't choose for the user. Subagents don't conduct this overlap dialog.
+An already-bound stage returns in-system with its handoff, without a dialog or free-work entry, even without a UI; its binding takes precedence over an earlier free/unrelated answer. Otherwise don't re-ask after a stored answer. Without a UI, no answer is recorded; don't choose for the user. Subagents don't conduct this overlap dialog.
 
 ## Consistency and recovery
 

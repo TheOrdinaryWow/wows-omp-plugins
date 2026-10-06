@@ -82,7 +82,7 @@ These are agent tools, not slash commands. Mutating tools use write approval; `r
 | `roadmap_todo` | `add`, `update`, `resolve`, `move`. |
 | `roadmap_adr` | `create`, `revise`, `set_status`, `supersede`, `note`. |
 | `roadmap_check` | Optional `fix: true` regenerates eligible generated blocks. Checks documents, not code/document drift. |
-| `roadmap_overlap` | `stage` and `intent`; ask the main-session user once per stage/session, reuse the answer, and return a handoff when using the roadmap. Subagents don't prompt. |
+| `roadmap_overlap` | `stage` and `intent`; an already-bound stage returns in-system with its handoff, without a dialog or free-work entry, even headless. Otherwise ask the main-session user once per stage/session and reuse the answer. Subagents don't prompt. |
 | `roadmap_init` | `project`, `round`, initial `adrs` and `stages`; requires `/init-project` authorization and a confirmed preview. |
 | `roadmap_round_open` | `round` charter and `import_todos` ids; requires `/roadmap new-round` authorization and a confirmed preview. |
 

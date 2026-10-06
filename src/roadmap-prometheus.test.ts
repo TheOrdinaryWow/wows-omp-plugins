@@ -176,7 +176,10 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     const text = injection?.systemPrompt?.join("\n") ?? "";
     assert.match(text, /completed for S01.*roadmap_stage close/);
     assert.match(text, /Gate results are evidence candidates/);
-    for (const gate of completion.gates.slice(0, 3)) assert(text.includes(gate.summary));
+    for (const gate of completion.gates) assert(text.includes(`${gate.gateId}: ${gate.verdict} — ${gate.summary}`));
+    const reminder = injection?.systemPrompt?.find((block) => block.includes("[Roadmap status]"));
+    assert(reminder && reminder.split("\n").length <= 40);
+    assert(reminder.length < 6000);
     const closed = await roadmapTool.execute("sdk-close", {
       action: "close",
       id: "S01",

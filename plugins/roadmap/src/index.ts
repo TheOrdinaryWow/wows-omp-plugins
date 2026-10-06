@@ -86,13 +86,13 @@ export default function roadmap(pi: ExtensionAPI): void {
           lines.push("Gate results are evidence candidates; map and verify them against the stage's done criteria:");
           lines.push(
             ...latest.gates
-              .slice(0, 3)
+              .slice(0, 4)
               .map(
                 (gate) =>
                   `- ${gate.gateId.replace(/\s+/g, " ").slice(0, 40)}: ${gate.verdict.replace(/\s+/g, " ").slice(0, 20)} — ${gate.summary.replace(/\s+/g, " ").slice(0, 180)}`,
               ),
           );
-          if (latest.gates.length > 3 || pending.length > 1)
+          if (latest.gates.length > 4 || pending.length > 1)
             lines.push("Additional pending-close evidence is retained in this session's Roadmap entries.");
         }
       }

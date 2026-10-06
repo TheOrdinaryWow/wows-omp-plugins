@@ -222,6 +222,10 @@ const CASES: Record<string, string> = {
   overlap: "free overlap asks once and persists without duplicating its log",
   binding: "roadmap overlap starts, binds and returns its handoff",
   headless: "headless overlap and previews report no answer available",
+  "bound-start": "started stages bypass the overlap dialog and free-work log",
+  "bound-join": "joined stages bypass the overlap dialog and free-work log",
+  "bound-start-headless": "started stages remain in-system without a UI",
+  "bound-join-headless": "joined stages remain in-system without a UI",
   external: "an externally closed stage drops its binding with a one-turn notice",
   round: "round commands collect dispositions, arm previews and import carried TODOs",
   rebuild: "session start, switch, branch and tree rebuild from the active branch",
@@ -489,6 +493,39 @@ async function acceptance(name: string, root: string): Promise<void> {
           await h.runner.emit({ type: "session_start" });
           assert(!(await injection(h)).includes("Bound stage:"));
         }
+      } else if (name.startsWith("bound-")) {
+        if (name.includes("join")) assert((await stage(repo, main, { action: "start", id: "S01" })).ok);
+        const started = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+        assert(started.ok);
+        if (name.includes("join")) assert(started.warnings.includes("another session may be working on this stage"));
+        const before = await readFile((await loadAll(repo)).stages[0]?.path as string, "utf8");
+        let uiCalls = 0;
+        h.setUi(() => {
+          uiCalls++;
+          return name.endsWith("headless") ? new HeadlessUi() : h.ui;
+        });
+        for (const stored of [false, true]) {
+          if (stored) {
+            h.session.sessionManager.appendCustomEntry(`${ENTRY_PREFIX}overlap`, {
+              v: 1,
+              repoRoot: root,
+              stage: "S01",
+              answer: "free",
+              at: new Date().toISOString(),
+            });
+            await h.runner.emit({ type: "session_start" });
+          }
+          const receipt = await call(h, "roadmap_overlap", { stage: "S01", intent: "Continue checkout" });
+          assert(receipt.ok, JSON.stringify(receipt));
+          assert.equal(receipt.answer, "roadmap");
+          assert.match(receipt.summary, /already working in-system/);
+          assert.match(receipt.handoff ?? "", /DC1/);
+          assert.deepEqual(receipt.changedFiles, []);
+          assert.equal(h.ui.overlapCalls.length, 0);
+          assert.equal(uiCalls, 0);
+          assert.equal((await loadAll(repo)).stages[0]?.free_work_log, "");
+          assert.equal(await readFile((await loadAll(repo)).stages[0]?.path as string, "utf8"), before);
+        }
       } else if (name === "round") {
         assert(
           (await call(h, "roadmap_todo", { action: "add", title: "Later", severity: "normal", source: "User", trigger: "Next round" })).ok,
@@ -561,7 +598,8 @@ async function acceptance(name: string, root: string): Promise<void> {
         await h.runner.emit({ type: "session_start" });
         const block = await injection(h);
         assert.match(block, /Plan approved-plan completed/);
-        assert.match(block, /F1: PASS/);
+        for (const gateId of ["F1", "F2", "F3", "F4"]) assert.match(block, new RegExp(`${gateId}: PASS — Tests passed`));
+        assert(!block.includes("F5: PASS"));
         assert.match(block, /evidence candidates/);
         assert(block.split("\n").length <= 40);
         assert(block.length < 6000);

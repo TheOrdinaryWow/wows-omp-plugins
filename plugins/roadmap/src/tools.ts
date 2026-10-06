@@ -304,6 +304,15 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
         ) {
           return { ok: false, reason: `${params.stage} is not an unclosed stage in an active round.`, hints: [] };
         }
+        if (ses.getBinding(repo.repoRoot)?.stage === current.id)
+          return {
+            ok: true,
+            summary: `This session is already working in-system on ${current.id}.`,
+            answer: "roadmap",
+            handoff: renderHandoff(model, current),
+            changedFiles: [],
+            warnings: [],
+          };
         const stored = ses.overlapAnswer(ctx, repo.repoRoot, current.id);
         const answer = stored ?? (await uiFor(ctx).overlap({ stage: current, intent: params.intent }));
         if (!answer)
