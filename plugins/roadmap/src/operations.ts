@@ -141,11 +141,17 @@ export interface RoundCloseInput {
 
 export interface OperationOptions {
   writeFile?: (path: string, content: string) => Promise<void>;
+  signal?: AbortSignal;
 }
 
 interface MutationOptions extends OperationOptions {
   guard?: (model: Model) => Receipt | undefined;
   onSuccess?: () => void;
+}
+
+function guardMutation(model: Model, options: MutationOptions): Receipt | undefined {
+  if (options.signal?.aborted) return { ok: false, reason: "Roadmap operation cancelled.", hints: [] };
+  return options.guard?.(model);
 }
 
 export interface PreparedOperation {
@@ -468,13 +474,13 @@ async function mutate(
           "Managed documents could not be loaded.",
           model.parseErrors.map((issue) => issue.message),
         );
-      const guarded = options.guard?.(model);
+      const guarded = guardMutation(model, options);
       if (guarded) return guarded;
       const mutation = new Mutation(model);
       const summary = await change(mutation);
       if (!mutation.readOnly) mutation.indexes();
       mutation.warnings.push(...(await checked(model)));
-      const beforeWrite = options.guard?.(model);
+      const beforeWrite = guardMutation(model, options);
       if (beforeWrite) return beforeWrite;
       const receipt = await mutation.write(repo, summary, options);
       if (receipt.ok) options.onSuccess?.();
@@ -1172,7 +1178,7 @@ export async function applyPrepared(
     return await withRepoLock(repo, async () => {
       const model = preparedModels.get(prepared);
       if (!model || prepared.repoRoot !== repo.repoRoot) throw new Refusal("Unknown preview; prepare it again in this session.");
-      const guarded = options.guard?.(model);
+      const guarded = guardMutation(model, options);
       if (guarded) return guarded;
       if ((await snapshot(repo)) !== prepared.snapshot)
         throw new Refusal("The preview is stale: managed files changed after it was prepared.");
@@ -1180,7 +1186,7 @@ export async function applyPrepared(
       const mutation = new Mutation(model);
       for (const file of prepared.files) mutation.changes.set(file.path, file.content);
       mutation.warnings.push(...prepared.warnings);
-      const beforeWrite = options.guard?.(model);
+      const beforeWrite = guardMutation(model, options);
       if (beforeWrite) return beforeWrite;
       const result = await mutation.write(repo, prepared.summary, options);
       if (result.ok) options.onSuccess?.();

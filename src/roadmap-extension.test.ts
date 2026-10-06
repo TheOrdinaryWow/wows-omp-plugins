@@ -11,7 +11,16 @@ import type { AgentSession, AgentToolResult, ExtensionRunner } from "@oh-my-pi/p
 import { loadAll, loadRepo, type Model, type Repo, roundFiles, roundSha256 } from "../plugins/roadmap/src/documents.ts";
 import { discoverRepo } from "../plugins/roadmap/src/git.ts";
 import { withRepoLock } from "../plugins/roadmap/src/numbering.ts";
-import { type Actor, closeRound, type InitInput, initProject, openRound, stage } from "../plugins/roadmap/src/operations.ts";
+import {
+  type Actor,
+  applyPrepared,
+  closeRound,
+  type InitInput,
+  initProject,
+  openRound,
+  prepareInit,
+  stage,
+} from "../plugins/roadmap/src/operations.ts";
 import { ENTRY_PREFIX, type UiFactory } from "../plugins/roadmap/src/ses.ts";
 import type { ToolReceipt } from "../plugins/roadmap/src/tools.ts";
 import {
@@ -187,10 +196,10 @@ async function command(h: Harness, name: string, args = ""): Promise<void> {
   await registered.handler(args, h.runner.createCommandContext());
 }
 
-async function call(h: Harness, name: string, input: object): Promise<ToolReceipt> {
+async function call(h: Harness, name: string, input: object, signal?: AbortSignal): Promise<ToolReceipt> {
   const tool = h.session.getToolByName(name);
   assert(tool);
-  const result = await tool.execute(`sdk-${name}-${crypto.randomUUID()}`, input);
+  const result = await tool.execute(`sdk-${name}-${crypto.randomUUID()}`, input, signal);
   // The SDK erases the in-process extension detail type; validate its discriminator at this boundary.
   assert(result.details && typeof result.details === "object" && "ok" in result.details && typeof result.details.ok === "boolean");
   const details = result.details as ToolReceipt;
@@ -250,6 +259,7 @@ async function confirmedPreviewBehindLock(
   toolName: "roadmap_init" | "roadmap_round_open",
   input: object,
   whileLocked: (preview: ScriptedUi["previewCalls"][number]) => Promise<void>,
+  signal?: AbortSignal,
 ): Promise<{ receipt: ToolReceipt; preview: ScriptedUi["previewCalls"][number] }> {
   const shown = Promise.withResolvers<ScriptedUi["previewCalls"][number]>();
   const confirmation = Promise.withResolvers<boolean>();
@@ -257,7 +267,7 @@ async function confirmedPreviewBehindLock(
     shown.resolve(preview);
     return confirmation.promise;
   };
-  const queued = observeLockWaits()(() => call(h, toolName, input));
+  const queued = observeLockWaits()(() => call(h, toolName, input, signal));
   const preview = await shown.promise;
   let settled = false;
   const pending = queued.pending.finally(() => {
@@ -311,6 +321,10 @@ const CASES: Record<string, string> = {
   "init-lock-authority": "confirmed init queued under the lock refuses rebuilt session authority and succeeds in the unchanged session",
   "round-lock-authority":
     "confirmed round open queued under the lock refuses rebuilt session authority and succeeds in the unchanged session",
+  "init-lock-cancel": "confirmed init cancelled while waiting for the repository lock writes nothing and retains arming",
+  "round-lock-cancel": "confirmed round open cancelled while waiting for the repository lock preserves managed bytes and arming",
+  "mutation-lock-cancel": "stage, TODO, ADR and overlap tools cancelled while waiting for the repository lock preserve managed bytes",
+  "prewrite-cancel": "mutations cancelled during locked validation cannot begin writing prepared or ordinary files",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
   "overlap-flight-concurrent": "concurrent overlap calls share one dialog and one free-work entry",
@@ -745,6 +759,165 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(write);
       await write.execute("uninitialized-write", { path: "docs/roadmap/x.md", content: "allowed" });
       assert.equal(await readFile(join(root, "docs/roadmap/x.md"), "utf8"), "allowed");
+    } else if (name === "prewrite-cancel") {
+      const info = discoverRepo(root);
+      assert(info);
+      const repo: Repo = { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") };
+      const preview = await prepareInit(repo, main, draft);
+      assert(preview.ok, JSON.stringify(preview));
+      const preparedController = new AbortController();
+      const preparedReceipt = await applyPrepared(repo, main, preview.prepared, {
+        signal: preparedController.signal,
+        guard() {
+          preparedController.abort();
+          return undefined;
+        },
+      });
+      assert(!preparedReceipt.ok, JSON.stringify(preparedReceipt));
+      assert.match(preparedReceipt.reason, /cancelled/i);
+      for (const file of preview.files) assert.equal(await Bun.file(file.path).exists(), false);
+      assert((await applyPrepared(repo, main, preview.prepared)).ok, "cancelled prepared operations remain retryable");
+      const before = (await loadAll(repo)).files;
+      const controller = new AbortController();
+      const receipt = await stage(
+        repo,
+        main,
+        { action: "start", id: "S01" },
+        {
+          signal: controller.signal,
+          guard() {
+            controller.abort();
+            return undefined;
+          },
+        },
+      );
+      assert(!receipt.ok, JSON.stringify(receipt));
+      assert.match(receipt.reason, /cancelled/i);
+      assert.deepEqual((await loadAll(repo)).files, before);
+    } else if (name === "init-lock-cancel" || name === "round-lock-cancel") {
+      const init = name === "init-lock-cancel";
+      const info = discoverRepo(root);
+      assert(info);
+      const repo: Repo = init
+        ? { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") }
+        : await initialized(root);
+      if (!init) {
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
+        await command(h, "roadmap", "close-round");
+        assert.equal((await loadAll(repo)).rounds[0]?.status, "closed");
+      }
+      const before = init ? undefined : (await loadAll(repo)).files;
+      const toolName = init ? "roadmap_init" : "roadmap_round_open";
+      const input = init ? { ...draft } : { round: { ...draft.round, title: "Next" }, import_todos: [] };
+      await command(h, init ? "init-project" : "roadmap", init ? "" : "new-round");
+      const disarms = () =>
+        h.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === `${ENTRY_PREFIX}disarmed`)
+          .length;
+      const initialDisarms = disarms();
+      const controller = new AbortController();
+      const { receipt, preview } = await confirmedPreviewBehindLock(
+        h,
+        repo,
+        toolName,
+        input,
+        async () => controller.abort(),
+        controller.signal,
+      );
+      assert(controller.signal.aborted);
+      assert(!receipt.ok, JSON.stringify(receipt));
+      assert.match(receipt.reason, /cancelled/i);
+      if (init) {
+        assert.equal(await loadRepo(root), null);
+        assert.equal(await Bun.file(repo.roadmapDir).exists(), false);
+        for (const file of preview.files)
+          assert.equal(await Bun.file(file.path).exists(), false, `${file.path} was written after cancellation`);
+      } else {
+        assert.deepEqual((await loadAll(repo)).files, before, "cancelled round open must preserve all managed bytes");
+        for (const file of preview.files.filter((file) => !(file.path in (before ?? {}))))
+          assert.equal(await Bun.file(file.path).exists(), false, `${file.path} was written after cancellation`);
+      }
+      assert.equal(disarms(), initialDisarms, "cancellation must not consume arming");
+      assert.equal(await h.runner.emitToolCall({ type: "tool_call", toolName, toolCallId: crypto.randomUUID(), input }), undefined);
+      const retry = await confirmedPreviewBehindLock(h, repo, toolName, input, async () => {});
+      assert(retry.receipt.ok, JSON.stringify(retry.receipt));
+      for (const file of retry.preview.files) assert.equal(await readFile(file.path, "utf8"), file.content);
+      assert.equal(disarms(), initialDisarms + 1, "only the successful retry consumes arming");
+    } else if (name === "mutation-lock-cancel") {
+      const repo = await initialized(root);
+      const before = (await loadAll(repo)).files;
+      for (const [toolName, input] of [
+        ["roadmap_stage", { action: "start", id: "S01" }],
+        ["roadmap_todo", { action: "add", title: "Check retry", severity: "normal", source: "Review", target: "S01" }],
+        [
+          "roadmap_adr",
+          { action: "create", title: "Use local storage", sections: { context: "Persist data", options: ["Local"], outcome: "Use local" } },
+        ],
+        ["roadmap_overlap", { stage: "S01", intent: "Inspect payments" }],
+      ] as Array<[string, Record<string, unknown>]>) {
+        const controller = new AbortController();
+        const locked = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const holding = withRepoLock(repo, async () => {
+          locked.resolve();
+          await release.promise;
+        });
+        await locked.promise;
+        const queued = observeLockWaits()(() => call(h, toolName, input, controller.signal));
+        try {
+          await queued.waiting;
+          controller.abort();
+        } finally {
+          release.resolve();
+          await holding;
+        }
+        const receipt = await queued.pending;
+        assert(!receipt.ok, `${toolName}: ${JSON.stringify(receipt)}`);
+        assert.match(receipt.reason, /cancelled/i);
+        assert.deepEqual((await loadAll(repo)).files, before, `${toolName} changed managed bytes after cancellation`);
+        assert.equal(
+          h.session.sessionManager
+            .getBranch()
+            .filter(
+              (entry) =>
+                entry.type === "custom" && (entry.customType === `${ENTRY_PREFIX}binding` || entry.customType === `${ENTRY_PREFIX}overlap`),
+            ).length,
+          0,
+          "cancelled mutations must not change session bindings or overlap answers",
+        );
+      }
+      assert((await call(h, "roadmap_stage", { action: "start", id: "S01" })).ok);
+      assert((await call(h, "roadmap_stage", closeInput)).ok);
+      const closeModel = await loadAll(repo);
+      const beforeClose = closeModel.files;
+      const round = closeModel.rounds[0];
+      assert(round);
+      const expected = { id: round.id, sha256: roundSha256(roundFiles(closeModel, round)) };
+      const controller = new AbortController();
+      const locked = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const holding = withRepoLock(repo, async () => {
+        locked.resolve();
+        await release.promise;
+      });
+      await locked.promise;
+      const queued = observeLockWaits()(() => closeRound(repo, main, { expected, dispositions: [] }, { signal: controller.signal }));
+      try {
+        await queued.waiting;
+        controller.abort();
+      } finally {
+        release.resolve();
+        await holding;
+      }
+      const receipt = await queued.pending;
+      assert(!receipt.ok, JSON.stringify(receipt));
+      assert.match(receipt.reason, /cancelled/i);
+      assert.deepEqual((await loadAll(repo)).files, beforeClose, "cancelled closeRound must preserve managed bytes");
+      h.ui.dispositions = undefined;
+      await command(h, "roadmap", "close-round");
+      assert.deepEqual((await loadAll(repo)).files, beforeClose, "cancelled command dispositions must not authorize round close");
+      h.ui.dispositions = [];
+      await command(h, "roadmap", "close-round");
+      assert.equal((await loadAll(repo)).rounds[0]?.status, "closed");
     } else if (name === "init-lock-authority" || name === "round-lock-authority") {
       const init = name === "init-lock-authority";
       const info = discoverRepo(root);

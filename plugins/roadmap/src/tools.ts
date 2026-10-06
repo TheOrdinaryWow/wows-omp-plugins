@@ -241,10 +241,11 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
       "Manage stage lifecycle. Start or join returns the planning handoff and binds this session. Close requires passing evidence for every done criterion and TODO/ADR dispositions.",
     parameters: stageParameters,
     approval: "write",
-    async execute(_id, params: typeof stageParameters.infer, _signal, _onUpdate, ctx) {
+    async execute(_id, params: typeof stageParameters.infer, signal, _onUpdate, ctx) {
       const generation = ses.currentGeneration(ctx);
       return run(ctx, (repo, owner) =>
         stage(repo, owner, params, {
+          signal,
           onSuccess() {
             if (!params.id || !ses.isCurrent(ctx, generation)) return;
             if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
@@ -261,8 +262,8 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
       "Add, update, resolve or move carry-over TODOs with a source, severity and an unclosed target stage or trigger. Fix broken tests/builds before proceeding.",
     parameters: todoParameters,
     approval: "write",
-    async execute(_id, params: typeof todoParameters.infer, _signal, _onUpdate, ctx) {
-      return run(ctx, (repo, owner) => todo(repo, owner, params));
+    async execute(_id, params: typeof todoParameters.infer, signal, _onUpdate, ctx) {
+      return run(ctx, (repo, owner) => todo(repo, owner, params, { signal }));
     },
   });
   pi.registerTool({
@@ -272,8 +273,8 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
       "Create MADR decisions, revise proposed ADRs, change status, supersede or append a dated note. Subagents can only create proposed ADRs and cannot decide statuses or supersede.",
     parameters: adrParameters,
     approval: "write",
-    async execute(_id, params: typeof adrParameters.infer, _signal, _onUpdate, ctx) {
-      return run(ctx, (repo, owner) => adr(repo, owner, params));
+    async execute(_id, params: typeof adrParameters.infer, signal, _onUpdate, ctx) {
+      return run(ctx, (repo, owner) => adr(repo, owner, params, { signal }));
     },
   });
   pi.registerTool({
@@ -294,7 +295,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
       "Ask the user once per stage/session whether overlapping work should use the roadmap, be logged as free work, or be treated as unrelated. Subagents do not prompt.",
     parameters: overlapParameters,
     approval: "write",
-    async execute(_id, params: typeof overlapParameters.infer, _signal, _onUpdate, ctx) {
+    async execute(_id, params: typeof overlapParameters.infer, signal, _onUpdate, ctx) {
       if (ctx.agent.kind === "sub")
         return toolResult({ ok: true, summary: "Subagents do not ask overlap questions.", changedFiles: [], warnings: [] });
       const generation = ses.currentGeneration(ctx);
@@ -326,6 +327,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
             answer = await uiFor(ctx).overlap({ stage: current, intent: params.intent });
           }
           const guard = (latest: Model): ToolReceipt | undefined => {
+            if (signal?.aborted) return { ok: false, reason: "Roadmap overlap cancelled.", hints: [] };
             if (!ses.isCurrent(ctx, generation)) return stale();
             const candidate = latest.stages.find((entry) => entry.id === params.stage);
             if (
@@ -364,8 +366,9 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
             if (!stored) ses.answerOverlap(ctx, repo.repoRoot, current.id, answer);
           };
           let receipt: Receipt;
-          if (answer === "free" && !stored) receipt = await recordFreeWork(repo, owner, params, { guard, onSuccess });
-          else if (answer === "roadmap") receipt = await stage(repo, owner, { action: "start", id: current.id }, { guard, onSuccess });
+          if (answer === "free" && !stored) receipt = await recordFreeWork(repo, owner, params, { signal, guard, onSuccess });
+          else if (answer === "roadmap")
+            receipt = await stage(repo, owner, { action: "start", id: current.id }, { signal, guard, onSuccess });
           else
             receipt = await withRepoLock(repo, async () => {
               const guarded = guard(await loadAll(repo));
@@ -416,6 +419,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
           if (stale) return stale;
           return applyPrepared(repo, owner, prepared.prepared, {
             guard,
+            signal,
             onSuccess() {
               if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, "init")) ses.disarm(ctx, repo.repoRoot);
             },
@@ -458,6 +462,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
         if (stale) return stale;
         return applyPrepared(repo, owner, prepared.prepared, {
           guard,
+          signal,
           onSuccess() {
             if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, "round")) ses.disarm(ctx, repo.repoRoot);
           },
