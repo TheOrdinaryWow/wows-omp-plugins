@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -207,6 +208,16 @@ async function call(h: Harness, name: string, input: object, signal?: AbortSigna
   return details;
 }
 
+function cancelAfterCommit(path: string, before?: string, controller = new AbortController()): AbortSignal {
+  Object.defineProperty(controller.signal, "aborted", {
+    get() {
+      if (!controller.signal.reason && existsSync(path) && readFileSync(path, "utf8") !== before) controller.abort();
+      return controller.signal.reason !== undefined;
+    },
+  });
+  return controller.signal;
+}
+
 async function initialized(root: string): Promise<Repo> {
   const info = discoverRepo(root);
   assert(info);
@@ -326,6 +337,11 @@ const CASES: Record<string, string> = {
   "mutation-lock-cancel":
     "stage, TODO, ADR, overlap and check tools cancelled while waiting for the repository lock preserve managed bytes",
   "prewrite-cancel": "mutations cancelled during locked validation cannot begin writing prepared or ordinary files",
+  "midwrite-stage-start": "cancelled stage start stops after its stage file, preserves binding and is repaired by roadmap_check fix",
+  "midwrite-stage-close": "cancelled stage close stops after its stage file without running binding cleanup",
+  "midwrite-init": "cancelled initialization stops after its first previewed file without consuming arming",
+  "midwrite-round-open": "cancelled round open stops after its first previewed file without consuming arming",
+  "midwrite-overlap-free": "cancelled free-work commit does not persist its overlap answer",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
   "overlap-flight-concurrent": "concurrent overlap calls share one dialog and one free-work entry",
@@ -795,6 +811,136 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(!receipt.ok, JSON.stringify(receipt));
       assert.match(receipt.reason, /cancelled/i);
       assert.deepEqual((await loadAll(repo)).files, before);
+    } else if (name === "midwrite-stage-start" || name === "midwrite-stage-close") {
+      const repo = await initialized(root);
+      assert((await call(h, "roadmap_stage", { action: "start", id: "S01" })).ok);
+      const starting = name === "midwrite-stage-start";
+      if (starting) {
+        const initial = draft.stages[0];
+        assert(initial);
+        assert((await call(h, "roadmap_stage", { action: "add", ...initial, title: "Cancellation" })).ok);
+      }
+      const before = await loadAll(repo);
+      const current = before.stages.find((candidate) => candidate.id === (starting ? "S02" : "S01"));
+      assert(current);
+      const stateEntries = () =>
+        h.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType.startsWith(ENTRY_PREFIX));
+      const sessionBefore = stateEntries();
+      const signal = cancelAfterCommit(current.path, await readFile(current.path, "utf8"));
+      const receipt = await call(h, "roadmap_stage", starting ? { action: "start", id: current.id } : closeInput, signal);
+      assert(signal.aborted);
+      assert(!receipt.ok, JSON.stringify(receipt));
+      assert.match(receipt.reason, /cancelled/i);
+      assert(receipt.hints.some((hint) => hint.includes(relative(root, current.path))));
+      assert(receipt.hints.some((hint) => hint.includes("roadmap_check") && hint.includes("fix: true")));
+      const partial = await loadAll(repo);
+      assert.equal(partial.stages.find((candidate) => candidate.id === current.id)?.status, starting ? "active" : "closed");
+      assert.deepEqual(
+        Object.entries(partial.files ?? {})
+          .filter(([path, content]) => !Buffer.from(content).equals(Buffer.from(before.files?.[path] ?? "")))
+          .map(([path]) => path),
+        [current.path],
+        "cancellation must preserve both remaining generated indexes",
+      );
+      assert.deepEqual(stateEntries(), sessionBefore, "cancellation must not append binding or binding-cleanup entries");
+      assert.deepEqual(
+        readdirSync(join(root, "docs"), { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".tmp")),
+        [],
+      );
+      const stale = await call(h, "roadmap_check", {});
+      assert(!stale.ok);
+      assert(stale.diagnostics?.some((item) => item.rule === "generated" && item.fixable));
+      const fixed = await call(h, "roadmap_check", { fix: true });
+      assert(fixed.ok, JSON.stringify(fixed));
+      const checked = await call(h, "roadmap_check", {});
+      assert(checked.ok, JSON.stringify(checked));
+      assert.deepEqual(checked.diagnostics, []);
+      assert.deepEqual(stateEntries(), sessionBefore);
+      if (starting) assert.match(await injection(h), /Bound stage: S01/);
+    } else if (name === "midwrite-init" || name === "midwrite-round-open") {
+      const initializing = name === "midwrite-init";
+      let before: Model["files"] = {};
+      if (!initializing) {
+        const repo = await initialized(root);
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Deferred" })).ok);
+        await command(h, "roadmap", "close-round");
+        before = (await loadAll(repo)).files;
+      }
+      await command(h, initializing ? "init-project" : "roadmap", initializing ? "" : "new-round");
+      const stateEntries = () =>
+        h.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType.startsWith(ENTRY_PREFIX));
+      const sessionBefore = stateEntries();
+      const controller = new AbortController();
+      let first: string | undefined;
+      h.ui.preview = async (preview) => {
+        first = preview.files[0]?.path;
+        assert(first);
+        const content = before?.[first];
+        cancelAfterCommit(first, content === undefined ? undefined : Buffer.from(content).toString("utf8"), controller);
+        return true;
+      };
+      const toolName = initializing ? "roadmap_init" : "roadmap_round_open";
+      const input = initializing ? { ...draft } : { round: { ...draft.round, title: "Next" }, import_todos: [] };
+      const receipt = await call(h, toolName, input, controller.signal);
+      assert(controller.signal.aborted);
+      assert(!receipt.ok, JSON.stringify(receipt));
+      assert.match(receipt.reason, /cancelled/i);
+      assert(first);
+      const firstPath = relative(root, first);
+      assert(receipt.hints.some((hint) => hint.includes(firstPath)));
+      const preview = h.ui.previewCalls[0];
+      assert(preview);
+      for (const file of preview.files) {
+        const original = before?.[file.path];
+        if (file.path === first) assert.equal(await readFile(file.path, "utf8"), file.content);
+        else if (original !== undefined) assert.equal(await readFile(file.path, "utf8"), Buffer.from(original).toString("utf8"));
+        else assert.equal(await Bun.file(file.path).exists(), false, `${file.path} was written after cancellation`);
+      }
+      for (const [path, content] of Object.entries(before ?? {})) {
+        if (path !== first) assert.equal(await readFile(path, "utf8"), Buffer.from(content).toString("utf8"));
+      }
+      assert.deepEqual(stateEntries(), sessionBefore, "cancellation must not consume initialization or round-opening arming");
+      assert.equal(await h.runner.emitToolCall({ type: "tool_call", toolName, toolCallId: crypto.randomUUID(), input }), undefined);
+      assert.deepEqual(stateEntries(), sessionBefore);
+      assert.deepEqual(
+        readdirSync(join(root, "docs"), { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".tmp")),
+        [],
+      );
+    } else if (name === "midwrite-overlap-free") {
+      const repo = await initialized(root);
+      const before = await loadAll(repo);
+      const current = before.stages[0];
+      assert(current);
+      const original = await readFile(current.path, "utf8");
+      const signal = cancelAfterCommit(current.path, original);
+      const receipt = await call(h, "roadmap_overlap", { stage: current.id, intent: "Inspect cancelled free work" }, signal);
+      assert(signal.aborted);
+      assert(!receipt.ok, JSON.stringify(receipt));
+      assert.match(receipt.reason, /cancelled/i);
+      assert.equal(
+        h.session.sessionManager
+          .getBranch()
+          .filter(
+            (entry) =>
+              entry.type === "custom" && (entry.customType === `${ENTRY_PREFIX}binding` || entry.customType === `${ENTRY_PREFIX}overlap`),
+          ).length,
+        0,
+      );
+      const partial = await loadAll(repo);
+      assert.match(partial.stages[0]?.free_work_log ?? "", /Inspect cancelled free work/);
+      for (const [path, content] of Object.entries(before.files ?? {})) {
+        if (path !== current.path) assert.equal(await readFile(path, "utf8"), Buffer.from(content).toString("utf8"));
+      }
+      assert.deepEqual(
+        readdirSync(join(root, "docs"), { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".tmp")),
+        [],
+      );
+      await writeFile(current.path, original);
+      const retry = await call(h, "roadmap_overlap", { stage: current.id, intent: "Inspect uncancelled free work" });
+      assert(retry.ok, JSON.stringify(retry));
+      assert.equal(retry.answer, "free");
+      assert.equal(h.ui.overlapCalls.length, 2, "a cancelled commit must not cache the dialog answer");
+      assert.equal((await loadAll(repo)).stages[0]?.free_work_log.split("\n").length, 1);
     } else if (name === "init-lock-cancel" || name === "round-lock-cancel") {
       const init = name === "init-lock-cancel";
       const info = discoverRepo(root);

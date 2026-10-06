@@ -16,6 +16,7 @@ import {
   roundSha256,
   stageSha256,
 } from "../plugins/roadmap/src/documents.ts";
+import { atomicWrite, stage } from "../plugins/roadmap/src/operations.ts";
 import { adrFixture, cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
 
 afterEach(cleanupFixtures);
@@ -275,6 +276,50 @@ describe("generated blocks and fix scope", () => {
     else expect(await readFile(model.index.path, "utf8")).not.toBe(original.get(model.index.path) as string);
     for (const path of paths.slice(1)) expect(await readFile(path, "utf8")).toBe(original.get(path) as string);
     expect(readdirSync(repo.roadmapDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("fix repairs only generated blocks after cancellation commits a stage but leaves both indexes stale", async () => {
+    const { repo } = await diskFixture();
+    const before = await loadAll(repo);
+    const current = before.stages[0];
+    if (!current) throw new Error("Missing planned stage");
+    const controller = new AbortController();
+    const written: string[] = [];
+    const receipt = await stage(
+      repo,
+      { sessionId: "cancelled-start", kind: "main" },
+      { action: "start", id: current.id },
+      {
+        signal: controller.signal,
+        async writeFile(path, content, options) {
+          await atomicWrite(path, content, options);
+          written.push(path);
+          controller.abort();
+        },
+      },
+    );
+    expect(receipt.ok).toBe(false);
+    expect(written).toEqual([current.path]);
+    const partial = await loadAll(repo);
+    expect(partial.stages[0]?.status).toBe("active");
+    expect(partial.files?.[partial.index.path]).toEqual(before.files?.[before.index.path]);
+    const roundPath = before.rounds[0]?.path as string;
+    expect(partial.files?.[roundPath]).toEqual(before.files?.[roundPath]);
+    const diagnostics = await check(partial);
+    expect(
+      diagnostics
+        .filter((item) => item.rule === "generated")
+        .map((item) => item.path)
+        .sort(),
+    ).toEqual([before.index.path, roundPath].sort());
+    const filesBeforeFix = partial.files;
+    expect(await check(partial, { fix: true })).toEqual([]);
+    const repaired = await loadAll(repo);
+    expect(await check(repaired)).toEqual([]);
+    for (const [path, content] of Object.entries(filesBeforeFix ?? {})) {
+      if (path !== partial.index.path && path !== roundPath) expect(repaired.files?.[path]).toEqual(content);
+    }
+    expect(readdirSync(dirname(current.path)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
   test("every generated block detects stale content; fix repairs only block spans and preserves authored CRLF bytes", async () => {

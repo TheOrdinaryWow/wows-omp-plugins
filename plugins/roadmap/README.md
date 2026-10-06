@@ -138,6 +138,8 @@ Your own editor isn't intercepted. You can edit authored body text, but retain t
 
 Writes take one repository lock and atomically replace each file. A multi-file operation is **not** an all-or-nothing transaction. If interrupted, it can leave individually complete files but stale generated indexes or a partially applied operation.
 
+Cancellation stops before the next temporary write or rename and removes uncommitted temporary files; files already committed remain in place. A cancelled operation reports those files and recovery guidance. It does not bind a stage, consume preview authorization or persist an overlap answer, even if its first file was committed. Inspect and repair the partial operation before retrying.
+
 1. Run `/roadmap check` or `roadmap_check` to inspect the tree.
 2. Use `/roadmap check --fix` or `roadmap_check` with `fix: true` for stale generated blocks. This doesn't repair authored content, recompute historical closure hashes or change frozen rounds.
 3. Restore other damage with git, then run the document check again.

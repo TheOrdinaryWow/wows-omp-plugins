@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -2074,5 +2075,156 @@ describe("handoff and bounded injection", () => {
     const parsed = parseStage(await readFile(path, "utf8"), path);
     await writeFile(path, renderStage({ ...parsed, depends_on: ["S01"] }));
     refused(await stage(repo, main, { action: "start", id: "S01" }), "dependency-cycle");
+  });
+});
+
+async function rawManagedBytes(repo: Repo): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  const walk = async (path: string): Promise<void> => {
+    try {
+      for (const entry of await readdir(path, { withFileTypes: true })) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory()) await walk(child);
+        else files[child] = await readFile(child, "utf8");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  };
+  await walk(repo.roadmapDir);
+  await walk(repo.adrDir);
+  return files;
+}
+
+describe("cancellation after managed writing starts", () => {
+  for (const boundary of ["committed", "temporary"] as const) {
+    test.each(["stage start", "stage close", "round close", "init", "round open"] as const)(
+      boundary === "committed"
+        ? "%s stops after the first committed file and does not run its success callback"
+        : "%s cancellation after a temporary write prevents every rename and success callback",
+      async (operation) => {
+        const repo = operation === "init" ? await emptyRepo() : await initialized();
+        const controller = new AbortController();
+        const attempted: string[] = [];
+        const written: string[] = [];
+        let callbacks = 0;
+        const options = {
+          signal: controller.signal,
+          async writeFile(path: string, content: string, writeOptions?: { signal?: AbortSignal }) {
+            attempted.push(path);
+            if (boundary === "temporary") {
+              Object.defineProperty(controller.signal, "aborted", {
+                get() {
+                  if (
+                    !controller.signal.reason &&
+                    existsSync(dirname(path)) &&
+                    readdirSync(dirname(path)).some((name) => name.endsWith(".tmp"))
+                  )
+                    controller.abort();
+                  return controller.signal.reason !== undefined;
+                },
+              });
+            }
+            await atomicWrite(path, content, writeOptions);
+            written.push(path);
+            if (written.length === 1) controller.abort();
+          },
+          onSuccess() {
+            callbacks++;
+          },
+        };
+        let run: () => Promise<Receipt>;
+        if (operation === "stage start") run = () => stage(repo, main, { action: "start", id: "S01" }, options);
+        else if (operation === "stage close") {
+          success(await stage(repo, main, { action: "start", id: "S01" }));
+          run = () => stage(repo, main, evidence(), options);
+        } else if (operation === "round close") {
+          success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+          const expected = await reviewedRound(repo);
+          run = () => closeRound(repo, main, { expected, dispositions: [] }, options);
+        } else {
+          if (operation === "round open") {
+            success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+            success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+          }
+          const preview =
+            operation === "init"
+              ? await prepareInit(repo, main, initInput)
+              : await prepareRoundOpen(repo, main, { round: { ...charter, title: "Next" }, import_todos: [] });
+          if (!preview.ok) throw new Error(preview.reason);
+          run = () => applyPrepared(repo, main, preview.prepared, options);
+        }
+        const before = await rawManagedBytes(repo);
+        const receipt = refused(await run(), "cancelled");
+        expect(controller.signal.aborted).toBe(true);
+        expect(attempted).toHaveLength(1);
+        expect(written).toHaveLength(boundary === "committed" ? 1 : 0);
+        expect(callbacks).toBe(0);
+        const after = await rawManagedBytes(repo);
+        if (boundary === "committed") {
+          const first = written[0] as string;
+          expect(receipt.hints.join("\n")).toContain(first.slice(repo.repoRoot.length + 1));
+          expect(receipt.hints.join("\n")).toContain("roadmap_check");
+          expect(receipt.hints.join("\n")).toContain("fix: true");
+          expect(after[first]).not.toBe(before[first]);
+          for (const path of new Set([...Object.keys(before), ...Object.keys(after)])) {
+            if (path !== first) expect(after[path]).toBe(before[path]);
+          }
+          if (operation === "stage start" || operation === "stage close") {
+            const partial = await loadAll(repo);
+            expect((await check(partial)).some((item) => item.rule === "generated" && item.fixable)).toBe(true);
+            expect((await check(partial, { fix: true })).filter((item) => item.severity === "error")).toEqual([]);
+          }
+        } else expect(after).toEqual(before);
+        expect(Object.keys(after).filter((path) => path.endsWith(".tmp"))).toEqual([]);
+      },
+    );
+  }
+
+  test("cancellation while creating the parent directory prevents the temporary write", async () => {
+    const repo = await emptyRepo();
+    const path = join(repo.roadmapDir, "first.md");
+    const controller = new AbortController();
+    Object.defineProperty(controller.signal, "aborted", {
+      get() {
+        if (!controller.signal.reason && existsSync(dirname(path))) controller.abort();
+        return controller.signal.reason !== undefined;
+      },
+    });
+    await expect(atomicWrite(path, "Must not be written", { signal: controller.signal })).rejects.toThrow("cancelled");
+    expect(controller.signal.aborted).toBe(true);
+    expect(await readdir(dirname(path))).toEqual([]);
+  });
+
+  test("cancellation after the only file commit skips the free-work success callback", async () => {
+    const repo = await initialized();
+    const before = await rawManagedBytes(repo);
+    const controller = new AbortController();
+    const written: string[] = [];
+    let callbacks = 0;
+    const receipt = await recordFreeWork(
+      repo,
+      main,
+      { stage: "S01", intent: "Inspect existing payments" },
+      {
+        signal: controller.signal,
+        async writeFile(path, content, options) {
+          await atomicWrite(path, content, options);
+          written.push(path);
+          controller.abort();
+        },
+        onSuccess() {
+          callbacks++;
+        },
+      },
+    );
+    const failure = refused(receipt, "cancelled");
+    expect(written).toHaveLength(1);
+    expect(callbacks).toBe(0);
+    const first = written[0] as string;
+    expect(failure.hints.join("\n")).toContain(first.slice(repo.repoRoot.length + 1));
+    const after = await rawManagedBytes(repo);
+    expect(after[first]).toContain("Inspect existing payments");
+    for (const path of Object.keys(before).filter((path) => path !== first)) expect(after[path]).toBe(before[path]);
   });
 });

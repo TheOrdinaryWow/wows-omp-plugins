@@ -40,7 +40,7 @@ import {
   validateBody,
 } from "./documents.ts";
 import { renderHandoff } from "./handoff.ts";
-import { guardMutation } from "./mutation-guard.ts";
+import { guardCancellation, guardMutation } from "./mutation-guard.ts";
 import { allocate, type IdKind, withRepoLock } from "./numbering.ts";
 
 export interface Actor {
@@ -142,7 +142,7 @@ export interface RoundCloseInput {
 }
 
 export interface OperationOptions {
-  writeFile?: (path: string, content: string) => Promise<void>;
+  writeFile?: (path: string, content: string, options?: OperationOptions) => Promise<void>;
   signal?: AbortSignal;
 }
 
@@ -347,11 +347,19 @@ async function checked(model: Model): Promise<string[]> {
   return diagnostics.map((diagnostic) => diagnostic.message);
 }
 
-export async function atomicWrite(path: string, content: string): Promise<void> {
+function assertNotCancelled(options: OperationOptions): void {
+  const cancelled = guardCancellation(options);
+  if (cancelled) throw new Refusal(cancelled.reason, cancelled.hints);
+}
+
+export async function atomicWrite(path: string, content: string, options: OperationOptions = {}): Promise<void> {
+  assertNotCancelled(options);
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
+    assertNotCancelled(options);
     await writeFile(temporary, content, { flag: "wx" });
+    assertNotCancelled(options);
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });
@@ -422,12 +430,29 @@ class Mutation {
   }
 
   async write(repo: Repo, summary: string, options: OperationOptions): Promise<Receipt> {
-    for (const [path, content] of this.changes) await (options.writeFile ?? atomicWrite)(path, content);
-    for (const path of this.removals) await rm(path);
+    const changedFiles: string[] = [];
+    try {
+      for (const [path, content] of this.changes) {
+        assertNotCancelled(options);
+        await (options.writeFile ?? atomicWrite)(path, content, options);
+        changedFiles.push(relative(repo.repoRoot, path));
+      }
+      for (const path of this.removals) {
+        assertNotCancelled(options);
+        await rm(path);
+        changedFiles.push(relative(repo.repoRoot, path));
+      }
+    } catch (error) {
+      const cancelled = guardCancellation(options, changedFiles);
+      if (cancelled) return cancelled;
+      throw error;
+    }
+    const cancelled = guardCancellation(options, changedFiles);
+    if (cancelled) return cancelled;
     return {
       ok: true,
       summary,
-      changedFiles: [...this.changes.keys(), ...this.removals].map((path) => relative(repo.repoRoot, path)),
+      changedFiles,
       warnings: [...new Set(this.warnings)],
       ...(this.handoff ? { handoff: this.handoff } : {}),
     };
@@ -458,7 +483,11 @@ async function mutate(
       const beforeWrite = guardMutation(model, options);
       if (beforeWrite) return beforeWrite;
       const receipt = await mutation.write(repo, summary, options);
-      if (receipt.ok) options.onSuccess?.();
+      if (receipt.ok) {
+        const cancelled = guardCancellation(options, receipt.changedFiles);
+        if (cancelled) return cancelled;
+        options.onSuccess?.();
+      }
       return receipt;
     });
   } catch (error) {
@@ -1177,7 +1206,11 @@ export async function applyPrepared(
       const beforeWrite = guardMutation(model, options);
       if (beforeWrite) return beforeWrite;
       const result = await mutation.write(repo, prepared.summary, options);
-      if (result.ok) options.onSuccess?.();
+      if (result.ok) {
+        const cancelled = guardCancellation(options, result.changedFiles);
+        if (cancelled) return cancelled;
+        options.onSuccess?.();
+      }
       preparedModels.delete(prepared);
       return result;
     });
