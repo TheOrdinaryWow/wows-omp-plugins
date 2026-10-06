@@ -3,7 +3,14 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { loadRepo } from "#src/documents.ts";
 import { discoverRepo, type GitRepo } from "#src/git.ts";
-import { editInspect, resolveToCwd, unwrapHashlineHeaderPath } from "#src/host.ts";
+import {
+  editInspect,
+  expandDelimitedPathEntries,
+  normalizePathLikeInput,
+  parseSearchPath,
+  resolveToCwd,
+  unwrapHashlineHeaderPath,
+} from "#src/host.ts";
 
 const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;
 
@@ -49,7 +56,12 @@ function bashTargets(command: string): string[] {
 }
 
 /** Native editInspect projects every supported edit grammar, including move/delete intents. */
-export function managedTargets(toolName: string, input: Record<string, unknown>, editMode: string | undefined, cwd: string): string[] {
+export async function managedTargets(
+  toolName: string,
+  input: Record<string, unknown>,
+  editMode: string | undefined,
+  cwd: string,
+): Promise<string[]> {
   const paths: string[] = [];
   if (toolName === "write" && typeof input.path === "string") paths.push(input.path);
   if (toolName === "edit" || toolName === "apply_patch") {
@@ -67,8 +79,15 @@ export function managedTargets(toolName: string, input: Record<string, unknown>,
     }
     if (!paths.length) throw new Error("Unrecognized native edit grammar; its mutation targets cannot be validated");
   }
-  if (toolName === "ast_edit" && Array.isArray(input.paths)) {
-    for (const path of input.paths) if (typeof path === "string") paths.push(path);
+  if (toolName === "ast_edit") {
+    if (!Array.isArray(input.paths) || !input.paths.length || input.paths.some((path) => typeof path !== "string")) {
+      throw new Error("AST edit scopes must be non-empty paths or globs");
+    }
+    const entries = input.paths.map(normalizePathLikeInput);
+    if (entries.some((path) => !path)) throw new Error("AST edit scopes must be non-empty paths or globs");
+    const scopes = await expandDelimitedPathEntries(entries, cwd);
+    if (scopes.some((path) => !path)) throw new Error("AST edit scopes must be non-empty paths or globs");
+    paths.push(...scopes.map((path) => parseSearchPath(path).basePath));
   }
   if (
     toolName === "lsp" &&
@@ -162,7 +181,7 @@ function managedFileIdentities(repoRoot: string): Set<string> {
 
 export async function interceptionReason(toolName: string, input: Record<string, unknown>, cwd: string): Promise<string | undefined> {
   if (!["write", "edit", "apply_patch", "ast_edit", "lsp", "bash"].includes(toolName)) return;
-  const candidates = managedTargets(toolName, input, undefined, cwd);
+  const candidates = await managedTargets(toolName, input, undefined, cwd);
   if (!candidates.length) return;
   const currentRepo = targetRepo(cwd);
   const marked = new Map<string, boolean>();

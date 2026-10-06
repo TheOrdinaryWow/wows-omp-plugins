@@ -229,6 +229,11 @@ const CASES: Record<string, string> = {
   patch: "the real apply_patch edit mode is intercepted",
   "interception-dangling": "dangling-symlink writes protect nonexistent managed targets but allow unmanaged targets",
   "interception-globs": "partial-name ast_edit globs protect managed directories",
+  "interception-ast-scope-delimited": "delimited ast_edit scopes protect both managed roots and allow unrelated files",
+  "interception-ast-scope-quoted": "quoted ast_edit scopes protect both managed roots and allow unrelated files",
+  "interception-ast-scope-padded": "whitespace-padded ast_edit scopes protect both managed roots and allow unrelated files",
+  "interception-ast-scope-backslashes": "backslash ast_edit scopes protect both managed roots and allow unrelated files",
+  "interception-ast-scope-errors": "invalid ast_edit scopes fail closed without changing managed bytes",
   "interception-write-aliases": "native write aliases cannot change managed bytes",
   "interception-replace-aliases": "native replace-edit aliases cannot change managed bytes",
   "interception-hashline-aliases": "native hashline-edit aliases cannot change managed bytes",
@@ -425,6 +430,54 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.equal(await readFile(path, "utf8"), source);
         }
         await rm(path);
+      } else if (name.startsWith("interception-ast-scope-")) {
+        const source = "const guarded = 1;\n";
+        const guards = [join(repo.roadmapDir, "guard.ts"), join(repo.adrDir, "guard.ts")];
+        const ordinary = join(root, "ordinary.ts");
+        const second = join(root, "second.ts");
+        const ast = h.session.getToolByName("ast_edit");
+        assert(ast);
+        const ops = [{ pat: "const guarded = 1;", out: "const guarded = 2;" }];
+        function scopes(path: string): string[] {
+          if (name.endsWith("delimited")) return [`ordinary.ts;${path}`, `ordinary.ts,${path}`, `ordinary.ts ${path}`];
+          if (name.endsWith("quoted")) return [`"${path}"`];
+          if (name.endsWith("padded")) return [` \t${path} \n`];
+          if (name.endsWith("backslashes")) return [path.replaceAll("/", "\\")];
+          return ["", " \t", '""'];
+        }
+        try {
+          for (const path of [...guards, ordinary, second]) await writeFile(path, source);
+          for (const guard of guards) {
+            for (const scope of scopes(relative(root, guard))) {
+              await assert.rejects(
+                ast.execute(`normalized-scope-${crypto.randomUUID()}`, { ops, paths: [scope] }),
+                name.endsWith("errors") ? /could not validate/ : /roadmap_stage/,
+                `ast_edit must refuse scope ${JSON.stringify(scope)}`,
+              );
+              for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
+            }
+          }
+          if (!name.endsWith("errors")) {
+            for (const scope of ["ordinary.ts", ...scopes("second.ts")]) {
+              for (const path of [ordinary, second]) await writeFile(path, source);
+              const preview: AgentToolResult<unknown> = await ast.execute(`unrelated-normalized-${crypto.randomUUID()}`, {
+                ops,
+                paths: [scope],
+              });
+              assert(!preview.isError, JSON.stringify(preview));
+              const applied: AgentToolResult<unknown> = await write.execute(`apply-normalized-${crypto.randomUUID()}`, {
+                path: "xd://resolve",
+                content: "Apply the unrelated AST edit.",
+              });
+              assert(!applied.isError, JSON.stringify(applied));
+              const changed = scope === "ordinary.ts" ? ordinary : second;
+              assert.equal(await readFile(changed, "utf8"), "const guarded = 2;\n");
+              for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
+            }
+          }
+        } finally {
+          for (const path of guards) await rm(path);
+        }
       } else if (name.startsWith("interception-mode-")) {
         const mode = EDIT_MODES.find((candidate) => name === `interception-mode-${candidate}`);
         const edit = h.session.getToolByName("edit");
