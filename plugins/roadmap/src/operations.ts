@@ -11,11 +11,14 @@ import {
   DocumentError,
   type DoneCriterion,
   generatedBlock,
+  lf,
   loadAll,
   type Model,
   markdownHeadings,
+  parseAdr,
   parseDoneCriteria,
   parseRoadmapIndex,
+  parseStage,
   parseTodo,
   type Repo,
   type RoundDoc,
@@ -161,6 +164,8 @@ class Refusal extends Error {
 }
 
 const preparedModels = new WeakMap<PreparedOperation, Model>();
+const BODY_REPAIR_HINT =
+  "Escape structural headings in body text or put examples inside fenced code blocks, and close every code fence before retrying.";
 
 function required(value: string | undefined, field: string, multiline = false): string {
   if (typeof value !== "string" || !value.trim() || (!multiline && /[\r\n]/.test(value))) {
@@ -172,6 +177,60 @@ function required(value: string | undefined, field: string, multiline = false): 
 function lines(values: string[] | undefined, field: string): string {
   if (!Array.isArray(values)) throw new Refusal(`${field} must be a list.`);
   return values.map((value) => `- ${required(value, field)}`).join("\n");
+}
+
+function normalizedFields(doc: object): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(doc)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [key, typeof value === "string" ? lf(value) : value]),
+  );
+}
+
+function sameFields(actual: object, intended: object): boolean {
+  const fields = normalizedFields(intended);
+  const entries = Object.entries(normalizedFields(actual));
+  return (
+    entries.length === Object.keys(fields).length &&
+    entries.every(([key, value]) => {
+      const intendedValue = fields[key];
+      return Array.isArray(value)
+        ? Array.isArray(intendedValue) &&
+            value.length === intendedValue.length &&
+            value.every((entry, index) => entry === intendedValue[index])
+        : value === intendedValue;
+    })
+  );
+}
+
+function bodyHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
+  try {
+    return markdownHeadings(lf(body), pattern, { requireClosedFences: true });
+  } catch (error) {
+    if (error instanceof DocumentError) throw new Refusal(`Body changes the document structure: ${error.message}`, [BODY_REPAIR_HINT]);
+    throw error;
+  }
+}
+
+function assertBody(body: string, pattern: RegExp): void {
+  if (bodyHeadings(body, pattern).length)
+    throw new Refusal("Body changes the document structure by introducing a reserved heading.", [BODY_REPAIR_HINT]);
+}
+
+function adrBody(title: string, sections: AdrSections): string {
+  for (const body of [
+    sections.context,
+    sections.drivers,
+    ...sections.options,
+    sections.outcome,
+    sections.consequences,
+    sections.confirmation,
+    sections.pros_cons,
+    sections.more_info,
+  ]) {
+    if (body !== undefined) assertBody(body, /^##? .+$|^### (?:Consequences|Confirmation)$/gm);
+  }
+  return buildAdrBody(title, sections);
 }
 
 function slug(title: string): string {
@@ -296,6 +355,47 @@ class Mutation {
   constructor(readonly model: Model) {}
 
   put(path: string, content: string): void {
+    const todo = this.model.todos.find((doc) => doc.path === path);
+    if (todo) {
+      let candidate: TodoDoc;
+      try {
+        candidate = parseTodo(content, path);
+      } catch (error) {
+        if (error instanceof DocumentError)
+          throw new Refusal(`TODO body changes the document structure: ${error.message}`, [BODY_REPAIR_HINT]);
+        throw error;
+      }
+      const expected = [...todo.items.filter((item) => item.status === "open"), ...todo.items.filter((item) => item.status !== "open")];
+      if (
+        candidate.items.length !== expected.length ||
+        candidate.items.some((item, index) => !sameFields(item, expected[index] as TodoItem))
+      )
+        throw new Refusal("TODO body changes intended item ids, order, metadata or bodies in the document structure.", [BODY_REPAIR_HINT]);
+      for (const item of todo.items) assertBody(item.body, /^##? .+$|^### .+$/gm);
+      Object.assign(todo, candidate);
+    }
+    const stage = this.model.stages.find((doc) => doc.path === path);
+    if (stage) {
+      const candidate = parseStage(content, path);
+      if (!sameFields(candidate, stage))
+        throw new Refusal("Stage body changes intended metadata or sections in the document structure.", [BODY_REPAIR_HINT]);
+      for (const body of [
+        stage.objective,
+        stage.scope_in,
+        stage.scope_out,
+        stage.done_criteria,
+        stage.design_constraints,
+        stage.risks,
+        stage.amendments,
+        stage.free_work_log,
+        stage.outcome,
+      ]) {
+        if (body !== undefined) assertBody(body, /^##? .+$|^### (?:In|Out)$/gm);
+      }
+    }
+    const adr = this.model.adrs.find((doc) => doc.path === path);
+    if (adr && !sameFields(parseAdr(content, path), adr))
+      throw new Refusal("ADR body changes intended identity or metadata in the document structure.", [BODY_REPAIR_HINT]);
     const previous = this.model.files?.[path];
     if (previous !== undefined && Buffer.from(previous).toString("utf8") === content) return;
     this.changes.set(path, content);
@@ -733,18 +833,7 @@ export async function todo(repo: Repo, actor: Actor, input: TodoOperationInput, 
           }
         } else throw new Refusal("Unknown TODO action.");
       }
-      const content = renderTodo(doc);
-      const hint = "Escape item-boundary headings in TODO bodies, or put Markdown examples inside fenced code blocks.";
-      let candidate: TodoDoc;
-      try {
-        candidate = parseTodo(content, doc.path);
-      } catch (error) {
-        if (error instanceof DocumentError) throw new Refusal(`TODO body changes the document structure: ${error.message}`, [hint]);
-        throw error;
-      }
-      if (candidate.items.length !== doc.items.length) throw new Refusal("TODO body introduces an item-boundary heading.", [hint]);
-      Object.assign(doc, candidate);
-      mutation.put(doc.path, content);
+      mutation.put(doc.path, renderTodo(doc));
       return `TODO ${item.id}: ${input.action} recorded.`;
     },
     options,
@@ -759,7 +848,7 @@ async function newAdr(repo: Repo, model: Model, actor: Actor, input: Partial<Adr
   if (!input.sections.options?.length) throw new Refusal("An ADR needs at least one considered option.");
   for (const option of input.sections.options) required(option, "ADR option");
   if (input.stage !== undefined) findStage(model, input.stage);
-  const body = buildAdrBody(title, input.sections);
+  const body = adrBody(title, input.sections);
   const n = await allocate(repo, "adr", highest(model, "adr"));
   const adr: AdrDoc = {
     format: 1,
@@ -800,7 +889,7 @@ export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, op
         required(input.sections.outcome, "ADR outcome", true);
         if (!input.sections.options?.length) throw new Refusal("An ADR needs at least one considered option.");
         current.title = input.title === undefined ? current.title : required(input.title, "ADR title");
-        current.body = buildAdrBody(current.title, input.sections);
+        current.body = adrBody(current.title, input.sections);
       } else if (input.action === "set_status") {
         if (actor.kind !== "main") throw new Refusal("Only the main agent can accept, reject or deprecate an ADR.");
         if (!input.status || !["accepted", "rejected", "deprecated"].includes(input.status))
@@ -820,8 +909,10 @@ export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, op
         return `${current.id} superseded by ${successor.id} — ${successor.title}.`;
       } else if (input.action === "note") {
         const note = required(input.text, "ADR note", true);
-        if (/^##? /m.test(note)) throw new Refusal("An ADR note cannot introduce top-level MADR headings.");
-        if (!markdownHeadings(current.body, /^## More Information$/gm).length) current.body += "## More Information\n\n";
+        assertBody(note, /^##? .+$|^### (?:Consequences|Confirmation)$/gm);
+        const information = bodyHeadings(current.body, /^## More Information$/gm);
+        current.body += current.body.endsWith("\n\n") ? "" : current.body.endsWith("\n") ? "\n" : "\n\n";
+        if (!information.length) current.body += "## More Information\n\n";
         current.body += `### ${new Date().toISOString().slice(0, 10)}\n\n${note}\n\n`;
       } else throw new Refusal("Unknown ADR action.");
       mutation.put(current.path, renderAdr(current));

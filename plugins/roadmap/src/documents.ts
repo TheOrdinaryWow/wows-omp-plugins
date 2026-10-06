@@ -315,7 +315,7 @@ function section(heading: string, body: string): string {
   return `${heading}\n${body ? `${lf(body)}\n` : ""}\n`;
 }
 
-export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
+export function markdownHeadings(body: string, pattern: RegExp, options: { requireClosedFences?: boolean } = {}): RegExpMatchArray[] {
   let fenceCharacter = "";
   let fenceLength = 0;
   const lines: string[] = [];
@@ -334,6 +334,7 @@ export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArra
     }
     lines.push(masked ? " ".repeat(line.length) : line);
   }
+  if (options.requireClosedFences && fenceCharacter) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
   return [...lines.join("\n").matchAll(pattern)];
 }
 

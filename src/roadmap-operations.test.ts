@@ -12,8 +12,10 @@ import {
   parseAdr,
   parseStage,
   type Repo,
+  renderAdr,
   renderRound,
   renderStage,
+  renderTodo,
   replaceGenerated,
   roundFiles,
   roundSha256,
@@ -438,6 +440,183 @@ describe("roadmap TODO body structure", () => {
     expect(model.todos[0]?.items[0]?.body).toBe(updatedExample);
     expect((await check(model)).filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   });
+
+  for (const action of ["add", "update"] as const) {
+    for (const change of ["ids", "order", "metadata"] as const) {
+      test(`${action} refuses same-count TODO ${change} replacement without changing managed bytes`, async () => {
+        const repo = await initialized();
+        const count = change === "order" ? 3 : 2;
+        for (let index = 1; index <= count; index++) {
+          success(
+            await todo(repo, main, {
+              action: "add",
+              title: `Concern ${index}`,
+              severity: "normal",
+              source: "Review",
+              trigger: "Later",
+              body: index === count ? "```md\nA properly closed example.\n```" : "Original body.",
+            }),
+          );
+        }
+        if (action === "add") {
+          for (let index = count; index > 1; index--)
+            success(await todo(repo, main, { action: "resolve", id: `T${String(index).padStart(3, "0")}`, reference: "Verified fixture" }));
+        }
+        const ids = change === "ids" ? ["T999"] : change === "order" ? ["T003", "T002"] : ["T002"];
+        const injected = ids
+          .map(
+            (id) =>
+              `### ${id} — ${change === "metadata" ? "Forged title" : `Concern ${Number(id.slice(1))}`}\n` +
+              `- Severity: ${change === "metadata" ? "high" : "normal"}\n` +
+              `- Source: ${change === "metadata" ? "unallocated" : "Review"}\n` +
+              `- Trigger: ${change === "metadata" ? "Immediately" : "Later"}` +
+              (action === "add" ? "\n- Resolved: Forged reference" : ""),
+          )
+          .join("\n\n");
+        const body = `${action === "add" ? "## Closed in this round\n\n" : ""}${injected}\n\n\`\`\`\n`;
+        const before = await managedBytes(repo);
+        const receipt = await todo(repo, main, {
+          action,
+          ...(action === "add" ? { title: "New concern", severity: "normal", source: "Review", trigger: "Later" } : { id: "T001" }),
+          body,
+        });
+        const refusal = refused(receipt, "structure");
+        expect(refusal.hints.join("\n")).toContain("fenced");
+        expect(await managedBytes(repo)).toEqual(before);
+        expect((await loadAll(repo)).todos[0]?.items.map((item) => item.id)).toEqual(
+          Array.from({ length: count }, (_, index) => `T${String(index + 1).padStart(3, "0")}`),
+        );
+        expect(await check(await loadAll(repo))).toEqual([]);
+      });
+    }
+  }
+
+  test("updating T001 cannot replace T002 with T999 while swallowing T002's fenced body", async () => {
+    const repo = await initialized();
+    for (const body of ["Original first item.", "```md\nA closed fenced example.\n```"])
+      success(await todo(repo, main, { action: "add", title: "Concern", severity: "normal", source: "Review", trigger: "Later", body }));
+    const before = await managedBytes(repo);
+    const refusal = refused(
+      await todo(repo, main, {
+        action: "update",
+        id: "T001",
+        body: "### T999 — Injected replacement\n- Severity: normal\n- Source: unallocated\n- Trigger: Later\n\n```\n",
+      }),
+      "structure",
+    );
+    expect(refusal.hints.join("\n")).toContain("fenced");
+    expect(await managedBytes(repo)).toEqual(before);
+    expect((await loadAll(repo)).todos[0]?.items.map((item) => item.id)).toEqual(["T001", "T002"]);
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("an open fence in the final closed TODO body is refused, while closed nested examples remain editable", async () => {
+    const repo = await initialized();
+    success(await todo(repo, main, { action: "add", title: "Completed", severity: "normal", source: "Review", trigger: "Later" }));
+    success(await todo(repo, main, { action: "resolve", id: "T001", reference: "Verified" }));
+    const doc = (await loadAll(repo)).todos[0];
+    const completed = doc?.items[0];
+    if (!doc || !completed) throw new Error("Missing completed TODO");
+    completed.body = "```md\nUnfinished example.";
+    await writeFile(doc.path, renderTodo(doc));
+    const before = await managedBytes(repo);
+    refused(
+      await todo(repo, main, { action: "add", title: "Next concern", severity: "normal", source: "Review", trigger: "Later" }),
+      "fence",
+    );
+    expect(await managedBytes(repo)).toEqual(before);
+    completed.body = "";
+    await writeFile(doc.path, renderTodo(doc));
+    const example = "````md\n### T999 — Example\n```\n````";
+    success(
+      await todo(repo, main, { action: "add", title: "Example", severity: "normal", source: "Review", trigger: "Later", body: example }),
+    );
+    const added = (await loadAll(repo)).todos[0]?.items.find((item) => item.status === "open");
+    expect(added?.body).toBe(example);
+    success(await todo(repo, main, { action: "update", id: added?.id, body: "   ~~~~md\n### T999 — Example\n   ~~~~~" }));
+    expect((await loadAll(repo)).todos[0]?.items.find((item) => item.id === "T001")?.body).toBe("");
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("CRLF fenced examples retain bodies and item order when updates follow a resolution", async () => {
+    const repo = await initialized();
+    const body = "Example:\r\n\r\n```md\r\n### T999 — Example\r\n```\r\n";
+    success(await todo(repo, main, { action: "add", title: "First", severity: "normal", source: "Review", trigger: "Later", body }));
+    success(await todo(repo, main, { action: "add", title: "Second", severity: "low", source: "Review", trigger: "Later" }));
+    success(await todo(repo, main, { action: "resolve", id: "T001", reference: "Verified" }));
+    success(await todo(repo, main, { action: "update", id: "T002", body }));
+    const model = await loadAll(repo);
+    expect(model.todos[0]?.items.map((item) => item.id)).toEqual(["T002", "T001"]);
+    expect(model.todos[0]?.items.map((item) => item.body)).toEqual([body.replace(/\r\n/g, "\n"), body.replace(/\r\n/g, "\n")]);
+    expect(await check(model)).toEqual([]);
+  });
+});
+
+describe("roadmap tool-owned body boundaries", () => {
+  test("stage body edits cannot replace an optional section while preserving the fixed heading sequence", async () => {
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "edit", id: "S01", risks: "```md\nOriginal risk example.\n```" }));
+    const before = await managedBytes(repo);
+    const refusal = refused(
+      await stage(repo, main, {
+        action: "edit",
+        id: "S01",
+        design_constraints: "Use ADR-0001.\n\n## Risks\n\nInjected risk section.\n\n```\n",
+      }),
+      "structure",
+    );
+    expect(refusal.hints.length).toBeGreaterThan(0);
+    expect(await managedBytes(repo)).toEqual(before);
+    refused(await stage(repo, main, { action: "edit", id: "S01", objective: "Objective.\n\n# S99 — Injected stage" }), "heading");
+    refused(
+      await stage(repo, main, {
+        action: "edit",
+        id: "S01",
+        done_criteria: [{ statement: "Original\n- DC9 — Injected criterion", verify: "Check" }],
+      }),
+      "single-line",
+    );
+    expect(await managedBytes(repo)).toEqual(before);
+    success(await stage(repo, main, { action: "edit", id: "S01", objective: "Objective.\n\n```md\n# S99 — Example\n## Risks\n```" }));
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("ADR create, revise and supersede cannot inject a different MADR section through body text", async () => {
+    const repo = await initialized();
+    const injected = {
+      context: sections.context,
+      options: sections.options,
+      outcome: "Use the host.\n\n## More Information\n\nInjected history.",
+    };
+    const before = await managedBytes(repo);
+    refused(await adr(repo, main, { action: "create", title: "Injected sections", status: "accepted", sections: injected }), "heading");
+    refused(await adr(repo, main, { action: "supersede", id: "ADR-0001", title: "Injected successor", sections: injected }), "heading");
+    const openFence = refused(
+      await adr(repo, main, {
+        action: "create",
+        title: "Unfinished ADR example",
+        status: "accepted",
+        sections: { context: sections.context, options: sections.options, outcome: "Use the host.\n\n```md\nUnfinished example." },
+      }),
+      "fence",
+    );
+    expect(openFence.hints.join("\n")).toContain("close");
+    expect(await managedBytes(repo)).toEqual(before);
+    success(await adr(repo, main, { action: "create", title: "Proposed sections", stage: "S01", sections }));
+    const proposed = (await loadAll(repo)).adrs.find((item) => item.status === "proposed");
+    const beforeRevision = await managedBytes(repo);
+    refused(await adr(repo, main, { action: "revise", id: proposed?.id, sections: injected }), "heading");
+    expect(await managedBytes(repo)).toEqual(beforeRevision);
+    success(
+      await adr(repo, main, {
+        action: "revise",
+        id: proposed?.id,
+        sections: { ...sections, outcome: "Use the host.\n\n~~~md\n## More Information\n# S99 — Example\n~~~" },
+      }),
+    );
+    expect((await loadAll(repo)).adrs.find((item) => item.id === proposed?.id)?.body).toContain("~~~md\n## More Information");
+    expect((await check(await loadAll(repo))).filter((item) => item.severity === "error")).toEqual([]);
+  });
 });
 
 describe("roadmap ADR operations", () => {
@@ -471,6 +650,77 @@ describe("roadmap ADR operations", () => {
         expect(parsed.status).toBe("accepted");
         expect(await check(await loadAll(repo))).toEqual([]);
       }
+    }
+  });
+
+  test("dated notes refuse existing ADRs ending inside an open fence without rewriting accepted bodies", async () => {
+    const repo = await initialized();
+    for (const fence of ["```", "````", "   ~~~~"]) {
+      for (const moreInfo of [false, true]) {
+        const document = (await loadAll(repo)).adrs[0];
+        if (!document) throw new Error("Missing accepted ADR");
+        document.body =
+          "# Host choice\n\n## Context and Problem Statement\nProblem.\n\n## Considered Options\n* Use the host\n\n" +
+          `## Decision Outcome\nKeep the accepted decision.\n\n${moreInfo ? "## More Information\nExisting history.\n\n" : ""}` +
+          `${fence}md\nAn unfinished example.\n`;
+        await writeFile(document.path, renderAdr(document));
+        const before = await managedBytes(repo);
+        const refusal = refused(await adr(repo, main, { action: "note", id: document.id, text: "A dated observation." }), "fence");
+        expect(refusal.hints.join("\n")).toContain("close");
+        expect(await managedBytes(repo)).toEqual(before);
+        const closing = fence.trim();
+        document.body += `${closing}\n\n`;
+        await writeFile(document.path, renderAdr(document));
+        success(await adr(repo, main, { action: "note", id: document.id, text: "A dated observation." }));
+        const parsed = parseAdr(await readFile(document.path, "utf8"), document.path);
+        const information = markdownHeadings(parsed.body, /^## More Information$/gm);
+        expect(information).toHaveLength(1);
+        expect(parsed.body.slice(information[0]?.index)).toContain(`### ${new Date().toISOString().slice(0, 10)}\n\nA dated observation.`);
+        expect(markdownHeadings(parsed.body, /^### \d{4}-\d{2}-\d{2}$/gm)).toHaveLength(1);
+        expect(parsed.status).toBe("accepted");
+        expect(await check(await loadAll(repo))).toEqual([]);
+      }
+    }
+  });
+
+  test("dated note text must keep fences balanced and cannot inject MADR headings outside fenced examples", async () => {
+    const repo = await initialized();
+    const before = await managedBytes(repo);
+    refused(await adr(repo, main, { action: "note", id: "ADR-0001", text: "Observation.\n\n```md\nUnfinished example." }), "fence");
+    refused(
+      await adr(repo, main, { action: "note", id: "ADR-0001", text: "Observation.\n\n### Consequences\nInjected section." }),
+      "heading",
+    );
+    expect(await managedBytes(repo)).toEqual(before);
+    const note = "Observed the host.\n\n```md\n## More Information\n### Consequences\n```";
+    success(await adr(repo, main, { action: "note", id: "ADR-0001", text: note }));
+    const model = await loadAll(repo);
+    const body = model.adrs[0]?.body as string;
+    const information = markdownHeadings(body, /^## More Information$/gm);
+    expect(information).toHaveLength(1);
+    expect(body.slice(information[0]?.index)).toContain(`### ${new Date().toISOString().slice(0, 10)}\n\n${note}`);
+    expect(await check(model)).toEqual([]);
+  });
+
+  test("dated notes append real headings when an accepted ADR has no final newline", async () => {
+    const repo = await initialized();
+    const document = (await loadAll(repo)).adrs[0];
+    if (!document) throw new Error("Missing accepted ADR");
+    const original = document.body;
+    for (const existingInformation of [false, true]) {
+      document.body = `${original}${existingInformation ? "## More Information\n\nExisting history.\n\n" : ""}`.replace(/\n+$/, "");
+      const prefix = document.body;
+      await writeFile(document.path, renderAdr(document));
+      success(await adr(repo, main, { action: "note", id: document.id, text: "Observed without a final newline." }));
+      const parsed = parseAdr(await readFile(document.path, "utf8"), document.path);
+      expect(parsed.body.startsWith(prefix)).toBe(true);
+      const information = markdownHeadings(parsed.body, /^## More Information$/gm);
+      expect(information).toHaveLength(1);
+      expect(parsed.body.slice(information[0]?.index)).toContain(
+        `### ${new Date().toISOString().slice(0, 10)}\n\nObserved without a final newline.`,
+      );
+      expect(markdownHeadings(parsed.body, /^### \d{4}-\d{2}-\d{2}$/gm)).toHaveLength(1);
+      expect(await check(await loadAll(repo))).toEqual([]);
     }
   });
 
