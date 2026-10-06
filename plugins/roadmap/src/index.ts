@@ -5,6 +5,7 @@ import { loadAll, loadRepo } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import { renderInjection } from "#src/handoff.ts";
 import { interceptionReason } from "#src/interception.ts";
+import { registerPrometheusContract } from "#src/prometheus.ts";
 import { RoadmapSession, type UiFactory } from "#src/ses.ts";
 import { registerTools } from "#src/tools.ts";
 import { createTuiUi } from "#src/ui.ts";
@@ -23,7 +24,7 @@ export default function roadmap(pi: ExtensionAPI): void {
   const uiFor: UiFactory = (ctx) => (testUiFactory ?? createTuiUi)(ctx);
   registerTools(pi, ses, uiFor);
   const commands = registerCommands(pi, ses, uiFor);
-  // T7 seam: add one import and registerPrometheusContract(pi, ses) here.
+  registerPrometheusContract(pi, ses);
 
   async function rebuild(_event: unknown, ctx: ExtensionContext): Promise<void> {
     ses.rebuild(ctx);

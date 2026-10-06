@@ -428,7 +428,8 @@ function writeBlockReason(input: Record<string, unknown>): string | undefined {
  * orchestration/observation. Nested xdev calls are classified recursively and
  * their real inner dispatch is intercepted again by the host's `tool_call` event.
  */
-export function executionBlockReason(toolName: string, input: unknown): string | undefined {
+export function executionBlockReason(toolName: string, input: unknown, roadmapToolSourcePath?: string): string | undefined {
+  if (toolName.startsWith("roadmap_") && roadmapToolSourcePath) return undefined;
   if (ALLOWED_TOOLS[toolName] === true || MAGIC_CONTEXT_TOOLS[toolName] === true) return undefined;
   const args = record(input) ?? {};
   switch (toolName) {
@@ -456,7 +457,14 @@ export function executionToolSourceBlockReason(
   toolName: string,
   source: string | undefined,
   trustedPrometheusTool = false,
+  roadmapToolSourcePath?: string,
+  toolSourcePath?: string,
 ): string | undefined {
+  if (toolName.startsWith("roadmap_")) {
+    return source === "extension" && roadmapToolSourcePath && toolSourcePath === roadmapToolSourcePath
+      ? undefined
+      : `\`${toolName}\` is not from the verified roadmap runtime`;
+  }
   if (PLUGIN_OWNED_TOOLS[toolName] === true) {
     return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
   }

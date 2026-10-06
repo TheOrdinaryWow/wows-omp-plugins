@@ -46,6 +46,7 @@ import {
   startRow,
 } from "./ledger.ts";
 import { writeLedgerAtomic } from "./ledger-store.ts";
+import { type AtlasCompleted, isRoadmapStage, RoadmapContract, type RoadmapStage } from "./roadmap-contract.ts";
 import {
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
@@ -117,6 +118,7 @@ interface SessionRecord {
   planSha256?: string;
   /** Tool-call provenance for the proposal that chose planFilePath. */
   proposedByToolCallId?: string;
+  roadmapStage?: RoadmapStage;
   /** `mode_change` entry for which native opt-in guidance was already supplied. */
   offerPendingForModeEntryId?: string;
   planningModeEntryId?: string;
@@ -156,6 +158,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const ownerships = new Set<Ownership>();
   const liveModels = new Map<string, AtlasLive>();
   const herdrDag = new HerdrDagContract(pi.events);
+  const roadmap = new RoadmapContract(pi.events);
   const WIDGET_KEY = "atlas";
   let atlasCompletions: AutocompleteItem[] = [];
   let planReferences = new AtlasPlanReferences();
@@ -262,6 +265,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         proposedByToolCallId: record.proposedByToolCallId,
         atlasPlanId: record.atlasPlanId,
         sourceSessionId: record.sourceSessionId,
+        roadmapStage: record.roadmapStage,
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
         ledgerPath: record.ledgerPath,
@@ -291,6 +295,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             offeredForModeEntryId?: unknown;
             suppressedForModeEntryId?: unknown;
             ledgerPath?: unknown;
+            roadmapStage?: unknown;
           }
         | undefined;
       if (data?.phase !== "idle" && data?.phase !== "planning" && data?.phase !== "executing") continue;
@@ -298,6 +303,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         phase: data.phase,
         atlasPlanId: typeof data.atlasPlanId === "string" && data.atlasPlanId ? data.atlasPlanId : undefined,
         sourceSessionId: typeof data.sourceSessionId === "string" && data.sourceSessionId ? data.sourceSessionId : undefined,
+        roadmapStage: isRoadmapStage(data.roadmapStage) ? data.roadmapStage : undefined,
         planFilePath: typeof data.planFilePath === "string" && data.planFilePath.trim() ? data.planFilePath : undefined,
         planSha256: typeof data.planSha256 === "string" && /^[a-f0-9]{64}$/.test(data.planSha256) ? data.planSha256 : undefined,
         proposedByToolCallId:
@@ -632,6 +638,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.ledgerPath = plan.ledgerPath;
       record.proposedByToolCallId = plan.proposedByToolCallId;
       record.sourceSessionId = plan.sourceSessionId;
+      record.roadmapStage = plan.roadmapStage;
       record.ledgerError = undefined;
       persist(record);
       if (validatedLedger) syncLedgerTodos(ctx, validatedLedger);
@@ -719,6 +726,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.planSha256 = undefined;
     record.atlasPlanId = undefined;
     record.sourceSessionId = undefined;
+    record.roadmapStage = undefined;
     record.ledgerError = undefined;
     record.proposedByToolCallId = undefined;
     record.offeredForModeEntryId = episodeId;
@@ -914,6 +922,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.planSha256 = plan.planSha256;
       record.proposedByToolCallId = plan.proposedByToolCallId;
       record.sourceSessionId = plan.sourceSessionId;
+      record.roadmapStage = plan.roadmapStage;
       persist(record);
       await bindPlan(ctx, record, store, plan, true);
       await syncTools(false, true, true);
@@ -1097,6 +1106,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.planSha256 = undefined;
       record.atlasPlanId = undefined;
       record.sourceSessionId = undefined;
+      record.roadmapStage = undefined;
       record.ledgerError = undefined;
       record.proposedByToolCallId = undefined;
       record.offeredForModeEntryId = undefined;
@@ -1124,11 +1134,11 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const provenanceBlockReason = (toolName: string): string | undefined => {
+  const provenanceBlockReason = (toolName: string, roadmapToolSourcePath?: string): string | undefined => {
     const provenance = toolProvenance(toolName);
     const trustedPrometheusTool =
       PLUGIN_OWNED_TOOLS[toolName] === true && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
-    return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool);
+    return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool, roadmapToolSourcePath, provenance?.path);
   };
 
   /** Refuses a Prometheus proposal Atlas could not execute, before the native approval overlay opens. */
@@ -1227,6 +1237,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         sourceSessionId,
         proposedByToolCallId,
         availableAgents: availableAgents(),
+        roadmapStage: record.roadmapStage,
       });
       if (record.phase !== "executing" || record.activation !== activation)
         throw new Error("Atlas exited while the approved plan was being stored");
@@ -1269,6 +1280,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           record.phase = "idle";
           await clearProposalMarker(ctx, record.planFilePath);
           record.planFilePath = undefined;
+          record.roadmapStage = undefined;
           record.proposedByToolCallId = undefined;
           record.planningModeEntryId = undefined;
           record.pendingConsent = undefined;
@@ -1542,8 +1554,10 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (!mainSession(ctx) || record?.phase !== "executing") return fail("Atlas execution is not active in this main session.");
       const ownership = record.ownership;
       let changedRow: LedgerItem | undefined;
+      let completion: Omit<AtlasCompleted, "v" | "at"> | undefined;
       try {
         const result = await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
+          const wasComplete = isComplete(ledger);
           if (params.action === "status") return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: { ledger } };
           const id = params.id?.trim();
           const item = ledgerRows(ledger).find((entry) => entry.id === id);
@@ -1603,6 +1617,18 @@ export default function prometheus(pi: ExtensionAPI): void {
             item.evidence = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
             item.status = "done";
             item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
+            if (!wasComplete && isComplete(ledger) && plan.roadmapStage) {
+              const gates = await Promise.all(
+                ledger.gates.map(async (gate) => {
+                  if (!gate.receipt) throw new Error(`Missing verified gate receipt for ${gate.id}`);
+                  const output = JSON.parse(
+                    await fs.readFile(path.join(plan.directory, "evidence", `${gate.receipt.receiptId}.md`), "utf8"),
+                  ) as { gateId: string; verdict: string; summary: string };
+                  return { gateId: output.gateId, verdict: output.verdict, summary: output.summary };
+                }),
+              );
+              completion = { sessionId: ctx.sessionManager.getSessionId(), planId: plan.id, roadmapStage: plan.roadmapStage, gates };
+            }
           } else {
             if (params.action === "block" && !evidence) throw new Error("Blocking a row requires an explanation");
             if ((params.action === "reopen" && item.status === "open") || (params.action === "block" && item.status === "blocked")) {
@@ -1622,6 +1648,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             details: { id: item.id, status: item.status, outputSchema: schema },
           };
         });
+        if (completion) roadmap.emitCompleted(completion);
         if (changedRow) {
           return {
             ...result,
@@ -1687,7 +1714,14 @@ export default function prometheus(pi: ExtensionAPI): void {
       try {
         const marker = JSON.parse(
           await fs.readFile(resolveLocalUrlToPath(prometheusArtifactUrl(reference), localOptions(ctx)), "utf8"),
-        ) as { version?: unknown; planFilePath?: unknown; planSha256?: unknown; proposedByToolCallId?: unknown; sourceSessionId?: unknown };
+        ) as {
+          version?: unknown;
+          planFilePath?: unknown;
+          planSha256?: unknown;
+          proposedByToolCallId?: unknown;
+          sourceSessionId?: unknown;
+          roadmapStage?: unknown;
+        };
         // A present but invalid plugin marker must pause this handoff, not silently become ordinary execution.
         if (
           marker.version !== 3 ||
@@ -1705,6 +1739,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           planSha256: typeof marker.planSha256 === "string" && /^[a-f0-9]{64}$/.test(marker.planSha256) ? marker.planSha256 : undefined,
           proposedByToolCallId: marker.proposedByToolCallId,
           sourceSessionId: marker.sourceSessionId,
+          roadmapStage: isRoadmapStage(marker.roadmapStage) ? marker.roadmapStage : undefined,
           lastBlockedAt: 0,
           stallCount: 0,
         };
@@ -1725,6 +1760,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (record.planningModeEntryId && episodeId && record.planningModeEntryId !== episodeId) {
         record.phase = "idle";
         record.planFilePath = undefined;
+        record.roadmapStage = undefined;
         record.proposedByToolCallId = undefined;
         record.planningModeEntryId = undefined;
         record.pendingConsent = undefined;
@@ -1760,6 +1796,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         await clearProposalMarker(ctx, record.planFilePath);
         record.phase = "idle";
         record.planFilePath = undefined;
+        record.roadmapStage = undefined;
         record.proposedByToolCallId = undefined;
         record.planningModeEntryId = undefined;
         record.pendingConsent = undefined;
@@ -1900,8 +1937,11 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     if (record?.phase !== "executing") return undefined;
 
-    let detail = executionBlockReason(event.toolName, event.input);
-    if (!detail) detail = provenanceBlockReason(event.toolName);
+    const roadmapToolSourcePath = event.toolName.startsWith("roadmap_")
+      ? roadmap.binding(ctx.sessionManager.getSessionId())?.toolSourcePath
+      : undefined;
+    let detail = executionBlockReason(event.toolName, event.input, roadmapToolSourcePath);
+    if (!detail) detail = provenanceBlockReason(event.toolName, roadmapToolSourcePath);
     const nested = event.toolName === "write" ? nestedXdevToolCall(event.input) : undefined;
     if (!detail && nested) detail = provenanceBlockReason(nested.toolName);
     // Native xdev task dispatch is intercepted again at its inner task boundary.
@@ -1995,6 +2035,8 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.approvalCompactionPending = false;
     record.ledgerPath = undefined;
     record.planSha256 = undefined;
+    const binding = roadmap.requestBinding(sessionId);
+    record.roadmapStage = binding?.stage ? { repoRoot: binding.repoRoot, id: binding.stage.id } : undefined;
     try {
       record.planSha256 = planDigest(await fs.readFile(resolveLocalUrlToPath(proposedPath, localOptions(ctx)), "utf8"));
       const markerFile = resolveLocalUrlToPath(prometheusArtifactUrl(proposedPath), localOptions(ctx));
@@ -2004,6 +2046,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         planSha256: record.planSha256,
         proposedByToolCallId: event.toolCallId,
         sourceSessionId: sessionId,
+        roadmapStage: record.roadmapStage,
         createdAt: Date.now(),
       });
     } catch (error) {
@@ -2162,6 +2205,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     reviewLevels.delete(sessionId);
     atlasWidgets.delete(sessionId);
     herdrDag.forget(sessionId);
+    roadmap.forget(sessionId);
     authorizedActivationCalls.clear();
   });
 }

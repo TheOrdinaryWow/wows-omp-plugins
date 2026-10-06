@@ -20,6 +20,7 @@ import {
   restoreLedger,
 } from "./ledger.ts";
 import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
+import { isRoadmapStage, type RoadmapStage } from "./roadmap-contract.ts";
 
 export interface AtlasPlan {
   id: string;
@@ -34,6 +35,7 @@ export interface AtlasPlan {
   sourcePlanPath: string;
   sourceSessionId: string;
   proposedByToolCallId: string;
+  roadmapStage?: RoadmapStage;
 }
 
 export interface AtlasRowDetail {
@@ -73,7 +75,7 @@ export interface AtlasPlanDetail {
 }
 
 interface Approval {
-  version: 1;
+  version: 1 | 2;
   id: string;
   name: string;
   cwd: string;
@@ -81,6 +83,7 @@ interface Approval {
   sourcePlanPath: string;
   sourceSessionId: string;
   proposedByToolCallId: string;
+  roadmapStage?: RoadmapStage;
 }
 
 interface Attempt {
@@ -348,7 +351,7 @@ export class AtlasStore {
     if (data === null || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid Atlas plan approval");
     const saved = data as Partial<Approval>;
     if (
-      saved.version !== 1 ||
+      (saved.version !== 1 && saved.version !== 2) ||
       saved.id !== id ||
       typeof saved.name !== "string" ||
       !validName(saved.name) ||
@@ -357,7 +360,10 @@ export class AtlasStore {
       path.resolve(saved.cwd) !== saved.cwd ||
       typeof saved.planSha256 !== "string" ||
       !HEX.test(saved.planSha256) ||
-      [saved.sourcePlanPath, saved.sourceSessionId, saved.proposedByToolCallId].some((field) => typeof field !== "string" || !field.trim())
+      [saved.sourcePlanPath, saved.sourceSessionId, saved.proposedByToolCallId].some(
+        (field) => typeof field !== "string" || !field.trim(),
+      ) ||
+      (saved.roadmapStage !== undefined && !isRoadmapStage(saved.roadmapStage))
     )
       throw new Error("Invalid Atlas plan approval");
     const approval = saved as Approval;
@@ -403,6 +409,7 @@ export class AtlasStore {
         sourcePlanPath: approval.sourcePlanPath,
         sourceSessionId: approval.sourceSessionId,
         proposedByToolCallId: approval.proposedByToolCallId,
+        roadmapStage: approval.roadmapStage,
       },
       approvalSha256: planDigest(raw),
     };
@@ -416,6 +423,7 @@ export class AtlasStore {
     sourceSessionId: string;
     proposedByToolCallId: string;
     availableAgents?: readonly string[];
+    roadmapStage?: RoadmapStage;
   }): Promise<AtlasPlan> {
     if (!validName(options.name)) throw new Error("Invalid Atlas plan name");
     if (typeof options.content !== "string" || !options.content.trim()) throw new Error("Atlas requires the exact approved plan content");
@@ -425,6 +433,7 @@ export class AtlasStore {
     if (!path.isAbsolute(options.cwd) || (await fs.realpath(options.cwd)) !== options.cwd) {
       throw new Error("Atlas requires a canonical absolute workspace path");
     }
+    if (options.roadmapStage !== undefined && !isRoadmapStage(options.roadmapStage)) throw new Error("Invalid Atlas roadmap stage");
     const slug =
       options.name
         .toLowerCase()
@@ -443,7 +452,7 @@ export class AtlasStore {
       const planFilePath = path.join(final, "plan.md");
       const ledger = createLedger(planFilePath, options.content, options.availableAgents);
       const approval: Approval = {
-        version: 1,
+        version: 2,
         id,
         name: options.name,
         cwd: options.cwd,
@@ -451,6 +460,7 @@ export class AtlasStore {
         sourcePlanPath: options.sourcePlanPath,
         sourceSessionId: options.sourceSessionId,
         proposedByToolCallId: options.proposedByToolCallId,
+        roadmapStage: options.roadmapStage,
       };
       const planHandle = await fs.open(path.join(stage, "plan.md"), "wx", 0o600);
       try {

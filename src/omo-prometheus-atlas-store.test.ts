@@ -277,8 +277,48 @@ describe("Atlas shared plan storage", () => {
     });
   });
 
+  test("new approvals use version 2 and validate optional roadmap stage metadata", async () => {
+    await fixture(async (f) => {
+      const unbound = JSON.parse(await fs.readFile(path.join(f.plan.directory, "approval.json"), "utf8"));
+      expect(unbound.version).toBe(2);
+      expect(unbound).not.toHaveProperty("roadmapStage");
+      const options = {
+        name: "Bound plan",
+        cwd: f.root,
+        content,
+        sourcePlanPath: "local://PLAN.md",
+        sourceSessionId: "session-a",
+        proposedByToolCallId: "native-proposal",
+        availableAgents: ["task"],
+      };
+      const roadmapStage = { repoRoot: f.root, id: "S01" };
+      const plan = await f.store.create({ ...options, roadmapStage });
+      const approvalPath = path.join(plan.directory, "approval.json");
+      const approval = JSON.parse(await fs.readFile(approvalPath, "utf8"));
+      expect(approval.version).toBe(2);
+      expect(approval.roadmapStage).toEqual(roadmapStage);
+      expect((await new AtlasStore(f.root).find(plan.id)).roadmapStage).toEqual(roadmapStage);
+      for (const invalid of [
+        { repoRoot: "", id: "S01" },
+        { repoRoot: "relative", id: "S01" },
+        { repoRoot: f.root, id: "S01-extra" },
+      ]) {
+        await expect(f.store.create({ ...options, roadmapStage: invalid })).rejects.toThrow("Invalid Atlas roadmap stage");
+        await fs.writeFile(approvalPath, JSON.stringify({ ...approval, roadmapStage: invalid }));
+        await expect(new AtlasStore(f.root).find(plan.id)).rejects.toThrow("Invalid Atlas plan approval");
+      }
+    });
+  });
+
   test("a bundle written by the previous ledger version keeps its progress and continues after upgrade", async () => {
     await fixture(async (f) => {
+      const approvalPath = path.join(f.plan.directory, "approval.json");
+      const approval = JSON.parse(await fs.readFile(approvalPath, "utf8"));
+      const oldApproval = `${JSON.stringify({ ...approval, version: 1 }, null, 2)}\n`;
+      await fs.writeFile(approvalPath, oldApproval);
+      const checkpointPath = path.join(f.plan.directory, "checkpoint.json");
+      const checkpoint = JSON.parse(await fs.readFile(checkpointPath, "utf8"));
+      await fs.writeFile(checkpointPath, JSON.stringify({ ...checkpoint, approvalSha256: planDigest(oldApproval) }));
       await f.store.acquire(f.plan.id, "session-a");
       for (const id of ["T1", "T3"]) await finish(f, f.store, "session-a", id);
       await f.store.release(f.plan.id, "session-a");
@@ -299,6 +339,9 @@ describe("Atlas shared plan storage", () => {
       expect(saved.fixes).toEqual([]);
       expect(saved.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
+      expect(await fs.readFile(approvalPath, "utf8")).toBe(oldApproval);
+      expect(JSON.parse(await fs.readFile(checkpointPath, "utf8")).approvalSha256).toBe(planDigest(oldApproval));
+      expect((await upgraded.find(f.plan.id)).roadmapStage).toBeUndefined();
     });
   });
 
