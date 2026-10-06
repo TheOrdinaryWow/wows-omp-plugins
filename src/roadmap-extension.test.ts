@@ -13,6 +13,7 @@ import { type Actor, closeRound, type InitInput, initProject, openRound, stage }
 import { ENTRY_PREFIX, type UiFactory } from "../plugins/roadmap/src/ses.ts";
 import type { ToolReceipt } from "../plugins/roadmap/src/tools.ts";
 import {
+  createTuiUi,
   HeadlessUi,
   type OverlapAnswer,
   type OverlapQuestion,
@@ -229,6 +230,9 @@ const CASES: Record<string, string> = {
   external: "an externally closed stage drops its binding with a one-turn notice",
   round: "round commands collect dispositions, arm previews and import carried TODOs",
   "round-close-stale": "round-close dialogs cannot authorize closing a replacement round",
+  "round-menu-stale": "status-menu close cannot authorize closing a replacement round",
+  "round-menu-changed": "status-menu close cannot authorize changed round files",
+  "round-menu-close": "status-menu close freezes the reviewed unchanged round",
   rebuild: "session start, switch, branch and tree rebuild from the active branch",
   pending: "pending-close reminders retain evidence and remain bounded",
   menu: "status-menu stage close gives tool guidance without writing files",
@@ -566,6 +570,66 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.equal(uiCalls, 0);
           assert.equal((await loadAll(repo)).stages[0]?.free_work_log, "");
           assert.equal(await readFile((await loadAll(repo)).stages[0]?.path as string, "utf8"), before);
+        }
+      } else if (name.startsWith("round-menu-")) {
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
+        const other = await createHarness(root);
+        const shown = Promise.withResolvers<void>();
+        const picked = Promise.withResolvers<string>();
+        const dialogs: Array<{ title: string; options: unknown[] }> = [];
+        h.setUi((ctx) =>
+          ctx.sessionManager.getSessionId() === h.session.sessionManager.getSessionId()
+            ? createTuiUi({
+                hasUI: true,
+                ui: {
+                  ...ctx.ui,
+                  select: async (title, options) => {
+                    dialogs.push({ title, options });
+                    shown.resolve();
+                    return picked.promise;
+                  },
+                },
+              })
+            : other.ui,
+        );
+        try {
+          const closing = command(h, "roadmap");
+          await shown.promise;
+          assert.match(dialogs[0]?.title ?? "", /Roadmap R1 Launch \[active\]/);
+          assert(dialogs[0]?.options.includes("Close round R1"));
+          if (name === "round-menu-stale") {
+            await command(other, "roadmap", "close-round");
+            assert.equal((await loadAll(repo)).rounds[0]?.status, "closed");
+            await command(other, "roadmap", "new-round");
+            assert((await call(other, "roadmap_round_open", { round: { ...draft.round, title: "Replacement" }, import_todos: [] })).ok);
+          } else if (name === "round-menu-changed") {
+            const receipt = await call(other, "roadmap_todo", {
+              action: "add",
+              title: "Later",
+              source: "User",
+              severity: "normal",
+              trigger: "Next round",
+            });
+            assert(receipt.ok, JSON.stringify(receipt));
+          }
+          const before = (await loadAll(repo)).files;
+          picked.resolve("Close round R1");
+          await closing;
+          const model = await loadAll(repo);
+          if (name === "round-menu-close") {
+            assert.equal(model.rounds[0]?.status, "closed");
+            assert(model.rounds[0]?.frozen_sha256);
+            assert.match(h.messages.at(-1) ?? "", /Closed and froze R1/);
+          } else {
+            assert.equal(model.rounds.find((round) => round.status === "active")?.id, name === "round-menu-stale" ? "R2" : "R1");
+            assert.deepEqual(model.files, before);
+            assert.match(h.messages.at(-1) ?? "", /stale/);
+            assert.match(h.messages.at(-1) ?? "", /Run \/roadmap close-round again/);
+          }
+          assert.equal(dialogs.length, 1);
+        } finally {
+          other.setUi();
+          other.session.dispose();
         }
       } else if (name === "round-close-stale") {
         assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);

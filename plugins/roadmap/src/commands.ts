@@ -60,7 +60,10 @@ export function registerCommands(pi: ExtensionAPI, ses: RoadmapSession, uiFor: U
       const words = args.trim().split(/\s+/).filter(Boolean);
       let action = words[0];
       let selectedStage = words[1];
+      let reviewedRound: { id: string; sha256: string } | undefined;
       if (!action) {
+        const round = model.rounds.find((candidate) => candidate.status === "active");
+        if (round) reviewedRound = { id: round.id, sha256: roundSha256(roundFiles(model, round)) };
         const choice = await ui.statusMenu(model);
         if (!choice) {
           ui.notify("Roadmap status menu: no answer available.", "info");
@@ -68,6 +71,7 @@ export function registerCommands(pi: ExtensionAPI, ses: RoadmapSession, uiFor: U
         }
         action = choice.action;
         selectedStage = choice.stage;
+        if (action === "close-round" && !reviewedRound) throw new Error("There is no reviewed active round to close.");
       }
       if (action === "close") {
         if (selectedStage) {
@@ -107,7 +111,7 @@ export function registerCommands(pi: ExtensionAPI, ses: RoadmapSession, uiFor: U
         );
       } else if (action === "close-round") {
         if (words.length > 1) throw new Error("Usage: /roadmap close-round");
-        model = await loadAll(repo);
+        if (!reviewedRound) model = await loadAll(repo);
         const round = model.rounds.find((candidate) => candidate.status === "active");
         if (!round) throw new Error("There is no active round to close.");
         if (model.stages.some((stage) => stage.round === round.id && stage.status !== "closed" && stage.status !== "dropped")) {
@@ -115,7 +119,7 @@ export function registerCommands(pi: ExtensionAPI, ses: RoadmapSession, uiFor: U
         }
         const errors = (await check(model)).filter((diagnostic) => diagnostic.severity === "error");
         if (errors.length) throw new Error(`Roadmap check failed: ${errors.map((diagnostic) => diagnostic.message).join("; ")}`);
-        const expected = { id: round.id, sha256: roundSha256(roundFiles(model, round)) };
+        const expected = reviewedRound ?? { id: round.id, sha256: roundSha256(roundFiles(model, round)) };
         const todos = model.todos
           .filter((doc) => doc.round === round.id)
           .flatMap((doc) => doc.items.filter((item) => item.status === "open"));
