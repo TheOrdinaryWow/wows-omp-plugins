@@ -18,6 +18,7 @@ import {
   parseAdr,
   parseDoneCriteria,
   parseRoadmapIndex,
+  parseRound,
   parseStage,
   parseTodo,
   type Repo,
@@ -169,7 +170,10 @@ const BODY_REPAIR_HINT =
 
 function required(value: string | undefined, field: string, multiline = false): string {
   if (typeof value !== "string" || !value.trim() || (!multiline && /[\r\n]/.test(value))) {
-    throw new Refusal(`${field} must be non-empty${multiline ? "" : " and single-line"}.`);
+    throw new Refusal(
+      `${field} must be non-empty${multiline ? "" : " and single-line"}.`,
+      !multiline && typeof value === "string" && /[\r\n]/.test(value) ? [`Use single-line text for this field. ${BODY_REPAIR_HINT}`] : [],
+    );
   }
   return value.replace(/\r\n/g, "\n");
 }
@@ -212,23 +216,24 @@ function bodyHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
   }
 }
 
-function assertBody(body: string, pattern: RegExp): void {
-  if (bodyHeadings(body, pattern).length)
+function assertBody(body: string, headingLevel = 2, reservedHeadings: readonly string[] = []): void {
+  if (
+    bodyHeadings(body, /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/gm).some((match) => {
+      const prefix = match[1] as string;
+      const title = (match[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
+      return prefix.length <= headingLevel || reservedHeadings.includes(`${prefix} ${title}`);
+    })
+  )
     throw new Refusal("Body changes the document structure by introducing a reserved heading.", [BODY_REPAIR_HINT]);
 }
 
 function adrBody(title: string, sections: AdrSections): string {
-  for (const body of [
-    sections.context,
-    sections.drivers,
-    ...sections.options,
-    sections.outcome,
-    sections.consequences,
-    sections.confirmation,
-    sections.pros_cons,
-    sections.more_info,
-  ]) {
-    if (body !== undefined) assertBody(body, /^##? .+$|^### (?:Consequences|Confirmation)$/gm);
+  for (const option of sections.options) required(option, "ADR option");
+  for (const body of [sections.context, sections.drivers, ...sections.options, sections.outcome, sections.pros_cons, sections.more_info]) {
+    if (body !== undefined) assertBody(body, 2, ["### Consequences", "### Confirmation"]);
+  }
+  for (const body of [sections.consequences, sections.confirmation]) {
+    if (body !== undefined) assertBody(body, 3);
   }
   return buildAdrBody(title, sections);
 }
@@ -371,7 +376,7 @@ class Mutation {
         candidate.items.some((item, index) => !sameFields(item, expected[index] as TodoItem))
       )
         throw new Refusal("TODO body changes intended item ids, order, metadata or bodies in the document structure.", [BODY_REPAIR_HINT]);
-      for (const item of todo.items) assertBody(item.body, /^##? .+$|^### .+$/gm);
+      for (const item of todo.items) assertBody(item.body, 3);
       Object.assign(todo, candidate);
     }
     const stage = this.model.stages.find((doc) => doc.path === path);
@@ -390,8 +395,14 @@ class Mutation {
         stage.free_work_log,
         stage.outcome,
       ]) {
-        if (body !== undefined) assertBody(body, /^##? .+$|^### (?:In|Out)$/gm);
+        if (body !== undefined) assertBody(body, 2, ["### In", "### Out"]);
       }
+    }
+    const round = this.model.rounds.find((doc) => doc.path === path);
+    if (round) {
+      if (!sameFields(parseRound(content, path), round))
+        throw new Refusal("Round body changes intended metadata or sections in the document structure.", [BODY_REPAIR_HINT]);
+      for (const body of [round.goal, round.constraints, round.non_goals, round.principles, round.known_limitations]) assertBody(body);
     }
     const adr = this.model.adrs.find((doc) => doc.path === path);
     if (adr && !sameFields(parseAdr(content, path), adr))
@@ -585,6 +596,8 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
     }
   }
   const delivered = required(input.delivered, "delivered", true);
+  assertBody(delivered, 3);
+  if (input.deviations !== undefined) assertBody(input.deviations, 3);
   const todoDoc = roundTodo(model, activeRound(model));
   const pendingTodos = todoDoc.items.filter((item) => item.status === "open" && item.target === stage.id);
   const todoDispositions = input.todos ?? [];
@@ -773,9 +786,11 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
         if (model.todos.some((doc) => doc.items.some((item) => item.status === "open" && item.target === current.id))) {
           throw new Refusal("Move or resolve every open TODO targeting this stage before dropping it.");
         }
+        const reason = required(input.reason, "drop reason", true);
+        assertBody(reason, 3);
         current.status = "dropped";
         current.closed = new Date().toISOString().slice(0, 10);
-        current.outcome = `### Delivered\n\nNot delivered; stage dropped.\n\n### Deviations\n\n${required(input.reason, "drop reason", true)}`;
+        current.outcome = `### Delivered\n\nNot delivered; stage dropped.\n\n### Deviations\n\n${reason}`;
       } else if (input.action === "renumber") {
         if (current.status !== "planned") throw new Refusal("Only a planned stage can be renumbered.");
         await renumberStage(repo, mutation, current, input.new_id);
@@ -846,7 +861,6 @@ async function newAdr(repo: Repo, model: Model, actor: Actor, input: Partial<Adr
   required(input.sections.context, "ADR context", true);
   required(input.sections.outcome, "ADR outcome", true);
   if (!input.sections.options?.length) throw new Refusal("An ADR needs at least one considered option.");
-  for (const option of input.sections.options) required(option, "ADR option");
   if (input.stage !== undefined) findStage(model, input.stage);
   const body = adrBody(title, input.sections);
   const n = await allocate(repo, "adr", highest(model, "adr"));
@@ -909,7 +923,7 @@ export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, op
         return `${current.id} superseded by ${successor.id} — ${successor.title}.`;
       } else if (input.action === "note") {
         const note = required(input.text, "ADR note", true);
-        assertBody(note, /^##? .+$|^### (?:Consequences|Confirmation)$/gm);
+        assertBody(note, 3);
         const information = bodyHeadings(current.body, /^## More Information$/gm);
         current.body += current.body.endsWith("\n\n") ? "" : current.body.endsWith("\n") ? "\n" : "\n\n";
         if (!information.length) current.body += "## More Information\n\n";
@@ -925,6 +939,7 @@ export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, op
 async function newRound(repo: Repo, model: Model, input: RoundInput): Promise<RoundDoc> {
   const title = required(input.title, "round title");
   const goal = required(input.goal, "round goal", true);
+  assertBody(goal);
   const constraints = lines(input.constraints, "constraints");
   const nonGoals = lines(input.non_goals, "non_goals");
   if (!Array.isArray(input.principles)) throw new Refusal("Round principles must be a list.");
@@ -1042,7 +1057,7 @@ export async function prepareInit(repo: Repo, actor: Actor, input: InitInput): P
   return prepare(repo, actor, true, async (mutation) => {
     const model = mutation.model;
     model.index.title = required(input.project.name, "project name");
-    required(input.project.description, "project description", true);
+    assertBody(required(input.project.description, "project description", true));
     const adrAliases: Record<string, string> = {};
     const adrStages: Array<{ adr: AdrDoc; origin?: string }> = [];
     for (const [index, original] of input.adrs.entries()) {
@@ -1187,6 +1202,7 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
         if (!item || seen.has(item.id)) throw new Refusal(`Unknown or repeated open TODO ${disposition.id}.`);
         seen.add(item.id);
         if (!["resolved", "wontfix", "carried"].includes(disposition.disposition)) throw new Refusal("Unknown round TODO disposition.");
+        if (disposition.reference !== undefined) assertBody(disposition.reference, 3);
         item.status = disposition.disposition;
         item.reference =
           disposition.disposition === "resolved"

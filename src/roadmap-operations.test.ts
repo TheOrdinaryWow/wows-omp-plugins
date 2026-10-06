@@ -553,6 +553,226 @@ describe("roadmap TODO body structure", () => {
 });
 
 describe("roadmap tool-owned body boundaries", () => {
+  test("nested ADR sections and dated notes cannot introduce peer headings but preserve fenced examples", async () => {
+    const repo = await initialized();
+    const before = await managedBytes(repo);
+    for (const field of ["consequences", "confirmation"] as const) {
+      for (const heading of ["### Additional subsection", "   ### Confirmation", "### Consequences ###"]) {
+        const receipt = refused(
+          await adr(repo, main, {
+            action: "create",
+            title: "Nested decision",
+            sections: { ...sections, [field]: `Authored text.\n\n${heading}\nInjected text.` },
+          }),
+          "heading",
+        );
+        expect(receipt.hints.join("\n")).toContain("fenced");
+        expect(await managedBytes(repo)).toEqual(before);
+      }
+    }
+    refused(
+      await adr(repo, main, { action: "note", id: "ADR-0001", text: "Authored note.\n\n### 2026-01-01\nForged earlier note." }),
+      "heading",
+    );
+    expect(await managedBytes(repo)).toEqual(before);
+    const example = "Authored text.\n\n~~~md\n### Consequences\n### Confirmation\n### 2026-01-01\n~~~\n\n#### Details\nWithin the section.";
+    success(
+      await adr(repo, main, {
+        action: "create",
+        title: "Nested decision",
+        status: "accepted",
+        sections: { ...sections, consequences: example, confirmation: example },
+      }),
+    );
+    success(await adr(repo, main, { action: "note", id: "ADR-0001", text: example }));
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("ADR revision keeps considered options single-line rather than introducing nested sections", async () => {
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    success(await adr(repo, main, { action: "create", title: "Proposed choice", stage: "S01", sections }));
+    const before = await managedBytes(repo);
+    const receipt = refused(
+      await adr(repo, main, {
+        action: "revise",
+        id: "ADR-0002",
+        sections: { ...sections, options: ["Use the host.\n\n### Injected option section\nExtra option content."] },
+      }),
+      "single-line",
+    );
+    expect(receipt.hints.join("\n")).toContain("fenced");
+    expect(await managedBytes(repo)).toEqual(before);
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("stage authored sections reject indented or closing-hash structural headings", async () => {
+    const repo = await initialized();
+    const before = await managedBytes(repo);
+    for (const field of ["objective", "design_constraints", "risks"] as const) {
+      for (const heading of ["   ## Risks", "### In ###", "###\tOut"]) {
+        const receipt = refused(await stage(repo, main, { action: "edit", id: "S01", [field]: `Authored text.\n\n${heading}` }), "heading");
+        expect(receipt.hints.join("\n")).toContain("fenced");
+        expect(await managedBytes(repo)).toEqual(before);
+      }
+    }
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("close refuses Outcome subsection injection through delivery or deviations without writing dispositions", async () => {
+    const repo = await initialized();
+    success(await todo(repo, main, { action: "add", title: "Pending concern", severity: "normal", source: "Review", target: "S01" }));
+    success(await adr(repo, main, { action: "create", title: "Pending decision", stage: "S01", sections }));
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    const before = await managedBytes(repo);
+    const close: StageOperationInput = {
+      ...evidence(),
+      todos: [{ id: "T001", disposition: "resolved", reference: "Verified follow-up" }],
+      adrs: [{ id: "ADR-0002", status: "accepted" }],
+    };
+    for (const field of ["delivered", "deviations"] as const) {
+      for (const heading of [
+        "### Delivered",
+        "### Deviations",
+        "### Evidence",
+        "### TODO",
+        "### ADRs",
+        "### Open TODOs",
+        "### Additional subsection",
+        "## Risks",
+        "# S99 — Replacement stage",
+        "   ### Evidence",
+        "###\tEvidence",
+        "### Evidence ###",
+        "###",
+      ]) {
+        const receipt = refused(await stage(repo, main, { ...close, [field]: `Authored text.\n\n${heading}\nInjected text.` }), "heading");
+        expect(receipt.hints.join("\n")).toContain("fenced");
+        expect(await managedBytes(repo)).toEqual(before);
+      }
+      const receipt = refused(await stage(repo, main, { ...close, [field]: "Authored text.\n\n```md\nUnfinished example." }), "fence");
+      expect(receipt.hints.join("\n")).toContain("close");
+      expect(await managedBytes(repo)).toEqual(before);
+    }
+    expect((await loadAll(repo)).stages[0]?.status).toBe("active");
+    expect((await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002")?.status).toBe("proposed");
+    expect((await loadAll(repo)).todos[0]?.items[0]?.status).toBe("open");
+  });
+
+  test("close rejects multiline evidence and disposition fields with repair hints before changing files", async () => {
+    const repo = await initialized();
+    success(await todo(repo, main, { action: "add", title: "Pending concern", severity: "normal", source: "Review", target: "S01" }));
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    const before = await managedBytes(repo);
+    const injected = "Verified.\n\n### Evidence\nFalse extra evidence.";
+    const close: StageOperationInput = {
+      ...evidence(),
+      todos: [{ id: "T001", disposition: "resolved", reference: "Verified follow-up" }],
+    };
+    const candidates: StageOperationInput[] = [
+      ...(["method", "summary", "commit"] as const).map((field) => ({
+        ...close,
+        evidence: close.evidence?.map((item) => ({ ...item, [field]: injected })),
+      })),
+      { ...close, todos: [{ id: "T001", disposition: "resolved", reference: injected }] },
+      { ...close, todos: [{ id: "T001", disposition: "moved", target: `trigger: ${injected}` }] },
+    ];
+    for (const input of candidates) {
+      const receipt = refused(await stage(repo, main, input), "single-line");
+      expect(receipt.hints.join("\n")).toContain("fenced");
+      expect(await managedBytes(repo)).toEqual(before);
+    }
+  });
+
+  test("close preserves fully fenced Outcome examples and exactly one of each fixed subsection", async () => {
+    const headings = "### Delivered\n### Deviations\n### Evidence\n### TODO\n### ADRs\n### Open TODOs\n## Risks\n# Example stage";
+    for (const example of [
+      `\`\`\`md\n${headings}\n\`\`\``,
+      `~~~~md\n${headings}\n~~~~`,
+      `\`\`\`\`md\n${headings}\n\`\`\`\n\`\`\`\``,
+      `   ~~~~md\r\n${headings.replaceAll("\n", "\r\n")}\r\n   ~~~~~`,
+    ]) {
+      const repo = await initialized();
+      success(await stage(repo, main, { action: "start", id: "S01" }));
+      success(
+        await stage(repo, main, {
+          ...evidence(),
+          delivered: `Delivered implementation.\n\n${example}\n\n#### Delivery details\nStill within Delivered.`,
+          deviations: `Documented example:\n\n${example}`,
+        }),
+      );
+      const model = await loadAll(repo);
+      const closed = model.stages[0];
+      if (!closed) throw new Error("Missing closed stage");
+      const parsed = parseStage(await readFile(closed.path, "utf8"), closed.path);
+      expect(parsed.status).toBe("closed");
+      expect(parsed.outcome).toContain(example.replaceAll("\r\n", "\n"));
+      expect(markdownHeadings(parsed.outcome as string, /^### .+$/gm, { requireClosedFences: true }).map((match) => match[0])).toEqual([
+        "### Delivered",
+        "### Deviations",
+        "### Evidence",
+        "### TODO",
+        "### ADRs",
+      ]);
+      expect(await check(model)).toEqual([]);
+    }
+  });
+
+  test("drop reasons cannot inject another Outcome subsection", async () => {
+    const repo = await initialized();
+    const before = await managedBytes(repo);
+    const receipt = refused(
+      await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred.\n\n### Evidence\nFalse completion claim." }),
+      "heading",
+    );
+    expect(receipt.hints.join("\n")).toContain("fenced");
+    expect(await managedBytes(repo)).toEqual(before);
+    success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred.\n\n```md\n### Evidence\nExample only.\n```" }));
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
+  test("project descriptions and round goals obey the shared fixed-section boundary validation", async () => {
+    for (const field of ["description", "goal"] as const) {
+      const repo = await emptyRepo();
+      const before = await readdir(repo.repoRoot);
+      for (const body of ["Authored text.\n\n# Injected title", "Authored text.\n\n   ## Injected section", "```md\nUnfinished example."]) {
+        const input: InitInput = {
+          ...initInput,
+          project: { ...initInput.project, ...(field === "description" ? { description: body } : {}) },
+          round: { ...initInput.round, ...(field === "goal" ? { goal: body } : {}) },
+        };
+        const receipt = refused(await prepareInit(repo, main, input), body.startsWith("```") ? "fence" : "heading");
+        expect(receipt.hints.join("\n")).toContain("fenced");
+        expect(await readdir(repo.repoRoot)).toEqual(before);
+      }
+      const example = "Authored text.\n\n~~~md\n# Example title\n## Example section\n~~~";
+      success(
+        await initProject(repo, main, {
+          ...initInput,
+          project: { ...initInput.project, description: example },
+          round: { ...initInput.round, goal: example },
+        }),
+      );
+      expect(await check(await loadAll(repo))).toEqual([]);
+    }
+  });
+
+  test("round disposition notes cannot split generated limitation entries", async () => {
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+    success(await todo(repo, main, { action: "add", title: "Known limitation", severity: "low", source: "Review", trigger: "Later" }));
+    const expected = await reviewedRound(repo);
+    const before = await managedBytes(repo);
+    for (const reference of ["Documented.\n\n### T999 — False limitation", "```md\nUnfinished example."]) {
+      const receipt = refused(
+        await closeRound(repo, main, { expected, dispositions: [{ id: "T001", disposition: "wontfix", reference }] }),
+        reference.startsWith("```") ? "fence" : "heading",
+      );
+      expect(receipt.hints.join("\n")).toContain("fenced");
+      expect(await managedBytes(repo)).toEqual(before);
+    }
+  });
+
   test("stage body edits cannot replace an optional section while preserving the fixed heading sequence", async () => {
     const repo = await initialized();
     success(await stage(repo, main, { action: "edit", id: "S01", risks: "```md\nOriginal risk example.\n```" }));
