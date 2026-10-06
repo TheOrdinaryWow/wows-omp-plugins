@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.3.0...omp-herdr-dag@0.4.0) (2026-10-06)
+
+
+### Features
+
+* **omp-herdr-dag:** jump between running nodes with f and wrap long titles in the footer ([ff60a49](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/ff60a49083b60a0cf1ca00501acd640a2cfadabc))
+
 ## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.2.0...omp-herdr-dag@0.3.0) (2026-10-06)
 
 
