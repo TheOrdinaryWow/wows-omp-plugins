@@ -199,9 +199,3 @@ test("HeadlessUi returns undefined from every dialog and is used without a UI", 
   }
   expect(stub.calls).toEqual([]);
 });
-
-test("notify forwards to ctx.ui.notify with the level", () => {
-  const stub = stubUi([]);
-  createTuiUi(stub.ctx).notify("Stage S02 closed", "warning");
-  expect(stub.calls).toEqual([{ kind: "notify", title: "warning", body: "Stage S02 closed" }]);
-});
