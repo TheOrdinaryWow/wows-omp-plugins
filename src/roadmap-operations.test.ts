@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { parseHtml, proseText } from "../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
 import { check } from "../plugins/roadmap/src/check.ts";
 import {
+  generatedBlock,
+  generatedContent,
   loadAll,
   loadRepo,
   type Model,
@@ -17,6 +19,7 @@ import {
   renderAdr,
   renderRound,
   renderStage,
+  renderStageTable,
   renderTodo,
   replaceGenerated,
   roundFiles,
@@ -2226,5 +2229,161 @@ describe("cancellation after managed writing starts", () => {
     const after = await rawManagedBytes(repo);
     expect(after[first]).toContain("Inspect existing payments");
     for (const path of Object.keys(before).filter((path) => path !== first)) expect(after[path]).toBe(before[path]);
+  });
+});
+
+describe("literal generated delimiters in authored bodies", () => {
+  const example = `Example:\n\n~~~md\n${["stages", "rounds", "status", "adrs"].map((name) => generatedBlock(name, "Literal text")).join("\n")}\n~~~`;
+  const inline = "Literal `<!-- roadmap:generated:stages --> <!-- /roadmap:generated -->` text.";
+  const literalSections = {
+    context: example,
+    drivers: example,
+    options: [inline],
+    outcome: example,
+    consequences: example,
+    confirmation: example,
+    pros_cons: example,
+    more_info: example,
+  };
+  const literalStage = { ...stageInput, objective: example, design_constraints: example, risks: example };
+  const literalRound = {
+    ...charter,
+    goal: example,
+    constraints: [inline],
+    non_goals: [inline],
+    principles: [{ text: inline, adrs: ["ADR-0001"] }],
+  };
+
+  async function intact(repo: Repo): Promise<Model> {
+    const model = await loadAll(repo);
+    expect(model.parseErrors ?? []).toEqual([]);
+    expect((await check(model)).filter((issue) => issue.severity === "error")).toEqual([]);
+    return model;
+  }
+
+  test("initialization, all authored-body operations and round opening accept literal delimiter fences", async () => {
+    const repo = await emptyRepo();
+    success(
+      await initProject(repo, main, {
+        ...initInput,
+        project: { ...initInput.project, description: example },
+        round: literalRound,
+        stages: [literalStage],
+        adrs: [{ ...initInput.adrs[0], title: "Literal host choice", sections: literalSections }],
+      }),
+    );
+    let model = await intact(repo);
+    expect(model.index.body).toContain(example);
+    expect(model.rounds[0]?.goal).toBe(example);
+    expect(model.rounds[0]?.constraints).toBe(`- ${inline}`);
+    success(await stage(repo, main, { action: "add", ...literalStage, title: "Literal follow-up" }));
+    success(await stage(repo, main, { action: "renumber", id: "S02", new_id: "S08" }));
+    success(await stage(repo, main, { action: "drop", id: "S08", reason: inline }));
+    success(await stage(repo, main, { action: "edit", id: "S01", ...literalStage, objective: `${example}\n\nEdited.` }));
+    model = await intact(repo);
+    expect(model.stages.find((doc) => doc.id === "S01")?.objective).toBe(`${example}\n\nEdited.`);
+    expect(model.stages.find((doc) => doc.id === "S08")?.objective).toBe(example);
+    success(
+      await todo(repo, main, { action: "add", title: "Literal concern", severity: "normal", source: inline, target: "S01", body: example }),
+    );
+    success(await todo(repo, main, { action: "update", id: "T001", body: `${example}\n\nUpdated.` }));
+    success(await todo(repo, main, { action: "move", id: "T001", trigger: inline }));
+    success(await todo(repo, main, { action: "resolve", id: "T001", reference: inline }));
+    expect((await intact(repo)).todos[0]?.items[0]?.body).toBe(`${example}\n\nUpdated.`);
+    success(await adr(repo, main, { action: "create", title: "Literal proposed decision", sections: literalSections }));
+    success(
+      await adr(repo, main, { action: "revise", id: "ADR-0002", sections: { ...literalSections, context: `${example}\n\nRevised.` } }),
+    );
+    success(await adr(repo, main, { action: "set_status", id: "ADR-0002", status: "accepted" }));
+    success(await adr(repo, main, { action: "note", id: "ADR-0002", text: example }));
+    success(await adr(repo, main, { action: "supersede", id: "ADR-0001", title: "Literal successor", sections: literalSections }));
+    model = await intact(repo);
+    expect(model.adrs.find((doc) => doc.id === "ADR-0002")?.body).toContain(`${example}\n\nRevised.`);
+    expect(model.adrs.find((doc) => doc.id === "ADR-0003")?.body).toContain(example);
+    success(await recordFreeWork(repo, main, { stage: "S01", intent: inline }));
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    success(await stage(repo, main, { action: "amend", id: "S01", reason: inline, amendments: { remove: ["DC2"] } }));
+    success(await stage(repo, main, { ...evidence("S01", ["DC1"]), delivered: example, deviations: example }));
+    model = await intact(repo);
+    expect(model.stages.find((doc) => doc.id === "S01")?.outcome?.split(example)).toHaveLength(3);
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    const frozen = await managedBytes(repo);
+    for (const round of [
+      { ...literalRound, constraints: [example] },
+      { ...literalRound, non_goals: [example] },
+      { ...literalRound, principles: [{ text: example, adrs: ["ADR-0001"] }] },
+    ]) {
+      refused(await openRound(repo, main, { round, import_todos: [] }), "single-line");
+      expect(await managedBytes(repo)).toEqual(frozen);
+    }
+    success(await openRound(repo, main, { round: { ...literalRound, title: "Next literal round" }, import_todos: [] }));
+    model = await intact(repo);
+    expect(model.rounds.find((doc) => doc.status === "active")?.goal).toBe(example);
+    for (const [path, content] of Object.entries(frozen).filter(([path]) => path.includes("/01-launch/")))
+      expect(await readFile(path, "utf8")).toBe(content);
+  }, 120_000);
+
+  test("check --fix regenerates only real blocks and leaves fenced authored bytes untouched", async () => {
+    const repo = await initialized();
+    const model = await loadAll(repo);
+    const round = model.rounds[0];
+    if (!round) throw new Error("Missing round");
+    round.goal = example;
+    round.constraints += `\n\n${example}`;
+    round.non_goals += `\n\n${example}`;
+    round.principles += `\n\n${example}`;
+    round.stages = `${example}\n\n${generatedBlock("stages", renderStageTable(model.stages))}\n\n${example}`;
+    round.known_limitations = example;
+    const roundText = renderRound(round);
+    const rootText = (await readFile(model.index.path, "utf8")).replace(
+      "## How this directory works\n",
+      `## How this directory works\n\n${example}\n`,
+    );
+    const adrPath = model.adrIndex?.path;
+    if (!adrPath) throw new Error("Missing ADR index");
+    const adrText = (await readFile(adrPath, "utf8")).replace("## Decisions\n", `## Decisions\n\n${example}\n`);
+    const expected: Record<string, string> = { [round.path]: roundText, [model.index.path]: rootText, [adrPath]: adrText };
+    for (const [path, content] of Object.entries(expected)) {
+      let stale = content;
+      for (const name of path === round.path ? ["stages"] : path === adrPath ? ["adrs"] : ["rounds", "status"])
+        stale = replaceGenerated(stale, name, "Stale real block");
+      await writeFile(path, stale);
+    }
+    const before = await managedBytes(repo);
+    const diagnostics = await check(await loadAll(repo));
+    expect(diagnostics.filter((issue) => issue.severity === "error").map((issue) => issue.rule)).toEqual([
+      "generated",
+      "generated",
+      "generated",
+      "generated",
+    ]);
+    expect(await check(await loadAll(repo), { fix: true })).toEqual([]);
+    for (const [path, content] of Object.entries(expected)) expect(await readFile(path, "utf8")).toBe(content);
+    for (const [path, content] of Object.entries(before)) if (!(path in expected)) expect(await readFile(path, "utf8")).toBe(content);
+  });
+
+  test("check still reports missing, duplicate and misplaced real blocks without repairing literal examples", async () => {
+    const repo = await initialized();
+    const round = (await loadAll(repo)).rounds[0];
+    if (!round) throw new Error("Missing round");
+    round.goal = example;
+    const original = renderRound(round);
+    const real = generatedBlock("stages", generatedContent(original, "stages"));
+    const broken = [
+      original.replace(real, ""),
+      original.replace(real, `${real}\n\n${real}`),
+      original.replace(real, "").replace("## Constraints\n", `## Constraints\n${real}\n`),
+    ];
+    for (const content of broken) {
+      await writeFile(round.path, content);
+      for (const fix of [false, true]) {
+        expect((await check(await loadAll(repo), { fix })).some((issue) => issue.rule === "structure" && issue.path === round.path)).toBe(
+          true,
+        );
+        expect(await readFile(round.path, "utf8")).toBe(content);
+      }
+    }
+    await writeFile(round.path, original);
+    await intact(repo);
   });
 });

@@ -387,15 +387,16 @@ export function validateBody(body: string, options: { inlineOnly?: boolean; afte
   if (fence) invalid("Unterminated body fence; close the top-level fenced code block.");
 }
 
-export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
-  const headings: RegExpMatchArray[] = [];
+function markdownMatches(body: string, pattern: RegExp, validate: boolean): RegExpMatchArray[] {
+  const matches: RegExpMatchArray[] = [];
   let fence: { marker: string; length: number } | undefined;
   let list = false;
   let blank = false;
   let offset = 0;
   let number = 0;
   const repair = "Edit the stored file to use plain paragraphs, flat lists and closed top-level fences.";
-  for (const raw of body.split("\n")) {
+  for (const source of body.split("\n")) {
+    const raw = source.endsWith("\r") ? source.slice(0, -1) : source;
     number++;
     if (fence) {
       const closing = BODY_FENCE_CLOSE.exec(raw)?.[1];
@@ -407,42 +408,51 @@ export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArra
         const marker = opening[2] as string;
         fence = { marker: marker[0] as string, length: marker.length };
         list = false;
-      } else if (
-        raw !== MANAGED_COMMENT &&
-        !/^<!-- roadmap:generated:(?:stages|rounds|status|adrs) -->$/.test(raw) &&
-        raw !== "<!-- /roadmap:generated -->"
-      ) {
+      } else {
+        const managed =
+          raw === MANAGED_COMMENT ||
+          /^<!-- roadmap:generated:(?:stages|rounds|status|adrs) -->$/.test(raw) ||
+          raw === "<!-- /roadmap:generated -->";
         const line = raw.trimStart();
         const item = /^(?:[-+*]|\d{1,9}[.)]) +/.exec(line);
         const content = item ? line.slice(item[0].length) : line;
-        if (
-          (raw.trim() && /^ {4}/.test(raw)) ||
-          raw.includes("\t") ||
-          /^(?:>|`{3,}|~{3,}|\[.*\]:)/.test(content) ||
-          /^(?:[-=]+|(?:[-*_] *)+) *$/.test(content) ||
-          (item && /^(?:#|[-+*] |\d{1,9}[.)] )/.test(content)) ||
-          (line !== raw && /^#{1,6}(?: |$)/.test(line))
-        )
-          invalid(`Unsupported stored Markdown at line ${number}. ${repair}`);
-        if (!inlineBodyAllowed(raw, /<[a-z/!?]/i)) invalid(`Unsupported stored HTML or multiline code span at line ${number}. ${repair}`);
-        if (item) list = true;
-        else if (raw.trim() && !raw.startsWith(" ")) {
-          if (list && !blank && !/^#{1,6}(?: |$)/.test(raw)) invalid(`Ambiguous stored list continuation at line ${number}. ${repair}`);
-          list = false;
+        if (validate && !managed) {
+          if (
+            (raw.trim() && /^ {4}/.test(raw)) ||
+            raw.includes("\t") ||
+            /^(?:>|`{3,}|~{3,}|\[.*\]:)/.test(content) ||
+            /^(?:[-=]+|(?:[-*_] *)+) *$/.test(content) ||
+            (item && /^(?:#|[-+*] |\d{1,9}[.)] )/.test(content)) ||
+            (line !== raw && /^#{1,6}(?: |$)/.test(line))
+          )
+            invalid(`Unsupported stored Markdown at line ${number}. ${repair}`);
+          if (!inlineBodyAllowed(raw, /<[a-z/!?]/i)) invalid(`Unsupported stored HTML or multiline code span at line ${number}. ${repair}`);
+        }
+        if (!managed) {
+          if (item) list = true;
+          else if (raw.trim() && !raw.startsWith(" ")) {
+            if (validate && list && !blank && !/^#{1,6}(?: |$)/.test(raw))
+              invalid(`Ambiguous stored list continuation at line ${number}. ${repair}`);
+            list = false;
+          }
         }
         const match = [...raw.matchAll(pattern)][0];
         if (match) {
           match.index = offset + (match.index ?? 0);
           match.input = body;
-          headings.push(match);
+          matches.push(match);
         }
       }
     }
-    offset += raw.length + 1;
+    offset += source.length + 1;
     blank = !raw.trim();
   }
   if (fence) invalid("Unterminated Markdown fence; edit the stored file to close the top-level fenced code block.");
-  return headings;
+  return matches;
+}
+
+export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
+  return markdownMatches(body, pattern, true);
 }
 
 function sections(body: string, title: string, headings: readonly string[], optional: readonly string[] = []): Record<string, string> {
@@ -545,7 +555,7 @@ export function parseRound(content: string, path = ""): RoundDoc {
   const roundId = id(fm.id, "round");
   const title = text(fm.title, "title");
   const parts = sections(body, `# ${roundId} — ${title}`, ROUND_HEADINGS);
-  generatedContent(parts["## Stages"] as string, "stages");
+  generatedContent(body, "stages");
   return {
     format: 1,
     path,
@@ -762,14 +772,36 @@ export function generatedBlock(name: string, content: string): string {
   return `<!-- roadmap:generated:${name} -->\n${content}\n<!-- /roadmap:generated -->`;
 }
 
+const GENERATED_SECTIONS: Record<string, string> = {
+  stages: "## Stages",
+  rounds: "## Rounds",
+  status: "## Current status",
+  adrs: "## Decisions",
+};
+
 function blockBounds(body: string, name: string): { start: number; end: number; innerStart: number; innerEnd: number } {
   const begin = `<!-- roadmap:generated:${name} -->`;
   const end = "<!-- /roadmap:generated -->";
-  const start = body.indexOf(begin);
-  const close = body.indexOf(end, start + begin.length);
-  if (start < 0 || close < 0 || body.indexOf(begin, start + begin.length) >= 0) invalid(`Missing or duplicate generated block ${name}.`);
-  const nested = body.indexOf("<!-- roadmap:generated:", start + begin.length);
-  if (nested >= 0 && nested < close) invalid(`Nested generated block ${name}.`);
+  let start = -1;
+  let close = -1;
+  let section: string | undefined;
+  let owner: string | undefined;
+  for (const match of markdownMatches(body, /^## .+$|^<!-- roadmap:generated:[^ ]+ -->$|^<!-- \/roadmap:generated -->$/gm, false)) {
+    const offset = match.index as number;
+    if (match[0].startsWith("## ")) {
+      if (start >= 0 && close < 0) invalid(`Generated block ${name} crosses its owning section.`);
+      section = match[0];
+    } else if (match[0] === begin) {
+      if (start >= 0) invalid(`Missing or duplicate generated block ${name}.`);
+      start = offset;
+      owner = section;
+    } else if (start >= 0 && close < 0) {
+      if (match[0] !== end) invalid(`Nested generated block ${name}.`);
+      close = offset;
+    }
+  }
+  if (start < 0 || close < 0) invalid(`Missing or duplicate generated block ${name}.`);
+  if (section !== undefined && owner !== GENERATED_SECTIONS[name]) invalid(`Generated block ${name} must be in its owning section.`);
   return { start, end: close + end.length, innerStart: start + begin.length, innerEnd: close };
 }
 

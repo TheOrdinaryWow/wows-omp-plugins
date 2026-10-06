@@ -7,6 +7,8 @@ import { parseHtml, proseText } from "../plugins/omo-ultrawork/assets/ulw-resear
 import {
   buildAdrBody,
   DocumentError,
+  generatedBlock,
+  generatedContent,
   loadAll,
   loadRepo,
   MADR_BODY_TEMPLATE,
@@ -25,6 +27,7 @@ import {
   renderRound,
   renderStage,
   renderTodo,
+  replaceGenerated,
   roundSha256,
   stageSha256,
   validateBody,
@@ -141,6 +144,105 @@ describe("roadmap managed documents", () => {
     adr.body = buildAdrBody(adr.title, { context: code, options: ["X"], outcome: "Choose X." });
     const adrText = renderAdr(adr);
     expect(renderAdr(parseAdr(adrText))).toBe(adrText);
+  });
+
+  test("generated delimiters inside closed fences remain literal in every round section", () => {
+    for (const marker of ["`", "~"]) {
+      for (const indent of ["", "   "]) {
+        const example = `Example:\n\n${indent}${marker.repeat(4)}md\n## Stages\n${generatedBlock("stages", "Literal text")}\n${generatedBlock("status", "Literal status")}\n${marker.repeat(3)}\n${marker.repeat(5)} \t`;
+        const real = generatedBlock("stages", "Real stages");
+        const doc = roundFixture({
+          goal: example,
+          constraints: example,
+          non_goals: example,
+          principles: example,
+          stages: `${example}\n\n${real}\n\n${example}`,
+          known_limitations: example,
+        });
+        const text = renderRound(doc);
+        for (const raw of [text, text.replaceAll("\n", "\r\n")]) {
+          expect(renderRound(parseRound(raw))).toBe(text);
+          expect(generatedContent(raw, "stages")).toBe("Real stages");
+          const replacement = generatedBlock("stages", "Regenerated stages");
+          const newline = raw.includes("\r\n") ? "\r\n" : "\n";
+          expect(replaceGenerated(raw, "stages", "Regenerated stages")).toBe(
+            raw.replace(real.replaceAll("\n", newline), replacement.replaceAll("\n", newline)),
+          );
+        }
+        const stage = renderStage(stageFixture({ objective: example, design_constraints: example, risks: example }));
+        expect(renderStage(parseStage(stage))).toBe(stage);
+        const decision = adrFixture();
+        decision.body = buildAdrBody(decision.title, {
+          context: example,
+          options: ["Keep literals"],
+          outcome: example,
+          consequences: example,
+          confirmation: example,
+          more_info: example,
+        });
+        const adr = renderAdr(decision);
+        expect(renderAdr(parseAdr(adr))).toBe(adr);
+      }
+    }
+  });
+
+  test("index generation replaces only unfenced blocks in their owning sections", () => {
+    for (const fence of ["```", "~~~"]) {
+      const example = `${fence}md\n${["rounds", "status", "adrs"].map((name) => generatedBlock(name, "Literal text")).join("\n")}\n${fence}`;
+      const index = renderRoadmapIndex(model.index, model.rounds, model.stages).replace(
+        "## How this directory works\n",
+        `## How this directory works\n\n${example}\n`,
+      );
+      expect(renderRoadmapIndex(parseRoadmapIndex(index))).toBe(index);
+      for (const name of ["rounds", "status"]) {
+        const real = generatedBlock(name, generatedContent(index, name));
+        expect(replaceGenerated(index, name, "Updated")).toBe(index.replace(real, generatedBlock(name, "Updated")));
+      }
+      const decisions = renderAdrIndex(model.adrIndex as NonNullable<typeof model.adrIndex>, model.adrs).replace(
+        "## Decisions\n",
+        `## Decisions\n\n${example}\n`,
+      );
+      expect(renderAdrIndex(parseAdrIndex(decisions))).toBe(decisions);
+      const real = generatedBlock("adrs", generatedContent(decisions, "adrs"));
+      expect(replaceGenerated(decisions, "adrs", "Updated")).toBe(decisions.replace(real, generatedBlock("adrs", "Updated")));
+    }
+  });
+
+  test("fenced examples cannot supply missing real blocks or hide duplicate and nested real blocks", () => {
+    for (const name of ["stages", "rounds", "status", "adrs"]) {
+      const literal = `~~~md\n${generatedBlock(name, "Literal")}\n~~~`;
+      const real = generatedBlock(name, "Real");
+      for (const broken of [literal, `${literal}\n\n${real}\n\n${real}`, `${literal}\n\n<!-- roadmap:generated:${name} -->\nUnclosed`]) {
+        expect(() => generatedContent(broken, name)).toThrow("Missing or duplicate");
+        expect(() => replaceGenerated(broken, name, "Updated")).toThrow("Missing or duplicate");
+      }
+      expect(() => generatedContent(`${literal}\n\n${generatedBlock(name, generatedBlock("nested", "Inner"))}`, name)).toThrow("Nested");
+      expect(generatedContent(generatedBlock(name, literal), name)).toBe(literal);
+    }
+    expect(() =>
+      parseRound(
+        renderRound(roundFixture({ stages: "~~~md\n<!-- roadmap:generated:stages -->\nLiteral\n<!-- /roadmap:generated -->\n~~~" })),
+      ),
+    ).toThrow("Missing or duplicate");
+  });
+
+  test("generated blocks cannot move outside their owning sections or cross section boundaries", () => {
+    const index = renderRoadmapIndex(model.index, model.rounds, model.stages);
+    for (const [name, heading] of [
+      ["rounds", "## Current status"],
+      ["status", "## Rounds"],
+    ]) {
+      const real = generatedBlock(name as string, generatedContent(index, name as string));
+      const moved = index.replace(real, "").replace(`${heading}\n`, `${heading}\n\n${real}\n`);
+      expect(() => parseRoadmapIndex(moved)).toThrow("section");
+      expect(() => generatedContent(moved, name as string)).toThrow("section");
+      expect(() => replaceGenerated(moved, name as string, "Updated")).toThrow("section");
+    }
+    const decisions = renderAdrIndex(model.adrIndex as NonNullable<typeof model.adrIndex>, model.adrs);
+    const real = generatedBlock("adrs", generatedContent(decisions, "adrs"));
+    expect(() => parseAdrIndex(decisions.replace(real, "").replace("## Decisions", `${real}\n\n## Decisions`))).toThrow("section");
+    const crossing = "## Stages\n\n<!-- roadmap:generated:stages -->\nTable\n\n## Known limitations\n<!-- /roadmap:generated -->";
+    expect(() => generatedContent(crossing, "stages")).toThrow("section");
   });
 
   test("stored-document scan masks only closed top-level fences and retains source offsets", () => {
