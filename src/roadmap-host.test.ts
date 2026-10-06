@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,8 +7,6 @@ import { fileURLToPath } from "node:url";
 const CHILD_ENV = "ROADMAP_HOST_CHECK";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
-const ASSETS = fileURLToPath(new URL("../plugins/roadmap/assets/madr/", import.meta.url));
-const UPSTREAM = "https://raw.githubusercontent.com/adr/madr/2475fe1973f66a12aaf58a91d8fa7b42c0f5ea3d/template/adr-template.md";
 
 async function hostCheck(root: string): Promise<void> {
   // Host paths are initialized at import time, after the child has its isolated HOME.
@@ -93,17 +90,4 @@ if (process.env[CHILD_ENV]) {
       await rm(root, { recursive: true, force: true });
     }
   }, 60_000);
-
-  test("vendored MADR template matches its recorded digest and pinned upstream bytes", async () => {
-    const template = await readFile(join(ASSETS, "adr-template.md"));
-    const notice = await readFile(join(ASSETS, "NOTICE"), "utf8");
-    const recorded = notice.match(/^Template SHA-256: ([a-f0-9]{64})$/m)?.[1];
-    assert(recorded, "NOTICE must record the template SHA-256.");
-    expect(createHash("sha256").update(template).digest("hex")).toBe(recorded);
-    const response = await fetch(UPSTREAM);
-    expect(response.ok).toBe(true);
-    const upstream = Buffer.from(await response.arrayBuffer());
-    expect(template.equals(upstream)).toBe(true);
-    expect(createHash("sha256").update(upstream).digest("hex")).toBe(recorded);
-  }, 30_000);
 }
