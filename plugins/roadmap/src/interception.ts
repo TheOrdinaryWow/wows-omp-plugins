@@ -1,10 +1,9 @@
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { loadRepo } from "#src/documents.ts";
 import { discoverRepo, type GitRepo } from "#src/git.ts";
-import { editInspect } from "#src/host.ts";
+import { editInspect, resolveToCwd, unwrapHashlineHeaderPath } from "#src/host.ts";
 
 /** Includes the managed directory itself, since removing it also mutates its files. */
 export function isManaged(path: string, repoRoot: string): boolean {
@@ -72,34 +71,44 @@ export function managedTargets(toolName: string, input: Record<string, unknown>,
   }
   if (toolName === "bash" && typeof input.command === "string") {
     paths.push(...bashTargets(input.command));
-    if (typeof input.cwd === "string") cwd = resolve(cwd, input.cwd);
+    if (typeof input.cwd === "string") cwd = resolveToCwd(input.cwd, cwd);
   }
   return [
     ...new Set(
       paths
-        .filter((path) => path && (!/^[a-z][a-z\d+.-]*:\/\//i.test(path) || path.startsWith("file://")))
+        .map((path) => (toolName === "write" ? unwrapHashlineHeaderPath(path) : path))
+        .filter((path) => path && (!/^@?[a-z][a-z\d+.-]*:\/\//i.test(path) || /^@?file:\/\//i.test(path)))
         .map((path) => {
-          if (path.startsWith("file://")) return fileURLToPath(path);
-          // Only glob-aware tools project a pattern to its directory ancestor.
-          const base = toolName === "ast_edit" || toolName === "bash" ? path.split(/[*?[\]{}]/, 1)[0] || "." : path;
-          return resolve(cwd, base);
+          const absolute = resolveToCwd(path, cwd);
+          if (toolName !== "ast_edit" && toolName !== "bash") return absolute;
+          const pattern = absolute.search(/[*?[\]{}]/);
+          return pattern < 0 ? absolute : absolute.slice(0, absolute.lastIndexOf(sep, pattern) + 1);
         }),
     ),
   ];
 }
 
-function resolvedPath(path: string): string {
+function resolvedPath(path: string, links?: Set<string>): string {
   let ancestor = path;
   for (;;) {
+    let isLink: boolean;
     try {
-      statSync(ancestor);
-      return resolve(realpathSync(ancestor), relative(ancestor, path));
+      isLink = lstatSync(ancestor).isSymbolicLink();
     } catch (error) {
-      if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const parent = dirname(ancestor);
       if (parent === ancestor) throw error;
       ancestor = parent;
+      continue;
     }
+    if (isLink) {
+      links ??= new Set<string>();
+      if (links.has(ancestor)) throw new Error(`Symlink cycle while resolving ${path}`);
+      links.add(ancestor);
+      const target = resolve(dirname(ancestor), readlinkSync(ancestor));
+      return resolve(resolvedPath(target, links), relative(ancestor, path));
+    }
+    return resolve(realpathSync(ancestor), relative(ancestor, path));
   }
 }
 

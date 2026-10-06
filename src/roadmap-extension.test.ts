@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import type { AgentSession, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
+import type { AgentSession, AgentToolResult, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
 
 import { loadAll, loadRepo, type Model, type Repo, roundFiles, roundSha256 } from "../plugins/roadmap/src/documents.ts";
 import { discoverRepo } from "../plugins/roadmap/src/git.ts";
@@ -96,7 +96,10 @@ async function git(root: string, args: string[]): Promise<void> {
   assert.equal(code, 0, `${stdout}\n${stderr}`);
 }
 
-async function createHarness(root: string, options: { sub?: boolean; applyPatch?: boolean } = {}): Promise<Harness> {
+async function createHarness(
+  root: string,
+  options: { sub?: boolean; editMode?: "hashline" | "replace" | "apply_patch" } = {},
+): Promise<Harness> {
   // These imports intentionally exercise the loader boundary after the child's isolated HOME is set.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
@@ -111,9 +114,9 @@ async function createHarness(root: string, options: { sub?: boolean; applyPatch?
     settings: Settings.isolated({
       "tools.approvalMode": "yolo",
       "autolearn.enabled": false,
-      "edit.mode": options.applyPatch ? "apply_patch" : "hashline",
+      "edit.mode": options.editMode ?? "hashline",
     }),
-    toolNames: ["write", "edit", "ast_edit", "bash"],
+    toolNames: ["read", "write", "edit", "ast_edit", "bash"],
     additionalExtensionPaths: [ENTRY],
     disableExtensionDiscovery: true,
     enableMCP: false,
@@ -214,6 +217,13 @@ async function injection(h: Harness): Promise<string> {
 const CASES: Record<string, string> = {
   interception: "initialized repositories block native mutators and allow other files",
   patch: "the real apply_patch edit mode is intercepted",
+  "interception-dangling": "dangling-symlink writes protect nonexistent managed targets but allow unmanaged targets",
+  "interception-globs": "partial-name ast_edit globs protect managed directories",
+  "interception-write-aliases": "native write aliases cannot change managed bytes",
+  "interception-replace-aliases": "native replace-edit aliases cannot change managed bytes",
+  "interception-hashline-aliases": "native hashline-edit aliases cannot change managed bytes",
+  "interception-patch-aliases": "native apply_patch aliases cannot change managed bytes",
+  "interception-errors": "path-resolution errors refuse native writes without changing managed bytes",
   uninitialized: "repositories without the marker allow native mutation hooks",
   worktree: "targets use their own worktree and symlink resolution",
   injection: "context is recomputed each turn and disappears after round close",
@@ -240,7 +250,15 @@ const CASES: Record<string, string> = {
 };
 
 async function acceptance(name: string, root: string): Promise<void> {
-  const h = await createHarness(root, { sub: name === "subagent", applyPatch: name === "patch" });
+  const h = await createHarness(root, {
+    sub: name === "subagent",
+    editMode:
+      name === "patch" || name === "interception-patch-aliases"
+        ? "apply_patch"
+        : name === "interception-replace-aliases"
+          ? "replace"
+          : "hashline",
+  });
   try {
     if (name === "interception" || name === "patch" || name === "worktree") {
       const repo = await initialized(root);
@@ -342,6 +360,106 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.equal(await readFile(join(unmarked, "docs/adr/x.md"), "utf8"), "allowed");
       }
       assert.equal(await readFile(current.path, "utf8"), before);
+    } else if (name.startsWith("interception-")) {
+      const repo = await initialized(root);
+      const model = await loadAll(repo);
+      const current = model.stages[0];
+      assert(current);
+      const write = h.session.getToolByName("write");
+      assert(write);
+      if (name === "interception-dangling") {
+        for (const [alias, target] of [
+          ["outside-alias.md", "docs/adr/9999-new.md"],
+          ["outside-directory", "docs/roadmap/missing-directory"],
+        ]) {
+          assert(alias && target);
+          await symlink(target, join(root, alias));
+          const path = alias === "outside-directory" ? `${alias}/new.md` : alias;
+          await assert.rejects(write.execute(`dangling-${alias}`, { path, content: "bad" }), /roadmap_stage/);
+          await assert.rejects(readFile(join(root, alias === "outside-directory" ? `${target}/new.md` : target)), { code: "ENOENT" });
+        }
+        await symlink("outside-alias.md", join(root, "outside-chain.md"));
+        await assert.rejects(write.execute("dangling-chain", { path: "outside-chain.md", content: "bad" }), /roadmap_stage/);
+        await symlink("docs/unmanaged-new.md", join(root, "unmanaged-alias.md"));
+        await write.execute("dangling-unmanaged", { path: "unmanaged-alias.md", content: "allowed\n" });
+        assert.equal(await readFile(join(root, "docs/unmanaged-new.md"), "utf8"), "allowed\n");
+      } else if (name === "interception-globs") {
+        const source = "const guarded = 1;\n";
+        const path = join(repo.roadmapDir, "guard.ts");
+        await writeFile(path, source);
+        const ast = h.session.getToolByName("ast_edit");
+        assert(ast);
+        for (const pattern of ["docs/roadm*/**/*.ts", "docs/roa?map/**/*.md"]) {
+          await assert.rejects(
+            ast.execute(`partial-glob-${crypto.randomUUID()}`, {
+              ops: [{ pat: "const guarded = 1;", out: "const guarded = 2;" }],
+              paths: [pattern],
+            }),
+            /roadmap_stage/,
+          );
+          assert.equal(await readFile(path, "utf8"), source);
+        }
+        await rm(path);
+      } else if (name === "interception-errors") {
+        await symlink("cycle-b", join(root, "cycle-a"));
+        await symlink("cycle-a", join(root, "cycle-b"));
+        await writeFile(join(root, "ordinary.md"), "Not a directory\n");
+        for (const path of ["cycle-a", "ordinary.md/child.md"]) {
+          await assert.rejects(write.execute(`resolution-error-${crypto.randomUUID()}`, { path, content: "bad" }), /could not validate/);
+        }
+        assert.equal(await readFile(join(root, "ordinary.md"), "utf8"), "Not a directory\n");
+      } else {
+        const edit = h.session.getToolByName("edit");
+        const read = h.session.getToolByName("read");
+        assert(edit && read);
+        for (const [index, absolute] of [current.path, join(repo.adrDir, "README.md")].entries()) {
+          const source = await readFile(absolute, "utf8");
+          const path = relative(root, absolute);
+          const alias = `managed-alias-${index}.md`;
+          await symlink(absolute, join(root, alias));
+          const paths = [`@${absolute}`, `:${absolute}`, `~/${relative(homedir(), absolute)}`, pathToFileURL(absolute).href, alias];
+          if (name === "interception-write-aliases") {
+            paths.push(`[${path}#ABCD]`, `[${path}]`, `[@${absolute}#ABCD]`);
+            for (const target of paths) {
+              await assert.rejects(write.execute(`alias-write-${crypto.randomUUID()}`, { path: target, content: "bad" }), /roadmap_stage/);
+              assert.equal(await readFile(absolute, "utf8"), source);
+            }
+          } else if (name === "interception-replace-aliases") {
+            for (const target of paths) {
+              await assert.rejects(
+                edit.execute(`alias-replace-${crypto.randomUUID()}`, { path: target, old_string: source, new_string: "bad\n" }),
+                /roadmap_stage/,
+              );
+              assert.equal(await readFile(absolute, "utf8"), source);
+            }
+          } else if (name === "interception-hashline-aliases") {
+            const snapshot: AgentToolResult<unknown> = await read.execute(`alias-read-${index}`, { path: absolute });
+            const text = snapshot.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+            const tag = /\[[^\r\n]+#([A-Fa-f\d]{4})\]/.exec(text)?.[1];
+            assert(tag, text);
+            for (const target of paths) {
+              await assert.rejects(
+                edit.execute(`alias-hashline-${crypto.randomUUID()}`, { input: `[${target}#${tag}]\nPUT >$:\n+bad` }),
+                /roadmap_stage/,
+              );
+              assert.equal(await readFile(absolute, "utf8"), source);
+            }
+          } else if (name === "interception-patch-aliases") {
+            const heading = source.split("\n").find((line) => line.startsWith("# "));
+            assert(heading);
+            for (const target of paths) {
+              await assert.rejects(
+                edit.execute(`alias-patch-${crypto.randomUUID()}`, {
+                  input: `*** Begin Patch\n*** Update File: ${target}\n@@\n-${heading}\n+# Bad\n*** End Patch`,
+                }),
+                /roadmap_stage/,
+              );
+              assert.equal(await readFile(absolute, "utf8"), source);
+            }
+          } else throw new Error(`Unknown interception case: ${name}`);
+        }
+      }
+      assert.deepEqual((await loadAll(repo)).files, model.files);
     } else if (name === "uninitialized") {
       assert.equal(await injection(h), "");
       for (const [toolName, input] of [

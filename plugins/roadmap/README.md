@@ -110,13 +110,13 @@ ADR `create` requires `title` and `sections` with `context`, nonempty `options` 
 
 ## Managed-file protection
 
-After initialization, a tool-call hook protects `docs/roadmap/**` and `docs/adr/**` in main and subagent sessions. It discovers the target's own git work tree, checks lexical and resolved paths, and blocks with guidance to use the roadmap tools. Repositories without the initialization marker are unaffected. A validation error in the hook refuses the call rather than allowing a potentially unmanaged mutation.
+After initialization, a tool-call hook protects `docs/roadmap/**` and `docs/adr/**` in main and subagent sessions. It discovers the target's own git work tree, checks lexical and resolved paths (including dangling symlink destinations), and blocks with guidance to use the roadmap tools. Native paths use the host's normalization for `@`-prefixed absolute paths, stray `:` prefixes, home-relative `~` paths and `file://` URLs. Repositories without the initialization marker are unaffected. A validation or path-resolution error in the hook refuses the call rather than allowing a potentially unmanaged mutation.
 
 | Surface | Coverage |
 | --- | --- |
-| `write` | Its `path`. |
+| `write` | Its `path`, including `[path#TAG]` headers copied from read output. |
 | `edit`, `apply_patch` | Native edit projection across supported grammars, including source and destination paths for file operations. |
-| `ast_edit` | `paths`, including directory or glob ancestors such as `docs`. |
+| `ast_edit` | `paths`, including directories and the containing directory of the first glob segment: `docs/roadm*/**/*.ts` and `docs/roa?map/**/*.md` both project to `docs`. |
 | `lsp` | File-named `rename`, `rename_file` source/destination and applied `code_actions` via `file` and `new_name`. This isn't inspection of every file in a cross-file workspace edit. |
 | `bash` | Best-effort static detection of path arguments after redirections (`>`, `>>`), `tee`, `mv`, `cp`, `rm`, in-place `sed` and `truncate`. |
 
