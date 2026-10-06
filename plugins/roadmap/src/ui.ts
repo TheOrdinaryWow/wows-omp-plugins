@@ -1,3 +1,5 @@
+import { relative } from "node:path";
+
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { Model, StageDoc, StageStatus, TodoItem } from "#src/documents.ts";
@@ -29,7 +31,7 @@ export interface RoundTodoDispositionChoice {
 
 export interface RoadmapUi {
   overlap(q: OverlapQuestion): Promise<OverlapAnswer | undefined>;
-  previewConfirm(p: { title: string; files: PreviewFile[] }): Promise<boolean | undefined>;
+  previewConfirm(p: { title: string; root: string; files: PreviewFile[] }): Promise<boolean | undefined>;
   statusMenu(m: Model): Promise<StatusMenuChoice | undefined>;
   closeRoundDispositions(todos: TodoItem[]): Promise<RoundTodoDispositionChoice[] | undefined>;
   notify(message: string, level: "info" | "warning" | "error"): void;
@@ -109,7 +111,7 @@ export function createTuiUi(ctx: RoadmapUiContext): RoadmapUi {
     async previewConfirm(p) {
       const write = `Write ${plural(p.files.length, "file")}`;
       const cancel = "Cancel";
-      const labels = [write, ...p.files.map((file) => `View ${file.path}`), cancel];
+      const labels = [write, ...p.files.map((file) => `View ${relative(p.root, file.path)}`), cancel];
       let initialIndex = 0;
       for (;;) {
         const picked = await ui.select(`${p.title}\nSelect a file to view it, or write all of them.`, labels, { initialIndex });
@@ -118,7 +120,7 @@ export function createTuiUi(ctx: RoadmapUiContext): RoadmapUi {
         if (picked === cancel) return false;
         initialIndex = labels.indexOf(picked);
         const file = p.files[initialIndex - 1];
-        if (file) await ui.editor(`${file.path} (read-only preview, edits are discarded)`, file.content);
+        if (file) await ui.editor(`${relative(p.root, file.path)} (read-only preview, edits are discarded)`, file.content);
       }
     },
 

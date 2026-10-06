@@ -64,7 +64,7 @@ const closeInput = {
 
 class ScriptedUi implements RoadmapUi {
   overlapCalls: OverlapQuestion[] = [];
-  previewCalls: Array<{ title: string; files: Array<{ path: string; content: string }> }> = [];
+  previewCalls: Array<Parameters<RoadmapUi["previewConfirm"]>[0]> = [];
   notifications: Array<{ message: string; level: string }> = [];
   answer: OverlapAnswer | undefined = "free";
   confirmed: boolean | undefined = true;
@@ -77,7 +77,7 @@ class ScriptedUi implements RoadmapUi {
     return this.answer;
   }
 
-  async previewConfirm(p: { title: string; files: Array<{ path: string; content: string }> }) {
+  async previewConfirm(p: Parameters<RoadmapUi["previewConfirm"]>[0]) {
     this.previewCalls.push(p);
     return this.preview ? this.preview(p) : this.confirmed;
   }

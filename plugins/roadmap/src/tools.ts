@@ -412,7 +412,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
           };
           const prepared = await prepareInit(repo, owner, params);
           if (!prepared.ok) return prepared;
-          const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, files: prepared.files });
+          const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
           if (confirmed !== true || signal?.aborted)
             return {
               ok: false,
@@ -455,7 +455,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
         };
         const prepared = await prepareRoundOpen(repo, owner, params);
         if (!prepared.ok) return prepared;
-        const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, files: prepared.files });
+        const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
         if (confirmed !== true || signal?.aborted)
           return {
             ok: false,

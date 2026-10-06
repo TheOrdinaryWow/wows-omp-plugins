@@ -95,31 +95,33 @@ test("overlap shows the stage and three options and maps answers", async () => {
   evidence("overlap", stub.transcript(0, 1));
 });
 
+const ROOT = "/work/repo";
 const FILES = [
-  { path: "docs/roadmap/README.md", content: "# Roadmap\n" },
-  { path: "docs/adr/0001-use-madr.md", content: "# Use MADR\n" },
+  { path: `${ROOT}/docs/roadmap/README.md`, content: "# Roadmap\n" },
+  { path: `${ROOT}/docs/adr/0001-use-madr.md`, content: "# Use MADR\n" },
 ];
+const PREVIEW = { title: "Initialize roadmap", root: ROOT, files: FILES };
 
-test("previewConfirm offers write, cancel and per-file views from one menu, returning to it after each view", async () => {
+test("previewConfirm offers write, cancel and repo-relative file views from one menu, returning to it after each view", async () => {
   const stub = stubUi(["View docs/adr/0001-use-madr.md", "edited text that must be ignored", "Write 2 files"]);
   const ui = createTuiUi(stub.ctx);
-  expect(await ui.previewConfirm({ title: "Initialize roadmap", files: FILES })).toBe(true);
+  expect(await ui.previewConfirm(PREVIEW)).toBe(true);
   expect(stub.calls.map((call) => call.kind)).toEqual(["select", "editor", "select"]);
   expect(stub.call(0).title).toContain("Initialize roadmap");
   expect(stub.call(0).body).toEqual(["Write 2 files", "View docs/roadmap/README.md", "View docs/adr/0001-use-madr.md", "Cancel"]);
-  expect(stub.call(1).title).toContain("docs/adr/0001-use-madr.md");
+  expect(stub.call(1).title).toStartWith("docs/adr/0001-use-madr.md");
   expect(stub.call(1).body).toBe("# Use MADR\n");
   evidence("previewConfirm", stub.transcript());
 
   const direct = stubUi(["Write 2 files"]);
-  expect(await createTuiUi(direct.ctx).previewConfirm({ title: "Initialize roadmap", files: FILES })).toBe(true);
+  expect(await createTuiUi(direct.ctx).previewConfirm(PREVIEW)).toBe(true);
   expect(direct.calls.map((call) => call.kind)).toEqual(["select"]);
 
   const declined = stubUi(["View docs/roadmap/README.md", undefined, "Cancel"]);
-  expect(await createTuiUi(declined.ctx).previewConfirm({ title: "Initialize roadmap", files: FILES })).toBe(false);
+  expect(await createTuiUi(declined.ctx).previewConfirm(PREVIEW)).toBe(false);
 
   const dismissed = stubUi([undefined]);
-  expect(await createTuiUi(dismissed.ctx).previewConfirm({ title: "Initialize roadmap", files: FILES })).toBeUndefined();
+  expect(await createTuiUi(dismissed.ctx).previewConfirm(PREVIEW)).toBeUndefined();
 });
 
 test("statusMenu lists round, stages with glyphs and TODO counts, and only valid actions", async () => {
@@ -194,7 +196,7 @@ test("HeadlessUi returns undefined from every dialog and is used without a UI", 
   const headless = new HeadlessUi();
   for (const target of [ui, headless]) {
     expect(await target.overlap(OVERLAP)).toBeUndefined();
-    expect(await target.previewConfirm({ title: "x", files: FILES })).toBeUndefined();
+    expect(await target.previewConfirm(PREVIEW)).toBeUndefined();
     expect(await target.statusMenu(model([round("R1", "active")], []))).toBeUndefined();
     expect(await target.closeRoundDispositions([todo("T001")])).toBeUndefined();
     target.notify("hello", "info");
