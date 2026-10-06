@@ -2,13 +2,15 @@ import { describe, expect, test } from "bun:test";
 
 import {
   acceptRoutingDecision,
-  chooseBudgetModel,
+  type ModelOption,
   PendingSpawnRoutes,
   parseLegalAgentNames,
   parseTaskInput,
   rewriteTaskRoutes,
   routableCandidates,
   routingDeadlineMs,
+  type ScoredModelOption,
+  selectSpawnModel,
   serializeCandidate,
 } from "../plugins/judge-dispatch/src/routing.ts";
 
@@ -100,10 +102,11 @@ test("candidate serialization exposes only compact routing metadata", () => {
     readOnly: true,
     declaredModelPatterns: ["@smol"],
     model: {
-      patterns: ["openai/gpt-fast"],
       role: "smol",
-      selected: "openai/gpt-fast",
-      fallbackChain: ["anthropic/claude-haiku"],
+      pool: [
+        { pattern: "openai/gpt-fast:low", key: "openai/gpt-fast", provider: "openai", intelligence: 40, blendedPrice: 1 },
+        { pattern: "anthropic/claude-haiku", key: "anthropic/claude-haiku", provider: "anthropic" },
+      ],
     },
   });
 
@@ -112,13 +115,7 @@ test("candidate serialization exposes only compact routing metadata", () => {
     description: "Read-only repository research",
     source: "bundled",
     access: "read-only",
-    model: {
-      declared: ["@smol"],
-      effective: ["openai/gpt-fast"],
-      role: "smol",
-      selected: "openai/gpt-fast",
-      fallbacks: ["anthropic/claude-haiku"],
-    },
+    model: { declared: ["@smol"], role: "smol", models: ["openai/gpt-fast", "anthropic/claude-haiku"] },
   });
 });
 
@@ -218,60 +215,92 @@ describe("routing decision acceptance", () => {
   });
 });
 
-describe("budget model choice", () => {
-  // Mirrors a chain whose last entries exist only as last-resort fallbacks.
-  const chain = [
-    { pattern: "primary", intelligence: 100, blendedPrice: 10 },
-    { pattern: "second", intelligence: 80, blendedPrice: 4 },
-    { pattern: "third", intelligence: 75, blendedPrice: 3 },
-    { pattern: "last-resort", intelligence: 20, blendedPrice: 0.1 },
-  ];
+describe("spawn model selection", () => {
+  const option = (key: string, intelligence: number, blendedPrice: number): ScoredModelOption => ({
+    pattern: `${key}:high`,
+    key,
+    provider: key.slice(0, key.indexOf("/")),
+    intelligence,
+    blendedPrice,
+  });
+  // A strongest-first chain: the primary is the best model, fallbacks get weaker.
+  const primary = option("openai/primary", 50, 4);
+  const sibling = option("openai/sibling", 47, 4);
+  const stronger = option("anthropic/stronger", 58, 8);
+  const weak = option("cheap/weak", 26, 1.5);
+  const pool = [primary, sibling, stronger, weak];
+  const fitFor = (key: string) => Object.fromEntries(pool.map((entry) => [entry.key, entry.key === key ? 0.7 : 0.1]));
+  const base = { pool, providerWeights: new Map<string, number>() };
+  const sample = (budget: "minimum" | "balanced" | "max", difficulty: "routine" | "standard" | "demanding", random: number) =>
+    selectSpawnModel({ ...base, budget, difficulty, pick: "weighted", random: () => random })?.chosen?.key;
 
-  test("never trades down to a weak last-resort fallback", () => {
-    expect(chooseBudgetModel(chain, "routine", "minimum")?.pattern).toBe("third");
-    expect(chooseBudgetModel(chain, "standard", "minimum")?.pattern).toBe("second");
-    expect(chooseBudgetModel(chain, "routine", "balanced")?.pattern).toBe("second");
+  test("best takes the judge's fit among models the budget admits relative to the primary", () => {
+    const pick = (budget: "minimum" | "balanced" | "max", key: string) =>
+      selectSpawnModel({ ...base, budget, difficulty: "routine", pick: "best", fit: fitFor(key) })?.chosen?.key;
+    expect(pick("balanced", "openai/sibling")).toBe("openai/sibling");
+    expect(pick("balanced", "anthropic/stronger")).toBe("anthropic/stronger");
+    expect(pick("balanced", "cheap/weak")).toBe("openai/primary");
+    expect(pick("max", "openai/sibling")).toBe("openai/primary");
+    expect(pick("minimum", "cheap/weak")).toBe("cheap/weak");
   });
 
-  test("demanding work stays on the strongest model unless the budget is minimum", () => {
-    expect(chooseBudgetModel(chain, "demanding", "balanced")?.pattern).toBe("primary");
-    expect(chooseBudgetModel(chain, "demanding", "minimum")?.pattern).toBe("primary");
-    const nearPeer = [...chain, { pattern: "near-peer", intelligence: 96, blendedPrice: 5 }];
-    expect(chooseBudgetModel(nearPeer, "demanding", "minimum")?.pattern).toBe("near-peer");
-    expect(chooseBudgetModel(nearPeer, "demanding", "balanced")?.pattern).toBe("primary");
+  test("best keeps the primary without a model judgment", () => {
+    expect(selectSpawnModel({ ...base, budget: "minimum", difficulty: "routine", pick: "best" })).toEqual({
+      primary: "openai/primary",
+      keptReason: "no model judgment",
+    });
   });
 
-  test("max picks the strongest candidate even when it is not first, preferring the cheaper on a tie", () => {
-    const reordered = [chain[1], { pattern: "best", intelligence: 100, blendedPrice: 12 }, chain[0]].filter(
-      (option) => option !== undefined,
-    );
-    expect(chooseBudgetModel(reordered, "routine", "max")?.pattern).toBe("primary");
-    expect(
-      chooseBudgetModel(
-        [chain[1], chain[2]].filter((option) => option !== undefined),
-        "routine",
-        "max",
-      )?.pattern,
-    ).toBe("second");
+  test("provider weights multiply the judged fit", () => {
+    const fit = { "openai/primary": 0.3, "anthropic/stronger": 0.45, "openai/sibling": 0.25 };
+    const pick = (weights: [string, number][]) =>
+      selectSpawnModel({ ...base, providerWeights: new Map(weights), budget: "balanced", difficulty: "routine", pick: "best", fit })?.chosen
+        ?.key;
+    expect(pick([])).toBe("anthropic/stronger");
+    expect(pick([["openai", 2]])).toBe("openai/primary");
+  });
+
+  test("weighted sampling reaches every admitted model and favors cheap ones on lower budgets", () => {
+    // Cost order: weak 1.5, sibling 4 (weaker of the 4s), primary 4, stronger 8.
+    expect(sample("minimum", "routine", 0)).toBe("openai/primary");
+    expect(sample("minimum", "routine", 0.99)).toBe("cheap/weak");
+    expect(sample("balanced", "demanding", 0.99)).toBe("anthropic/stronger");
+    expect(sample("max", "routine", 0.99)).toBe("anthropic/stronger");
+    // routine/minimum weights in pool order: primary 1/9, sibling 1/4, stronger 1/16, weak 1, so weak takes about 70% of draws.
+    const draws = Array.from({ length: 100 }, (_, index) => sample("minimum", "routine", index / 100));
+    expect(draws.filter((key) => key === "cheap/weak").length).toBeGreaterThanOrEqual(65);
+    expect(new Set(draws).size).toBe(4);
+  });
+
+  test("an unscored primary or a single admitted model keeps the configured primary", () => {
+    const unscored: ModelOption = { pattern: "x/unknown", key: "x/unknown", provider: "x" };
+    expect(selectSpawnModel({ ...base, pool: [unscored, primary], budget: "minimum", difficulty: "routine", pick: "weighted" })).toEqual({
+      primary: "x/unknown",
+      keptReason: "primary model has no catalog score",
+    });
+    expect(selectSpawnModel({ ...base, pool: [stronger, primary], budget: "max", difficulty: "routine", pick: "weighted" })).toEqual({
+      primary: "anthropic/stronger",
+      keptReason: "no eligible alternatives",
+    });
   });
 });
 
 describe("pending spawn routes", () => {
+  const decision = { agent: "task", primary: "openai/primary", patterns: ["openai/sibling"], note: "note" };
+
   test("matches the host's prefixed and collision-suffixed spawn keys once", () => {
     const pending = new PendingSpawnRoutes();
-    pending.add("Audit", { agent: "task", difficulty: "routine" });
-    pending.add("Docs", { difficulty: "standard" });
-    expect(pending.take("parent.Audit-2", "task")).toEqual({ agent: "task", difficulty: "routine" });
+    pending.add("Audit", decision);
+    expect(pending.take("parent.Audit-2", "task")).toEqual(decision);
     expect(pending.take("Audit", "task")).toBeUndefined();
-    expect(pending.take("Docs", "scout")).toEqual({ difficulty: "standard" });
   });
 
   test("an agent mismatch or a name claimed twice changes nothing", () => {
     const pending = new PendingSpawnRoutes();
-    pending.add("Audit", { agent: "task", difficulty: "routine" });
+    pending.add("Audit", decision);
     expect(pending.take("Audit", "scout")).toBeUndefined();
-    pending.add("Plan", { agent: "task", difficulty: "routine" });
-    pending.add("Plan", { agent: "task", difficulty: "demanding" });
+    pending.add("Plan", decision);
+    pending.add("Plan", decision);
     expect(pending.take("Plan", "task")).toBeUndefined();
     expect(pending.take("Plan-2", "task")).toBeUndefined();
   });

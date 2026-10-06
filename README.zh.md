@@ -30,7 +30,7 @@ omp plugin upgrade <name>@wows-omp-plugins
 | 插件 | 说明 | 文档 |
 | --- | --- | --- |
 | `audit-goal` | `/audit`：反复进行独立审计与修复，并记录轮次账本 | [README](plugins/audit-goal/README.zh.md) |
-| `judge-dispatch` | 让 OMP 的 judge 角色为 `task` 调用选择子代理类型 | [README](plugins/judge-dispatch/README.zh.md) |
+| `judge-dispatch` | 让 OMP 的 judge 角色为 `task` 调用选择子代理类型、思考强度和模型 | [README](plugins/judge-dispatch/README.zh.md) |
 | `omp-herdr-dag` | 在 Herdr 侧边窗格中实时展示待办、计划、Atlas DAG 和子代理视图 | [README](plugins/omp-herdr-dag/README.zh.md) |
 | `omo-prometheus` | 移植到 OMP 的 oh-my-openagent Prometheus 规划与 Atlas 执行 | [README](plugins/omo-prometheus/README.zh.md) |
 | `omo-ultrawork` | Ultrawork 模式、mass-ulw、`/hyperplan` 和 `/ulw-research` | [README](plugins/omo-ultrawork/README.zh.md) |

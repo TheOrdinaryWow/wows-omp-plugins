@@ -4,6 +4,7 @@ import {
   formatModelStringWithRouting,
   normalizeModelPatternList,
   resolveAgentModelSelection,
+  resolveExplicitModelRole,
   resolveModelOverride,
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { findScopedSettings, type Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -17,11 +18,14 @@ import { registerLegacyRouteRecords, setRoutingWorkingMessage, showRouteOutcomes
 import {
   acceptRoutingDecision,
   blendedPrice,
-  chooseBudgetModel,
   DIFFICULTY_EFFORT,
+  isScored,
   type JudgeDispatchSettings,
   MODEL_BUDGETS,
+  MODEL_PICKS,
   type ModelBudget,
+  type ModelOption,
+  type ModelPick,
   type ParsedTaskRoute,
   PendingSpawnRoutes,
   parseLegalAgentNames,
@@ -32,21 +36,16 @@ import {
   rewriteTaskRoutes,
   routableCandidates,
   routingDeadlineMs,
-  type ScoredModelOption,
   type SerializedCandidate,
+  selectSpawnModel,
   serializeCandidate,
   TASK_DIFFICULTIES,
   type TaskDifficulty,
 } from "#src/routing.ts";
 
 const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
-const DEFAULT_SETTINGS: JudgeDispatchSettings = {
-  minimumConfidence: 0.7,
-  includeSharedContext: true,
-  judgeEffort: false,
-  modelBudget: "off",
-  indicator: true,
-};
+/** The host's `task` default agent when a call names none and the session spawn policy is unrestricted. */
+const DEFAULT_SPAWN_AGENT = "task";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -68,38 +67,55 @@ async function withRoutingDeadline<T>(timeoutMs: number, operation: (signal: Abo
   }
 }
 
+function parseProviderWeights(raw: unknown): Map<string, number> {
+  if (typeof raw !== "string") throw new Error(`invalid providerWeights ${JSON.stringify(raw)}`);
+  const weights = new Map<string, number>();
+  for (const entry of raw.split(/[,;\n]/)) {
+    if (!entry.trim()) continue;
+    const separator = entry.indexOf("=");
+    const provider = entry.slice(0, separator).trim();
+    const weight = Number(entry.slice(separator + 1).trim());
+    if (separator < 0 || !provider || !Number.isFinite(weight) || weight <= 0 || weights.has(provider)) {
+      throw new Error(`invalid providerWeights entry ${JSON.stringify(entry.trim())}; expected unique provider=weight with weight > 0`);
+    }
+    weights.set(provider, weight);
+  }
+  return weights;
+}
+
+function booleanSetting(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = raw[key] ?? fallback;
+  if (typeof value !== "boolean") throw new Error(`invalid ${key} ${JSON.stringify(value)}`);
+  return value;
+}
+
 function parseSettings(raw: Record<string, unknown>): JudgeDispatchSettings {
-  const minimumConfidence = raw.minimumConfidence ?? DEFAULT_SETTINGS.minimumConfidence;
+  const minimumConfidence = raw.minimumConfidence ?? 0.7;
   if (typeof minimumConfidence !== "number" || !Number.isFinite(minimumConfidence) || minimumConfidence < 0 || minimumConfidence > 1) {
     throw new Error(`invalid minimumConfidence ${JSON.stringify(minimumConfidence)}`);
   }
 
-  const includeSharedContext = raw.includeSharedContext ?? DEFAULT_SETTINGS.includeSharedContext;
-  if (typeof includeSharedContext !== "boolean") {
-    throw new Error(`invalid includeSharedContext ${JSON.stringify(includeSharedContext)}`);
-  }
-
-  const judgeEffort = raw.judgeEffort ?? DEFAULT_SETTINGS.judgeEffort;
-  if (typeof judgeEffort !== "boolean") {
-    throw new Error(`invalid judgeEffort ${JSON.stringify(judgeEffort)}`);
-  }
-
-  const modelBudget = raw.modelBudget ?? DEFAULT_SETTINGS.modelBudget;
+  // Releases up to 0.5 stored `modelBudget: off` to mean "no model selection" and any other budget to enable it.
+  const legacyOff = raw.modelBudget === "off";
+  const modelBudget = legacyOff ? "balanced" : (raw.modelBudget ?? "balanced");
   if (!MODEL_BUDGETS.includes(modelBudget as ModelBudget)) {
     throw new Error(`invalid modelBudget ${JSON.stringify(modelBudget)}`);
   }
-
-  const indicator = raw.indicator ?? DEFAULT_SETTINGS.indicator;
-  if (typeof indicator !== "boolean") {
-    throw new Error(`invalid indicator ${JSON.stringify(indicator)}`);
+  const modelPick = raw.modelPick ?? "best";
+  if (!MODEL_PICKS.includes(modelPick as ModelPick)) {
+    throw new Error(`invalid modelPick ${JSON.stringify(modelPick)}`);
   }
 
   return {
-    minimumConfidence,
-    includeSharedContext,
-    judgeEffort,
+    routeAgent: booleanSetting(raw, "routeAgent", true),
+    selectModel: booleanSetting(raw, "selectModel", raw.modelBudget !== undefined && !legacyOff),
     modelBudget: modelBudget as ModelBudget,
-    indicator,
+    modelPick: modelPick as ModelPick,
+    providerWeights: parseProviderWeights(raw.providerWeights ?? ""),
+    minimumConfidence,
+    includeSharedContext: booleanSetting(raw, "includeSharedContext", true),
+    judgeEffort: booleanSetting(raw, "judgeEffort", false),
+    indicator: booleanSetting(raw, "indicator", true),
   };
 }
 
@@ -122,17 +138,47 @@ function deduplicateAgents(agents: readonly AgentDefinition[]): AgentDefinition[
   });
 }
 
-function selectedModel(patterns: readonly string[], settings: Settings, ctx: ExtensionContext): string | undefined {
-  const resolved = resolveModelOverride([...patterns], ctx.modelRegistry, settings);
-  if (!resolved.model) return undefined;
-  const selector = formatModelStringWithRouting(resolved.model);
-  return resolved.explicitThinkingLevel && resolved.thinkingLevel ? `${selector}:${resolved.thinkingLevel}` : selector;
+function modelOption(pattern: string, settings: Settings, ctx: ExtensionContext): ModelOption | undefined {
+  const model = resolveModelOverride([pattern], ctx.modelRegistry, settings).model;
+  if (!model) return undefined;
+  return {
+    pattern,
+    key: `${model.provider}/${model.id}`,
+    provider: model.provider,
+    ...(model.int != null && Number.isFinite(model.int) ? { intelligence: model.int } : {}),
+    ...(model.cost ? { blendedPrice: blendedPrice(model.cost) } : {}),
+  };
 }
 
-function fallbackChain(patterns: readonly string[], role: string | undefined, chains: Record<string, unknown>): string[] {
-  if (patterns.length > 1) return patterns.slice(1);
-  const inherited = chains[role ?? "default"] ?? (role ? chains.default : undefined);
-  return Array.isArray(inherited) ? inherited.filter((entry): entry is string => typeof entry === "string") : [];
+/**
+ * Flatten an agent's model selection into one pool, primary first: the expanded
+ * selectors, every role alias's retry chain, and, for a single selector, the chain
+ * the host would inherit for it. Selectors resolving to the same `provider/id`
+ * collapse into the first, so its thinking suffix wins.
+ */
+function modelPool(
+  selection: { patterns: readonly string[]; role?: string },
+  sourceSelectors: readonly string[],
+  chains: Record<string, unknown>,
+  settings: Settings,
+  ctx: ExtensionContext,
+): ModelOption[] {
+  const chainOf = (role: string): string[] | undefined => {
+    const chain = chains[role];
+    return Array.isArray(chain) ? chain.filter((entry): entry is string => typeof entry === "string") : undefined;
+  };
+  const roles = sourceSelectors.flatMap((selector) => resolveExplicitModelRole(selector, settings) ?? []);
+  const selectors = [
+    ...selection.patterns,
+    ...roles.flatMap((role) => chainOf(role) ?? []),
+    ...(selection.patterns.length === 1 ? (chainOf(selection.role ?? "default") ?? chainOf("default") ?? []) : []),
+  ];
+  const pool: ModelOption[] = [];
+  for (const pattern of selectors) {
+    const option = modelOption(pattern, settings, ctx);
+    if (option && !pool.some((existing) => existing.key === option.key)) pool.push(option);
+  }
+  return pool;
 }
 
 /**
@@ -159,14 +205,16 @@ async function discoverCandidates(ctx: ExtensionContext, settings: Settings, leg
     .map((name) => byName.get(name))
     .filter((agent): agent is AgentDefinition => agent !== undefined)
     .map((agent) => {
+      const override = modelOverrides[agent.name];
       const selection = resolveAgentModelSelection({
-        settingsOverride: modelOverrides[agent.name],
+        settingsOverride: override,
         agentModel: agent.model,
         settings,
         activeModelPattern,
         fallbackModelPattern: activeModelPattern,
       });
-      const selected = selectedModel(selection.patterns, settings, ctx);
+      const sourceSelectors =
+        normalizeModelPatternList(override).length > 0 ? normalizeModelPatternList(override) : normalizeModelPatternList(agent.model);
       return {
         name: agent.name,
         description: agent.description,
@@ -174,10 +222,8 @@ async function discoverCandidates(ctx: ExtensionContext, settings: Settings, leg
         readOnly: isReadOnlyAgent(agent),
         declaredModelPatterns: normalizeModelPatternList(agent.model),
         model: {
-          patterns: selection.patterns,
           ...(selection.role ? { role: selection.role } : {}),
-          ...(selected ? { selected } : {}),
-          fallbackChain: fallbackChain(selection.patterns, selection.role, fallbackChains),
+          pool: modelPool(selection, sourceSelectors, fallbackChains, settings, ctx),
         },
       } satisfies RoutingCandidate;
     });
@@ -187,10 +233,8 @@ function candidateCriterion(candidate: SerializedCandidate): string {
   const model = candidate.model;
   const selectors = [
     model.declared?.length ? `declared ${model.declared.join(", ")}` : undefined,
-    model.effective.length ? `effective ${model.effective.join(", ")}` : undefined,
     model.role ? `role ${model.role}` : undefined,
-    model.selected ? `selected ${model.selected}` : undefined,
-    model.fallbacks.length ? `fallbacks ${model.fallbacks.join(", ")}` : undefined,
+    model.models.length ? `models ${model.models.join(", ")}` : undefined,
   ]
     .filter((part): part is string => part !== undefined)
     .join("; ");
@@ -220,6 +264,20 @@ const DIFFICULTY_QUESTION: ChoiceQuestion<TaskDifficulty> = {
   },
 };
 
+const MODEL_QUESTION_INSTRUCTIONS =
+  "Choose the single model best suited to complete this assignment, weighing the work's reasoning depth and domain against each model's catalog intelligence and price. Do not choose the agent type.";
+
+function modelCriteria(candidates: readonly RoutingCandidate[]): Record<string, string> {
+  const criteria: Record<string, string> = {};
+  for (const option of candidates.flatMap((candidate) => candidate.model.pool)) {
+    if (Object.hasOwn(criteria, option.key) || !isScored(option)) continue;
+    const agents = candidates.filter((candidate) => candidate.model.pool.some((entry) => entry.key === option.key)).map((c) => c.name);
+    criteria[option.key] =
+      `intelligence ${option.intelligence}, $${option.blendedPrice.toFixed(2)}/M blended; available to ${agents.join(", ")}`;
+  }
+  return criteria;
+}
+
 async function judgeRoute(
   route: ParsedTaskRoute,
   allCandidates: readonly RoutingCandidate[],
@@ -229,11 +287,15 @@ async function judgeRoute(
   beforeJudge: () => void,
 ): Promise<RouteOutcome | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
-  const candidates = routableCandidates(route.requestedAgent, allCandidates);
-  if (!candidates) return "workflow-owned or unknown agent";
+  const routable = routableCandidates(route.requestedAgent, allCandidates);
+  if (!routable) return "workflow-owned or unknown agent";
+  const spawnAgent = route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
+  const candidates = config.routeAgent ? routable : routable.filter((candidate) => candidate.name === spawnAgent);
   if (candidates.length === 0) return "no alternatives";
-  const routesAgent = candidates.length >= 2;
-  const judgesDifficulty = config.judgeEffort || config.modelBudget !== "off";
+  const routesAgent = config.routeAgent && candidates.length >= 2;
+  const modelOptions = config.selectModel ? modelCriteria(candidates) : {};
+  const judgesModel = Object.keys(modelOptions).length >= 2;
+  const judgesDifficulty = config.judgeEffort || judgesModel;
   if (!routesAgent && !judgesDifficulty) return "no alternatives";
 
   const serialized = candidates.map(serializeCandidate);
@@ -254,6 +316,7 @@ async function judgeRoute(
     };
   }
   if (judgesDifficulty) questions.difficulty = DIFFICULTY_QUESTION;
+  if (judgesModel) questions.model = { type: "choice", instructions: MODEL_QUESTION_INSTRUCTIONS, criteria: modelOptions };
 
   // A chat-model judge cannot reproduce a native judge's calibrated confidence, so
   // the chain's first usable candidate must be native; anything else is never called.
@@ -273,10 +336,13 @@ async function judgeRoute(
         };
         const agent = routesAgent ? accept("agent", candidateNames) : undefined;
         const difficulty = judgesDifficulty ? accept("difficulty", TASK_DIFFICULTIES) : undefined;
+        const modelAnswer = judgesModel ? answers.model : undefined;
+        const modelFit = modelAnswer?.type === "choice" ? modelAnswer.probabilities : undefined;
         return {
           ...(agent ? { agent, agentConfidence: answers.agent?.confidence } : {}),
           ...(routesAgent && !agent ? { agentUndecided: true } : {}),
           ...(difficulty ? { difficulty, difficultyConfidence: answers.difficulty?.confidence } : {}),
+          ...(modelFit ? { modelFit } : {}),
         };
       },
       { signal },
@@ -313,11 +379,12 @@ async function judgeRouteFailOpen(
   }
 }
 
-/** Turn a judgment into the task-call rewrite, recording the budget decision its spawn hook will look up. */
+/** Turn a judgment into the task-call rewrite, recording the model decision its spawn hook will apply. */
 function routeChoice(
   route: ParsedTaskRoute,
   judged: RouteOutcome,
   config: JudgeDispatchSettings,
+  candidates: readonly RoutingCandidate[],
   pending: PendingSpawnRoutes,
 ): RouteChoice | undefined {
   if (typeof judged === "string") return undefined;
@@ -327,30 +394,34 @@ function routeChoice(
       ? { effort: DIFFICULTY_EFFORT[judged.difficulty], effortConfidence: judged.difficultyConfidence }
       : {}),
   };
-  if (config.modelBudget !== "off" && judged.difficulty) {
-    const agent = judged.agent ?? route.requestedAgent;
-    const name = route.name ?? `${agent ?? "task"}-${crypto.randomUUID().slice(0, 8)}`;
-    if (!route.name) choice.name = name;
-    pending.add(name, { ...(agent ? { agent } : {}), difficulty: judged.difficulty });
-  }
-  return choice;
-}
+  if (!config.selectModel) return choice;
 
-/** Registry models behind the spawn's configured selectors, keeping only available ones with a catalog score and price. */
-function scoredSpawnOptions(patterns: readonly string[], settings: Settings, ctx: ExtensionContext): ScoredModelOption[] | undefined {
-  const available = new Set(ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`));
-  const options: ScoredModelOption[] = [];
-  for (const [position, pattern] of patterns.entries()) {
-    const model = resolveModelOverride([pattern], ctx.modelRegistry, settings).model;
-    const scored = model && available.has(`${model.provider}/${model.id}`) && model.int != null && Number.isFinite(model.int);
-    // Without the first choice's score there is no reference for what a fallback gives up.
-    if (!scored) {
-      if (position === 0) return undefined;
-      continue;
-    }
-    options.push({ pattern, intelligence: model.int as number, blendedPrice: blendedPrice(model.cost) });
-  }
-  return options;
+  const agent = judged.agent ?? route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
+  const pool = candidates.find((candidate) => candidate.name === agent)?.model.pool ?? [];
+  // Without a confident difficulty, select as for the hardest work so the budget never trades down on a guess.
+  const difficulty = judged.difficulty ?? "demanding";
+  const model = selectSpawnModel({
+    pool,
+    difficulty,
+    budget: config.modelBudget,
+    pick: config.modelPick,
+    providerWeights: config.providerWeights,
+    ...(judged.modelFit ? { fit: judged.modelFit } : {}),
+  });
+  if (!model) return choice;
+  choice.model = model;
+  const chosen = model.chosen;
+  if (!chosen || chosen.key === model.primary) return choice;
+
+  const name = route.name ?? `${agent}-${crypto.randomUUID().slice(0, 8)}`;
+  if (!route.name) choice.name = name;
+  pending.add(name, {
+    agent,
+    primary: model.primary,
+    patterns: [chosen.pattern, ...pool.filter((option) => option.key !== chosen.key).map((option) => option.pattern)],
+    note: `judge-dispatch ${config.modelPick} pick, ${config.modelBudget} budget, ${difficulty} task: intelligence ${chosen.intelligence}, $${chosen.blendedPrice.toFixed(2)}/M blended`,
+  });
+  return choice;
 }
 
 /** Warn once per session that routing is idle until the host's judge role reaches a native judgment model. */
@@ -435,7 +506,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         const outcomes = await Promise.all(routes.map((route) => judgeRouteFailOpen(session, route, candidates, signal)));
         signal.throwIfAborted();
         const pending = pendingFor(ctx);
-        const choices = routes.map((route, index) => routeChoice(route, outcomes[index] as RouteOutcome, config, pending));
+        const choices = routes.map((route, index) => routeChoice(route, outcomes[index] as RouteOutcome, config, candidates, pending));
         const rewritten = rewriteTaskRoutes(input, routes, choices);
         if (indicator) showRouteOutcomes(pi, ctx, input, routes, outcomes, choices);
         return rewritten === input ? undefined : { input: rewritten };
@@ -457,20 +528,12 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
     try {
       const route = pendingFor(ctx).take(event.spawnKey, event.agent);
       if (!route) return undefined;
-      const { modelBudget } = await effectivePluginSettings(ctx.cwd);
-      if (modelBudget === "off") return undefined;
-      const settings = scopedSettings(ctx);
-      const chains = (await readHostSetting(settings, "retry.fallbackChains")) as Record<string, unknown>;
-      const patterns = [...new Set([...event.patterns, ...fallbackChain(event.patterns, event.modelRole, chains)])];
-      const options = scoredSpawnOptions(patterns, settings, ctx);
-      const chosen = options && chooseBudgetModel(options, route.difficulty, modelBudget);
-      if (!chosen || chosen.pattern === event.patterns[0]) return undefined;
-      return {
-        model: [chosen.pattern, ...event.patterns.filter((pattern) => pattern !== chosen.pattern)],
-        note: `judge-dispatch ${modelBudget} budget, ${route.difficulty} task: intelligence ${chosen.intelligence}, $${chosen.blendedPrice.toFixed(2)}/M blended`,
-      };
+      // The pool was flattened at `tool_call`; skip it if the host now resolves a different primary.
+      const primary = event.patterns[0] ? modelOption(event.patterns[0], scopedSettings(ctx), ctx) : undefined;
+      if (primary?.key !== route.primary) return undefined;
+      return { model: route.patterns, note: route.note };
     } catch (error) {
-      pi.logger.warn("judge-dispatch budget model selection failed open", { error: errorMessage(error) });
+      pi.logger.warn("judge-dispatch model selection failed open", { error: errorMessage(error) });
       return undefined;
     }
   });

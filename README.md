@@ -30,7 +30,7 @@ omp plugin upgrade <name>@wows-omp-plugins
 | Plugin | Description | Documentation |
 | --- | --- | --- |
 | `audit-goal` | `/audit`: repeated independent audits and fixes, with a round ledger | [README](plugins/audit-goal/README.md) |
-| `judge-dispatch` | Lets OMP's judge role pick the subagent type for `task` calls | [README](plugins/judge-dispatch/README.md) |
+| `judge-dispatch` | Lets OMP's judge role pick the subagent type, thinking effort, and model for `task` calls | [README](plugins/judge-dispatch/README.md) |
 | `omp-herdr-dag` | Live todo, plan, Atlas DAG and subagent views in a Herdr side pane | [README](plugins/omp-herdr-dag/README.md) |
 | `omo-prometheus` | oh-my-openagent's Prometheus planning and Atlas execution, ported to OMP | [README](plugins/omo-prometheus/README.md) |
 | `omo-ultrawork` | Ultrawork mode, mass-ulw, `/hyperplan`, and `/ulw-research` | [README](plugins/omo-ultrawork/README.md) |

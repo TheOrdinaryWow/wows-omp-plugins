@@ -2,28 +2,48 @@
 export const TASK_EFFORTS = ["lo", "med", "hi"] as const;
 export type TaskEffort = (typeof TASK_EFFORTS)[number];
 
-/** One judged difficulty drives both the thinking effort and the budget model tier, so the two never disagree. */
+/** One judged difficulty drives both the thinking effort and the model budget, so the two never disagree. */
 export const TASK_DIFFICULTIES = ["routine", "standard", "demanding"] as const;
 export type TaskDifficulty = (typeof TASK_DIFFICULTIES)[number];
 
 export const DIFFICULTY_EFFORT: Record<TaskDifficulty, TaskEffort> = { routine: "lo", standard: "med", demanding: "hi" };
 
-export const MODEL_BUDGETS = ["off", "minimum", "balanced", "max"] as const;
+export const MODEL_BUDGETS = ["minimum", "balanced", "max"] as const;
 export type ModelBudget = (typeof MODEL_BUDGETS)[number];
 
+export const MODEL_PICKS = ["best", "weighted"] as const;
+export type ModelPick = (typeof MODEL_PICKS)[number];
+
 export interface JudgeDispatchSettings {
+  routeAgent: boolean;
+  selectModel: boolean;
+  modelBudget: ModelBudget;
+  modelPick: ModelPick;
+  /** Multiplier per provider id; unlisted providers weigh 1. */
+  providerWeights: ReadonlyMap<string, number>;
   minimumConfidence: number;
   includeSharedContext: boolean;
   judgeEffort: boolean;
-  modelBudget: ModelBudget;
   indicator: boolean;
 }
 
+/** One model an agent may spawn with, resolved through the host registry. */
+export interface ModelOption {
+  /** The selector exactly as configured, so its thinking suffix and routing survive. */
+  pattern: string;
+  /** `provider/id` the selector resolves to; a pool holds each key once. */
+  key: string;
+  provider: string;
+  /** Catalog intelligence score; absent when the catalog has none. */
+  intelligence?: number;
+  /** USD per million tokens, blended 3:1 input to output; absent without catalog pricing. */
+  blendedPrice?: number;
+}
+
 export interface CandidateModelSummary {
-  patterns: readonly string[];
   role?: string;
-  selected?: string;
-  fallbackChain: readonly string[];
+  /** Every available model the agent may spawn with, primary first: its selectors plus each role's fallback chain. */
+  pool: readonly ModelOption[];
 }
 
 export interface RoutingCandidate {
@@ -53,10 +73,9 @@ export interface SerializedCandidate {
   access: "read-only" | "write-capable";
   model: {
     declared?: string[];
-    effective: string[];
     role?: string;
-    selected?: string;
-    fallbacks: string[];
+    /** `provider/id` keys of the agent's model pool, primary first. */
+    models: string[];
   };
 }
 
@@ -72,8 +91,21 @@ export interface RouteChoice {
   effort?: TaskEffort;
   agentConfidence?: number;
   effortConfidence?: number;
-  /** Spawn label to write when the call has none, so the spawn hook can find this route's budget decision. */
+  /** Spawn label to write when the call has none, so the spawn hook can find this route's model decision. */
   name?: string;
+  model?: ModelChoice;
+}
+
+/** Outcome of model selection for one route: the switch made, or why the primary stays. */
+export interface ModelChoice {
+  /** `provider/id` of the configured primary model. */
+  primary: string;
+  /** The pool option to spawn with; absent when the primary stays. */
+  chosen?: ScoredModelOption;
+  /** Judged fit of a `best` pick: its probability share among the eligible models. */
+  fit?: number;
+  /** Why the primary stays, when the selection did not run to a choice. */
+  keptReason?: string;
 }
 
 /** Accepted answers from one native judgment; an absent field was not asked or not confident enough. */
@@ -84,6 +116,8 @@ export interface JudgedRoute {
   difficultyConfidence?: number;
   /** The agent question was asked but no legal answer cleared `minimumConfidence`. */
   agentUndecided?: boolean;
+  /** The judged probability per model `provider/id`. */
+  modelFit?: Readonly<Record<string, number>>;
 }
 
 /** Why a route kept its requested agent without a usable judgment. */
@@ -240,10 +274,8 @@ export function serializeCandidate(candidate: RoutingCandidate): SerializedCandi
     access: candidate.readOnly ? "read-only" : "write-capable",
     model: {
       ...(declared && declared.length > 0 ? { declared: [...declared] } : {}),
-      effective: [...candidate.model.patterns],
       ...(candidate.model.role ? { role: candidate.model.role } : {}),
-      ...(candidate.model.selected ? { selected: candidate.model.selected } : {}),
-      fallbacks: [...candidate.model.fallbackChain],
+      models: candidate.model.pool.map((option) => option.key),
     },
   };
 }
@@ -281,73 +313,112 @@ export function acceptRoutingDecision<T extends string>(
   return legalChoices.find((choice) => choice === decision.choice);
 }
 
-/** A spawn candidate resolved to a registry model that carries a catalog intelligence score and price. */
-export interface ScoredModelOption {
-  /** The selector exactly as configured, so its thinking suffix and routing survive. */
-  pattern: string;
-  intelligence: number;
-  /** USD per million tokens, blended 3:1 input to output. */
-  blendedPrice: number;
-}
+export type ScoredModelOption = ModelOption & { intelligence: number; blendedPrice: number };
 
-/** Minimum share of the strongest option's intelligence an option needs to be eligible, per budget and difficulty. */
-const CAPABILITY_FLOORS: Record<Exclude<ModelBudget, "off" | "max">, Record<TaskDifficulty, number>> = {
-  minimum: { routine: 0.7, standard: 0.8, demanding: 0.95 },
-  balanced: { routine: 0.8, standard: 0.9, demanding: 1 },
-};
+export function isScored(option: ModelOption): option is ScoredModelOption {
+  return (
+    option.intelligence !== undefined &&
+    Number.isFinite(option.intelligence) &&
+    option.intelligence > 0 &&
+    option.blendedPrice !== undefined &&
+    Number.isFinite(option.blendedPrice)
+  );
+}
 
 export function blendedPrice(cost: { input: number; output: number }): number {
   return (3 * cost.input + cost.output) / 4;
 }
 
 /**
- * Pick the spawn model for a budget. `max` takes the strongest option; the other
- * budgets take the cheapest option whose intelligence clears a floor relative to
- * the strongest one, so a weak last-resort fallback is never chosen to save money.
+ * Lowest share of the primary model's intelligence a pool option needs, per budget
+ * and difficulty. The primary is the user's declared baseline, so it always
+ * qualifies and anything stronger may be picked; `minimum` admits the whole pool.
  */
-export function chooseBudgetModel(
-  options: readonly ScoredModelOption[],
-  difficulty: TaskDifficulty,
-  budget: Exclude<ModelBudget, "off">,
-): ScoredModelOption | undefined {
-  const strongest = Math.max(...options.map((option) => option.intelligence));
-  if (!Number.isFinite(strongest) || strongest <= 0) return undefined;
-  if (budget === "max") {
-    return options.reduce<ScoredModelOption | undefined>(
-      (best, option) =>
-        !best ||
-        option.intelligence > best.intelligence ||
-        (option.intelligence === best.intelligence && option.blendedPrice < best.blendedPrice)
-          ? option
-          : best,
-      undefined,
+const CAPABILITY_FLOORS: Record<ModelBudget, Record<TaskDifficulty, number>> = {
+  max: { routine: 1, standard: 1, demanding: 1 },
+  balanced: { routine: 0.8, standard: 0.9, demanding: 1 },
+  minimum: { routine: 0, standard: 0, demanding: 0 },
+};
+
+/** Exponent `k` of the `weighted` cheapness factor `1 / (1 + rank)^k`; 0 ignores price. */
+const CHEAPNESS_EXPONENTS: Record<ModelBudget, Record<TaskDifficulty, number>> = {
+  max: { routine: 0, standard: 0, demanding: 0 },
+  balanced: { routine: 1, standard: 0.5, demanding: 0 },
+  minimum: { routine: 2, standard: 1, demanding: 0.5 },
+};
+
+export interface ModelSelection {
+  /** Available pool, primary first, one entry per `provider/id`. */
+  pool: readonly ModelOption[];
+  difficulty: TaskDifficulty;
+  budget: ModelBudget;
+  pick: ModelPick;
+  providerWeights: ReadonlyMap<string, number>;
+  /** The judged probability per model `provider/id`; absent when the judge was not asked or did not answer. */
+  fit?: Readonly<Record<string, number>>;
+  /** Uniform sample in [0, 1) for `weighted`. */
+  random?: () => number;
+}
+
+/**
+ * Pick a spawn model from an agent's pool. The budget decides which options are
+ * eligible; `best` then takes the judge's best fit weighted by provider, and
+ * `weighted` samples by fit, provider weight, and how cheap an option is.
+ */
+export function selectSpawnModel(selection: ModelSelection): ModelChoice | undefined {
+  const primary = selection.pool[0];
+  if (!primary) return undefined;
+  const kept = (keptReason: string): ModelChoice => ({ primary: primary.key, keptReason });
+  if (!isScored(primary)) return kept("primary model has no catalog score");
+
+  const floor = primary.intelligence * CAPABILITY_FLOORS[selection.budget][selection.difficulty];
+  const eligible = selection.pool.filter(isScored).filter((option) => option.intelligence >= floor);
+  if (eligible.length < 2) return kept("no eligible alternatives");
+
+  const providerWeight = (option: ModelOption) => selection.providerWeights.get(option.provider) ?? 1;
+  const probabilities = selection.fit;
+  const fitMass = probabilities ? eligible.reduce((sum, option) => sum + (probabilities[option.key] ?? 0), 0) : 0;
+  const fitOf = (option: ModelOption) => (probabilities && fitMass > 0 ? (probabilities[option.key] ?? 0) / fitMass : 1);
+
+  if (selection.pick === "best") {
+    // Many-option answers rarely concentrate past a routing threshold, and every option is a model the
+    // user configured for this agent, so `best` follows the judged distribution instead of its confidence.
+    if (fitMass <= 0) return kept("no model judgment");
+    // Strict comparison keeps the earlier pool entry, so the primary wins ties.
+    const chosen = eligible.reduce((best, option) =>
+      fitOf(option) * providerWeight(option) > fitOf(best) * providerWeight(best) ? option : best,
     );
+    return { primary: primary.key, chosen, fit: fitOf(chosen) };
   }
-  const floor = strongest * CAPABILITY_FLOORS[budget][difficulty];
-  return options
-    .filter((option) => option.intelligence >= floor)
-    .reduce<ScoredModelOption | undefined>(
-      (best, option) =>
-        !best ||
-        option.blendedPrice < best.blendedPrice ||
-        (option.blendedPrice === best.blendedPrice && option.intelligence > best.intelligence)
-          ? option
-          : best,
-      undefined,
-    );
+
+  const exponent = CHEAPNESS_EXPONENTS[selection.budget][selection.difficulty];
+  const byCost = [...eligible].sort((a, b) => a.blendedPrice - b.blendedPrice || a.intelligence - b.intelligence);
+  const weights = eligible.map((option) => fitOf(option) * providerWeight(option) * (1 + byCost.indexOf(option)) ** -exponent);
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  if (!(total > 0)) return kept("no eligible alternatives");
+  let remaining = (selection.random ?? Math.random)() * total;
+  for (const [index, option] of eligible.entries()) {
+    remaining -= weights[index] as number;
+    if (remaining < 0) return { primary: primary.key, chosen: option };
+  }
+  return { primary: primary.key, chosen: eligible.at(-1) };
 }
 
 export interface PendingSpawnRoute {
-  /** Agent the rewritten call spawns; absent when the call relies on the host's default agent. */
-  agent?: string;
-  difficulty: TaskDifficulty;
+  /** Agent whose pool the decision came from; the spawn must be of this agent. */
+  agent: string;
+  /** `provider/id` the host must still resolve as primary, or the pool is stale. */
+  primary: string;
+  /** Spawn selectors, chosen model first, the rest of the pool as its retry chain. */
+  patterns: string[];
+  note: string;
 }
 
 const PENDING_SPAWN_LIMIT = 256;
 const SPAWN_SUFFIX_PATTERN = /-\d+$/;
 
 /**
- * Budget decisions made at `tool_call` time, waiting for the matching
+ * Model decisions made at `tool_call` time, waiting for the matching
  * `before_subagent_spawn`. That event carries no assignment, only a spawn key the
  * host derives from the task item's `name` (`<parent>.<name>`, `-N` on collision),
  * so decisions are keyed by name. A name claimed twice is dropped for both spawns.
@@ -375,7 +446,7 @@ export class PendingSpawnRoutes {
       if (!this.#routes.has(name)) continue;
       const route = this.#routes.get(name);
       this.#routes.delete(name);
-      if (!route || (route.agent !== undefined && route.agent !== agent)) return undefined;
+      if (!route || route.agent !== agent) return undefined;
       return route;
     }
     return undefined;
