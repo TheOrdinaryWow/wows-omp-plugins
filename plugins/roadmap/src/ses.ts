@@ -38,6 +38,7 @@ export function actor(ctx: ExtensionContext): Actor {
 /** One instance per extension factory; the current branch is the durable source of truth. */
 export class RoadmapSession {
   private sessionId?: string;
+  private generation = 0;
   private repos = new Map<string, RepoState>();
 
   constructor(private readonly pi: Pick<ExtensionAPI, "appendEntry">) {}
@@ -57,11 +58,21 @@ export class RoadmapSession {
 
   rebuild(ctx: ExtensionContext): void {
     this.sessionId = ctx.sessionManager.getSessionId();
+    this.generation++;
     this.repos.clear();
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom" || !entry.customType.startsWith(ENTRY_PREFIX)) continue;
       this.restore(entry.customType.slice(ENTRY_PREFIX.length), entry.data);
     }
+  }
+
+  currentGeneration(ctx: ExtensionContext): number {
+    this.ensure(ctx);
+    return this.generation;
+  }
+
+  isCurrent(ctx: ExtensionContext, generation: number): boolean {
+    return this.generation === generation && this.sessionId === ctx.sessionManager.getSessionId();
   }
 
   private restore(type: string, data: unknown): void {

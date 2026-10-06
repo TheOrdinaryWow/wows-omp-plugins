@@ -97,6 +97,7 @@ export async function checkReceipt(repo: Repo, fix = false): Promise<ToolReceipt
 
 export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFactory): void {
   const z = pi.zod;
+  const overlapFlights = new Map<string, Promise<ToolReceipt>>();
   const criterion = z.object({ id: z.string().optional(), statement: z.string(), verify: z.string() });
   const stageFields = {
     id: z.string().optional(),
@@ -293,42 +294,77 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     async execute(_id, params: typeof overlapParameters.infer, _signal, _onUpdate, ctx) {
       if (ctx.agent.kind === "sub")
         return toolResult({ ok: true, summary: "Subagents do not ask overlap questions.", changedFiles: [], warnings: [] });
-      return run(ctx, async (repo, owner) => {
-        const model = await loadAll(repo);
-        ses.validateBinding(ctx, repo.repoRoot, model);
-        const current = model.stages.find((candidate) => candidate.id === params.stage);
-        if (
-          !current ||
-          (current.status !== "planned" && current.status !== "active") ||
-          !model.rounds.some((candidate) => candidate.id === current.round && candidate.status === "active")
-        ) {
-          return { ok: false, reason: `${params.stage} is not an unclosed stage in an active round.`, hints: [] };
-        }
-        if (ses.getBinding(repo.repoRoot)?.stage === current.id)
-          return {
-            ok: true,
-            summary: `This session is already working in-system on ${current.id}.`,
-            answer: "roadmap",
-            handoff: renderHandoff(model, current),
-            changedFiles: [],
-            warnings: [],
-          };
-        const stored = ses.overlapAnswer(ctx, repo.repoRoot, current.id);
-        const answer = stored ?? (await uiFor(ctx).overlap({ stage: current, intent: params.intent }));
-        if (!answer)
-          return {
-            ok: false,
-            reason: "Roadmap overlap: no answer available.",
-            hints: ["Ask the user in an interactive session before beginning overlapping work."],
-          };
-        let receipt: Receipt = { ok: true, summary: `Overlap answer for ${current.id}: ${answer}.`, changedFiles: [], warnings: [] };
-        if (!stored && answer === "free") receipt = await recordFreeWork(repo, owner, params);
-        if (answer === "roadmap") {
-          receipt = await stage(repo, owner, { action: "start", id: current.id });
-          if (receipt.ok) ses.bind(ctx, repo.repoRoot, current.id);
-        }
-        if (receipt.ok && !stored) ses.answerOverlap(ctx, repo.repoRoot, current.id, answer);
-        return { ...receipt, answer };
+      const generation = ses.currentGeneration(ctx);
+      return run(ctx, (repo, owner) => {
+        const key = JSON.stringify([owner.sessionId, repo.repoRoot, params.stage, generation]);
+        const pending = overlapFlights.get(key);
+        if (pending) return pending;
+        const stale = (): ToolReceipt => ({
+          ok: false,
+          reason: "Roadmap overlap answer is stale: the session or stage changed while the dialog was open.",
+          hints: ["Call roadmap_overlap again to review the current session and stage."],
+        });
+        const resolve = async (): Promise<ToolReceipt> => {
+          let model = await loadAll(repo);
+          if (!ses.isCurrent(ctx, generation)) return stale();
+          ses.validateBinding(ctx, repo.repoRoot, model);
+          let current = model.stages.find((candidate) => candidate.id === params.stage);
+          const roundId = current?.round;
+          if (
+            !current ||
+            (current.status !== "planned" && current.status !== "active") ||
+            !model.rounds.some((candidate) => candidate.id === roundId && candidate.status === "active")
+          ) {
+            return { ok: false, reason: `${params.stage} is not an unclosed stage in an active round.`, hints: [] };
+          }
+          let stored = ses.overlapAnswer(ctx, repo.repoRoot, current.id);
+          let answer = stored;
+          if (ses.getBinding(repo.repoRoot)?.stage !== current.id && !stored) {
+            answer = await uiFor(ctx).overlap({ stage: current, intent: params.intent });
+            if (!ses.isCurrent(ctx, generation)) return stale();
+            model = await loadAll(repo);
+            if (!ses.isCurrent(ctx, generation)) return stale();
+            current = model.stages.find((candidate) => candidate.id === params.stage);
+            const latestRoundId = current?.round;
+            if (
+              !current ||
+              (current.status !== "planned" && current.status !== "active") ||
+              !model.rounds.some((candidate) => candidate.id === latestRoundId && candidate.status === "active")
+            )
+              return stale();
+            ses.validateBinding(ctx, repo.repoRoot, model);
+            stored = ses.overlapAnswer(ctx, repo.repoRoot, current.id);
+            answer = stored ?? answer;
+          }
+          if (ses.getBinding(repo.repoRoot)?.stage === current.id)
+            return {
+              ok: true,
+              summary: `This session is already working in-system on ${current.id}.`,
+              answer: "roadmap",
+              handoff: renderHandoff(model, current),
+              changedFiles: [],
+              warnings: [],
+            };
+          if (!answer)
+            return {
+              ok: false,
+              reason: "Roadmap overlap: no answer available.",
+              hints: ["Ask the user in an interactive session before beginning overlapping work."],
+            };
+          let receipt: Receipt = { ok: true, summary: `Overlap answer for ${current.id}: ${answer}.`, changedFiles: [], warnings: [] };
+          if (!stored && answer === "free") receipt = await recordFreeWork(repo, owner, params);
+          if (!ses.isCurrent(ctx, generation)) return stale();
+          if (answer === "roadmap") {
+            receipt = await stage(repo, owner, { action: "start", id: current.id });
+            if (!ses.isCurrent(ctx, generation)) return stale();
+            if (receipt.ok) ses.bind(ctx, repo.repoRoot, current.id);
+          }
+          if (receipt.ok && !stored) ses.answerOverlap(ctx, repo.repoRoot, current.id, answer);
+          return { ...receipt, answer };
+        };
+        const flight = resolve().finally(() => overlapFlights.delete(key));
+        overlapFlights.set(key, flight);
+        return flight;
       });
     },
   });

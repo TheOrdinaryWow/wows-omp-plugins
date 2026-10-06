@@ -212,6 +212,18 @@ async function injection(h: Harness): Promise<string> {
   return result.systemPrompt.slice(1).join("\n");
 }
 
+function holdOverlap(h: Harness, stageId = "S01") {
+  const shown = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<OverlapAnswer | undefined>();
+  h.ui.overlap = async (question) => {
+    h.ui.overlapCalls.push(question);
+    if (question.stage.id !== stageId) return h.ui.answer;
+    shown.resolve();
+    return answer.promise;
+  };
+  return { shown: shown.promise, resolve: answer.resolve, reject: answer.reject };
+}
+
 const CASES: Record<string, string> = {
   interception: "initialized repositories block native mutators and allow other files",
   patch: "the real apply_patch edit mode is intercepted",
@@ -234,6 +246,15 @@ const CASES: Record<string, string> = {
   init: "init requires command arming, confirmation and consumes authorization",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
+  "overlap-flight-concurrent": "concurrent overlap calls share one dialog and one free-work entry",
+  "overlap-flight-start": "a stage started during an overlap dialog discards a late free-work answer",
+  "overlap-flight-join": "a stage joined during an overlap dialog discards a late free-work answer",
+  "overlap-flight-closed": "a stage closed during an overlap dialog discards its late answer without writing",
+  "overlap-flight-dropped": "a stage dropped during an overlap dialog discards its late answer without writing",
+  "overlap-flight-rebuild": "session rebuilds invalidate pending overlap answers without writing into the new branch",
+  "overlap-flight-cancel": "cancelled shared overlap dialogs can be retried without duplicating free work",
+  "overlap-flight-error": "failed shared overlap dialogs can be retried without duplicating free work",
+  "overlap-flight-isolated": "pending overlap dialogs are isolated by stage and session",
   binding: "roadmap overlap starts, binds and returns its handoff",
   headless: "headless overlap and previews report no answer available",
   "bound-start": "started stages bypass the overlap dialog and free-work log",
@@ -759,6 +780,144 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.match(log, /Fix free checkout/);
         assert.match(log, new RegExp(h.session.sessionManager.getSessionId()));
         assert.equal(log.split("\n").filter((line) => line.startsWith("- ")).length, 1);
+      } else if (name.startsWith("overlap-flight-")) {
+        const overlapEntries = () =>
+          h.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === `${ENTRY_PREFIX}overlap`);
+        const currentStage = async () => {
+          const current = (await loadAll(repo)).stages.find((candidate) => candidate.id === "S01");
+          assert(current);
+          return current;
+        };
+        if (name === "overlap-flight-rebuild") {
+          for (const type of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {
+            const before = await readFile((await currentStage()).path, "utf8");
+            const held = holdOverlap(h);
+            const pending = call(h, "roadmap_overlap", { stage: "S01", intent: `Stale ${type}` });
+            await held.shown;
+            const leaf = h.session.sessionManager.appendCustomEntry("roadmap-regression", { type });
+            if (type === "session_start") await h.runner.emit({ type });
+            if (type === "session_switch") await h.runner.emit({ type, reason: "resume", previousSessionFile: undefined });
+            if (type === "session_branch") await h.runner.emit({ type, previousSessionFile: undefined });
+            if (type === "session_tree") await h.runner.emit({ type, oldLeafId: leaf, newLeafId: leaf });
+            const fresh = holdOverlap(h);
+            const next = call(h, "roadmap_overlap", { stage: "S01", intent: `Current ${type}` });
+            await fresh.shown;
+            held.resolve("free");
+            const receipt = await pending;
+            assert(!receipt.ok, JSON.stringify(receipt));
+            assert.match(receipt.reason, /stale/i);
+            assert.equal(receipt.answer, undefined);
+            assert.equal((await currentStage()).free_work_log, "");
+            assert.equal(overlapEntries().length, 0);
+            assert.equal(await readFile((await currentStage()).path, "utf8"), before);
+            fresh.resolve(undefined);
+            assert(!(await next).ok);
+          }
+          h.ui.overlap = async (question) => {
+            h.ui.overlapCalls.push(question);
+            return "free";
+          };
+          assert((await call(h, "roadmap_overlap", { stage: "S01", intent: "Current branch work" })).ok);
+          assert.equal(h.ui.overlapCalls.length, 9);
+          assert.equal((await currentStage()).free_work_log.split("\n").length, 1);
+          assert.equal(overlapEntries().length, 1);
+        } else {
+          if (name === "overlap-flight-join" || name === "overlap-flight-closed")
+            assert((await stage(repo, main, { action: "start", id: "S01" })).ok);
+          const held = holdOverlap(h);
+          const pending = call(h, "roadmap_overlap", { stage: "S01", intent: "First free-work request" });
+          await held.shown;
+          if (name === "overlap-flight-concurrent" || name === "overlap-flight-cancel" || name === "overlap-flight-error") {
+            const second = call(h, "roadmap_overlap", { stage: "S01", intent: "Second free-work request" });
+            assert((await call(h, "roadmap_status", {})).ok);
+            if (name === "overlap-flight-error") held.reject(new Error("Overlap dialog failed"));
+            else held.resolve(name === "overlap-flight-cancel" ? undefined : "free");
+            const receipts = await Promise.all([pending, second]);
+            assert.equal(h.ui.overlapCalls.length, 1, "concurrent native calls must share the pending dialog");
+            if (name === "overlap-flight-concurrent") {
+              for (const receipt of receipts) {
+                assert(receipt.ok, JSON.stringify(receipt));
+                assert.equal(receipt.answer, "free");
+              }
+              assert.equal((await call(h, "roadmap_overlap", { stage: "S01", intent: "Stored answer" })).answer, "free");
+              assert.equal(h.ui.overlapCalls.length, 1);
+            } else {
+              for (const receipt of receipts) {
+                assert(!receipt.ok, JSON.stringify(receipt));
+                assert.match(receipt.reason, name === "overlap-flight-error" ? /Overlap dialog failed/ : /no answer available/);
+              }
+              assert.equal((await currentStage()).free_work_log, "");
+              assert.equal(overlapEntries().length, 0);
+              h.ui.overlap = async (question) => {
+                h.ui.overlapCalls.push(question);
+                return "free";
+              };
+              assert((await call(h, "roadmap_overlap", { stage: "S01", intent: "Retried free work" })).ok);
+              assert.equal(h.ui.overlapCalls.length, 2);
+            }
+            const log = (await currentStage()).free_work_log;
+            assert.equal(log.split("\n").length, 1);
+            assert(!log.includes("Second free-work request"));
+            assert.equal(overlapEntries().length, 1);
+          } else if (name === "overlap-flight-start" || name === "overlap-flight-join") {
+            const started = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+            assert(started.ok, JSON.stringify(started));
+            if (name === "overlap-flight-join") assert(started.warnings.includes("another session may be working on this stage"));
+            const before = await readFile((await currentStage()).path, "utf8");
+            held.resolve("free");
+            const receipt = await pending;
+            assert(receipt.ok, JSON.stringify(receipt));
+            assert.equal(receipt.answer, "roadmap");
+            assert.match(receipt.summary, /already working in-system/);
+            assert.match(receipt.handoff ?? "", /DC1/);
+            assert.deepEqual(receipt.changedFiles, []);
+            assert.equal(overlapEntries().length, 0);
+            assert.equal((await currentStage()).free_work_log, "");
+            assert.equal(await readFile((await currentStage()).path, "utf8"), before);
+            assert.match(await injection(h), /Bound stage: S01/);
+          } else if (name === "overlap-flight-closed" || name === "overlap-flight-dropped") {
+            assert(
+              (
+                await stage(
+                  repo,
+                  { sessionId: "external-process", kind: "main" },
+                  name === "overlap-flight-closed" ? closeInput : { action: "drop", id: "S01", reason: "Deferred during dialog" },
+                )
+              ).ok,
+            );
+            const before = await readFile((await currentStage()).path, "utf8");
+            held.resolve("free");
+            const receipt = await pending;
+            assert(!receipt.ok, JSON.stringify(receipt));
+            assert.match(receipt.reason, /stale/i);
+            assert.equal(receipt.answer, undefined);
+            assert.equal(overlapEntries().length, 0);
+            assert.equal((await currentStage()).free_work_log, "");
+            assert.equal(await readFile((await currentStage()).path, "utf8"), before);
+          } else if (name === "overlap-flight-isolated") {
+            assert((await call(h, "roadmap_stage", { action: "add", ...draft.stages[0], title: "Second stage" })).ok);
+            const other = await createHarness(root);
+            const factory: UiFactory = (ctx) =>
+              ctx.sessionManager.getSessionId() === h.session.sessionManager.getSessionId() ? h.ui : other.ui;
+            h.setUi(factory);
+            other.setUi(factory);
+            try {
+              assert.equal((await call(h, "roadmap_overlap", { stage: "S02", intent: "Different stage" })).answer, "free");
+              assert.equal((await call(other, "roadmap_overlap", { stage: "S01", intent: "Different session" })).answer, "free");
+              assert.equal(other.ui.overlapCalls.length, 1);
+              held.resolve("free");
+              assert.equal((await pending).answer, "free");
+              assert.equal(h.ui.overlapCalls.length, 2);
+              const log = (await currentStage()).free_work_log;
+              assert.equal(log.split("\n").length, 2);
+              assert.match(log, new RegExp(h.session.sessionManager.getSessionId()));
+              assert.match(log, new RegExp(other.session.sessionManager.getSessionId()));
+            } finally {
+              other.setUi();
+              await other.session.dispose();
+            }
+          } else throw new Error(`Unknown overlap case: ${name}`);
+        }
       } else if (name === "binding" || name === "external") {
         h.ui.answer = "roadmap";
         const receipt = await call(h, "roadmap_overlap", { stage: "S01", intent: "Build checkout" });
