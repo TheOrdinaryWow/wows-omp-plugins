@@ -1,9 +1,11 @@
-import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { loadRepo } from "#src/documents.ts";
 import { discoverRepo, type GitRepo } from "#src/git.ts";
 import { editInspect, resolveToCwd, unwrapHashlineHeaderPath } from "#src/host.ts";
+
+const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;
 
 /** Includes the managed directory itself, since removing it also mutates its files. */
 export function isManaged(path: string, repoRoot: string): boolean {
@@ -47,18 +49,23 @@ function bashTargets(command: string): string[] {
 }
 
 /** Native editInspect projects every supported edit grammar, including move/delete intents. */
-export function managedTargets(toolName: string, input: Record<string, unknown>, editMode: string, cwd: string): string[] {
+export function managedTargets(toolName: string, input: Record<string, unknown>, editMode: string | undefined, cwd: string): string[] {
   const paths: string[] = [];
   if (toolName === "write" && typeof input.path === "string") paths.push(input.path);
   if (toolName === "edit" || toolName === "apply_patch") {
-    const mode = toolName === "apply_patch" ? "apply_patch" : editMode;
-    const projection = editInspect(mode, JSON.stringify(input));
-    paths.push(...projection.paths, ...projection.entries.map((entry) => entry.path));
-    for (const op of projection.fileOps) {
-      paths.push(op.path);
-      if (op.to) paths.push(op.to);
+    // The active host mode can depend on the model; inspect every grammar rather than guessing from wire fields.
+    const modes = toolName === "apply_patch" ? ["apply_patch"] : editMode === undefined ? EDIT_MODES : [editMode];
+    const payload = JSON.stringify(input);
+    for (const mode of modes) {
+      if (!EDIT_MODES.some((supported) => supported === mode)) throw new Error(`Unknown native edit mode: ${mode}`);
+      const projection = editInspect(mode, payload);
+      paths.push(...projection.paths, ...projection.entries.map((entry) => entry.path));
+      for (const op of projection.fileOps) {
+        paths.push(op.path);
+        if (op.to) paths.push(op.to);
+      }
     }
-    if (typeof input.path === "string") paths.push(input.path);
+    if (!paths.length) throw new Error("Unrecognized native edit grammar; its mutation targets cannot be validated");
   }
   if (toolName === "ast_edit" && Array.isArray(input.paths)) {
     for (const path of input.paths) if (typeof path === "string") paths.push(path);
@@ -127,32 +134,71 @@ function targetRepo(path: string): GitRepo | null {
   }
 }
 
+function hardlinkIdentity(path: string): string | undefined {
+  try {
+    const info = statSync(path, { bigint: true });
+    return info.isFile() && info.nlink > 1n ? `${info.dev}:${info.ino}` : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
+function managedFileIdentities(repoRoot: string): Set<string> {
+  const files = new Set<string>();
+  const directories = new Set<string>();
+  function visit(path: string): void {
+    const info = statSync(path, { bigint: true });
+    const identity = `${info.dev}:${info.ino}`;
+    if (info.isDirectory()) {
+      if (directories.has(identity)) return;
+      directories.add(identity);
+      for (const name of readdirSync(path)) visit(join(path, name));
+    } else if (info.isFile() && info.nlink > 1n) files.add(identity);
+  }
+  for (const directory of ["docs/roadmap", "docs/adr"]) visit(join(repoRoot, directory));
+  return files;
+}
+
 export async function interceptionReason(toolName: string, input: Record<string, unknown>, cwd: string): Promise<string | undefined> {
   if (!["write", "edit", "apply_patch", "ast_edit", "lsp", "bash"].includes(toolName)) return;
-  const mode =
-    typeof input.input === "string"
-      ? input.input.trimStart().startsWith("*** Begin Patch")
-        ? "apply_patch"
-        : "hashline"
-      : typeof input.old_text === "string"
-        ? "replace"
-        : "patch";
-  const candidates = managedTargets(toolName, input, mode, cwd);
+  const candidates = managedTargets(toolName, input, undefined, cwd);
+  if (!candidates.length) return;
+  const currentRepo = targetRepo(cwd);
+  const marked = new Map<string, boolean>();
+  const identities = new Map<string, Set<string>>();
+  const broad = toolName !== "write" && toolName !== "edit" && toolName !== "apply_patch";
+  const reason =
+    "Managed Roadmap files must change through roadmap_stage, roadmap_todo or roadmap_adr (roadmap_check with fix for generated indexes).";
   for (const candidate of candidates) {
     // Check both spellings: a symlink inside a managed directory must not grant an escape.
     for (const path of new Set([candidate, resolvedPath(candidate)])) {
       const git = targetRepo(path);
-      if (!git) continue;
-      const broad = toolName !== "write" && toolName !== "edit" && toolName !== "apply_patch";
-      const ancestor =
-        broad &&
-        ["docs/roadmap", "docs/adr"].some((directory) => {
-          const name = relative(path, join(git.repoRoot, directory));
-          return name === "" || (name !== ".." && !name.startsWith(`..${sep}`) && !isAbsolute(name));
-        });
-      if (!isManaged(path, git.repoRoot) && !ancestor) continue;
-      if (!(await loadRepo(git.repoRoot))) continue;
-      return "Managed Roadmap files must change through roadmap_stage, roadmap_todo or roadmap_adr (roadmap_check with fix for generated indexes).";
+      const roots = new Set<string>();
+      if (git) roots.add(git.repoRoot);
+      if (currentRepo) roots.add(currentRepo.repoRoot);
+      const identity = hardlinkIdentity(path);
+      for (const repoRoot of roots) {
+        const managed = isManaged(path, repoRoot);
+        const ancestor =
+          broad &&
+          ["docs/roadmap", "docs/adr"].some((directory) => {
+            const name = relative(path, join(repoRoot, directory));
+            return name === "" || (name !== ".." && !name.startsWith(`..${sep}`) && !isAbsolute(name));
+          });
+        if (!managed && !ancestor && !identity) continue;
+        if (!marked.has(repoRoot)) marked.set(repoRoot, Boolean(await loadRepo(repoRoot)));
+        if (!marked.get(repoRoot)) continue;
+        if (managed || ancestor) return reason;
+        if (identity) {
+          let files = identities.get(repoRoot);
+          if (!files) {
+            files = managedFileIdentities(repoRoot);
+            identities.set(repoRoot, files);
+          }
+          if (files.has(identity)) return reason;
+        }
+      }
     }
   }
 }

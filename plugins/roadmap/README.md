@@ -114,17 +114,19 @@ If an existing ADR or the new note ends inside an unterminated fenced block, `no
 
 ## Managed-file protection
 
-After initialization, a tool-call hook protects `docs/roadmap/**` and `docs/adr/**` in main and subagent sessions. It discovers the target's own git work tree, checks lexical and resolved paths (including dangling symlink destinations), and blocks with guidance to use the roadmap tools. Native paths use the host's normalization for `@`-prefixed absolute paths, stray `:` prefixes, home-relative `~` paths and `file://` URLs. Repositories without the initialization marker are unaffected. A validation or path-resolution error in the hook refuses the call rather than allowing a potentially unmanaged mutation.
+After initialization, a tool-call hook protects `docs/roadmap/**` and `docs/adr/**` in main and subagent sessions. It discovers the target's own git work tree, checks lexical and resolved paths (including dangling symlink destinations), and blocks with guidance to use the roadmap tools. Existing file targets are also compared by device and inode against multiply linked managed files in the session and target worktrees, so native `write` and `edit` cannot change a managed original through a hardlink alias inside or outside the repository. Native paths use the host's normalization for `@`-prefixed absolute paths, stray `:` prefixes, home-relative `~` paths and `file://` URLs. Repositories without the initialization marker are unaffected. A validation, path-resolution or file-identity error in the hook refuses the call rather than allowing a potentially unmanaged mutation.
 
 | Surface | Coverage |
 | --- | --- |
-| `write` | Its `path`, including `[path#TAG]` headers copied from read output. |
-| `edit`, `apply_patch` | Native edit projection across supported grammars, including source and destination paths for file operations. |
-| `ast_edit` | `paths`, including directories and the containing directory of the first glob segment: `docs/roadm*/**/*.ts` and `docs/roa?map/**/*.md` both project to `docs`. |
+| `write` | Its `path`, including `[path#TAG]` headers copied from read output and existing hardlink aliases. |
+| `edit`, `apply_patch` | Every native `edit` call projects the `hashline`, `replace`, `patch`, `apply_patch` and `sloppy` grammars; `apply_patch` uses its own grammar. Any managed source/destination or existing hardlink alias is blocked. Unknown grammars or modes are refused. |
+| `ast_edit` | `paths`, including directories outside the worktree that contain its managed roots, and the containing directory of the first glob segment. `docs/roadm*/**/*.ts` projects to `docs`; `/work/re*/docs/roadmap/*.ts` projects to `/work` and is blocked when the current repository is below it. |
 | `lsp` | File-named `rename`, `rename_file` source/destination and applied `code_actions` via `file` and `new_name`. This isn't inspection of every file in a cross-file workspace edit. |
 | `bash` | Best-effort static detection of path arguments after redirections (`>`, `>>`), `tee`, `mv`, `cp`, `rm`, in-place `sed` and `truncate`. |
 
 This is workflow protection, not a filesystem sandbox. It doesn't intercept `eval`, `ctx_execute*`, editors launched from bash, or arbitrary programs that write files. Shell variables, substitutions and indirect writes can evade static bash matching. Broad directory/glob candidates can also be blocked conservatively.
+
+Hardlink identity checks cover existing named file targets. They don't enumerate aliases hidden inside an otherwise unrelated directory/glob or anticipate a link created by a later shell statement: the target filename must be projected and already exist for its inode to be compared.
 
 Your own editor isn't intercepted. You can edit authored body text, but retain the front matter, managed comment, fixed headings and generated-block delimiters. Tools refuse malformed structure, and changing a closed stage or frozen round is reported by its hash check. Use a new stage for corrective work instead of rewriting closed history.
 

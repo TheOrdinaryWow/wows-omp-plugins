@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,6 +25,7 @@ import {
 const CHILD_ENV = "ROADMAP_EXTENSION_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
+const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;
 const main: Actor = { sessionId: "fixture-main", kind: "main" };
 const draft: InitInput = {
   project: { name: "Shop", description: "A small verified shop." },
@@ -96,10 +97,7 @@ async function git(root: string, args: string[]): Promise<void> {
   assert.equal(code, 0, `${stdout}\n${stderr}`);
 }
 
-async function createHarness(
-  root: string,
-  options: { sub?: boolean; editMode?: "hashline" | "replace" | "apply_patch" } = {},
-): Promise<Harness> {
+async function createHarness(root: string, options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number] } = {}): Promise<Harness> {
   // These imports intentionally exercise the loader boundary after the child's isolated HOME is set.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
@@ -224,6 +222,11 @@ const CASES: Record<string, string> = {
   "interception-hashline-aliases": "native hashline-edit aliases cannot change managed bytes",
   "interception-patch-aliases": "native apply_patch aliases cannot change managed bytes",
   "interception-errors": "path-resolution errors refuse native writes without changing managed bytes",
+  ...Object.fromEntries(EDIT_MODES.map((mode) => [`interception-mode-${mode}`, `native ${mode} edits protect both managed roots`])),
+  "interception-write-hardlinks": "native writes reject inside and outside hardlink aliases but allow distinct inodes",
+  "interception-replace-hardlinks": "native replace edits reject inside and outside hardlink aliases but allow distinct inodes",
+  "interception-hardlink-errors": "hardlink stat errors refuse native mutations without changing managed bytes",
+  "interception-outside-scopes": "outside-repository AST ancestors and globs protect managed files but allow unrelated scopes",
   uninitialized: "repositories without the marker allow native mutation hooks",
   worktree: "targets use their own worktree and symlink resolution",
   injection: "context is recomputed each turn and disappears after round close",
@@ -253,11 +256,12 @@ async function acceptance(name: string, root: string): Promise<void> {
   const h = await createHarness(root, {
     sub: name === "subagent",
     editMode:
-      name === "patch" || name === "interception-patch-aliases"
+      EDIT_MODES.find((mode) => name === `interception-mode-${mode}`) ??
+      (name === "patch" || name === "interception-patch-aliases"
         ? "apply_patch"
-        : name === "interception-replace-aliases"
+        : name === "interception-replace-aliases" || name === "interception-replace-hardlinks" || name === "interception-hardlink-errors"
           ? "replace"
-          : "hashline",
+          : "hashline"),
   });
   try {
     if (name === "interception" || name === "patch" || name === "worktree") {
@@ -400,6 +404,132 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.equal(await readFile(path, "utf8"), source);
         }
         await rm(path);
+      } else if (name.startsWith("interception-mode-")) {
+        const mode = EDIT_MODES.find((candidate) => name === `interception-mode-${candidate}`);
+        const edit = h.session.getToolByName("edit");
+        const read = h.session.getToolByName("read");
+        assert(mode && edit && read);
+        async function inputFor(path: string): Promise<Record<string, unknown>> {
+          const source = await readFile(path, "utf8");
+          const heading = source.split("\n").find((line) => line.startsWith("# "));
+          assert(heading);
+          if (mode === "replace") return { path, old_string: heading, new_string: "# Changed" };
+          if (mode === "patch") return { path, edits: [{ diff: `@@\n-${heading}\n+# Changed` }] };
+          if (mode === "apply_patch") {
+            return { input: `*** Begin Patch\n*** Update File: ${path}\n@@\n-${heading}\n+# Changed\n*** End Patch` };
+          }
+          if (mode === "sloppy") return { input: `*** Edit File: ${path}\n*** Find\n${heading}\n*** Replace\n# Changed` };
+          assert(read);
+          const snapshot: AgentToolResult<unknown> = await read.execute(`mode-read-${crypto.randomUUID()}`, { path });
+          const text = snapshot.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+          const tag = /\[[^\r\n]+#([A-Fa-f\d]{4})\]/.exec(text)?.[1];
+          assert(tag, text);
+          return { input: `[${path}#${tag}]\nPUT >$:\n+# Changed` };
+        }
+        for (const path of [current.path, join(repo.adrDir, "README.md")]) {
+          const source = await readFile(path, "utf8");
+          await assert.rejects(edit.execute(`managed-${mode}-${crypto.randomUUID()}`, await inputFor(path)), /roadmap_stage/);
+          assert.equal(await readFile(path, "utf8"), source);
+        }
+        const ordinary = join(root, "ordinary.md");
+        await writeFile(ordinary, "# Ordinary\n");
+        const allowed: AgentToolResult<unknown> = await edit.execute(`ordinary-${mode}`, await inputFor(ordinary));
+        assert(!allowed.isError, JSON.stringify(allowed));
+        assert.match(await readFile(ordinary, "utf8"), /# Changed/);
+        await assert.rejects(edit.execute(`unknown-${mode}`, { input: "Unrecognized native edit grammar" }), /could not validate/);
+      } else if (name === "interception-write-hardlinks" || name === "interception-replace-hardlinks") {
+        const edit = h.session.getToolByName("edit");
+        assert(edit);
+        for (const [index, path] of [current.path, join(repo.adrDir, "README.md")].entries()) {
+          const source = await readFile(path, "utf8");
+          const aliases = [join(root, `hardlink-${index}.md`), join(dirname(root), `outside-hardlink-${index}.md`)];
+          for (const alias of aliases) await link(path, alias);
+          const original = await stat(path, { bigint: true });
+          assert.equal(original.nlink, 3n);
+          for (const alias of aliases) {
+            const identity = await stat(alias, { bigint: true });
+            assert.equal(identity.dev, original.dev);
+            assert.equal(identity.ino, original.ino);
+            const mutation =
+              name === "interception-write-hardlinks"
+                ? write.execute(`hardlink-write-${crypto.randomUUID()}`, { path: alias, content: "bad\n" })
+                : edit.execute(`hardlink-edit-${crypto.randomUUID()}`, { path: alias, old_string: source, new_string: "bad\n" });
+            await assert.rejects(mutation, /roadmap_stage/);
+            assert.equal(await readFile(path, "utf8"), source);
+            assert.equal(await readFile(alias, "utf8"), source);
+          }
+          const ordinary = join(root, `ordinary-${index}.md`);
+          const ordinaryAlias = join(dirname(root), `ordinary-alias-${index}.md`);
+          await writeFile(ordinary, source);
+          await link(ordinary, ordinaryAlias);
+          const unrelated = await stat(ordinaryAlias, { bigint: true });
+          assert(unrelated.dev !== original.dev || unrelated.ino !== original.ino);
+          const allowed: AgentToolResult<unknown> =
+            name === "interception-write-hardlinks"
+              ? await write.execute(`ordinary-write-${index}`, { path: ordinaryAlias, content: "allowed\n" })
+              : await edit.execute(`ordinary-edit-${index}`, { path: ordinaryAlias, old_string: source, new_string: "allowed\n" });
+          assert(!allowed.isError, JSON.stringify(allowed));
+          assert.equal(await readFile(ordinary, "utf8"), "allowed\n");
+          assert.equal(await readFile(path, "utf8"), source);
+        }
+      } else if (name === "interception-hardlink-errors") {
+        const edit = h.session.getToolByName("edit");
+        assert(edit);
+        const alias = join(dirname(root), "stat-error-alias.md");
+        const dangling = join(repo.adrDir, "dangling.md");
+        const source = await readFile(current.path, "utf8");
+        await link(current.path, alias);
+        await symlink(join(root, "nonexistent.md"), dangling);
+        try {
+          await assert.rejects(write.execute("hardlink-stat-write", { path: alias, content: "bad\n" }), /could not validate/);
+          await assert.rejects(
+            edit.execute("hardlink-stat-edit", { path: alias, old_string: source, new_string: "bad\n" }),
+            /could not validate/,
+          );
+          assert.equal(await readFile(current.path, "utf8"), source);
+        } finally {
+          await rm(dangling);
+        }
+      } else if (name === "interception-outside-scopes") {
+        const ast = h.session.getToolByName("ast_edit");
+        assert(ast);
+        const source = "const guarded = 1;\n";
+        const guards = [join(repo.roadmapDir, "guard.ts"), join(repo.adrDir, "guard.ts")];
+        for (const path of guards) await writeFile(path, source);
+        try {
+          for (const scope of [dirname(root), join(dirname(root), "re*/docs/roadmap/*.ts"), join(dirname(root), "re*/docs/adr/*.ts")]) {
+            await assert.rejects(
+              ast.execute(`outside-scope-${crypto.randomUUID()}`, {
+                ops: [{ pat: "const guarded = 1;", out: "const guarded = 2;" }],
+                paths: [scope],
+              }),
+              /roadmap_stage/,
+            );
+            for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
+          }
+          const ordinaryDir = join(dirname(root), "unrelated");
+          const ordinary = join(ordinaryDir, "ordinary.ts");
+          await mkdir(ordinaryDir);
+          await writeFile(ordinary, source);
+          for (const scope of [ordinaryDir, join(ordinaryDir, "ord*.ts")]) {
+            await writeFile(ordinary, source);
+            const preview: AgentToolResult<unknown> = await ast.execute(`unrelated-scope-${crypto.randomUUID()}`, {
+              ops: [{ pat: "const guarded = 1;", out: "const guarded = 2;" }],
+              paths: [scope],
+            });
+            assert(!preview.isError, JSON.stringify(preview));
+            assert.equal(await readFile(ordinary, "utf8"), source);
+            const applied: AgentToolResult<unknown> = await write.execute(`apply-unrelated-${crypto.randomUUID()}`, {
+              path: "xd://resolve",
+              content: "Apply the unrelated AST edit.",
+            });
+            assert(!applied.isError, JSON.stringify(applied));
+            assert.equal(await readFile(ordinary, "utf8"), "const guarded = 2;\n");
+            for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
+          }
+        } finally {
+          for (const path of guards) await rm(path);
+        }
       } else if (name === "interception-errors") {
         await symlink("cycle-b", join(root, "cycle-a"));
         await symlink("cycle-a", join(root, "cycle-b"));
