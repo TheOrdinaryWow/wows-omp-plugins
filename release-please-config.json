@@ -47,6 +47,13 @@
         { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
         { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='omo-toolkit')].version" }
       ]
+    },
+    "plugins/roadmap": {
+      "component": "roadmap",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='roadmap')].version" }
+      ]
     }
   }
 }

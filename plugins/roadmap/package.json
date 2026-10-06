@@ -1,0 +1,16 @@
+{
+  "name": "wows-omp-plugin-roadmap",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

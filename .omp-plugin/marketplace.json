@@ -118,6 +118,23 @@
         "grep"
       ],
       "license": "MIT (code) / SUL-1.0 (derived prompt assets)"
+    },
+    {
+      "name": "roadmap",
+      "source": "./roadmap",
+      "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",
+      "version": "0.1.0",
+      "author": {
+        "name": "TheOrdinaryWow"
+      },
+      "category": "productivity",
+      "keywords": [
+        "roadmap",
+        "stages",
+        "todo",
+        "adr"
+      ],
+      "license": "MIT"
     }
   ]
 }

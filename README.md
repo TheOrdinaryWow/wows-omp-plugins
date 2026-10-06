@@ -36,6 +36,7 @@ omp plugin upgrade <name>@wows-omp-plugins
 | `omo-prometheus` | oh-my-openagent's Prometheus planning and Atlas execution, ported to OMP | [README](plugins/omo-prometheus/README.md) |
 | `omo-ultrawork` | Ultrawork mode, mass-ulw, `/hyperplan`, and `/ulw-research` | [README](plugins/omo-ultrawork/README.md) |
 | `omo-toolkit` | Category and research agents, skills, and documentation MCP servers | [README](plugins/omo-toolkit/README.md) |
+| `roadmap` | Tool-managed project rounds, stages, TODOs and MADR architecture decisions | [README](plugins/roadmap/README.md) |
 
 ## Repository layout
 
