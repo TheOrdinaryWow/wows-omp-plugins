@@ -73,13 +73,9 @@ export async function statusReceipt(repo: Repo, id?: string): Promise<Receipt> {
 
 export async function checkReceipt(repo: Repo, fix = false, signal?: AbortSignal): Promise<ToolReceipt> {
   const model = await loadAll(repo);
-  const before = new Map(Object.entries(model.files ?? {}).map(([path, content]) => [path, Buffer.from(content)]));
-  const diagnostics = await check(model, { fix, signal });
-  const changedFiles = fix
-    ? Object.entries(model.files ?? {})
-        .filter(([path, content]) => !before.get(path)?.equals(Buffer.from(content)))
-        .map(([path]) => path)
-    : [];
+  const writtenFiles = new Set<string>();
+  const diagnostics = await check(model, { fix, signal, changedFiles: writtenFiles });
+  const changedFiles = [...writtenFiles];
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
   const lines = diagnostics.map((diagnostic) => `${diagnostic.severity}: ${diagnostic.rule} — ${diagnostic.path}: ${diagnostic.message}`);
   if (errors.length) {

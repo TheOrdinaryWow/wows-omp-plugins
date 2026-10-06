@@ -281,7 +281,10 @@ function diagnostics(model: Model): Diagnostics[] {
 }
 
 /** Fix owns the repository lock; callers must not wrap check(..., {fix:true}) in another lock. */
-export async function check(model: Model, options: { fix?: boolean; signal?: AbortSignal } = {}): Promise<Diagnostics[]> {
+export async function check(
+  model: Model,
+  options: { fix?: boolean; signal?: AbortSignal; changedFiles?: Set<string> } = {},
+): Promise<Diagnostics[]> {
   if (!options.fix) return diagnostics(model);
   const cancelled = (path = model.index.path): Diagnostics[] | undefined => {
     const guarded = guardMutation(model, options);
@@ -329,6 +332,7 @@ export async function check(model: Model, options: { fix?: boolean; signal?: Abo
         const beforeRename = cancelled(path);
         if (beforeRename) return beforeRename;
         await rename(temporary, path);
+        options.changedFiles?.add(path);
         model.files ??= {};
         model.files[path] = Buffer.from(content);
       } finally {

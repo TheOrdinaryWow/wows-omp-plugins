@@ -308,6 +308,25 @@ describe("ADR warnings", () => {
 });
 
 describe("generated blocks and fix scope", () => {
+  test.each([0, 1, 2, 3])("fix records only its %i renames after unrelated authored edits", async (count) => {
+    const { repo, model } = await diskFixture();
+    const loaded = await loadAll(repo);
+    const current = model.stages[0];
+    if (!current) throw new Error("Missing stage fixture");
+    await writeFile(current.path, renderStage({ ...current, objective: "An unrelated authored edit." }));
+    const paths = [model.index.path, model.rounds[0]?.path as string, model.adrIndex?.path as string];
+    const names = ["status", "stages", "adrs"];
+    for (const [index, path] of paths.slice(0, count).entries()) {
+      await writeFile(path, replaceGenerated(await readFile(path, "utf8"), names[index] as string, "Stale table"));
+    }
+    const changedFiles = new Set<string>();
+    const options = { fix: true, changedFiles };
+    expect(await check(loaded, options)).toEqual([]);
+    expect([...changedFiles].toSorted()).toEqual(paths.slice(0, count).toSorted());
+    expect((await loadAll(repo)).stages[0]?.objective).toBe("An unrelated authored edit.");
+    expect(loaded.files).toEqual((await loadAll(repo)).files);
+  });
+
   test("a cancelled fix leaves stale generated blocks unchanged while read-only check still reports them", async () => {
     const { repo, model } = await diskFixture();
     const stale = replaceGenerated(await readFile(model.index.path, "utf8"), "status", "Stale status");
@@ -351,7 +370,10 @@ describe("generated blocks and fix scope", () => {
           return controller.signal.reason !== undefined;
         },
       });
-      const result = await check(loaded, { fix: true, signal: controller.signal });
+      const changedFiles = new Set<string>();
+      const options = { fix: true, signal: controller.signal, changedFiles };
+      const result = await check(loaded, options);
+      expect([...changedFiles]).toEqual(paths.slice(0, committedCount));
       expect(controller.signal.aborted).toBe(true);
       expect(result.map((item) => item.rule)).toEqual(["cancelled"]);
       for (const [index, path] of paths.entries()) {

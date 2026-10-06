@@ -15,6 +15,7 @@ import { withRepoLock } from "../plugins/roadmap/src/numbering.ts";
 import {
   type Actor,
   applyPrepared,
+  atomicWrite,
   closeRound,
   type InitInput,
   initProject,
@@ -353,6 +354,15 @@ const CASES: Record<string, string> = {
       `check-fix-cancel-${count}`,
       `cancelled check fixes report all ${count} committed files and a retry path`,
     ]),
+  ),
+  "check-fix-queued-objective": "queued no-op fix does not attribute another operation's objective edit",
+  ...Object.fromEntries(
+    [false, true].flatMap((cancelled) =>
+      [0, 1, 2, 3].map((count) => [
+        `check-fix-queued-${cancelled ? "cancel" : "success"}-${count}`,
+        `queued ${cancelled ? "cancelled" : "successful"} fix reports only its ${count} renames after another operation commits`,
+      ]),
+    ),
   ),
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
@@ -881,6 +891,100 @@ async function acceptance(name: string, root: string): Promise<void> {
         );
         assert.deepEqual((await loadAll(repo)).files, before);
       }
+    } else if (name.startsWith("check-fix-queued-")) {
+      const repo = await initialized(root);
+      const model = await loadAll(repo);
+      assert(model.stages[0] && model.rounds[0] && model.adrIndex);
+      const objectiveOnly = name.endsWith("objective");
+      const count = objectiveOnly ? 0 : Number(name.at(-1));
+      const cancelled = name.includes("-cancel-");
+      const paths = [model.index.path, model.rounds[0].path, model.adrIndex.path];
+      const names = ["status", "stages", "adrs"];
+      const stale = new Map<string, string>();
+      let precedingWritten = false;
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const preceding = stage(
+        repo,
+        main,
+        objectiveOnly ? { action: "edit", id: "S01", objective: "Unrelated objective edit." } : { action: "start", id: "S01" },
+        {
+          async writeFile(path, content, options) {
+            entered.resolve();
+            await release.promise;
+            await atomicWrite(path, content, options);
+            if (path === model.index.path) {
+              for (const [index, repairPath] of paths.slice(0, count).entries()) {
+                const text = replaceGenerated(await readFile(repairPath, "utf8"), names[index] as string, "Stale table");
+                await atomicWrite(repairPath, text);
+                stale.set(repairPath, text);
+              }
+              precedingWritten = true;
+            }
+          },
+        },
+      );
+      await entered.promise;
+      const controller = new AbortController();
+      let guardReads = 0;
+      if (cancelled && count === 0) {
+        Object.defineProperty(controller.signal, "aborted", {
+          get() {
+            // The first guard runs under the lock; the second is the final no-op guard.
+            if (precedingWritten && ++guardReads === 2) controller.abort();
+            return controller.signal.reason !== undefined;
+          },
+        });
+      } else if (cancelled) {
+        const last = paths[count - 1];
+        assert(last);
+        Object.defineProperty(controller.signal, "aborted", {
+          get() {
+            if (stale.has(last) && readFileSync(last, "utf8") !== stale.get(last) && !controller.signal.reason) controller.abort();
+            return controller.signal.reason !== undefined;
+          },
+        });
+      }
+      const tool = h.session.getToolByName("roadmap_check");
+      assert(tool);
+      const queued = observeLockWaits()(() => tool.execute(name, { fix: true }, controller.signal));
+      try {
+        await queued.waiting;
+        assert.deepEqual((await loadAll(repo)).files, model.files, "preceding operation is held before its first write");
+      } finally {
+        release.resolve();
+        const receipt = await preceding;
+        assert(receipt.ok, JSON.stringify(receipt));
+        assert.equal(receipt.changedFiles.length, objectiveOnly ? 1 : 3);
+      }
+      const result = await queued.pending;
+      const receipt = result.details as ToolReceipt;
+      assert.equal(receipt.ok, !cancelled, JSON.stringify(receipt));
+      assert.deepEqual(receipt.changedFiles?.toSorted(), paths.slice(0, count).toSorted());
+      if (!receipt.ok) {
+        assert.equal(result.isError, true);
+        assert.deepEqual(
+          receipt.diagnostics?.map((item) => item.rule),
+          ["cancelled"],
+        );
+        const hints = receipt.hints.join("\n");
+        const text = result.content.map((item) => (item.type === "text" ? item.text : "")).join("\n");
+        for (const path of [model.stages[0].path, ...paths]) {
+          assert.equal(hints.includes(path), paths.slice(0, count).includes(path));
+        }
+        if (count === 0) {
+          assert.match(hints, /No files were committed by the interrupted fix/);
+          assert(!hints.includes("Files committed by the interrupted fix:"));
+          assert(!text.includes("Files committed by the interrupted fix:"));
+          assert.equal(guardReads, 2, "zero-write cancellation occurs at the final guard");
+        }
+      }
+      const after = await loadAll(repo);
+      assert.equal(after.stages[0]?.status, objectiveOnly ? "planned" : "active");
+      if (objectiveOnly) assert.equal(after.stages[0]?.objective, "Unrelated objective edit.");
+      assert((await call(h, "roadmap_check", {})).ok);
+      const noop = await call(h, "roadmap_check", { fix: true });
+      assert(noop.ok && noop.changedFiles.length === 0);
     } else if (name.startsWith("check-fix-cancel-")) {
       const repo = await initialized(root);
       const model = await loadAll(repo);
