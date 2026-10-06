@@ -93,7 +93,8 @@ export async function managedTargets(
     toolName === "lsp" &&
     (input.action === "rename" || input.action === "rename_file" || (input.action === "code_actions" && input.apply))
   ) {
-    for (const field of ["file", "new_name"]) if (typeof input[field] === "string") paths.push(input[field]);
+    if (typeof input.file === "string") paths.push(input.file);
+    if (input.action === "rename_file" && typeof input.new_name === "string") paths.push(input.new_name);
   }
   if (toolName === "bash" && typeof input.command === "string") {
     paths.push(...bashTargets(input.command));

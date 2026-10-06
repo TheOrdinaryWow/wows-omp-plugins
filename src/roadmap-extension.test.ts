@@ -109,7 +109,10 @@ async function git(root: string, args: string[]): Promise<void> {
   assert.equal(code, 0, `${stdout}\n${stderr}`);
 }
 
-async function createHarness(root: string, options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number] } = {}): Promise<Harness> {
+async function createHarness(
+  root: string,
+  options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number]; lsp?: boolean } = {},
+): Promise<Harness> {
   // These imports intentionally exercise the loader boundary after the child's isolated HOME is set.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
@@ -126,11 +129,11 @@ async function createHarness(root: string, options: { sub?: boolean; editMode?: 
       "autolearn.enabled": false,
       "edit.mode": options.editMode ?? "hashline",
     }),
-    toolNames: ["read", "write", "edit", "ast_edit", "bash"],
+    toolNames: ["read", "write", "edit", "ast_edit", "bash", ...(options.lsp ? ["lsp"] : [])],
     additionalExtensionPaths: [ENTRY],
     disableExtensionDiscovery: true,
     enableMCP: false,
-    enableLsp: false,
+    enableLsp: options.lsp ?? false,
     enableIrc: false,
     skipPythonPreflight: true,
     cacheWarming: false,
@@ -307,6 +310,7 @@ async function confirmedPreviewBehindLock(
 const CASES: Record<string, string> = {
   interception: "initialized repositories block native mutators and allow other files",
   patch: "the real apply_patch edit mode is intercepted",
+  "interception-lsp-rename": "LSP symbol rename identifiers are not paths while managed file renames remain blocked",
   "interception-dangling": "dangling-symlink writes protect nonexistent managed targets but allow unmanaged targets",
   "interception-globs": "partial-name ast_edit globs protect managed directories",
   "interception-ast-scope-delimited": "delimited ast_edit scopes protect both managed roots and allow unrelated files",
@@ -377,6 +381,7 @@ const CASES: Record<string, string> = {
 async function acceptance(name: string, root: string): Promise<void> {
   const h = await createHarness(root, {
     sub: name === "subagent",
+    lsp: name === "interception-lsp-rename",
     editMode:
       EDIT_MODES.find((mode) => name === `interception-mode-${mode}`) ??
       (name === "patch" || name === "interception-patch-aliases"
@@ -493,7 +498,54 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(current);
       const write = h.session.getToolByName("write");
       assert(write);
-      if (name === "interception-dangling") {
+      if (name === "interception-lsp-rename") {
+        const lsp = h.session.getToolByName("lsp");
+        assert(lsp, "The real SDK must register the native LSP tool");
+        const source = "const oldName = 1;\n";
+        await writeFile(join(root, "source.ts"), source);
+        for (const apply of [true, false]) {
+          const rename = { action: "rename", file: "source.ts", line: 1, symbol: "oldName", apply };
+          const ordinary: AgentToolResult<unknown> = await lsp.execute(`symbol-rename-records-${apply}`, {
+            ...rename,
+            new_name: "records",
+          });
+          assert.match(JSON.stringify(ordinary), /No language server found for this action/);
+          const docs: AgentToolResult<unknown> = await lsp.execute(`symbol-rename-docs-${apply}`, { ...rename, new_name: "docs" });
+          assert.deepEqual(docs, ordinary, "Renaming a symbol to docs must reach the same native implementation as records");
+        }
+        for (const path of [current.path, join(repo.adrDir, "README.md")]) {
+          const before = await readFile(path, "utf8");
+          await assert.rejects(
+            lsp.execute(`managed-rename-destination-${crypto.randomUUID()}`, {
+              action: "rename_file",
+              file: "source.ts",
+              new_name: relative(root, path),
+            }),
+            /roadmap_stage/,
+          );
+          await assert.rejects(
+            lsp.execute(`managed-rename-source-${crypto.randomUUID()}`, {
+              action: "rename_file",
+              file: relative(root, path),
+              new_name: "renamed.md",
+            }),
+            /roadmap_stage/,
+          );
+          await assert.rejects(
+            lsp.execute(`managed-symbol-source-${crypto.randomUUID()}`, {
+              action: "rename",
+              file: relative(root, path),
+              line: 1,
+              symbol: "oldName",
+              new_name: "records",
+              apply: true,
+            }),
+            /roadmap_stage/,
+          );
+          assert.equal(await readFile(path, "utf8"), before);
+        }
+        assert.equal(await readFile(join(root, "source.ts"), "utf8"), source);
+      } else if (name === "interception-dangling") {
         for (const [alias, target] of [
           ["outside-alias.md", "docs/adr/9999-new.md"],
           ["outside-directory", "docs/roadmap/missing-directory"],
