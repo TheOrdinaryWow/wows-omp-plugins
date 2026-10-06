@@ -36,7 +36,7 @@ While a round is active, the plugin reads the checked-out documents on each turn
 
 1. Run `/init-project` in the main session. The repository must be a git work tree, `docs/roadmap/` must not exist, and `docs/adr/` must be absent or empty.
 2. Answer the agent's interview: project identity and description; first-round goal, constraints, non-goals and principles; decisions already made; stages with objectives, scope, done criteria and dependencies.
-3. Review the files presented by `roadmap_init` and confirm before anything is written. Preview editors show editable text, but edits made there are discarded. Ask the agent to revise the tool inputs if the draft needs changes.
+3. Review the `roadmap_init` preview and confirm before anything is written. The preview opens as one menu: pick `Write N files` to confirm, `Cancel` to decline, or any file to read it in an editor and return to the menu. Edits made in that editor are discarded; ask the agent to revise the tool inputs if the draft needs changes.
 4. Ask the agent to start a stage with `roadmap_stage`, `action: "start"`. Use its handoff to plan and execute the work. Starting an already active stage joins it and warns that another session may be working on it.
 5. Record scope or criterion changes on an active stage with `amend` and a reason. Keep later work in TODOs and decisions in ADRs.
 6. Close the stage with evidence and dispositions, then close the round when all stages are closed or dropped.

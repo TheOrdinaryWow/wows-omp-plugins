@@ -100,24 +100,26 @@ const FILES = [
   { path: "docs/adr/0001-use-madr.md", content: "# Use MADR\n" },
 ];
 
-test("previewConfirm shows every file through the editor, discards edits, then confirms", async () => {
-  const stub = stubUi(["edited text that must be ignored", "# Use MADR\n", true]);
+test("previewConfirm offers write, cancel and per-file views from one menu, returning to it after each view", async () => {
+  const stub = stubUi(["View docs/adr/0001-use-madr.md", "edited text that must be ignored", "Write 2 files"]);
   const ui = createTuiUi(stub.ctx);
   expect(await ui.previewConfirm({ title: "Initialize roadmap", files: FILES })).toBe(true);
-  expect(stub.calls.map((call) => call.kind)).toEqual(["editor", "editor", "confirm"]);
-  expect(stub.call(0).title).toContain("docs/roadmap/README.md");
-  expect(stub.call(0).body).toBe("# Roadmap\n");
+  expect(stub.calls.map((call) => call.kind)).toEqual(["select", "editor", "select"]);
+  expect(stub.call(0).title).toContain("Initialize roadmap");
+  expect(stub.call(0).body).toEqual(["Write 2 files", "View docs/roadmap/README.md", "View docs/adr/0001-use-madr.md", "Cancel"]);
   expect(stub.call(1).title).toContain("docs/adr/0001-use-madr.md");
   expect(stub.call(1).body).toBe("# Use MADR\n");
-  expect(stub.call(2).body).toContain("docs/adr/0001-use-madr.md");
   evidence("previewConfirm", stub.transcript());
 
-  const declined = stubUi(["", "", false]);
+  const direct = stubUi(["Write 2 files"]);
+  expect(await createTuiUi(direct.ctx).previewConfirm({ title: "Initialize roadmap", files: FILES })).toBe(true);
+  expect(direct.calls.map((call) => call.kind)).toEqual(["select"]);
+
+  const declined = stubUi(["View docs/roadmap/README.md", undefined, "Cancel"]);
   expect(await createTuiUi(declined.ctx).previewConfirm({ title: "Initialize roadmap", files: FILES })).toBe(false);
 
-  const cancelled = stubUi(["", undefined]);
-  expect(await createTuiUi(cancelled.ctx).previewConfirm({ title: "Initialize roadmap", files: FILES })).toBeUndefined();
-  expect(cancelled.calls.map((call) => call.kind)).toEqual(["editor", "editor"]);
+  const dismissed = stubUi([undefined]);
+  expect(await createTuiUi(dismissed.ctx).previewConfirm({ title: "Initialize roadmap", files: FILES })).toBeUndefined();
 });
 
 test("statusMenu lists round, stages with glyphs and TODO counts, and only valid actions", async () => {

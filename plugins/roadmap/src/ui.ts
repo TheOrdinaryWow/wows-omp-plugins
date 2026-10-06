@@ -107,11 +107,19 @@ export function createTuiUi(ctx: RoadmapUiContext): RoadmapUi {
       choose(`This request overlaps stage ${q.stage.id} "${q.stage.title}" [${q.stage.status}]\nRequest: ${q.intent}`, OVERLAP_OPTIONS),
 
     async previewConfirm(p) {
-      for (const [index, file] of p.files.entries()) {
-        const shown = await ui.editor(`${p.title} · ${file.path} (${index + 1}/${p.files.length}, edits are discarded)`, file.content);
-        if (shown === undefined) return undefined;
+      const write = `Write ${plural(p.files.length, "file")}`;
+      const cancel = "Cancel";
+      const labels = [write, ...p.files.map((file) => `View ${file.path}`), cancel];
+      let initialIndex = 0;
+      for (;;) {
+        const picked = await ui.select(`${p.title}\nSelect a file to view it, or write all of them.`, labels, { initialIndex });
+        if (picked === undefined) return undefined;
+        if (picked === write) return true;
+        if (picked === cancel) return false;
+        initialIndex = labels.indexOf(picked);
+        const file = p.files[initialIndex - 1];
+        if (file) await ui.editor(`${file.path} (read-only preview, edits are discarded)`, file.content);
       }
-      return ui.confirm(p.title, `Write ${plural(p.files.length, "file")}?\n${p.files.map((file) => `  ${file.path}`).join("\n")}`);
     },
 
     statusMenu(m) {
