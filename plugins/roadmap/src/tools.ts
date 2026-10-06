@@ -389,11 +389,20 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     parameters: initParameters,
     approval: "write",
     async execute(_id, params: typeof initParameters.infer, signal, _onUpdate, ctx) {
+      const generation = ses.currentGeneration(ctx);
       return run(
         ctx,
         async (repo, owner) => {
           if (!ses.isArmed(ctx, repo.repoRoot, "init"))
             return { ok: false, reason: "roadmap_init is unarmed. Run /init-project first.", hints: [] };
+          const guard = (): Receipt | undefined => {
+            if (
+              ctx.sessionManager.getSessionId() !== owner.sessionId ||
+              !ses.isCurrent(ctx, generation) ||
+              !ses.isArmed(ctx, repo.repoRoot, "init")
+            )
+              return { ok: false, reason: "Initialization authorization changed; run /init-project again.", hints: [] };
+          };
           const prepared = await prepareInit(repo, owner, params);
           if (!prepared.ok) return prepared;
           const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, files: prepared.files });
@@ -403,11 +412,14 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
               reason: confirmed === false ? "Initialization preview declined." : "Initialization: no answer available or cancelled.",
               hints: [],
             };
-          if (ctx.sessionManager.getSessionId() !== owner.sessionId || !ses.isArmed(ctx, repo.repoRoot, "init"))
-            return { ok: false, reason: "Initialization authorization changed; run /init-project again.", hints: [] };
-          const receipt = await applyPrepared(repo, owner, prepared.prepared);
-          if (receipt.ok) ses.disarm(ctx, repo.repoRoot);
-          return receipt;
+          const stale = guard();
+          if (stale) return stale;
+          return applyPrepared(repo, owner, prepared.prepared, {
+            guard,
+            onSuccess() {
+              if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, "init")) ses.disarm(ctx, repo.repoRoot);
+            },
+          });
         },
         true,
       );
@@ -421,9 +433,18 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     parameters: roundParameters,
     approval: "write",
     async execute(_id, params: typeof roundParameters.infer, signal, _onUpdate, ctx) {
+      const generation = ses.currentGeneration(ctx);
       return run(ctx, async (repo, owner) => {
         if (!ses.isArmed(ctx, repo.repoRoot, "round"))
           return { ok: false, reason: "roadmap_round_open is unarmed. Run /roadmap new-round first.", hints: [] };
+        const guard = (): Receipt | undefined => {
+          if (
+            ctx.sessionManager.getSessionId() !== owner.sessionId ||
+            !ses.isCurrent(ctx, generation) ||
+            !ses.isArmed(ctx, repo.repoRoot, "round")
+          )
+            return { ok: false, reason: "Round authorization changed; run /roadmap new-round again.", hints: [] };
+        };
         const prepared = await prepareRoundOpen(repo, owner, params);
         if (!prepared.ok) return prepared;
         const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, files: prepared.files });
@@ -433,11 +454,14 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
             reason: confirmed === false ? "Round preview declined." : "Round open: no answer available or cancelled.",
             hints: [],
           };
-        if (ctx.sessionManager.getSessionId() !== owner.sessionId || !ses.isArmed(ctx, repo.repoRoot, "round"))
-          return { ok: false, reason: "Round authorization changed; run /roadmap new-round again.", hints: [] };
-        const receipt = await applyPrepared(repo, owner, prepared.prepared);
-        if (receipt.ok) ses.disarm(ctx, repo.repoRoot);
-        return receipt;
+        const stale = guard();
+        if (stale) return stale;
+        return applyPrepared(repo, owner, prepared.prepared, {
+          guard,
+          onSuccess() {
+            if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, "round")) ses.disarm(ctx, repo.repoRoot);
+          },
+        });
       });
     },
   });

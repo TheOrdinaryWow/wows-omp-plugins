@@ -1158,20 +1158,25 @@ export async function applyPrepared(
   repo: Repo,
   actor: Actor,
   prepared: PreparedOperation,
-  options: OperationOptions = {},
+  options: MutationOptions = {},
 ): Promise<Receipt> {
   try {
     actorValid(actor, true);
     return await withRepoLock(repo, async () => {
       const model = preparedModels.get(prepared);
       if (!model || prepared.repoRoot !== repo.repoRoot) throw new Refusal("Unknown preview; prepare it again in this session.");
+      const guarded = options.guard?.(model);
+      if (guarded) return guarded;
       if ((await snapshot(repo)) !== prepared.snapshot)
         throw new Refusal("The preview is stale: managed files changed after it was prepared.");
       await checked(model);
       const mutation = new Mutation(model);
       for (const file of prepared.files) mutation.changes.set(file.path, file.content);
       mutation.warnings.push(...prepared.warnings);
+      const beforeWrite = options.guard?.(model);
+      if (beforeWrite) return beforeWrite;
       const result = await mutation.write(repo, prepared.summary, options);
+      if (result.ok) options.onSuccess?.();
       preparedModels.delete(prepared);
       return result;
     });

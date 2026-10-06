@@ -244,6 +244,45 @@ function observeLockWaits() {
   };
 }
 
+async function confirmedPreviewBehindLock(
+  h: Harness,
+  repo: Repo,
+  toolName: "roadmap_init" | "roadmap_round_open",
+  input: object,
+  whileLocked: (preview: ScriptedUi["previewCalls"][number]) => Promise<void>,
+): Promise<{ receipt: ToolReceipt; preview: ScriptedUi["previewCalls"][number] }> {
+  const shown = Promise.withResolvers<ScriptedUi["previewCalls"][number]>();
+  const confirmation = Promise.withResolvers<boolean>();
+  h.ui.preview = async (preview) => {
+    shown.resolve(preview);
+    return confirmation.promise;
+  };
+  const queued = observeLockWaits()(() => call(h, toolName, input));
+  const preview = await shown.promise;
+  let settled = false;
+  const pending = queued.pending.finally(() => {
+    settled = true;
+  });
+  const locked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const holding = withRepoLock(repo, async () => {
+    locked.resolve();
+    await release.promise;
+  });
+  await locked.promise;
+  try {
+    confirmation.resolve(true);
+    await queued.waiting;
+    assert.equal(settled, false, `${toolName} must still be waiting for the repository lock`);
+    await whileLocked(preview);
+  } finally {
+    confirmation.resolve(true);
+    release.resolve();
+    await holding;
+  }
+  return { receipt: await pending, preview };
+}
+
 const CASES: Record<string, string> = {
   interception: "initialized repositories block native mutators and allow other files",
   patch: "the real apply_patch edit mode is intercepted",
@@ -269,6 +308,9 @@ const CASES: Record<string, string> = {
   injection: "context is recomputed each turn and disappears after round close",
   subagent: "SDK subagents receive context and cannot decide ADR status",
   init: "init requires command arming, confirmation and consumes authorization",
+  "init-lock-authority": "confirmed init queued under the lock refuses rebuilt session authority and succeeds in the unchanged session",
+  "round-lock-authority":
+    "confirmed round open queued under the lock refuses rebuilt session authority and succeeds in the unchanged session",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
   "overlap-flight-concurrent": "concurrent overlap calls share one dialog and one free-work entry",
@@ -703,6 +745,80 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(write);
       await write.execute("uninitialized-write", { path: "docs/roadmap/x.md", content: "allowed" });
       assert.equal(await readFile(join(root, "docs/roadmap/x.md"), "utf8"), "allowed");
+    } else if (name === "init-lock-authority" || name === "round-lock-authority") {
+      const init = name === "init-lock-authority";
+      const info = discoverRepo(root);
+      assert(info);
+      const repo: Repo = init
+        ? { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") }
+        : await initialized(root);
+      if (!init) {
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
+        await command(h, "roadmap", "close-round");
+        assert.equal((await loadAll(repo)).rounds[0]?.status, "closed");
+      }
+      const before = init ? undefined : (await loadAll(repo)).files;
+      const rootLeaf = h.session.sessionManager.appendCustomEntry("roadmap-regression-root", { name });
+      const toolName = init ? "roadmap_init" : "roadmap_round_open";
+      const input: Record<string, unknown> = init ? { ...draft } : { round: { ...draft.round, title: "Next" }, import_todos: [] };
+      const arm = async () => command(h, init ? "init-project" : "roadmap", init ? "" : "new-round");
+      const disarmedCount = () =>
+        h.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === `${ENTRY_PREFIX}disarmed`)
+          .length;
+      const initialDisarms = disarmedCount();
+      const unchanged = async (preview: ScriptedUi["previewCalls"][number]) => {
+        assert(preview.files.length >= (init ? 5 : 3));
+        if (init) {
+          assert.equal(await loadRepo(root), null);
+          for (const file of preview.files)
+            assert.equal(await Bun.file(file.path).exists(), false, `${file.path} was written after authority changed`);
+        } else {
+          assert.deepEqual((await loadAll(repo)).files, before, "all managed round bytes must remain unchanged");
+        }
+      };
+      for (const event of ["session_tree", "session_branch"] as const) {
+        await arm();
+        const { receipt, preview } = await confirmedPreviewBehindLock(h, repo, toolName, input, async (shown) => {
+          await unchanged(shown);
+          const armedLeaf = h.session.sessionManager.getLeafId();
+          assert(armedLeaf);
+          h.session.sessionManager.branch(rootLeaf);
+          if (event === "session_tree") await h.runner.emit({ type: event, oldLeafId: armedLeaf, newLeafId: rootLeaf });
+          else await h.runner.emit({ type: event, previousSessionFile: undefined });
+          const fresh = await h.runner.emitToolCall({ type: "tool_call", toolName, toolCallId: crypto.randomUUID(), input });
+          assert.equal(fresh?.block, true, "the rebuilt branch must be unarmed for new calls");
+          assert.match(fresh.reason ?? "", /unarmed/);
+          assert.equal(disarmedCount(), initialDisarms);
+        });
+        assert(!receipt.ok, `${event}: ${JSON.stringify(receipt)}`);
+        assert.match(receipt.reason, /changed|stale|unarmed/i);
+        await unchanged(preview);
+        assert.equal(disarmedCount(), initialDisarms);
+      }
+      await arm();
+      const generationOnly = await confirmedPreviewBehindLock(h, repo, toolName, input, async () => {
+        await h.runner.emit({ type: "session_branch", previousSessionFile: undefined });
+        assert.equal(
+          await h.runner.emitToolCall({ type: "tool_call", toolName, toolCallId: crypto.randomUUID(), input }),
+          undefined,
+          "this branch is still armed but its session generation changed",
+        );
+      });
+      assert(!generationOnly.receipt.ok, JSON.stringify(generationOnly.receipt));
+      assert.match(generationOnly.receipt.reason, /changed|stale/i);
+      await unchanged(generationOnly.preview);
+      assert.equal(disarmedCount(), initialDisarms, "refusals must not consume the current arming");
+      const success = await confirmedPreviewBehindLock(h, repo, toolName, input, async (preview) => {
+        await unchanged(preview);
+        assert.equal(disarmedCount(), initialDisarms, "authorization must remain armed while the confirmed write waits for the lock");
+      });
+      assert(success.receipt.ok, JSON.stringify(success.receipt));
+      assert.deepEqual([...success.receipt.changedFiles].sort(), success.preview.files.map((file) => relative(root, file.path)).sort());
+      for (const file of success.preview.files) assert.equal(await readFile(file.path, "utf8"), file.content);
+      assert.equal(disarmedCount(), initialDisarms + 1, "only the successful write consumes the arming");
+      const consumed = await h.runner.emitToolCall({ type: "tool_call", toolName, toolCallId: crypto.randomUUID(), input });
+      assert.equal(consumed?.block, true);
+      assert.match(consumed.reason ?? "", /unarmed/);
     } else if (name === "init" || name === "stale" || name === "headless") {
       const unarmed = await h.runner.emitToolCall({
         type: "tool_call",
