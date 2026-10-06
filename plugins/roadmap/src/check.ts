@@ -297,10 +297,10 @@ export async function check(model: Model, options: { fix?: boolean; signal?: Abo
         message: "Fix requires a disk-loaded repository model.",
         fixable: false,
       });
-    return result;
+    return cancelled() ?? result;
   }
   const repo = model.repo;
-  return withRepoLock(repo, async () => {
+  const result = await withRepoLock(repo, async () => {
     const afterLock = cancelled();
     if (afterLock) return afterLock;
     const fresh = await loadAll(repo);
@@ -329,6 +329,8 @@ export async function check(model: Model, options: { fix?: boolean; signal?: Abo
         const beforeRename = cancelled(path);
         if (beforeRename) return beforeRename;
         await rename(temporary, path);
+        model.files ??= {};
+        model.files[path] = Buffer.from(content);
       } finally {
         await rm(temporary, { force: true });
       }
@@ -337,4 +339,5 @@ export async function check(model: Model, options: { fix?: boolean; signal?: Abo
     Object.assign(model, repaired);
     return diagnostics(repaired);
   });
+  return cancelled() ?? result;
 }

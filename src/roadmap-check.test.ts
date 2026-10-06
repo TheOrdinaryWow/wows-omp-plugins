@@ -17,6 +17,7 @@ import {
   stageSha256,
 } from "../plugins/roadmap/src/documents.ts";
 import { atomicWrite, stage } from "../plugins/roadmap/src/operations.ts";
+import { checkReceipt } from "../plugins/roadmap/src/tools.ts";
 import { adrFixture, cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
 
 afterEach(cleanupFixtures);
@@ -324,7 +325,45 @@ describe("generated blocks and fix scope", () => {
     expect(await check(loaded, { fix: true })).toEqual([]);
   });
 
-  test.each(["temporary", "committed"] as const)("fix cancellation after a %s write prevents the next managed write", async (boundary) => {
+  test.each(["temporary", "committed", "penultimate", "final"] as const)(
+    "fix cancellation after a %s write retains committed paths",
+    async (boundary) => {
+      const { repo, model } = await diskFixture();
+      const paths = [model.index.path, model.rounds[0]?.path as string, model.adrIndex?.path as string];
+      const names = ["status", "stages", "adrs"];
+      const committedCount = ["temporary", "committed", "penultimate", "final"].indexOf(boundary);
+      const triggerPath = paths[Math.max(0, committedCount - 1)] as string;
+      const original = new Map<string, string>();
+      for (const [index, path] of paths.entries()) {
+        const stale = replaceGenerated(await readFile(path, "utf8"), names[index] as string, "Stale table");
+        await writeFile(path, stale);
+        original.set(path, stale);
+      }
+      const loaded = await loadAll(repo);
+      const controller = new AbortController();
+      Object.defineProperty(controller.signal, "aborted", {
+        get() {
+          const reached =
+            boundary === "temporary"
+              ? readdirSync(repo.roadmapDir).some((name) => name.endsWith(".tmp"))
+              : readFileSync(triggerPath, "utf8") !== original.get(triggerPath);
+          if (reached && !controller.signal.reason) controller.abort();
+          return controller.signal.reason !== undefined;
+        },
+      });
+      const result = await check(loaded, { fix: true, signal: controller.signal });
+      expect(controller.signal.aborted).toBe(true);
+      expect(result.map((item) => item.rule)).toEqual(["cancelled"]);
+      for (const [index, path] of paths.entries()) {
+        if (index < committedCount) expect(await readFile(path, "utf8")).not.toBe(original.get(path) as string);
+        else expect(await readFile(path, "utf8")).toBe(original.get(path) as string);
+      }
+      expect(loaded.files).toEqual((await loadAll(repo)).files);
+      expect(readdirSync(repo.roadmapDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    },
+  );
+
+  test.each([0, 1, 2, 3])("cancelled check fixes report all %i committed files and a retry path", async (committedCount) => {
     const { repo, model } = await diskFixture();
     const paths = [model.index.path, model.rounds[0]?.path as string, model.adrIndex?.path as string];
     const names = ["status", "stages", "adrs"];
@@ -334,25 +373,35 @@ describe("generated blocks and fix scope", () => {
       await writeFile(path, stale);
       original.set(path, stale);
     }
-    const loaded = await loadAll(repo);
     const controller = new AbortController();
-    Object.defineProperty(controller.signal, "aborted", {
-      get() {
-        const reached =
-          boundary === "temporary"
-            ? readdirSync(repo.roadmapDir).some((name) => name.endsWith(".tmp"))
-            : readFileSync(model.index.path, "utf8") !== original.get(model.index.path);
-        if (reached && !controller.signal.reason) controller.abort();
-        return controller.signal.reason !== undefined;
-      },
-    });
-    const result = await check(loaded, { fix: true, signal: controller.signal });
+    if (committedCount === 0) controller.abort();
+    else {
+      const triggerPath = paths[committedCount - 1] as string;
+      Object.defineProperty(controller.signal, "aborted", {
+        get() {
+          if (!controller.signal.reason && readFileSync(triggerPath, "utf8") !== original.get(triggerPath)) controller.abort();
+          return controller.signal.reason !== undefined;
+        },
+      });
+    }
+    const receipt = await checkReceipt(repo, true, controller.signal);
     expect(controller.signal.aborted).toBe(true);
-    expect(result.map((item) => item.rule)).toEqual(["cancelled"]);
-    if (boundary === "temporary") expect(await readFile(model.index.path, "utf8")).toBe(original.get(model.index.path) as string);
-    else expect(await readFile(model.index.path, "utf8")).not.toBe(original.get(model.index.path) as string);
-    for (const path of paths.slice(1)) expect(await readFile(path, "utf8")).toBe(original.get(path) as string);
-    expect(readdirSync(repo.roadmapDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect(receipt.ok).toBe(false);
+    if (receipt.ok) throw new Error("Expected cancelled check receipt");
+    expect(receipt.diagnostics?.map((item) => item.rule)).toEqual(["cancelled"]);
+    expect(receipt.changedFiles?.toSorted()).toEqual(paths.slice(0, committedCount).toSorted());
+    const hints = receipt.hints.join("\n");
+    expect(hints).toMatch(/roadmap_check.*fix: true/);
+    for (const [index, path] of paths.entries()) {
+      if (index < committedCount) {
+        expect(hints).toContain(path);
+        expect(await readFile(path, "utf8")).not.toBe(original.get(path) as string);
+      } else {
+        expect(hints).not.toContain(path);
+        expect(await readFile(path, "utf8")).toBe(original.get(path) as string);
+      }
+    }
+    expect(await check(await loadAll(repo), { fix: true })).toEqual([]);
   });
 
   test("fix repairs only generated blocks after cancellation commits a stage but leaves both indexes stale", async () => {

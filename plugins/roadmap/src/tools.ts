@@ -21,7 +21,7 @@ import {
 import { actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
 import type { OverlapAnswer } from "#src/ui.ts";
 
-export type ToolReceipt = Receipt & { answer?: OverlapAnswer; diagnostics?: Diagnostics[] };
+export type ToolReceipt = Receipt & { answer?: OverlapAnswer; diagnostics?: Diagnostics[]; changedFiles?: string[] };
 
 export function toolResult(receipt: ToolReceipt) {
   const text = receipt.ok
@@ -84,8 +84,16 @@ export async function checkReceipt(repo: Repo, fix = false, signal?: AbortSignal
   const lines = diagnostics.map((diagnostic) => `${diagnostic.severity}: ${diagnostic.rule} — ${diagnostic.path}: ${diagnostic.message}`);
   if (errors.length) {
     const hints = ["Check verifies document consistency, not code/document drift."];
-    if (changedFiles.length) hints.push(`Regenerated: ${changedFiles.join(", ")}. Commit these files per the project's rules.`);
-    return { ok: false, reason: lines.join("\n"), hints, diagnostics };
+    const cancelled = errors.some((diagnostic) => diagnostic.rule === "cancelled");
+    if (cancelled) {
+      hints.push(
+        changedFiles.length
+          ? `Files committed by the interrupted fix: ${changedFiles.join(", ")}. Commit these files per the project's rules.`
+          : "No files were committed by the interrupted fix.",
+        "Run roadmap_check with fix: true again to finish regenerating eligible generated blocks, then run roadmap_check to verify consistency.",
+      );
+    } else if (changedFiles.length) hints.push(`Regenerated: ${changedFiles.join(", ")}. Commit these files per the project's rules.`);
+    return { ok: false, reason: lines.join("\n"), hints, diagnostics, ...(cancelled ? { changedFiles } : {}) };
   }
   return {
     ok: true,

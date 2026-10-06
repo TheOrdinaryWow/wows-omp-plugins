@@ -348,6 +348,12 @@ const CASES: Record<string, string> = {
   "midwrite-init": "cancelled initialization stops after its first previewed file without consuming arming",
   "midwrite-round-open": "cancelled round open stops after its first previewed file without consuming arming",
   "midwrite-overlap-free": "cancelled free-work commit does not persist its overlap answer",
+  ...Object.fromEntries(
+    [0, 1, 2, 3].map((count) => [
+      `check-fix-cancel-${count}`,
+      `cancelled check fixes report all ${count} committed files and a retry path`,
+    ]),
+  ),
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
   "overlap-flight-concurrent": "concurrent overlap calls share one dialog and one free-work entry",
@@ -875,6 +881,86 @@ async function acceptance(name: string, root: string): Promise<void> {
         );
         assert.deepEqual((await loadAll(repo)).files, before);
       }
+    } else if (name.startsWith("check-fix-cancel-")) {
+      const repo = await initialized(root);
+      const model = await loadAll(repo);
+      assert(model.rounds[0] && model.adrIndex);
+      const paths = [model.index.path, model.rounds[0].path, model.adrIndex.path];
+      const names = ["status", "stages", "adrs"];
+      const expected = new Map<string, string>();
+      const stale = new Map<string, string>();
+      for (const [index, path] of paths.entries()) {
+        const raw = await readFile(path, "utf8");
+        const text = replaceGenerated(raw, names[index] as string, "Stale table");
+        expected.set(path, raw);
+        stale.set(path, text);
+        await writeFile(path, text);
+      }
+      const before = (await loadAll(repo)).files;
+      const committedCount = Number(name.slice("check-fix-cancel-".length));
+      const controller = new AbortController();
+      if (committedCount > 0) {
+        const triggerPath = paths[committedCount - 1];
+        assert(triggerPath);
+        cancelAfterCommit(triggerPath, stale.get(triggerPath), controller);
+      }
+      const readonly = await call(h, "roadmap_check", {}, controller.signal);
+      assert(!readonly.ok && readonly.diagnostics?.every((item) => item.rule === "generated"));
+      assert.deepEqual((await loadAll(repo)).files, before, "read-only check ignores the fix cancellation signal and preserves bytes");
+      const tool = h.session.getToolByName("roadmap_check");
+      assert(tool);
+      const execute = () => tool.execute(`check-cancel-${committedCount}`, { fix: true }, controller.signal);
+      let result: AgentToolResult<unknown>;
+      if (committedCount === 0) {
+        const locked = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const holding = withRepoLock(repo, async () => {
+          locked.resolve();
+          await release.promise;
+        });
+        await locked.promise;
+        const queued = observeLockWaits()(execute);
+        try {
+          await queued.waiting;
+          controller.abort();
+        } finally {
+          release.resolve();
+          await holding;
+        }
+        result = await queued.pending;
+      } else result = await execute();
+      const receipt = result.details as ToolReceipt;
+      assert(controller.signal.aborted);
+      assert(!receipt.ok && result.isError, JSON.stringify(receipt));
+      assert.deepEqual(
+        receipt.diagnostics?.map((item) => item.rule),
+        ["cancelled"],
+      );
+      assert.deepEqual(receipt.changedFiles?.toSorted(), paths.slice(0, committedCount).toSorted());
+      const hints = receipt.hints.join("\n");
+      const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+      assert.match(hints, /roadmap_check.*fix: true/);
+      assert.match(text, /roadmap_check.*fix: true/);
+      for (const [index, path] of paths.entries()) {
+        if (index < committedCount) {
+          assert(hints.includes(path) && text.includes(path));
+          assert.equal(await readFile(path, "utf8"), expected.get(path));
+        } else {
+          assert(!hints.includes(path));
+          assert.equal(await readFile(path, "utf8"), stale.get(path));
+        }
+      }
+      assert.deepEqual(
+        readdirSync(join(root, "docs"), { recursive: true, encoding: "utf8" }).filter((path) => path.endsWith(".tmp")),
+        [],
+      );
+      const recovered = await call(h, "roadmap_check", { fix: true });
+      assert(recovered.ok, JSON.stringify(recovered));
+      assert.deepEqual(recovered.changedFiles.toSorted(), paths.slice(committedCount).toSorted());
+      assert((await call(h, "roadmap_check", {})).ok);
+      const noChanges = await call(h, "roadmap_check", { fix: true });
+      assert(noChanges.ok);
+      assert.deepEqual(noChanges.changedFiles, []);
     } else if (name === "prewrite-cancel") {
       const info = discoverRepo(root);
       assert(info);
