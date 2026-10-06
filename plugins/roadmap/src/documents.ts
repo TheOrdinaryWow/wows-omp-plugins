@@ -315,90 +315,218 @@ function section(heading: string, body: string): string {
   return `${heading}\n${body ? `${lf(body)}\n` : ""}\n`;
 }
 
-export function markdownHeadings(body: string, pattern: RegExp, options: { requireClosedFences?: boolean } = {}): RegExpMatchArray[] {
-  let fenceCharacter = "";
-  let fenceLength = 0;
-  let html: { end: RegExp; opener: string; line: number } | undefined;
-  let offset = 0;
+type MarkdownContainer = { kind: "quote" } | { kind: "list"; indent: number; empty: boolean };
+type MarkdownHtml = { end?: RegExp; opener: string; line: number };
+
+const HTML_BLOCK_TAG =
+  /^ {0,3}(<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?=[ \t/>]|$))/i;
+const HTML_COMPLETE_TAG =
+  /^ {0,3}(<[a-z][a-z\d-]*(?:[ \t]+[a-z_:][a-z\d_.:-]*(?:[ \t]*=[ \t]*(?:"[^"]*"|'[^']*'|[^ \t"'=<>`]+))?)*[ \t]*\/?>|<\/[a-z][a-z\d-]*[ \t]*>)[ \t]*$/i;
+const MARKDOWN_FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const MARKDOWN_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
+const MARKDOWN_THEMATIC = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+const MARKDOWN_ATX = /^ {0,3}#{1,6}(?:[ \t]|$)/;
+const MARKDOWN_LIST = /^( {0,3})([*+-]|\d{1,9}[.)])( +|$)/;
+
+function markdownHtml(line: string, paragraph: boolean, number: number): MarkdownHtml | undefined {
+  const opener = /^ {0,3}(<(?:script|pre|style|textarea)(?=[ \t>]|$))/i.exec(line) ?? /^ {0,3}(<!--|<\?|<![A-Z]|<!\[CDATA\[)/.exec(line);
+  if (opener) {
+    const start = opener[1] as string;
+    const end =
+      start === "<!--"
+        ? /-->/
+        : start === "<?"
+          ? /\?>/
+          : start === "<![CDATA["
+            ? /\]\]>/
+            : /^<![A-Z]/.test(start)
+              ? />/
+              : /<\/(?:script|pre|style|textarea)>/i;
+    return { end, opener: start, line: number };
+  }
+  const tag = HTML_BLOCK_TAG.exec(line) ?? (!paragraph ? HTML_COMPLETE_TAG.exec(line) : null);
+  return tag ? { opener: tag[1] as string, line: number } : undefined;
+}
+
+function markdownFence(line: string): RegExpExecArray | null {
+  const fence = MARKDOWN_FENCE.exec(line);
+  return fence && (fence[1]?.[0] !== "`" || !fence[2]?.includes("`")) ? fence : null;
+}
+
+function markdownList(line: string, paragraph: boolean): RegExpExecArray | null {
+  if (MARKDOWN_THEMATIC.test(line)) return null;
+  const marker = MARKDOWN_LIST.exec(line);
+  if (
+    paragraph &&
+    marker &&
+    (!line.slice(marker[0].length).trim() || (/\d/.test(marker[2] as string) && !/^1[.)]$/.test(marker[2] as string)))
+  )
+    return null;
+  return marker;
+}
+
+// Tabs advance to four-column stops, including after list and quote markers.
+// The source map keeps all heading spans in the original, unexpanded Markdown.
+function markdownLine(raw: string): { text: string; source: number[] } {
+  let text = "";
+  const source: number[] = [];
+  for (let index = 0; index < raw.length; index++) {
+    const width = raw[index] === "\t" ? 4 - (text.length % 4) : 1;
+    text += raw[index] === "\t" ? " ".repeat(width) : raw[index];
+    for (let column = 0; column < width; column++) source.push(index);
+  }
+  source.push(raw.length);
+  return { text, source };
+}
+
+export function markdownHeadings(
+  body: string,
+  pattern: RegExp,
+  options: { requireClosedFences?: boolean; topLevelOnly?: boolean } = {},
+): RegExpMatchArray[] {
+  const headings: RegExpMatchArray[] = [];
+  const containers: MarkdownContainer[] = [];
+  let fence: { character: string; length: number } | undefined;
+  let html: MarkdownHtml | undefined;
+  let indented = false;
   let paragraph: { offset: number; lines: string[] } | undefined;
-  const lines: string[] = [];
-  const setext: RegExpMatchArray[] = [];
-  for (const line of body.split("\n")) {
-    let masked = Boolean(fenceCharacter || html);
-    if (html) {
-      if (html.end.test(line)) html = undefined;
-    } else if (fenceCharacter) {
-      const fence = /^ {0,3}(`{3,}|~{3,})([ \t]*)$/.exec(line);
-      if (fence?.[1]?.[0] === fenceCharacter && fence[1].length >= fenceLength) fenceCharacter = "";
-    } else {
-      // CommonMark HTML block types 1-5 interrupt paragraphs and end on a delimiter,
-      // never a blank line. Fence-looking text inside HTML is still raw HTML.
-      const opener =
-        /^ {0,3}(<(?:script|pre|style|textarea)(?:[ \t>]|$))/i.exec(line) ?? /^ {0,3}(<!--|<\?|<![A-Z]|<!\[CDATA\[)/.exec(line);
-      if (opener) {
-        const start = opener[1] as string;
-        const end =
-          start === "<!--"
-            ? /-->/
-            : start === "<?"
-              ? /\?>/
-              : start === "<![CDATA["
-                ? /\]\]>/
-                : /^<![A-Z]/.test(start)
-                  ? />/
-                  : /<\/(?:script|pre|style|textarea)>/i;
-        masked = true;
-        if (!end.test(line)) html = { end, opener: start.trimEnd(), line: lines.length + 1 };
+  let offset = 0;
+  let number = 0;
+  for (const raw of body.split("\n")) {
+    number++;
+    const line = markdownLine(raw);
+    let cursor = 0;
+    let continued = 0;
+    for (const container of containers) {
+      const rest = line.text.slice(cursor);
+      if (container.kind === "quote") {
+        const marker = /^ {0,3}> ?/.exec(rest);
+        if (!marker) break;
+        cursor += marker[0].length;
+      } else if (!rest.trim()) {
+        // An empty item can begin with only its marker's blank line.
+        if (container.empty) break;
+        cursor = line.text.length;
+      } else {
+        const indent = /^ */.exec(rest)?.[0].length ?? 0;
+        if (indent < container.indent) break;
+        cursor += container.indent;
+        container.empty = false;
       }
-      if (!masked) {
-        const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-        if (fence && (fence[1]?.[0] !== "`" || !fence[2]?.includes("`"))) {
-          fenceCharacter = fence[1]?.[0] as string;
-          fenceLength = (fence[1] as string).length;
+      continued++;
+    }
+    let content = line.text.slice(cursor);
+    const lazy =
+      continued < containers.length &&
+      paragraph &&
+      content.trim() &&
+      !MARKDOWN_ATX.test(content) &&
+      !MARKDOWN_UNDERLINE.test(content) &&
+      !MARKDOWN_THEMATIC.test(content) &&
+      !/^ {0,3}>/.test(content) &&
+      !markdownList(content, true) &&
+      !markdownFence(content) &&
+      !markdownHtml(content, true, number);
+    if (continued < containers.length && !lazy) {
+      // A fence/HTML leaf belongs to its containers. Dedenting out of an item or
+      // omitting a required quote marker ends it implicitly, as in CommonMark.
+      if (fence && options.requireClosedFences) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
+      containers.length = continued;
+      fence = html = paragraph = undefined;
+      indented = false;
+    }
+    if (!fence && !html && !lazy) {
+      for (;;) {
+        const quote = /^ {0,3}> ?/.exec(content);
+        const item = quote ? null : markdownList(content, Boolean(paragraph));
+        if (!quote && !item) break;
+        if (quote) {
+          containers.push({ kind: "quote" });
+          cursor += quote[0].length;
+        } else if (item) {
+          const empty = !content.slice(item[0].length).trim();
+          const padding = (item[3] as string).length;
+          const indent = (item[1] as string).length + (item[2] as string).length + (!empty && padding >= 1 && padding <= 4 ? padding : 1);
+          containers.push({ kind: "list", indent, empty });
+          cursor += indent;
+        }
+        paragraph = undefined;
+        indented = false;
+        content = line.text.slice(cursor);
+      }
+    }
+    let masked = false;
+    if (html) {
+      masked = true;
+      if (html.end ? html.end.test(content) : !content.trim()) html = undefined;
+    } else if (fence) {
+      masked = true;
+      const closing = /^ {0,3}(`{3,}|~{3,}) *$/.exec(content);
+      if (closing?.[1]?.[0] === fence.character && closing[1].length >= fence.length) fence = undefined;
+    } else {
+      if (indented && content.trim() && !/^ {4}/.test(content)) indented = false;
+      if (!paragraph && /^ {4}/.test(content)) indented = true;
+      if (indented) masked = true;
+      else {
+        const opener = markdownHtml(content, Boolean(paragraph), number);
+        const openingFence = opener ? null : markdownFence(content);
+        if (opener) {
           masked = true;
+          if (!opener.end?.test(content)) html = opener;
+        } else if (openingFence) {
+          masked = true;
+          fence = { character: openingFence[1]?.[0] as string, length: (openingFence[1] as string).length };
         }
       }
     }
     if (masked) paragraph = undefined;
     else {
-      const underline = /^ {0,3}(=+|-+)[ \t]*$/.exec(line);
-      if (underline && paragraph) {
+      const underline = MARKDOWN_UNDERLINE.exec(content);
+      if (underline && paragraph && !lazy) {
         const prefix = underline[1]?.startsWith("=") ? "#" : "##";
-        const heading = `${prefix} ${paragraph.lines.join(" ")}`;
-        const match = [...heading.matchAll(pattern)][0];
-        if (match) {
-          // Keep source spans for section slicing; captures describe the Setext heading.
-          match[0] = body.slice(paragraph.offset, offset + line.length);
+        const match = [...`${prefix} ${paragraph.lines.join(" ")}`.matchAll(pattern)][0];
+        if (match && (!options.topLevelOnly || !containers.length)) {
+          match[0] = body.slice(paragraph.offset, offset + raw.length);
           match.index = paragraph.offset;
           match.input = body;
-          setext.push(match);
+          headings.push(match);
         }
         paragraph = undefined;
-      } else if (
-        /^[ \t]*$/.test(line) ||
-        /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>)/.test(line) ||
-        /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line) ||
-        (paragraph ? /^ {0,3}(?:[*+-]|1[.)])[ \t]+\S/ : /^ {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]+|$)/).test(line) ||
-        (!paragraph && /^(?: {4}|\t)/.test(line))
-      ) {
+      } else if (MARKDOWN_ATX.test(content)) {
+        if (!options.topLevelOnly || !containers.length) {
+          const match = [...content.matchAll(pattern)][0];
+          if (match) {
+            const start = cursor + (match.index ?? 0);
+            const sourceStart = line.source[start] ?? raw.length;
+            const sourceEnd = line.source[start + match[0].length] ?? raw.length;
+            match[0] = raw.slice(sourceStart, sourceEnd);
+            match.index = offset + sourceStart;
+            match.input = body;
+            headings.push(match);
+          }
+        }
+        paragraph = undefined;
+      } else if (!content.trim() || MARKDOWN_THEMATIC.test(content) || (!paragraph && /^ {0,3}\[[^\]]+\]:[ \t]*\S/.test(content))) {
         paragraph = undefined;
       } else {
         paragraph ??= { offset, lines: [] };
-        paragraph.lines.push(line.trim());
+        paragraph.lines.push(content.trim());
       }
     }
-    lines.push(masked ? " ".repeat(line.length) : line);
-    offset += line.length + 1;
+    offset += raw.length + 1;
   }
-  if (html) invalid(`Unterminated HTML block (${html.opener}) at line ${html.line}; close the HTML block before retrying.`);
-  if (options.requireClosedFences && fenceCharacter) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
-  return [...lines.join("\n").matchAll(pattern), ...setext].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
+  if (html?.end) invalid(`Unterminated HTML block (${html.opener}) at line ${html.line}; close the HTML block before retrying.`);
+  if (options.requireClosedFences && fence) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
+  return headings;
 }
 
 function sections(body: string, title: string, headings: readonly string[], optional: readonly string[] = []): Record<string, string> {
   if (!body.startsWith(`${title}\n\n`)) invalid(`Expected fixed title ${title}.`);
   const rest = body.slice(title.length + 2);
-  const matches = markdownHeadings(rest, headings.includes("### In") ? /^## .+$|^### (?:In|Out)$/gm : /^## .+$/gm);
+  const matches = markdownHeadings(rest, headings.includes("### In") ? /^## .+$|^### (?:In|Out)$/gm : /^## .+$/gm, {
+    topLevelOnly: true,
+    requireClosedFences: true,
+  });
   if (matches[0]?.index !== 0) invalid("Unexpected text before the first fixed heading.");
   const actual = matches.map((match) => match[0]);
   const expected = headings.filter((heading) => !optional.includes(heading) || actual.includes(heading));
@@ -537,7 +665,7 @@ export function parseTodo(content: string, path = ""): TodoDoc {
   const rest = body.slice(`# ${round} — TODO\n\n`.length);
   const openHeader = "## Open\n\n";
   const closedHeader = "## Closed in this round\n\n";
-  const headings = markdownHeadings(rest, /^## .+$/gm);
+  const headings = markdownHeadings(rest, /^## .+$/gm, { topLevelOnly: true, requireClosedFences: true });
   if (!rest.startsWith(openHeader) || headings.length !== 2 || headings[1]?.[0] !== "## Closed in this round") {
     invalid("TODO fixed headings must be Open and Closed in this round.");
   }
@@ -548,7 +676,7 @@ export function parseTodo(content: string, path = ""): TodoDoc {
 }
 
 function todoItems(body: string, open: boolean): TodoItem[] {
-  const outline = markdownHeadings(body, /^### .+$/gm);
+  const outline = markdownHeadings(body, /^### .+$/gm, { topLevelOnly: true, requireClosedFences: true });
   const headings = outline.map((heading) => {
     const item = /^### (T\d{3,}) — (.+)$/.exec(heading[0]);
     if (!item) invalid("Malformed TODO item heading.");
@@ -657,7 +785,10 @@ export function buildAdrBody(title: string, input: AdrSections): string {
 function validateAdrBody(body: string): string {
   const title = /^# (.+)\n\n/.exec(body)?.[1];
   if (!title) invalid("ADR requires a MADR title.");
-  const headings = markdownHeadings(body, /^## .+$|^### (?:Consequences|Confirmation)$/gm).map((match) => match[0]);
+  const headings = markdownHeadings(body, /^## .+$|^### (?:Consequences|Confirmation)$/gm, {
+    topLevelOnly: true,
+    requireClosedFences: true,
+  }).map((match) => match[0]);
   const templateHeadings = [...MADR_BODY_TEMPLATE.matchAll(/^## .+$|^### (?:Consequences|Confirmation)$/gm)].map((match) => match[0]);
   let previous = -1;
   for (const heading of headings) {
@@ -778,7 +909,7 @@ export function renderCurrentStatus(rounds: readonly RoundDoc[], stages: readonl
 export function parseRoadmapIndex(content: string, path = ""): RoadmapIndexDoc {
   const { fm, body } = header(content, ["format", "roadmap", "title"], true);
   const title = text(fm.title, "title");
-  const headings = markdownHeadings(body, /^## .+$/gm).map((heading) => heading[0]);
+  const headings = markdownHeadings(body, /^## .+$/gm, { topLevelOnly: true, requireClosedFences: true }).map((heading) => heading[0]);
   if (!body.startsWith(`# ${title}\n\n`) || headings.join("\n") !== "## How this directory works\n## Rounds\n## Current status") {
     invalid("Roadmap index missing or altered fixed title, How this directory works, Rounds or Current status headings.");
   }
@@ -820,7 +951,7 @@ export function parseAdrIndex(content: string, path = ""): AdrIndexDoc {
   const { body } = header(content, ["format"]);
   if (
     !body.startsWith("# Architecture Decision Records\n\n") ||
-    markdownHeadings(body, /^## .+$/gm)
+    markdownHeadings(body, /^## .+$/gm, { topLevelOnly: true, requireClosedFences: true })
       .map((heading) => heading[0])
       .join("\n") !== "## Decisions"
   )

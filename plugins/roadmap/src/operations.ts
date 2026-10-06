@@ -220,7 +220,7 @@ function sameFields(actual: object, intended: object): boolean {
 
 function bodyHeadings(body: string, pattern: RegExp, requireClosedFences = true): RegExpMatchArray[] {
   try {
-    return markdownHeadings(lf(body), pattern, { requireClosedFences });
+    return markdownHeadings(lf(body), pattern, { requireClosedFences, topLevelOnly: true });
   } catch (error) {
     if (error instanceof DocumentError) throw new Refusal(`Body changes the document structure: ${error.message}`, [BODY_REPAIR_HINT]);
     throw error;

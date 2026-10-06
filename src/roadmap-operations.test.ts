@@ -44,6 +44,7 @@ import {
   todo,
 } from "../plugins/roadmap/src/operations.ts";
 import { cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
+import { closedMarkdownBodies, markdownStructureEscapes } from "./roadmap-markdown-fixtures.ts";
 
 const main: Actor = { sessionId: "main-session", kind: "main" };
 const sub: Actor = { sessionId: "sub-session", kind: "sub" };
@@ -533,7 +534,12 @@ describe("roadmap TODO body structure", () => {
     );
     const added = (await loadAll(repo)).todos[0]?.items.find((item) => item.status === "open");
     expect(added?.body).toBe(example);
-    success(await todo(repo, main, { action: "update", id: added?.id, body: "   ~~~~md\n### T999 — Example\n   ~~~~~" }));
+    const beforeIndented = await managedBytes(repo);
+    refused(await todo(repo, main, { action: "update", id: added?.id, body: "   ~~~~md\n### T999 — Example\n   ~~~~~" }), "structure");
+    expect(await managedBytes(repo)).toEqual(beforeIndented);
+    // Without the unindented paragraph, the opener continues the metadata list
+    // and the unindented example heading ends that container before the closer.
+    success(await todo(repo, main, { action: "update", id: added?.id, body: "Example:\n\n   ~~~~md\n### T999 — Example\n   ~~~~~" }));
     expect((await loadAll(repo)).todos[0]?.items.find((item) => item.id === "T001")?.body).toBe("");
     expect(await check(await loadAll(repo))).toEqual([]);
   });
@@ -931,6 +937,176 @@ describe("roadmap tool-owned body boundaries", () => {
     expect((await loadAll(repo)).adrs.find((item) => item.id === proposed?.id)?.body).toContain("~~~md\n## More Information");
     expect((await check(await loadAll(repo))).filter((item) => item.severity === "error")).toEqual([]);
   });
+});
+
+describe("roadmap CommonMark container boundaries", () => {
+  test("list and HTML escapes refuse delivery, deviations, objective, TODO and every ADR body without changing managed bytes", async () => {
+    const repo = await initialized();
+    success(await todo(repo, main, { action: "add", title: "Pending", severity: "normal", source: "Review", target: "S01" }));
+    success(await adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections }));
+    const planned = await managedBytes(repo);
+    for (const { body } of markdownStructureEscapes) {
+      const peer = body.replace("### Evidence", "## Evidence");
+      refused(await stage(repo, main, { action: "edit", id: "S01", objective: peer }), "structure");
+      expect(await managedBytes(repo)).toEqual(planned);
+      for (const action of ["add", "update"] as const) {
+        refused(
+          await todo(repo, main, {
+            action,
+            id: "T001",
+            title: "Injected",
+            severity: "normal",
+            source: "Review",
+            trigger: "Later",
+            body,
+          }),
+          "structure",
+        );
+        expect(await managedBytes(repo)).toEqual(planned);
+      }
+      for (const field of ["context", "drivers", "outcome", "consequences", "confirmation", "pros_cons", "more_info"] as const) {
+        for (const input of [
+          { action: "create", title: "Injected", status: "accepted" },
+          { action: "revise", id: "ADR-0002" },
+          { action: "supersede", id: "ADR-0001", title: "Injected" },
+        ] as const) {
+          refused(await adr(repo, main, { ...input, sections: { ...sections, [field]: peer } }), "structure");
+          expect(await managedBytes(repo)).toEqual(planned);
+        }
+      }
+      refused(await adr(repo, main, { action: "note", id: "ADR-0001", text: body }), "structure");
+      expect(await managedBytes(repo)).toEqual(planned);
+    }
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    const active = await managedBytes(repo);
+    const close: StageOperationInput = {
+      ...evidence(),
+      todos: [{ id: "T001", disposition: "resolved", reference: "Verified" }],
+      adrs: [{ id: "ADR-0002", status: "accepted" }],
+    };
+    for (const { body } of markdownStructureEscapes) {
+      for (const field of ["delivered", "deviations"] as const) {
+        refused(await stage(repo, main, { ...close, [field]: body }), "structure");
+        expect(await managedBytes(repo)).toEqual(active);
+      }
+    }
+    const model = await loadAll(repo);
+    expect(model.stages[0]?.status).toBe("active");
+    expect(model.stages[0]?.closed_sha256).toBeNull();
+    expect(model.todos[0]?.items[0]?.status).toBe("open");
+    expect(model.adrs.find((doc) => doc.id === "ADR-0002")?.status).toBe("proposed");
+    expect(await check(model)).toEqual([]);
+  }, 120_000);
+
+  test("round-open refuses list and HTML goal escapes without changing closed history", async () => {
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    const before = await managedBytes(repo);
+    for (const { body } of markdownStructureEscapes) {
+      refused(
+        await openRound(repo, main, { round: { ...charter, goal: body.replace("### Evidence", "## Evidence") }, import_todos: [] }),
+        "structure",
+      );
+      expect(await managedBytes(repo)).toEqual(before);
+    }
+  });
+
+  test("accepted list fences, quote fences and HTML blocks retain the same rendered and scanned headings after every write", async () => {
+    const repo = await initialized();
+    const examples = [...closedMarkdownBodies, "> ## Quoted heading", "- ## List heading", "1. Nested Setext\n   --------"].join("\n\n");
+    async function intact(): Promise<void> {
+      const model = await loadAll(repo);
+      expect(await check(model)).toEqual([]);
+      for (const content of Object.values(model.files ?? {})) {
+        const body = Buffer.from(content)
+          .toString("utf8")
+          .replace(/^---\n[\s\S]*?\n---\n/, "");
+        const scanned = markdownHeadings(body, /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/gm).map((heading) => [
+          (heading[1] as string).length,
+          (heading[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim(),
+        ]);
+        const rendered = [...Bun.markdown.html(body).matchAll(/<h([1-6])>([\s\S]*?)<\/h\1>/g)].map((heading) => [
+          Number(heading[1]),
+          heading[2] ?? "",
+        ]);
+        expect(scanned).toEqual(rendered);
+      }
+    }
+    success(await stage(repo, main, { action: "edit", id: "S01", objective: examples, design_constraints: examples, risks: examples }));
+    await intact();
+    success(
+      await todo(repo, main, { action: "add", title: "Examples", severity: "normal", source: "Review", trigger: "Later", body: examples }),
+    );
+    await intact();
+    success(await todo(repo, main, { action: "update", id: "T001", body: examples }));
+    await intact();
+    success(
+      await adr(repo, main, {
+        action: "create",
+        title: "Examples",
+        status: "accepted",
+        sections: {
+          ...sections,
+          context: examples,
+          drivers: examples,
+          outcome: examples,
+          consequences: examples,
+          confirmation: examples,
+          pros_cons: examples,
+          more_info: examples,
+        },
+      }),
+    );
+    await intact();
+    success(await adr(repo, main, { action: "note", id: "ADR-0001", text: examples }));
+    await intact();
+    success(await stage(repo, main, { action: "start", id: "S01" }));
+    success(await stage(repo, main, { ...evidence(), delivered: examples, deviations: examples }));
+    await intact();
+    success(
+      await closeRound(repo, main, {
+        expected: await reviewedRound(repo),
+        dispositions: [{ id: "T001", disposition: "carried", reference: "Next round" }],
+      }),
+    );
+    success(await openRound(repo, main, { round: { ...charter, goal: examples }, import_todos: [] }));
+    await intact();
+  });
+
+  test("stored-file check reports sections swallowed by list fences and HTML types 6 and 7", async () => {
+    const { repo, model } = await diskFixture();
+    const current = model.stages[0];
+    const round = model.rounds[0];
+    const todos = model.todos[0];
+    const decision = model.adrs[0];
+    if (!current || !round || !todos || !decision) throw new Error("Missing fixtures");
+    for (const { body } of markdownStructureEscapes) {
+      const peer = body.replace("### Evidence", "## Evidence");
+      for (const [path, content] of [
+        [current.path, renderStage({ ...current, objective: peer })],
+        [
+          current.path,
+          renderStage({ ...current, outcome: `### Delivered\n\n${body}\n\n### Deviations\n\nNone.\n\n### Evidence\n\nReal evidence.` }),
+        ],
+        [round.path, renderRound({ ...round, goal: peer })],
+        [todos.path, renderTodo({ ...todos, items: todos.items.map((item) => ({ ...item, body })) })],
+        [
+          decision.path,
+          renderAdr({
+            ...decision,
+            body: decision.body.replace("## Context and Problem Statement\n", `## Context and Problem Statement\n\n${peer}\n\n`),
+          }),
+        ],
+      ] as const) {
+        const original = await readFile(path, "utf8");
+        await writeFile(path, content);
+        const diagnostics = await check(await loadAll(repo));
+        expect(diagnostics.some((item) => item.rule === "structure" && item.severity === "error" && item.path === path)).toBe(true);
+        await writeFile(path, original);
+      }
+    }
+  }, 120_000);
 });
 
 describe("roadmap HTML body boundaries", () => {
