@@ -9,7 +9,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-
 
 import { type ExecutionLedger, isComplete, ledgerRows } from "../plugins/omo-prometheus/src/ledger.ts";
 import { type AtlasCompleted, RoadmapContract } from "../plugins/omo-prometheus/src/roadmap-contract.ts";
-import { executionBlockReason, executionToolSourceBlockReason } from "../plugins/omo-prometheus/src/workflow.ts";
+import { EXECUTION_PREAMBLE, executionBlockReason, executionToolSourceBlockReason } from "../plugins/omo-prometheus/src/workflow.ts";
 
 const CHILD = "PROMETHEUS_ROADMAP_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
@@ -370,6 +370,30 @@ if (process.env[CHILD]) {
     expect(executionToolSourceBlockReason("roadmap_stage", "extension", true)).toBeTruthy();
     expect(executionBlockReason("bash", {}, ROADMAP_ENTRY)).toBeTruthy();
     expect(executionToolSourceBlockReason("task", "extension", false, ROADMAP_ENTRY, ROADMAP_ENTRY)).toBeTruthy();
+  });
+  test("Atlas stage-close policy keeps the authenticated roadmap exception separate from direct workspace writes", async () => {
+    const policy = await readFile(new URL("../plugins/omo-prometheus/assets/atlas.md", import.meta.url), "utf8");
+    for (const text of [EXECUTION_PREAMBLE, policy]) {
+      expect(text).toContain("sole workspace-mutation exception is stage closure through");
+      expect(text).toContain("provenance-verified `roadmap_*` tools");
+      expect(text).toContain("runtime authenticated by the roadmap handshake");
+      expect(text).toContain("`roadmap_stage` action=close with verified evidence");
+      expect(text).toContain("does not permit direct managed-file edits or any other workspace write");
+    }
+    const close = { action: "close", id: "S01" };
+    expect(executionBlockReason("roadmap_stage", close, ROADMAP_ENTRY)).toBeUndefined();
+    expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, ROADMAP_ENTRY, ROADMAP_ENTRY)).toBeUndefined();
+    expect(executionBlockReason("roadmap_stage", close)).toBeTruthy();
+    expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, ROADMAP_ENTRY, "/shadow.ts")).toBeTruthy();
+    for (const [toolName, input] of [
+      ["write", { path: "docs/roadmap/README.md", content: "changed" }],
+      ["edit", { path: "docs/roadmap/README.md" }],
+      ["ast_edit", { paths: ["docs/roadmap"] }],
+      ["bash", { command: "echo changed > docs/roadmap/README.md" }],
+      ["eval", { code: "write('docs/roadmap/README.md', 'changed')" }],
+      ["lsp", { action: "rename", apply: true }],
+    ] as const)
+      expect(executionBlockReason(toolName, input, ROADMAP_ENTRY)).toBeTruthy();
   });
   for (const name of ["bound", "absent", "unbound", "restored", "legacy", "lazy"]) {
     test(`Prometheus roadmap contract: ${name}`, async () => {

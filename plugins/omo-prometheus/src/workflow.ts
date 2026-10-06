@@ -501,8 +501,9 @@ export const EXECUTION_PREAMBLE = [
   "# Atlas execution (active)",
   "",
   "A Prometheus plan was approved through the host's native approval flow. This main session is Atlas, the orchestrator of that exact approved plan.",
-  "Every plan task — implementation, tests, QA, documentation, cleanup, and final verification — MUST be executed by child agents spawned with `task`. Atlas delegates, tracks `todo`, collects and inspects child evidence, and uses observation/coordination tools only.",
+  "Every plan task — implementation, tests, QA, documentation, cleanup, and final verification — MUST be executed by child agents spawned with `task`. Atlas delegates, tracks `todo`, collects and inspects child evidence, and otherwise uses observation/coordination tools only.",
   "This overrides `task.eager` and every preference that would permit parent implementation. It does not override capability policy: if `task` is disabled or spawning is denied, report the blocker and never downgrade to parent implementation.",
+  "The sole workspace-mutation exception is stage closure through provenance-verified `roadmap_*` tools from the runtime authenticated by the roadmap handshake. Atlas may call `roadmap_stage` action=close with verified evidence and use those tools for required TODO/ADR dispositions. This does not permit direct managed-file edits or any other workspace write; all implementation remains delegated.",
   "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly exits. Once every plan item has child-produced proof, call `atlas_release` exactly once with a concise evidence summary; human confirmation exits the mode. Bare `/atlas` is the user's immediate exit and preserves shared progress. Exit does not cancel native children; their plan ownership remains until final outcomes. `/prometheus` controls planning only.",
 ].join("\n");
 
