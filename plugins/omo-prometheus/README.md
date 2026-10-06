@@ -67,6 +67,7 @@ Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file w
 |---|---|
 |[Magic Context](https://github.com/cortexkit/magic-context) (an extension, not part of OMP)|`ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, `ctx_note`, only when registered by an extension; same-named MCP tools stay blocked|
 |Extension wrappers of `todo`, such as [omp-herdr-dag](../omp-herdr-dag/README.md)'s edge-aware `todo`|`todo`, when an extension re-registers it; an MCP `todo` stays blocked|
+|[roadmap](../roadmap/README.md)|`roadmap_*`, only from the extension source path verified by the synchronous roadmap binding handshake; shadows from other extensions or MCP servers stay blocked|
 
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session. To survive that switch, the plugin writes a marker to `local://prometheus/<slug>.proposal.json` when the plan is proposed, and OMP copies it into the new session along with the plan. Plans approved in ordinary Plan Mode have no marker, and the plugin leaves them alone.
 
@@ -147,6 +148,14 @@ Binding emits `atlas:hello` and `atlas:snapshot`. Live updates publish the plan 
 An enabled producer also announces availability without a plan after an unbound session starts or switches, so a viewer that starts first does not need to retry its initial handshake.
 
 Detaching emits `atlas:released` with `reason: "exit"`, `"session-switch"`, or `"shutdown"`, followed by a hello without a plan. Release means detached from the view, not finished execution or cancelled children. With `herdrDag: false`, no contract events are emitted, including hello replies; ledger, todo mirror, ownership, and UI behavior remain unchanged. No viewer or runtime dependency is required by this producer.
+
+## Roadmap contract
+
+With [roadmap](../roadmap/README.md) installed, Prometheus uses a versioned `pi.events` contract independent of `herdrDag`. At proposal time it emits `roadmap:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `roadmap:binding` reply matching that session and request. The reply includes `repoRoot`, `toolSourcePath` and an optional bound active stage. New Atlas bundles write approval version 2 with optional `roadmapStage: {repoRoot, id}`; version 1 approvals still resume without rewriting their bytes or requiring fresh approval. Atlas admits `roadmap_*` tools only with extension provenance whose path exactly matches the handshake's `toolSourcePath`; the guard can request that binding lazily on its first roadmap tool call.
+
+After the ledger write that first makes a stage-bound plan complete, Prometheus emits `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, at}` with verified gate verdicts and summaries. Roadmap records a pending-close reminder for the executing session's next turn. The session must still map and verify that evidence against the stage criteria and call the normal stage-close tool with TODO/ADR dispositions; completion doesn't close a stage automatically. Check the bundle's `approval.json` for `roadmapStage` to confirm the plan carries this integration.
+
+Completion deduplication is per producer instance, not durable exactly-once delivery. A producer restart followed by reopening and recompleting a plan can emit again. Roadmap deduplicates pending-close entries by `planId` within the same receiving session's retained state; another session may receive its own reminder.
 
 ## Plan format
 
