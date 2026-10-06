@@ -8,6 +8,8 @@ import {
   loadAll,
   loadRepo,
   type Model,
+  markdownHeadings,
+  parseAdr,
   parseStage,
   type Repo,
   renderRound,
@@ -112,6 +114,13 @@ async function initialized(): Promise<Repo> {
   success(await initProject(repo, main, initInput));
   expect((await check(await loadAll(repo))).filter((item) => item.severity === "error")).toEqual([]);
   return repo;
+}
+
+async function reviewedRound(repo: Repo): Promise<{ id: string; sha256: string }> {
+  const model = await loadAll(repo);
+  const round = model.rounds.find((candidate) => candidate.status === "active");
+  if (!round) throw new Error("Missing active round");
+  return { id: round.id, sha256: roundSha256(roundFiles(model, round)) };
 }
 
 function evidence(id = "S01", criteria = ["DC1", "DC2"]): StageOperationInput {
@@ -350,7 +359,7 @@ describe("roadmap stage lifecycle and close gate", () => {
     round.goal += "\n\nS03 is reserved for a later round.";
     await writeFile(round.path, renderRound(round, first.stages));
     success(await stage(frozenRepo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-    success(await closeRound(frozenRepo, main, { dispositions: [] }));
+    success(await closeRound(frozenRepo, main, { expected: await reviewedRound(frozenRepo), dispositions: [] }));
     success(await openRound(frozenRepo, main, { round: { ...charter, title: "Next" }, import_todos: [] }));
     success(await stage(frozenRepo, main, { action: "add", ...stageInput, title: "Second" }));
     success(await stage(frozenRepo, main, { action: "add", ...stageInput, title: "Third" }));
@@ -393,6 +402,39 @@ describe("roadmap stage lifecycle and close gate", () => {
 });
 
 describe("roadmap ADR operations", () => {
+  test("dated notes ignore fenced More Information examples and stay in the real section", async () => {
+    const repo = await initialized();
+    for (const fence of ["~~~", "```"]) {
+      for (const more_info of [undefined, "Existing decision history."]) {
+        const context = `A documented example:\n\n${fence}md\n## More Information\n${fence}`;
+        success(
+          await adr(repo, main, {
+            action: "create",
+            title: `Fenced example ${fence} ${Boolean(more_info)}`,
+            status: "accepted",
+            sections: { ...sections, context, more_info },
+          }),
+        );
+        const created = (await loadAll(repo)).adrs.at(-1);
+        if (!created) throw new Error("Missing created ADR");
+        const note = "The accepted decision was exercised in production.";
+        success(await adr(repo, main, { action: "note", id: created.id, text: note }));
+        const parsed = parseAdr(await readFile(created.path, "utf8"), created.path);
+        const headings = markdownHeadings(parsed.body, /^## .+$/gm);
+        const information = headings.filter((heading) => heading[0] === "## More Information");
+        expect(information).toHaveLength(1);
+        const start = information[0]?.index as number;
+        expect(headings.at(-1)?.[0]).toBe("## More Information");
+        expect(parsed.body.slice(0, start)).toContain(context);
+        expect(parsed.body.slice(0, start)).not.toContain(note);
+        expect(parsed.body.slice(start)).toContain(`### ${new Date().toISOString().slice(0, 10)}\n\n${note}`);
+        if (more_info) expect(parsed.body.slice(start)).toContain(more_info);
+        expect(parsed.status).toBe("accepted");
+        expect(await check(await loadAll(repo))).toEqual([]);
+      }
+    }
+  });
+
   test("subagent creates proposed, proposed revisions retain metadata, and main-only transitions preserve accepted bodies", async () => {
     const repo = await initialized();
     success(await stage(repo, main, { action: "start", id: "S01" }));
@@ -448,9 +490,36 @@ describe("roadmap ADR operations", () => {
 });
 
 describe("round freeze, import and recovery", () => {
+  test("round close refuses changed contents, a closed reviewed round and a replacement round without writes", async () => {
+    const repo = await initialized();
+    success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+    const expected = await reviewedRound(repo);
+    success(await todo(repo, main, { action: "add", title: "New concern", severity: "normal", source: "Review", trigger: "Later" }));
+    const changed = await managedBytes(repo);
+    const stale = refused(await closeRound(repo, main, { expected, dispositions: [] }), "stale");
+    expect(stale.hints).toContain("Run /roadmap close-round again to review the current round and TODOs.");
+    expect(await managedBytes(repo)).toEqual(changed);
+    expect((await loadAll(repo)).rounds[0]?.status).toBe("active");
+    const reviewed = await reviewedRound(repo);
+    const other: Actor = { sessionId: "other-main", kind: "main" };
+    success(await closeRound(repo, other, { expected: reviewed, dispositions: [{ id: "T001", disposition: "carried" }] }));
+    const closed = await managedBytes(repo);
+    refused(await closeRound(repo, main, { expected: reviewed, dispositions: [] }), "stale");
+    expect(await managedBytes(repo)).toEqual(closed);
+    success(await openRound(repo, other, { round: { ...charter, title: "Replacement" }, import_todos: [] }));
+    const replacement = await managedBytes(repo);
+    refused(await closeRound(repo, main, { expected: reviewed, dispositions: [] }), "stale");
+    expect((await loadAll(repo)).rounds.map((round) => [round.id, round.status]).sort()).toEqual([
+      ["R1", "closed"],
+      ["R2", "active"],
+    ]);
+    expect(await managedBytes(repo)).toEqual(replacement);
+    expect(await check(await loadAll(repo))).toEqual([]);
+  });
+
   test("round close collects all disposition kinds, freezes all files, and the next round imports carried TODOs without modifying history", async () => {
     const repo = await initialized();
-    refused(await closeRound(repo, main, { dispositions: [] }), "Every stage");
+    refused(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }), "Every stage");
     refused(await openRound(repo, main, { round: charter, import_todos: [] }), "active round");
     for (const [index, title] of ["Resolved limitation", "Known limitation", "Carry forward"].entries()) {
       success(
@@ -465,15 +534,19 @@ describe("round freeze, import and recovery", () => {
       );
     }
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Launch deferred" }));
-    refused(await closeRound(repo, sub, { dispositions: [] }), "main session");
+    refused(await closeRound(repo, sub, { expected: await reviewedRound(repo), dispositions: [] }), "main session");
     const before = await managedBytes(repo);
     refused(
-      await closeRound(repo, main, { dispositions: [{ id: "T001", disposition: "resolved", reference: "commit abc1234" }] }),
+      await closeRound(repo, main, {
+        expected: await reviewedRound(repo),
+        dispositions: [{ id: "T001", disposition: "resolved", reference: "commit abc1234" }],
+      }),
       "Every open TODO",
     );
     expect(await managedBytes(repo)).toEqual(before);
     success(
       await closeRound(repo, main, {
+        expected: await reviewedRound(repo),
         dispositions: [
           { id: "T001", disposition: "resolved", reference: "commit abc1234" },
           { id: "T002", disposition: "wontfix", reference: "Outside the product boundary" },
@@ -557,7 +630,7 @@ describe("round freeze, import and recovery", () => {
     refused(await applyPrepared(repo, main, preview.prepared), "Unknown preview");
     refused(await prepareInit(repo, main, initInput), "already exists");
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Prepare a later round" }));
-    success(await closeRound(repo, main, { dispositions: [] }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
     const next = await prepareRoundOpen(repo, main, { round: { ...charter, title: "Next" }, import_todos: [] });
     if (!next.ok) throw new Error(next.reason);
     success(await adr(repo, main, { action: "note", id: "ADR-0001", text: "Changed while the preview was visible." }));

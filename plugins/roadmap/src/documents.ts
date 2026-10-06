@@ -315,7 +315,7 @@ function section(heading: string, body: string): string {
   return `${heading}\n${body ? `${lf(body)}\n` : ""}\n`;
 }
 
-function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
+export function markdownHeadings(body: string, pattern: RegExp): RegExpMatchArray[] {
   let fenceCharacter = "";
   let fenceLength = 0;
   const lines: string[] = [];

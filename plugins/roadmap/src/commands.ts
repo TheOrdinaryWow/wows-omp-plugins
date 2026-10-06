@@ -3,7 +3,7 @@ import { lstat, readdir } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { check } from "#src/check.ts";
-import { loadAll, loadRepo } from "#src/documents.ts";
+import { loadAll, loadRepo, roundFiles, roundSha256 } from "#src/documents.ts";
 import { closeRound } from "#src/operations.ts";
 import { actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
 import { checkReceipt, requireRepo, statusReceipt, toolResult } from "#src/tools.ts";
@@ -107,6 +107,7 @@ export function registerCommands(pi: ExtensionAPI, ses: RoadmapSession, uiFor: U
         }
         const errors = (await check(model)).filter((diagnostic) => diagnostic.severity === "error");
         if (errors.length) throw new Error(`Roadmap check failed: ${errors.map((diagnostic) => diagnostic.message).join("; ")}`);
+        const expected = { id: round.id, sha256: roundSha256(roundFiles(model, round)) };
         const todos = model.todos
           .filter((doc) => doc.round === round.id)
           .flatMap((doc) => doc.items.filter((item) => item.status === "open"));
@@ -115,7 +116,7 @@ export function registerCommands(pi: ExtensionAPI, ses: RoadmapSession, uiFor: U
           ui.notify("Round close: no answer available.", "info");
           return;
         }
-        const receipt = await closeRound(repo, actor(ctx), { dispositions });
+        const receipt = await closeRound(repo, actor(ctx), { expected, dispositions });
         if (receipt.ok) {
           for (const stage of model.stages.filter((stage) => stage.round === round.id)) ses.clearStage(ctx, repo.repoRoot, stage.id);
           ses.disarm(ctx, repo.repoRoot);

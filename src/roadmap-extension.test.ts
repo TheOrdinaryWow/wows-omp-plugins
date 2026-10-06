@@ -6,10 +6,10 @@ import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
 
-import { loadAll, loadRepo, type Repo } from "../plugins/roadmap/src/documents.ts";
+import { loadAll, loadRepo, type Model, type Repo, roundFiles, roundSha256 } from "../plugins/roadmap/src/documents.ts";
 import { discoverRepo } from "../plugins/roadmap/src/git.ts";
 import { withRepoLock } from "../plugins/roadmap/src/numbering.ts";
-import { type Actor, type InitInput, initProject, stage } from "../plugins/roadmap/src/operations.ts";
+import { type Actor, closeRound, type InitInput, initProject, openRound, stage } from "../plugins/roadmap/src/operations.ts";
 import { ENTRY_PREFIX, type UiFactory } from "../plugins/roadmap/src/ses.ts";
 import type { ToolReceipt } from "../plugins/roadmap/src/tools.ts";
 import {
@@ -228,6 +228,7 @@ const CASES: Record<string, string> = {
   "bound-join-headless": "joined stages remain in-system without a UI",
   external: "an externally closed stage drops its binding with a one-turn notice",
   round: "round commands collect dispositions, arm previews and import carried TODOs",
+  "round-close-stale": "round-close dialogs cannot authorize closing a replacement round",
   rebuild: "session start, switch, branch and tree rebuild from the active branch",
   pending: "pending-close reminders retain evidence and remain bounded",
   preflight: "init command preflight rejects existing directories and non-git roots",
@@ -526,6 +527,40 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.equal((await loadAll(repo)).stages[0]?.free_work_log, "");
           assert.equal(await readFile((await loadAll(repo)).stages[0]?.path as string, "utf8"), before);
         }
+      } else if (name === "round-close-stale") {
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
+        let before: Model["files"];
+        h.ui.closeRoundDispositions = async () => {
+          const reviewed = await loadAll(repo);
+          const round = reviewed.rounds.find((candidate) => candidate.status === "active");
+          assert.equal(round?.id, "R1");
+          assert(round);
+          const other: Actor = { sessionId: "other-main", kind: "main" };
+          assert(
+            (
+              await closeRound(repo, other, {
+                expected: { id: round.id, sha256: roundSha256(roundFiles(reviewed, round)) },
+                dispositions: [],
+              })
+            ).ok,
+          );
+          assert((await openRound(repo, other, { round: { ...draft.round, title: "Replacement" }, import_todos: [] })).ok);
+          before = (await loadAll(repo)).files;
+          return [];
+        };
+        await command(h, "roadmap", "close-round");
+        const model = await loadAll(repo);
+        assert.deepEqual(
+          model.rounds.map((round) => [round.id, round.status]).sort(),
+          [
+            ["R1", "closed"],
+            ["R2", "active"],
+          ],
+        );
+        assert(before);
+        assert.deepEqual(model.files, before);
+        assert.match(h.messages.at(-1) ?? "", /stale/);
+        assert.match(h.messages.at(-1) ?? "", /Run \/roadmap close-round again/);
       } else if (name === "round") {
         assert(
           (await call(h, "roadmap_todo", { action: "add", title: "Later", severity: "normal", source: "User", trigger: "Next round" })).ok,

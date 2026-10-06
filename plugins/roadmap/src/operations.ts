@@ -13,6 +13,7 @@ import {
   generatedBlock,
   loadAll,
   type Model,
+  markdownHeadings,
   parseDoneCriteria,
   parseRoadmapIndex,
   type Repo,
@@ -129,6 +130,7 @@ export interface RoundOpenInput {
 }
 
 export interface RoundCloseInput {
+  expected: { id: string; sha256: string };
   dispositions: Array<{ id: string; disposition: "resolved" | "wontfix" | "carried"; reference?: string }>;
 }
 
@@ -807,7 +809,7 @@ export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, op
       } else if (input.action === "note") {
         const note = required(input.text, "ADR note", true);
         if (/^##? /m.test(note)) throw new Refusal("An ADR note cannot introduce top-level MADR headings.");
-        if (!/^## More Information\n/m.test(current.body)) current.body += "## More Information\n\n";
+        if (!markdownHeadings(current.body, /^## More Information$/gm).length) current.body += "## More Information\n\n";
         current.body += `### ${new Date().toISOString().slice(0, 10)}\n\n${note}\n\n`;
       } else throw new Refusal("Unknown ADR action.");
       mutation.put(current.path, renderAdr(current));
@@ -1066,8 +1068,11 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
     async (mutation) => {
       actorValid(actor, true);
       const model = mutation.model;
+      const round = model.rounds.find((candidate) => candidate.status === "active");
+      if (!round || round.id !== input.expected?.id || roundSha256(roundFiles(model, round)) !== input.expected.sha256) {
+        throw new Refusal("Round-close authorization is stale.", ["Run /roadmap close-round again to review the current round and TODOs."]);
+      }
       await checked(model);
-      const round = activeRound(model);
       if (model.stages.some((stage) => stage.round === round.id && stage.status !== "closed" && stage.status !== "dropped")) {
         throw new Refusal("Every stage must be closed or dropped before the round can close.");
       }

@@ -55,6 +55,8 @@ The operation records the Outcome and closure hash. The plugin validates evidenc
 
 `/roadmap close-round` requires every stage to be closed or dropped and no document-check errors. Its dialog asks for a disposition for every open TODO: `resolved` with a reference, `wontfix` recorded under Known limitations, or `carried` for consideration in a later round. Closing freezes the directory rather than moving it.
 
+The dialog authorizes only the round and round-file snapshot reviewed before it opened. If that round closes, another round opens, or any of its files change while the dialog is pending, closing is refused as stale without writing. Run `/roadmap close-round` again to review the current state.
+
 `/roadmap new-round` interviews you for the next charter. The resulting `roadmap_round_open` preview can import selected carried TODO ids from frozen rounds. Imported items get new ids, retain their origin, and begin with a trigger rather than a stale target stage. The old round stays untouched.
 
 ## Commands
