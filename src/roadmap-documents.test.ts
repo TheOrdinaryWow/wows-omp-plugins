@@ -10,6 +10,7 @@ import {
   loadRepo,
   MADR_BODY_TEMPLATE,
   MANAGED_COMMENT,
+  markdownHeadings,
   parseAdr,
   parseAdrIndex,
   parseDoneCriteria,
@@ -127,6 +128,63 @@ describe("roadmap managed documents", () => {
     adr.body = buildAdrBody(adr.title, { context: code, options: ["X"], outcome: "Choose X." });
     const adrText = renderAdr(adr);
     expect(renderAdr(parseAdr(adrText))).toBe(adrText);
+  });
+
+  test("fence masking follows CommonMark opener info, marker, length and zero-to-three-space indentation rules", () => {
+    for (const indent of ["", " ", "  ", "   "]) {
+      for (const opener of ["````markdown", "~~~~lang`valid"]) {
+        const marker = opener[0] as string;
+        const source = `${indent}${opener}\n## Hidden\nEvidence\n--------\n${marker.repeat(3)}\n${marker.repeat(5)} \t\n## Visible`;
+        expect(markdownHeadings(source, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual(["## Visible"]);
+      }
+    }
+    for (const opener of ["```lang`invalid", "   ```lang`invalid", "    ```markdown"]) {
+      expect(markdownHeadings(`${opener}\n## Visible`, /^## .+$/gm, { requireClosedFences: true }).map((heading) => heading[0])).toEqual([
+        "## Visible",
+      ]);
+    }
+    for (const closing of ["```", "~~~~", "```` comment", "    ````", "````\u00a0"]) {
+      expect(() => markdownHeadings(`\`\`\`\`markdown\n## Hidden\n${closing}`, /^## .+$/gm, { requireClosedFences: true })).toThrow(
+        "Unterminated Markdown fence",
+      );
+    }
+  });
+
+  test("Setext headings preserve source spans and include their preceding paragraph lines", () => {
+    for (const indent of ["", " ", "  ", "   "]) {
+      for (const [underline, level] of [
+        ["=", 1],
+        ["--", 2],
+      ] as const) {
+        const title = `${indent}Paragraph line\n${indent}Evidence\n${indent}${underline} \t`;
+        const source = `Before.\n\n${title}\n\nAfter.`;
+        const headings = markdownHeadings(source, /^(#{1,6})(?:[ \t]+(.*))?$/gm, { requireClosedFences: true });
+        expect(headings).toHaveLength(1);
+        const heading = headings[0];
+        expect(heading?.[0]).toBe(title);
+        expect(heading?.[1]).toBe("#".repeat(level));
+        expect(heading?.[2]).toBe("Paragraph line Evidence");
+        expect(heading?.index).toBe(source.indexOf(title));
+      }
+    }
+    expect(markdownHeadings("Paragraph\n2. continuation\n---", /^(#{1,6})(?:[ \t]+(.*))?$/gm)[0]?.[1]).toBe("##");
+  });
+
+  test("horizontal rules without paragraph context are not Setext headings", () => {
+    for (const source of [
+      "---\n\nText.",
+      "Text.\n\n---",
+      "#### Details\n---",
+      "Text.\n- A list item\n---",
+      "Text.\n1. A list item\n---",
+      "Text.\n\n    Indented code\n---",
+      "Text.\n- - -",
+      "Text.\n* * *",
+      "Text.\n___",
+      "~~~markdown\nEvidence\n---\n~~~\n---",
+    ]) {
+      expect(markdownHeadings(source, /^(#{1,2})(?:[ \t]+(.*))?$/gm, { requireClosedFences: true })).toEqual([]);
+    }
   });
 
   test("quoted metadata retains hashes, commas and apostrophes; plain canonical YAML scalars are accepted", () => {

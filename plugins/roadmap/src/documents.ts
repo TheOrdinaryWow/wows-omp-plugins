@@ -318,24 +318,57 @@ function section(heading: string, body: string): string {
 export function markdownHeadings(body: string, pattern: RegExp, options: { requireClosedFences?: boolean } = {}): RegExpMatchArray[] {
   let fenceCharacter = "";
   let fenceLength = 0;
+  let offset = 0;
+  let paragraph: { offset: number; lines: string[] } | undefined;
   const lines: string[] = [];
+  const setext: RegExpMatchArray[] = [];
   for (const line of body.split("\n")) {
     const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     let masked = Boolean(fenceCharacter);
     if (fence) {
       const delimiter = fence[1] as string;
-      if (!fenceCharacter) {
+      const info = fence[2] as string;
+      if (!fenceCharacter && (delimiter[0] !== "`" || !info.includes("`"))) {
         fenceCharacter = delimiter[0] as string;
         fenceLength = delimiter.length;
         masked = true;
-      } else if (delimiter[0] === fenceCharacter && delimiter.length >= fenceLength && !fence[2]?.trim()) {
+      } else if (delimiter[0] === fenceCharacter && delimiter.length >= fenceLength && /^[ \t]*$/.test(info)) {
         fenceCharacter = "";
       }
     }
+    if (masked) paragraph = undefined;
+    else {
+      const underline = /^ {0,3}(=+|-+)[ \t]*$/.exec(line);
+      if (underline && paragraph) {
+        const prefix = underline[1]?.startsWith("=") ? "#" : "##";
+        const heading = `${prefix} ${paragraph.lines.join(" ")}`;
+        const match = [...heading.matchAll(pattern)][0];
+        if (match) {
+          // Keep source spans for section slicing; captures describe the Setext heading.
+          match[0] = body.slice(paragraph.offset, offset + line.length);
+          match.index = paragraph.offset;
+          match.input = body;
+          setext.push(match);
+        }
+        paragraph = undefined;
+      } else if (
+        /^[ \t]*$/.test(line) ||
+        /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>)/.test(line) ||
+        /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line) ||
+        (paragraph ? /^ {0,3}(?:[*+-]|1[.)])[ \t]+\S/ : /^ {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]+|$)/).test(line) ||
+        (!paragraph && /^(?: {4}|\t)/.test(line))
+      ) {
+        paragraph = undefined;
+      } else {
+        paragraph ??= { offset, lines: [] };
+        paragraph.lines.push(line.trim());
+      }
+    }
     lines.push(masked ? " ".repeat(line.length) : line);
+    offset += line.length + 1;
   }
   if (options.requireClosedFences && fenceCharacter) invalid("Unterminated Markdown fence; close the fenced code block before retrying.");
-  return [...lines.join("\n").matchAll(pattern)];
+  return [...lines.join("\n").matchAll(pattern), ...setext].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
 }
 
 function sections(body: string, title: string, headings: readonly string[], optional: readonly string[] = []): Record<string, string> {
