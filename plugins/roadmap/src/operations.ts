@@ -3,7 +3,7 @@ import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 
-import { check } from "./check.ts";
+import { check, checkClosureIntegrity, type Diagnostics } from "./check.ts";
 import {
   type AdrDoc,
   type AdrSections,
@@ -335,8 +335,8 @@ function target(model: Model, input: { target?: string; trigger?: string }): { t
   return { target: stage.id };
 }
 
-async function checked(model: Model): Promise<string[]> {
-  const diagnostics = await check(model);
+async function checked(model: Model, issues?: Diagnostics[]): Promise<string[]> {
+  const diagnostics = issues ?? (await check(model));
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
   if (errors.length) {
     throw new Refusal(
@@ -476,6 +476,7 @@ async function mutate(
         );
       const guarded = guardMutation(model, options);
       if (guarded) return guarded;
+      await checked(model, checkClosureIntegrity(model));
       const mutation = new Mutation(model);
       const summary = await change(mutation);
       if (!mutation.readOnly) mutation.indexes();

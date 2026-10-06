@@ -64,7 +64,7 @@ function generated(model: Model): Generated[] {
       name: "stages",
       expected: renderStageTable(model.stages.filter((stage) => stage.round === round.id)),
       source: content(round.path, renderRound(round)),
-      frozen: round.status === "closed",
+      frozen: round.status === "closed" || round.closed !== null || round.frozen_sha256 !== null,
     });
   }
   if (model.adrIndex) {
@@ -77,6 +77,52 @@ function generated(model: Model): Generated[] {
     });
   }
   return blocks;
+}
+
+export function checkClosureIntegrity(model: Model): Diagnostics[] {
+  const result: Diagnostics[] = [];
+  const report = (rule: string, path: string, message: string): void => {
+    result.push({ severity: "error", rule, path, message, fixable: false });
+  };
+  for (const stage of model.stages) {
+    if (
+      (stage.closed_sha256 !== null && stage.status !== "closed") ||
+      (stage.closed !== null && stage.status !== "closed" && stage.status !== "dropped")
+    ) {
+      report(
+        "closed-stage-status",
+        stage.path,
+        `${stage.id} status ${stage.status} is inconsistent with its closure metadata. Restore it with git; corrective work belongs in a new stage.`,
+      );
+    }
+    if ((stage.status === "closed" || stage.closed_sha256 !== null) && stage.closed_sha256 !== stageSha256(stage)) {
+      report(
+        "closed-stage-hash",
+        stage.path,
+        `${stage.id} closed_sha256 mismatch: a closed stage was edited. Restore it with git; corrective work belongs in a new stage.`,
+      );
+    }
+  }
+  for (const round of model.rounds) {
+    if (round.status !== "closed" && (round.closed !== null || round.frozen_sha256 !== null)) {
+      report(
+        "frozen-round-status",
+        round.path,
+        `${round.id} status ${round.status} is inconsistent with its closure metadata. Restore the frozen directory with git.`,
+      );
+    }
+    if (round.status === "closed" || round.frozen_sha256 !== null) {
+      const files = roundFiles(model, round);
+      if (!Object.keys(files).length || round.frozen_sha256 !== roundSha256(files)) {
+        report(
+          "frozen-round-hash",
+          round.path,
+          `${round.id} frozen_sha256 mismatch: a closed round was edited. Restore the frozen directory with git.`,
+        );
+      }
+    }
+  }
+  return result;
 }
 
 function diagnostics(model: Model): Diagnostics[] {
@@ -107,6 +153,7 @@ function diagnostics(model: Model): Diagnostics[] {
   for (const doc of model.stages) validate(doc, renderStage, parseStage);
   for (const doc of model.todos) validate(doc, renderTodo, parseTodo);
   for (const doc of model.adrs) validate(doc, renderAdr, parseAdr);
+  result.push(...checkClosureIntegrity(model));
 
   const seen = new Map<string, string>();
   for (const doc of [
@@ -132,14 +179,6 @@ function diagnostics(model: Model): Diagnostics[] {
     if (!rounds.has(stage.round)) report("error", "dangling-reference", stage.path, `${stage.id} has unknown round ${stage.round}.`);
     for (const dependency of [...stage.depends_on, ...(stage.follows ? [stage.follows] : [])]) {
       if (!stages.has(dependency)) report("error", "dangling-reference", stage.path, `${stage.id} refers to missing stage ${dependency}.`);
-    }
-    if (stage.status === "closed" && stage.closed_sha256 !== stageSha256(stage)) {
-      report(
-        "error",
-        "closed-stage-hash",
-        stage.path,
-        `${stage.id} closed_sha256 mismatch: a closed stage was edited. Restore it with git; corrective work belongs in a new stage.`,
-      );
     }
   }
   const visited = new Set<string>();
@@ -167,19 +206,6 @@ function diagnostics(model: Model): Diagnostics[] {
     visited.add(stageId);
   };
   for (const stage of model.stages) visit(stage.id);
-  for (const round of model.rounds) {
-    if (round.status === "closed") {
-      const files = roundFiles(model, round);
-      if (!Object.keys(files).length || round.frozen_sha256 !== roundSha256(files)) {
-        report(
-          "error",
-          "frozen-round-hash",
-          round.path,
-          `${round.id} frozen_sha256 mismatch: a closed round was edited. Restore the frozen directory with git.`,
-        );
-      }
-    }
-  }
   for (const todo of model.todos) {
     if (!rounds.has(todo.round)) report("error", "dangling-reference", todo.path, `TODO document refers to missing round ${todo.round}.`);
     for (const item of todo.items) {
@@ -279,7 +305,16 @@ export async function check(model: Model, options: { fix?: boolean; signal?: Abo
     if (afterLock) return afterLock;
     const fresh = await loadAll(repo);
     const initial = diagnostics(fresh);
-    if (initial.some((item) => item.rule === "structure" || item.rule === "format")) return initial;
+    if (
+      initial.some(
+        (item) =>
+          item.rule === "structure" ||
+          item.rule === "format" ||
+          item.rule.startsWith("closed-stage-") ||
+          item.rule.startsWith("frozen-round-"),
+      )
+    )
+      return initial;
     const changes = new Map<string, string>();
     for (const block of generated(fresh)) {
       if (block.frozen || generatedContent(block.source, block.name) === block.expected) continue;

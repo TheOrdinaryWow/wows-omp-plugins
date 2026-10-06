@@ -128,6 +128,83 @@ describe("closed document hashes", () => {
     await writeFile(extra, "edited file\n");
     expect(await rules(await loadAll(repo))).toContain("frozen-round-hash");
   });
+
+  test.each(["planned", "active", "dropped"] as const)("a %s stage cannot retain a closure hash even when it matches", async (status) => {
+    const { repo, model } = await diskFixture();
+    const current = model.stages[0] as (typeof model.stages)[number];
+    current.status = status;
+    current.closed = "2026-10-06";
+    current.closed_sha256 = stageSha256(current);
+    await writeFile(current.path, renderStage(current));
+    const loaded = await loadAll(repo);
+    const before = loaded.files;
+    expect(await rules(loaded)).not.toContain("closed-stage-hash");
+    for (const fix of [false, true]) {
+      const result = await check(loaded, { fix });
+      expect(result).toContainEqual(expect.objectContaining({ rule: "closed-stage-status", severity: "error", fixable: false }));
+      expect((await loadAll(repo)).files).toEqual(before);
+    }
+  });
+
+  test.each(["planned", "active"] as const)("a %s stage cannot retain only a closure date", async (status) => {
+    const { repo, model } = await diskFixture();
+    const current = model.stages[0] as (typeof model.stages)[number];
+    current.status = status;
+    current.closed = "2026-10-06";
+    await writeFile(current.path, renderStage(current));
+    const before = (await loadAll(repo)).files;
+    const result = await check(await loadAll(repo), { fix: true });
+    expect(result).toContainEqual(expect.objectContaining({ rule: "closed-stage-status", severity: "error", fixable: false }));
+    expect((await loadAll(repo)).files).toEqual(before);
+  });
+
+  test.each(["hash", "date"] as const)("an active round cannot retain a closure %s", async (metadata) => {
+    const { repo, model } = await diskFixture();
+    const current = model.rounds[0] as (typeof model.rounds)[number];
+    current.closed = "2026-10-06";
+    await writeFile(current.path, renderRound(current, model.stages));
+    if (metadata === "hash") {
+      current.frozen_sha256 = roundSha256(roundFiles(await loadAll(repo), current));
+      await writeFile(current.path, renderRound(current, model.stages));
+    }
+    const loaded = await loadAll(repo);
+    const before = loaded.files;
+    expect(await rules(loaded)).not.toContain("frozen-round-hash");
+    for (const fix of [false, true]) {
+      const result = await check(loaded, { fix });
+      expect(result).toContainEqual(expect.objectContaining({ rule: "frozen-round-status", severity: "error", fixable: false }));
+      expect((await loadAll(repo)).files).toEqual(before);
+    }
+  });
+
+  test.each(["stage", "round"] as const)("changing only a closed %s status does not bypass its retained hash", async (kind) => {
+    const { repo, model } = await diskFixture();
+    const current = kind === "stage" ? model.stages[0] : model.rounds[0];
+    if (!current) throw new Error("Missing closure fixture");
+    current.status = "closed";
+    current.closed = "2026-10-06";
+    if (kind === "stage") {
+      const closed = model.stages[0] as (typeof model.stages)[number];
+      closed.closed_sha256 = stageSha256(closed);
+      await writeFile(closed.path, renderStage(closed));
+    } else {
+      const closed = model.rounds[0] as (typeof model.rounds)[number];
+      await writeFile(closed.path, renderRound(closed, model.stages));
+      closed.frozen_sha256 = roundSha256(roundFiles(await loadAll(repo), closed));
+      await writeFile(closed.path, renderRound(closed, model.stages));
+    }
+    const raw = await readFile(current.path, "utf8");
+    await writeFile(current.path, raw.replace(/^status: "closed"$/m, `status: "${kind === "stage" ? "planned" : "active"}"`));
+    const before = (await loadAll(repo)).files;
+    const prefix = kind === "stage" ? "closed-stage" : "frozen-round";
+    for (const fix of [false, true]) {
+      const result = await check(await loadAll(repo), { fix });
+      for (const suffix of ["status", "hash"]) {
+        expect(result).toContainEqual(expect.objectContaining({ rule: `${prefix}-${suffix}`, severity: "error", fixable: false }));
+      }
+      expect((await loadAll(repo)).files).toEqual(before);
+    }
+  });
 });
 
 describe("TODO completeness and targets", () => {

@@ -246,6 +246,44 @@ describe("roadmap stage lifecycle and close gate", () => {
     expect((await loadAll(repo)).stages.find((item) => item.id === "S02")?.status).toBe("active");
   });
 
+  test.each(["stage hash", "stage date", "round hash", "round date"] as const)(
+    "retained closure metadata (%s) refuses every mutation before it can change history",
+    async (scenario) => {
+      const repo = await initialized();
+      success(await stage(repo, main, { action: "start", id: "S01" }));
+      success(await stage(repo, main, evidence()));
+      const isRound = scenario.startsWith("round");
+      if (isRound) success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+      const model = await loadAll(repo);
+      const current = isRound ? model.rounds[0] : model.stages[0];
+      if (!current) throw new Error("Missing closed document");
+      let raw = (await readFile(current.path, "utf8")).replace(/^status: "closed"$/m, `status: "${isRound ? "active" : "planned"}"`);
+      if (scenario.endsWith("date")) raw = raw.replace(/^(closed_sha256|frozen_sha256):.*$/m, "$1: null");
+      await writeFile(current.path, raw);
+      const before = await managedBytes(repo);
+      const rule = isRound ? "frozen-round-status" : "closed-stage-status";
+      const attempts: Array<() => Promise<Receipt>> = [
+        () => stage(repo, main, { action: "add", ...stageInput, title: "Forbidden addition" }),
+        () => stage(repo, main, { action: "edit", id: "S01", objective: "Forbidden rewrite" }),
+        () => stage(repo, main, { action: "start", id: "S01" }),
+        () => stage(repo, main, { action: "drop", id: "S01", reason: "Hide the retained date" }),
+        () => stage(repo, main, { action: "renumber", id: "S01", new_id: "S10" }),
+        () => todo(repo, main, { action: "add", title: "Forbidden TODO", severity: "normal", source: "Review", trigger: "Later" }),
+        () => adr(repo, main, { action: "create", title: "Forbidden ADR", status: "accepted", sections }),
+        () => adr(repo, main, { action: "note", id: "ADR-0001", text: "Forbidden note" }),
+      ];
+      for (const attempt of attempts) {
+        refused(await attempt(), rule);
+        expect(await managedBytes(repo)).toEqual(before);
+      }
+      const active = raw.replace(/^status: "planned"$/m, 'status: "active"');
+      await writeFile(current.path, active);
+      const activeBefore = await managedBytes(repo);
+      refused(await stage(repo, main, evidence()), rule);
+      expect(await managedBytes(repo)).toEqual(activeBefore);
+    },
+  );
+
   test("criterion, TODO and ADR gate refusals write nothing; subagents cannot dispose proposed ADRs", async () => {
     const { repo } = await diskFixture();
     success(await stage(repo, main, { action: "start", id: "S01" }));

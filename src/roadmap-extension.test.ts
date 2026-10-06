@@ -332,6 +332,8 @@ const CASES: Record<string, string> = {
   worktree: "targets use their own worktree and symlink resolution",
   injection: "context is recomputed each turn and disappears after round close",
   subagent: "SDK subagents receive context and cannot decide ADR status",
+  "closure-stage-status": "a changed stage status cannot bypass its retained closure hash through native tools",
+  "closure-round-status": "a changed round status cannot unlock its frozen directory through native tools",
   init: "init requires command arming, confirmation and consumes authorization",
   "init-lock-authority": "confirmed init queued under the lock refuses rebuilt session authority and succeeds in the unchanged session",
   "round-lock-authority":
@@ -828,6 +830,51 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(write);
       await write.execute("uninitialized-write", { path: "docs/roadmap/x.md", content: "allowed" });
       assert.equal(await readFile(join(root, "docs/roadmap/x.md"), "utf8"), "allowed");
+    } else if (name === "closure-stage-status" || name === "closure-round-status") {
+      const repo = await initialized(root);
+      assert((await call(h, "roadmap_stage", { action: "start", id: "S01" })).ok);
+      assert((await call(h, "roadmap_stage", closeInput)).ok);
+      const isRound = name === "closure-round-status";
+      if (isRound) await command(h, "roadmap", "close-round");
+      const model = await loadAll(repo);
+      const current = isRound ? model.rounds[0] : model.stages[0];
+      assert(current);
+      const raw = await readFile(current.path, "utf8");
+      await writeFile(current.path, raw.replace(/^status: "closed"$/m, `status: "${isRound ? "active" : "planned"}"`));
+      const before = (await loadAll(repo)).files;
+      const prefix = isRound ? "frozen-round" : "closed-stage";
+      for (const fix of [false, true]) {
+        const receipt = await call(h, "roadmap_check", { fix });
+        assert(!receipt.ok, JSON.stringify(receipt));
+        for (const suffix of ["status", "hash"]) {
+          assert(receipt.diagnostics?.some((item) => item.rule === `${prefix}-${suffix}` && item.severity === "error" && !item.fixable));
+        }
+        assert.deepEqual((await loadAll(repo)).files, before);
+      }
+      const initial = draft.stages[0];
+      assert(initial);
+      for (const [toolName, input] of [
+        ["roadmap_stage", { action: "edit", id: "S01", objective: "Forbidden rewrite" }],
+        ["roadmap_stage", { action: "add", ...initial, title: "Forbidden addition" }],
+        ["roadmap_todo", { action: "add", title: "Forbidden TODO", severity: "low", source: "Review", trigger: "Later" }],
+        [
+          "roadmap_adr",
+          {
+            action: "create",
+            title: "Forbidden ADR",
+            status: "accepted",
+            sections: { context: "Review", options: ["Host"], outcome: "Host" },
+          },
+        ],
+      ] as const) {
+        const receipt = await call(h, toolName, input);
+        assert(!receipt.ok, JSON.stringify(receipt));
+        assert(
+          receipt.hints.some((hint) => hint.includes(`${prefix}-status`)),
+          JSON.stringify(receipt),
+        );
+        assert.deepEqual((await loadAll(repo)).files, before);
+      }
     } else if (name === "prewrite-cancel") {
       const info = discoverRepo(root);
       assert(info);

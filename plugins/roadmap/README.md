@@ -134,6 +134,8 @@ Hardlink identity checks cover existing named file targets. They don't enumerate
 
 Your own editor isn't intercepted. You can edit authored body text, but retain the front matter, managed comment, fixed headings and generated-block delimiters. `check` reports unsupported stored HTML, reference definitions, Setext/thematic-break lines, quotes, container fences and ambiguous indentation as non-fixable structure errors with an editor repair hint; it does not emulate their CommonMark behavior. Closed top-level fences are masked when locating fixed headings, and an unclosed fence is also a structure error. Tools refuse malformed structure, and changing a closed stage or frozen round is reported by its hash check. Use a new stage for corrective work instead of rewriting closed history.
 
+Closure hashes are verified whenever they are retained, even if the current status was changed. A status that contradicts retained closure metadata is also an error. Generated-block fixes and document mutations refuse these integrity errors; restore the affected history with git instead of reopening it by hand.
+
 ## Recovery and git worktrees
 
 Writes take one repository lock and atomically replace each file. A multi-file operation is **not** an all-or-nothing transaction. If interrupted, it can leave individually complete files but stale generated indexes or a partially applied operation.
