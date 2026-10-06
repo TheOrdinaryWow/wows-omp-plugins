@@ -71,10 +71,10 @@ export async function statusReceipt(repo: Repo, id?: string): Promise<Receipt> {
   };
 }
 
-export async function checkReceipt(repo: Repo, fix = false): Promise<ToolReceipt> {
+export async function checkReceipt(repo: Repo, fix = false, signal?: AbortSignal): Promise<ToolReceipt> {
   const model = await loadAll(repo);
   const before = new Map(Object.entries(model.files ?? {}).map(([path, content]) => [path, Buffer.from(content)]));
-  const diagnostics = await check(model, { fix });
+  const diagnostics = await check(model, { fix, signal });
   const changedFiles = fix
     ? Object.entries(model.files ?? {})
         .filter(([path, content]) => !before.get(path)?.equals(Buffer.from(content)))
@@ -284,8 +284,8 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
       "Check document consistency. fix regenerates eligible generated blocks without changing frozen rounds. Does not compare documents with code.",
     parameters: checkParameters,
     approval: "write",
-    async execute(_id, params: typeof checkParameters.infer, _signal, _onUpdate, ctx) {
-      return run(ctx, (repo) => checkReceipt(repo, params.fix));
+    async execute(_id, params: typeof checkParameters.infer, signal, _onUpdate, ctx) {
+      return run(ctx, (repo) => checkReceipt(repo, params.fix, signal));
     },
   });
   pi.registerTool({

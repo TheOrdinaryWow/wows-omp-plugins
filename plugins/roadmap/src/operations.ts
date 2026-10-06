@@ -39,6 +39,7 @@ import {
   type TodoItem,
 } from "./documents.ts";
 import { renderHandoff } from "./handoff.ts";
+import { guardMutation } from "./mutation-guard.ts";
 import { allocate, type IdKind, withRepoLock } from "./numbering.ts";
 
 export interface Actor {
@@ -147,11 +148,6 @@ export interface OperationOptions {
 interface MutationOptions extends OperationOptions {
   guard?: (model: Model) => Receipt | undefined;
   onSuccess?: () => void;
-}
-
-function guardMutation(model: Model, options: MutationOptions): Receipt | undefined {
-  if (options.signal?.aborted) return { ok: false, reason: "Roadmap operation cancelled.", hints: [] };
-  return options.guard?.(model);
 }
 
 export interface PreparedOperation {

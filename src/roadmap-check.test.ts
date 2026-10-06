@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 
@@ -228,6 +229,54 @@ describe("ADR warnings", () => {
 });
 
 describe("generated blocks and fix scope", () => {
+  test("a cancelled fix leaves stale generated blocks unchanged while read-only check still reports them", async () => {
+    const { repo, model } = await diskFixture();
+    const stale = replaceGenerated(await readFile(model.index.path, "utf8"), "status", "Stale status");
+    await writeFile(model.index.path, stale);
+    const loaded = await loadAll(repo);
+    const before = loaded.files;
+    const controller = new AbortController();
+    controller.abort();
+    expect(await check(loaded, { fix: true, signal: controller.signal })).toEqual([
+      { severity: "error", rule: "cancelled", path: model.index.path, message: "Roadmap operation cancelled.", fixable: false },
+    ]);
+    expect((await loadAll(repo)).files).toEqual(before);
+    expect((await check(loaded, { signal: controller.signal })).map((item) => item.rule)).toContain("generated");
+    expect((await loadAll(repo)).files).toEqual(before);
+    expect(await check(loaded, { fix: true })).toEqual([]);
+  });
+
+  test.each(["temporary", "committed"] as const)("fix cancellation after a %s write prevents the next managed write", async (boundary) => {
+    const { repo, model } = await diskFixture();
+    const paths = [model.index.path, model.rounds[0]?.path as string, model.adrIndex?.path as string];
+    const names = ["status", "stages", "adrs"];
+    const original = new Map<string, string>();
+    for (const [index, path] of paths.entries()) {
+      const stale = replaceGenerated(await readFile(path, "utf8"), names[index] as string, "Stale table");
+      await writeFile(path, stale);
+      original.set(path, stale);
+    }
+    const loaded = await loadAll(repo);
+    const controller = new AbortController();
+    Object.defineProperty(controller.signal, "aborted", {
+      get() {
+        const reached =
+          boundary === "temporary"
+            ? readdirSync(repo.roadmapDir).some((name) => name.endsWith(".tmp"))
+            : readFileSync(model.index.path, "utf8") !== original.get(model.index.path);
+        if (reached && !controller.signal.reason) controller.abort();
+        return controller.signal.reason !== undefined;
+      },
+    });
+    const result = await check(loaded, { fix: true, signal: controller.signal });
+    expect(controller.signal.aborted).toBe(true);
+    expect(result.map((item) => item.rule)).toEqual(["cancelled"]);
+    if (boundary === "temporary") expect(await readFile(model.index.path, "utf8")).toBe(original.get(model.index.path) as string);
+    else expect(await readFile(model.index.path, "utf8")).not.toBe(original.get(model.index.path) as string);
+    for (const path of paths.slice(1)) expect(await readFile(path, "utf8")).toBe(original.get(path) as string);
+    expect(readdirSync(repo.roadmapDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
   test("every generated block detects stale content; fix repairs only block spans and preserves authored CRLF bytes", async () => {
     const { repo, model } = await diskFixture();
     const index = model.index.path;

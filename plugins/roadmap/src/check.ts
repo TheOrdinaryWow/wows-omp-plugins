@@ -28,6 +28,7 @@ import {
   roundSha256,
   stageSha256,
 } from "./documents.ts";
+import { guardMutation } from "./mutation-guard.ts";
 import { withRepoLock } from "./numbering.ts";
 
 export interface Diagnostics {
@@ -254,8 +255,12 @@ function diagnostics(model: Model): Diagnostics[] {
 }
 
 /** Fix owns the repository lock; callers must not wrap check(..., {fix:true}) in another lock. */
-export async function check(model: Model, options: { fix?: boolean } = {}): Promise<Diagnostics[]> {
+export async function check(model: Model, options: { fix?: boolean; signal?: AbortSignal } = {}): Promise<Diagnostics[]> {
   if (!options.fix) return diagnostics(model);
+  const cancelled = (path = model.index.path): Diagnostics[] | undefined => {
+    const guarded = guardMutation(model, options);
+    if (guarded && !guarded.ok) return [{ severity: "error", rule: "cancelled", path, message: guarded.reason, fixable: false }];
+  };
   if (!model.repo) {
     const result = diagnostics(model);
     if (result.some((item) => item.fixable))
@@ -270,6 +275,8 @@ export async function check(model: Model, options: { fix?: boolean } = {}): Prom
   }
   const repo = model.repo;
   return withRepoLock(repo, async () => {
+    const afterLock = cancelled();
+    if (afterLock) return afterLock;
     const fresh = await loadAll(repo);
     const initial = diagnostics(fresh);
     if (initial.some((item) => item.rule === "structure" || item.rule === "format")) return initial;
@@ -279,9 +286,13 @@ export async function check(model: Model, options: { fix?: boolean } = {}): Prom
       changes.set(block.path, replaceGenerated(changes.get(block.path) ?? block.source, block.name, block.expected));
     }
     for (const [path, content] of changes) {
+      const beforeWrite = cancelled(path);
+      if (beforeWrite) return beforeWrite;
       const temporary = `${path}.${randomUUID()}.tmp`;
       try {
         await writeFile(temporary, content, { flag: "wx" });
+        const beforeRename = cancelled(path);
+        if (beforeRename) return beforeRename;
         await rename(temporary, path);
       } finally {
         await rm(temporary, { force: true });

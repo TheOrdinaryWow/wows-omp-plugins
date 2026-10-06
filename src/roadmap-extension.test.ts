@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { AgentSession, AgentToolResult, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
 
-import { loadAll, loadRepo, type Model, type Repo, roundFiles, roundSha256 } from "../plugins/roadmap/src/documents.ts";
+import { loadAll, loadRepo, type Model, type Repo, replaceGenerated, roundFiles, roundSha256 } from "../plugins/roadmap/src/documents.ts";
 import { discoverRepo } from "../plugins/roadmap/src/git.ts";
 import { withRepoLock } from "../plugins/roadmap/src/numbering.ts";
 import {
@@ -323,7 +323,8 @@ const CASES: Record<string, string> = {
     "confirmed round open queued under the lock refuses rebuilt session authority and succeeds in the unchanged session",
   "init-lock-cancel": "confirmed init cancelled while waiting for the repository lock writes nothing and retains arming",
   "round-lock-cancel": "confirmed round open cancelled while waiting for the repository lock preserves managed bytes and arming",
-  "mutation-lock-cancel": "stage, TODO, ADR and overlap tools cancelled while waiting for the repository lock preserve managed bytes",
+  "mutation-lock-cancel":
+    "stage, TODO, ADR, overlap and check tools cancelled while waiting for the repository lock preserve managed bytes",
   "prewrite-cancel": "mutations cancelled during locked validation cannot begin writing prepared or ordinary files",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
@@ -844,6 +845,9 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert.equal(disarms(), initialDisarms + 1, "only the successful retry consumes arming");
     } else if (name === "mutation-lock-cancel") {
       const repo = await initialized(root);
+      const indexPath = join(repo.roadmapDir, "README.md");
+      const expectedIndex = await readFile(indexPath, "utf8");
+      await writeFile(indexPath, replaceGenerated(expectedIndex, "status", "Stale status awaiting repair"));
       const before = (await loadAll(repo)).files;
       for (const [toolName, input] of [
         ["roadmap_stage", { action: "start", id: "S01" }],
@@ -853,6 +857,7 @@ async function acceptance(name: string, root: string): Promise<void> {
           { action: "create", title: "Use local storage", sections: { context: "Persist data", options: ["Local"], outcome: "Use local" } },
         ],
         ["roadmap_overlap", { stage: "S01", intent: "Inspect payments" }],
+        ["roadmap_check", { fix: true }],
       ] as Array<[string, Record<string, unknown>]>) {
         const controller = new AbortController();
         const locked = Promise.withResolvers<void>();
@@ -885,6 +890,14 @@ async function acceptance(name: string, root: string): Promise<void> {
           "cancelled mutations must not change session bindings or overlap answers",
         );
       }
+      const checked = await call(h, "roadmap_check", {});
+      assert(!checked.ok);
+      assert(checked.diagnostics?.some((item) => item.rule === "generated"));
+      assert.deepEqual((await loadAll(repo)).files, before, "read-only check must preserve stale managed bytes");
+      const repaired = await call(h, "roadmap_check", { fix: true });
+      assert(repaired.ok, JSON.stringify(repaired));
+      assert.deepEqual(repaired.changedFiles, [indexPath]);
+      assert.equal(await readFile(indexPath, "utf8"), expectedIndex);
       assert((await call(h, "roadmap_stage", { action: "start", id: "S01" })).ok);
       assert((await call(h, "roadmap_stage", closeInput)).ok);
       const closeModel = await loadAll(repo);
