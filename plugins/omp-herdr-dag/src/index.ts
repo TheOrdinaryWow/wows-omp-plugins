@@ -89,7 +89,7 @@ class DagExtension {
   }
 
   #supported(ctx: ExtensionContext): boolean {
-    if (ctx.hasUI !== true) return false;
+    if (ctx.hasUI !== true || ctx.mode !== "tui") return false;
     const platform = this.#deps.platform ?? process.platform;
     if (platform === "win32" && !this.#noticeShown) {
       this.#noticeShown = true;
@@ -218,6 +218,7 @@ class DagExtension {
   }
 
   async restore(ctx: ExtensionContext, options: { start?: boolean; preserveProposal?: boolean } = {}): Promise<void> {
+    if (ctx.mode !== "tui") return;
     if (ctx.hasUI !== true) await this.#readSettings(ctx);
     if (ctx.hasUI !== true) return;
     this.#ctx = ctx;
@@ -380,6 +381,7 @@ class DagExtension {
   }
 
   async command(args: string, ctx: ExtensionContext): Promise<void> {
+    if (ctx.hasUI !== true || ctx.mode !== "tui") return;
     this.#ctx = ctx;
     await this.#readSettings(ctx);
     if (this.#stopping) return;

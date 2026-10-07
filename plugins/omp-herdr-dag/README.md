@@ -16,6 +16,12 @@ The pane needs a Bun executable. Put `bun` on `PATH` or set `viewerRuntime` to i
 
 Herdr supplies `HERDR_ENV=1`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`; all three are required. Outside Herdr, `/dag-pane` reports that the pane is unavailable. The native todo wrapper remains registered, including outside Herdr.
 
+## Host modes
+
+Pane management, the viewer, transport subscriptions, and snapshot publishing run only with `mode: "tui"`, `hasUI: true`, and all three Herdr environment variables. RPC/rpc-ui and ACP are inactive even when `hasUI` is true or Herdr variables were inherited. SDK/headless sessions with `hasUI: false` never start or split panes. A missing `HERDR_PANE_ID` also prevents pane startup. `/dag-pane [open|close|toggle]` is a TUI command; there is no headless pane equivalent. The native todo wrapper remains available in every mode as described below.
+
+There is no plugin-state sidecar for this viewer: its graph projects native todo/subagent state and Atlas state, available through host RPC data and omo-prometheus's sidecar. Its existing Herdr snapshot is viewer recovery data, not another workflow authority.
+
 ## Commands and automatic opening
 
 ```text

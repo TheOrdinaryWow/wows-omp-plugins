@@ -136,6 +136,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const ctx = {
     cwd,
     hasUI: name !== "non-ui",
+    mode: name.startsWith("rpc") ? "rpc" : "tui",
     get sessionManager() {
       return manager;
     },
@@ -219,7 +220,12 @@ async function scenario(name: string, root: string): Promise<void> {
     'Plan approved.\n\n<plan path="local://approved.md">\n# Plan\n</plan>\nFull plan inlined below; durable copy at `local://approved.md`';
   register(api, {
     platform: name === "windows" ? "win32" : "linux",
-    env: name === "outside-herdr" ? {} : { HERDR_ENV: "1", HERDR_PANE_ID: "host", HERDR_SOCKET_PATH: "/fake/herdr.sock" },
+    env:
+      name === "outside-herdr"
+        ? {}
+        : name === "rpc-no-pane"
+          ? { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/fake/herdr.sock" }
+          : { HERDR_ENV: "1", HERDR_PANE_ID: "host", HERDR_SOCKET_PATH: "/fake/herdr.sock" },
     timer: clock,
     exec: async (args, options) => {
       calls.push([...args]);
@@ -264,13 +270,23 @@ async function scenario(name: string, root: string): Promise<void> {
     },
   });
   try {
-    if (name === "non-ui" || name === "windows" || name === "outside-herdr") {
+    if (name === "non-ui" || name === "windows" || name === "outside-herdr" || name.startsWith("rpc")) {
       await hook("session_start");
       await hook("session_switch", { reason: "new" });
       assert.deepEqual([...tools.keys()], ["todo"]);
-      assert.equal(commands.size, name === "non-ui" ? 0 : 1);
+      assert.equal(commands.size, name === "non-ui" || name.startsWith("rpc") ? 0 : 1);
       assert.equal(calls.length, 0);
       assert.equal(hellos, 0);
+      if (name.startsWith("rpc")) {
+        await todo();
+        await hook("before_agent_start", { prompt: handoff });
+        await hook("agent_end");
+        assert.equal(calls.length, 0);
+        assert.equal(hellos, 0);
+        assert.equal(notices.length, 0);
+        assert.equal(clock.pending, 0);
+        assert.equal(await Bun.file(join(dir(), "snapshot.json")).exists(), false);
+      }
       if (name === "windows") {
         await command("open");
         await command("open");
@@ -1001,6 +1017,8 @@ if (process.env[CHILD_ENV]) {
   describe("Herdr DAG registered extension, host sources and transport", () => {
     for (const name of [
       "non-ui",
+      "rpc-no-pane",
+      "rpc-herdr-env",
       "windows",
       "outside-herdr",
       "streaming",

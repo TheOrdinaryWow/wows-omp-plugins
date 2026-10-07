@@ -16,6 +16,12 @@ omp plugin install omp-herdr-dag@wows-omp-plugins
 
 Herdr 提供 `HERDR_ENV=1`、`HERDR_PANE_ID` 和 `HERDR_SOCKET_PATH`，三者缺一不可。在 Herdr 外，`/dag-pane` 会提示窗格不可用。原生 `todo` 包装器仍会注册，在 Herdr 外也一样。
 
+## 宿主模式
+
+只有 `mode: "tui"`、`hasUI: true` 且三个 Herdr 环境变量齐全时，才会运行窗格管理、查看器、传输订阅和快照发布。RPC/rpc-ui 与 ACP 即使 `hasUI` 为 true，或继承了 Herdr 环境变量，也不会启动这些功能。`hasUI: false` 的 SDK/无界面会话绝不会启动或分割窗格；缺少 `HERDR_PANE_ID` 同样会阻止窗格启动。`/dag-pane [open|close|toggle]` 是 TUI 命令，没有无界面窗格替代命令。原生 `todo` 包装器在所有模式下仍可用，详见下文。
+
+查看器不发布插件状态 sidecar：图形是原生待办/子代理状态和 Atlas 状态的投影，客户端可通过宿主 RPC 数据和 omo-prometheus 的 sidecar 获取来源状态。已有的 Herdr 快照只用于查看器恢复，不构成另一套工作流状态源。
+
 ## 命令与自动打开
 
 ```text
