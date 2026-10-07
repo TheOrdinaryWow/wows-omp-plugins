@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.2.2...roadmap@0.2.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **roadmap:** complete /roadmap arguments one level at a time ([5e8ecbc](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/5e8ecbc8f66d5bbd89e0fd98f124f412259bf9a6))
+
 ## [0.2.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.2.1...roadmap@0.2.2) (2026-10-07)
 
 

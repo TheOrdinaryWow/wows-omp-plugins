@@ -5,5 +5,5 @@
   "plugins/omo-prometheus": "0.14.0",
   "plugins/omo-ultrawork": "0.4.1",
   "plugins/omo-toolkit": "0.3.0",
-  "plugins/roadmap": "0.2.2"
+  "plugins/roadmap": "0.2.3"
 }
