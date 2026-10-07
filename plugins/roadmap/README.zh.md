@@ -197,15 +197,15 @@ ADR 的 `create` 要求 `title` 和 `sections`，其中须包含 `context`、非
 
 将 [omo-prometheus](../omo-prometheus/README.zh.md) 与 roadmap 一起安装，即可规划并执行已绑定阶段。两个插件都不依赖对方，此集成也不受 `herdrDag` 设置控制。
 
-1. 在 Prometheus 提案前开始或加入阶段。提案时，Prometheus 发出 `roadmap:binding-request`，roadmap 同步回复 `roadmap:binding`，两者的契约版本均为 `v: 1`。回复标识会话、请求、仓库、可信工具来源，以及可选的已绑定活跃阶段。没有同步回复表示 roadmap 未加载。
+1. 在 Prometheus 提案前开始或加入阶段。提案时，Prometheus 发出 `roadmap:binding-request`，roadmap 同步回复 `roadmap:binding`，两者的契约版本均为 `v: 1`。回复标识会话、请求、仓库、可信工具来源，以及可选的已绑定活跃阶段。即使已绑定阶段的文档无法读取，roadmap 也会回复，只是不带阶段。没有同步回复表示 roadmap 未加载。
 2. 新 Atlas 计划包写入版本 2 的 `approval.json`，其中可选的 `roadmapStage: { repoRoot, id }` 来自该提案绑定。版本 1 的批准记录仍可加载，不会重写其字节，也不要求重新批准。
-3. 只有当 `roadmap_*` 工具的来源类型为扩展，且来源路径与握手中的 `toolSourcePath` 完全一致时，Atlas 才允许这些工具。其他扩展或 MCP 服务器提供的同名工具不适用此例外。
-4. 某次账本写入首次使绑定计划完成后，Prometheus 会发出 `atlas:completed`，携带执行会话 ID、计划 ID、阶段，以及已验证的关卡结论和摘要。Roadmap 在该会话中保存待关闭条目；只要阶段仍活跃，就会在下一轮对话中添加提醒。
+3. 只有当 `roadmap_*` 工具的来源类型为扩展，且来源路径与握手中的 `toolSourcePath` 完全一致时，Atlas 才允许这些工具，直接调用和通过 `write xd://roadmap_*` 设备调用都适用。其他扩展或 MCP 服务器提供的同名工具不适用此例外。满足条件后，Atlas 可以执行计划要求的全部 roadmap 动作，例如延后开始阶段、修订 ADR 并决定其状态，以及最终关闭阶段。
+4. 某次账本写入首次使计划完成后，Prometheus 会发出 `atlas:completed`，携带执行会话 ID、计划 ID、阶段，以及已验证的关卡结论和摘要。阶段取提案时记录的阶段；提案时没有记录的，取执行会话此时绑定的阶段。Roadmap 在该会话中保存待关闭条目；只要阶段仍活跃，就会在下一轮对话中添加提醒。
 5. 执行会话将关卡结果映射到阶段标准，核实相关性，然后调用 `roadmap_stage`，使用 `action: "close"`。完成通知会发送提醒，不会自动关闭阶段。常规证据和处置关卡仍然适用。
 
 带阶段 ID 调用 `roadmap_status`，可以确认阶段是否活跃。开始或加入后，下一轮状态会显示 `Bound stage: S01`。
 
-对于拟议计划，请检查 Atlas 计划包中的 `approval.json`，其中的 `roadmapStage` 字段记录了绑定。完成后，执行会话会在下一轮上下文中收到 `Plan <id> completed for <stage>` 和关卡证据候选。仅安装两个插件，不会将未绑定的提案附加到阶段。
+对于拟议计划，请检查 Atlas 计划包中的 `approval.json`，其中的 `roadmapStage` 字段记录了提案时的绑定。完成后，执行会话会在下一轮上下文中收到 `Plan <id> completed for <stage>` 和关卡证据候选。提案时和执行会话中都没有绑定阶段的计划，不会关联到任何阶段。
 
 完成事件按 Prometheus 生产方实例去重，没有持久化的恰好一次投递标记。重启生产方后，重新打开已完成的账本行并再次完成计划，可能再次发出 `atlas:completed`。Roadmap 在接收会话保留的状态中按 `planId` 对待关闭条目去重；其他会话收到重复事件时，可能在那里创建提醒。
 

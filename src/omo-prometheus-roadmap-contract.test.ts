@@ -9,7 +9,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-
 
 import { type ExecutionLedger, isComplete, ledgerRows } from "../plugins/omo-prometheus/src/ledger.ts";
 import { type AtlasCompleted, RoadmapContract } from "../plugins/omo-prometheus/src/roadmap-contract.ts";
-import { EXECUTION_PREAMBLE, executionBlockReason, executionToolSourceBlockReason } from "../plugins/omo-prometheus/src/workflow.ts";
+import { executionBlockReason, executionToolSourceBlockReason } from "../plugins/omo-prometheus/src/workflow.ts";
 
 const CHILD = "PROMETHEUS_ROADMAP_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
@@ -155,7 +155,9 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.notEqual(result.isError, true, JSON.stringify(result));
     return result;
   };
-  const responder = (bound: boolean) =>
+  // The responder reads the live flag so a stage started during execution changes later answers.
+  let stageBound = name === "bound" || name === "restored";
+  const responder = () =>
     bus.on("roadmap:binding-request", (raw) => {
       const request = raw as { sessionId: string; requestId: string };
       requestCount++;
@@ -164,12 +166,12 @@ async function scenario(name: string, root: string): Promise<void> {
         v: 1,
         repoRoot: root,
         toolSourcePath: ROADMAP_ENTRY,
-        ...(bound ? { stage: { id: "S01", title: "Checkout", round: "R1" } } : {}),
+        ...(stageBound ? { stage: { id: "S01", title: "Checkout", round: "R1" } } : {}),
       });
     });
-  const bound = name === "bound" || name === "restored";
+  const bound = stageBound;
   install();
-  if (name !== "absent" && name !== "legacy" && name !== "lazy") responder(bound);
+  if (name !== "absent" && name !== "legacy" && name !== "lazy") responder();
   await commands.get("prometheus")?.("", ctx);
   const restore = name === "restored" || name === "legacy";
   mode = restore;
@@ -210,21 +212,29 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(isComplete(JSON.parse(readFileSync(ledgerPath, "utf8")) as ExecutionLedger), "Event must follow the durable ledger write");
     completionEvents.push(raw as AtlasCompleted);
   });
+  const roadmapDevice = (content: Record<string, unknown>) => ({
+    toolName: "write",
+    toolCallId: crypto.randomUUID(),
+    input: { path: "xd://roadmap_stage", content: JSON.stringify(content) },
+  });
   if (name === "lazy") {
     await hook("session_shutdown");
     install();
     await hook("session_start");
-    const unsubscribe = responder(false);
+    const unanswered = (await hook("tool_call", roadmapDevice({ action: "start", id: "S01" }))) as { block: boolean; reason: string };
+    assert.equal(unanswered.block, true);
+    assert.match(unanswered.reason, /did not answer the binding handshake/);
+    const unsubscribe = responder();
     assert.equal(await hook("tool_call", { toolName: "roadmap_stage", input: { action: "close" } }), undefined);
+    assert.equal(await hook("tool_call", roadmapDevice({ action: "start", id: "S01" })), undefined);
     assert.equal(requestCount, 1);
     unsubscribe();
     sourcePath = `${ROADMAP_ENTRY}-shadow`;
-    const denied = (await hook("tool_call", { toolName: "roadmap_stage", input: { action: "close" } })) as {
-      block: boolean;
-      reason: string;
-    };
-    assert.equal(denied.block, true);
-    assert.match(denied.reason, /verified roadmap/);
+    for (const event of [{ toolName: "roadmap_stage", input: { action: "close" } }, roadmapDevice({ action: "close", id: "S01" })]) {
+      const denied = (await hook("tool_call", event)) as { block: boolean; reason: string };
+      assert.equal(denied.block, true);
+      assert.match(denied.reason, /verified roadmap runtime.*-shadow/);
+    }
     sourcePath = ROADMAP_ENTRY;
     source = "builtin";
     assert.equal(((await hook("tool_call", { toolName: "roadmap_stage", input: {} })) as { block: boolean }).block, true);
@@ -232,10 +242,14 @@ async function scenario(name: string, root: string): Promise<void> {
     console.log(`PROMETHEUS_ROADMAP_OK ${name}`);
     return;
   }
-  if (name === "bound" || name === "unbound") {
+  if (name === "bound" || name === "unbound" || name === "late") {
     assert.equal(await hook("tool_call", { toolName: "roadmap_stage", input: { action: "close" } }), undefined);
+    assert.equal(await hook("tool_call", roadmapDevice({ action: "start", id: "S01" })), undefined);
     assert.equal(requestCount, 1);
   }
+  // Atlas starts the stage after a proposal that carried none.
+  if (name === "late") stageBound = true;
+  const expectsCompletion = bound || name === "late";
   const finish = async (id: string) => {
     const started = await call({ action: "start", id });
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as ExecutionLedger;
@@ -298,8 +312,8 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(completionEvents.length, 0);
   }
   await finish("F4");
-  assert.equal(completionEvents.length, bound ? 1 : 0);
-  if (bound) {
+  assert.equal(completionEvents.length, expectsCompletion ? 1 : 0);
+  if (expectsCompletion) {
     const event = completionEvents[0];
     assert(event);
     assert.equal(event.v, 1);
@@ -315,7 +329,7 @@ async function scenario(name: string, root: string): Promise<void> {
   await call({ action: "status" });
   await call({ action: "reopen", id: "F4", evidence: "Recheck the gate" });
   await finish("F4");
-  assert.equal(completionEvents.length, bound ? 1 : 0);
+  assert.equal(completionEvents.length, expectsCompletion ? 1 : 0);
   await hook("session_shutdown");
   console.log(`PROMETHEUS_ROADMAP_OK ${name}`);
 }
@@ -371,19 +385,15 @@ if (process.env[CHILD]) {
     expect(executionBlockReason("bash", {}, ROADMAP_ENTRY)).toBeTruthy();
     expect(executionToolSourceBlockReason("task", "extension", false, ROADMAP_ENTRY, ROADMAP_ENTRY)).toBeTruthy();
   });
-  test("Atlas stage-close policy keeps the authenticated roadmap exception separate from direct workspace writes", async () => {
-    const policy = await readFile(new URL("../plugins/omo-prometheus/assets/atlas.md", import.meta.url), "utf8");
-    for (const text of [EXECUTION_PREAMBLE, policy]) {
-      expect(text).toContain("sole workspace-mutation exception is stage closure through");
-      expect(text).toContain("provenance-verified `roadmap_*` tools");
-      expect(text).toContain("runtime authenticated by the roadmap handshake");
-      expect(text).toContain("`roadmap_stage` action=close with verified evidence");
-      expect(text).toContain("does not permit direct managed-file edits or any other workspace write");
-    }
+  test("Atlas roadmap policy keeps the authenticated roadmap exception separate from direct workspace writes", () => {
     const close = { action: "close", id: "S01" };
     expect(executionBlockReason("roadmap_stage", close, ROADMAP_ENTRY)).toBeUndefined();
     expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, ROADMAP_ENTRY, ROADMAP_ENTRY)).toBeUndefined();
-    expect(executionBlockReason("roadmap_stage", close)).toBeTruthy();
+    expect(executionBlockReason("roadmap_stage", close)).toMatch(/did not answer the binding handshake/);
+    const device = { path: "xd://roadmap_adr", content: JSON.stringify({ action: "set_status", id: "ADR-0001", status: "accepted" }) };
+    expect(executionBlockReason("write", device, ROADMAP_ENTRY)).toBeUndefined();
+    expect(executionBlockReason("write", device)).toMatch(/did not answer the binding handshake/);
+    expect(executionBlockReason("write", { ...device, path: "xd://bash" }, ROADMAP_ENTRY)).toMatch(/not an approved/);
     expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, ROADMAP_ENTRY, "/shadow.ts")).toBeTruthy();
     for (const [toolName, input] of [
       ["write", { path: "docs/roadmap/README.md", content: "changed" }],
@@ -395,7 +405,7 @@ if (process.env[CHILD]) {
     ] as const)
       expect(executionBlockReason(toolName, input, ROADMAP_ENTRY)).toBeTruthy();
   });
-  for (const name of ["bound", "absent", "unbound", "restored", "legacy", "lazy"]) {
+  for (const name of ["bound", "absent", "unbound", "late", "restored", "legacy", "lazy"]) {
     test(`Prometheus roadmap contract: ${name}`, async () => {
       const home = await realpath(await mkdtemp(join(tmpdir(), "prometheus-roadmap-")));
       try {

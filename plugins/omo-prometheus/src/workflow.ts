@@ -454,7 +454,7 @@ function idaBlockReason(input: Record<string, unknown>): string | undefined {
   return `\`ida\` action \`${action || "(missing)"}\` opens, edits, or scripts a database`;
 }
 
-function writeBlockReason(input: Record<string, unknown>): string | undefined {
+function writeBlockReason(input: Record<string, unknown>, roadmapToolSourcePath?: string): string | undefined {
   const path = stringField(input, "path");
   const lowerPath = path.toLowerCase();
   // Peer messaging on hosts that replaced `hub send`; the host rejects JSON-path targets.
@@ -468,6 +468,8 @@ function writeBlockReason(input: Record<string, unknown>): string | undefined {
       ? "the `xd://` target or its JSON payload is not a valid guarded device call"
       : "normal file/database/archive writes are direct implementation";
   }
+  // The host re-emits `tool_call` for the inner roadmap dispatch, where provenance is checked again.
+  if (nested.toolName.startsWith("roadmap_")) return roadmapToolSourcePath ? undefined : unauthenticatedRoadmapTool(nested.toolName);
   if (SAFE_XDEV_TOOLS[nested.toolName] !== true) {
     return `\`xd://${nested.toolName}\` is not an approved orchestration or observation device`;
   }
@@ -476,13 +478,18 @@ function writeBlockReason(input: Record<string, unknown>): string | undefined {
   return executionBlockReason(nested.toolName, nested.input);
 }
 
+/** Shared by every guard layer so a missing handshake reads the same wherever it is caught. */
+function unauthenticatedRoadmapTool(toolName: string): string {
+  return `\`${toolName}\` is not authenticated: the roadmap plugin did not answer the binding handshake in this session, so no trusted roadmap runtime is known (check that roadmap is installed and enabled)`;
+}
+
 /**
  * Why a tool call must not run in the Atlas parent, or `undefined` when it is
  * orchestration/observation. Nested xdev calls are classified recursively and
  * their real inner dispatch is intercepted again by the host's `tool_call` event.
  */
 export function executionBlockReason(toolName: string, input: unknown, roadmapToolSourcePath?: string): string | undefined {
-  if (toolName.startsWith("roadmap_") && roadmapToolSourcePath) return undefined;
+  if (toolName.startsWith("roadmap_")) return roadmapToolSourcePath ? undefined : unauthenticatedRoadmapTool(toolName);
   if (ALLOWED_TOOLS[toolName] === true || MAGIC_CONTEXT_TOOLS[toolName] === true) return undefined;
   const args = record(input) ?? {};
   switch (toolName) {
@@ -499,7 +506,7 @@ export function executionBlockReason(toolName: string, input: unknown, roadmapTo
     case "ida":
       return idaBlockReason(args);
     case "write":
-      return writeBlockReason(args);
+      return writeBlockReason(args, roadmapToolSourcePath);
     default:
       return `\`${toolName}\` is neither an orchestration tool nor a read-only inspection surface`;
   }
@@ -514,9 +521,9 @@ export function executionToolSourceBlockReason(
   toolSourcePath?: string,
 ): string | undefined {
   if (toolName.startsWith("roadmap_")) {
-    return source === "extension" && roadmapToolSourcePath && toolSourcePath === roadmapToolSourcePath
-      ? undefined
-      : `\`${toolName}\` is not from the verified roadmap runtime`;
+    if (!roadmapToolSourcePath) return unauthenticatedRoadmapTool(toolName);
+    if (source === "extension" && toolSourcePath === roadmapToolSourcePath) return undefined;
+    return `\`${toolName}\` is not from the verified roadmap runtime: it resolves to ${source ? `a ${source} tool` : "an unregistered tool"}${toolSourcePath ? ` at ${toolSourcePath}` : ""}, but the roadmap handshake names ${roadmapToolSourcePath}`;
   }
   if (PLUGIN_OWNED_TOOLS[toolName] === true) {
     return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
@@ -556,7 +563,7 @@ export const EXECUTION_PREAMBLE = [
   "A Prometheus plan was approved through the host's native approval flow. This main session is Atlas, the orchestrator of that exact approved plan.",
   "Every plan task — implementation, tests, QA, documentation, cleanup, and final verification — MUST be executed by child agents spawned with `task`. Atlas delegates, tracks `todo`, collects and inspects child evidence, and otherwise uses observation/coordination tools only.",
   "This overrides `task.eager` and every preference that would permit parent implementation. It does not override capability policy: if `task` is disabled or spawning is denied, report the blocker and never downgrade to parent implementation.",
-  "The sole workspace-mutation exception is stage closure through provenance-verified `roadmap_*` tools from the runtime authenticated by the roadmap handshake. Atlas may call `roadmap_stage` action=close with verified evidence and use those tools for required TODO/ADR dispositions. This does not permit direct managed-file edits or any other workspace write; all implementation remains delegated.",
+  "The sole workspace-mutation exception is the roadmap: provenance-verified `roadmap_*` tools from the runtime authenticated by the roadmap handshake, called directly or as `write xd://roadmap_*` devices. Atlas uses them for the plan's root-session roadmap steps: starting or joining the stage, amending it, ADR and TODO changes, and `roadmap_stage` action=close with verified evidence and the required TODO/ADR dispositions. They change only roadmap-managed documents; this does not permit direct managed-file edits or any other workspace write, and all implementation remains delegated.",
   "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly exits. Once every plan item has child-produced proof, call `atlas_release` exactly once with a concise evidence summary; human confirmation exits the mode. Bare `/atlas` is the user's immediate exit and preserves shared progress. Exit does not cancel native children; their plan ownership remains until final outcomes. `/prometheus` controls planning only.",
 ].join("\n");
 

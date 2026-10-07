@@ -43,9 +43,9 @@ export function isRoadmapStage(value: unknown): value is RoadmapStage {
   );
 }
 
-/** Optional synchronous handshake; a late answer cannot grant tool provenance. */
+/** Optional synchronous handshake; a late answer cannot grant tool provenance, and a missed one is retried on the next request. */
 export class RoadmapContract {
-  readonly #bindings = new Map<string, RoadmapBinding | undefined>();
+  readonly #bindings = new Map<string, RoadmapBinding>();
   readonly #completed = new Set<string>();
 
   constructor(readonly events?: ContractEvents) {}
@@ -82,13 +82,15 @@ export class RoadmapContract {
       this.events?.emit("roadmap:binding-request", { v: 1, sessionId, requestId });
     } finally {
       unsubscribe?.();
-      this.#bindings.set(sessionId, binding);
     }
+    if (binding) this.#bindings.set(sessionId, binding);
+    else this.#bindings.delete(sessionId);
     return binding;
   }
 
+  /** The tool source is stable for a session, so a confirmed answer is reused; the bound stage may be stale. */
   binding(sessionId: string): RoadmapBinding | undefined {
-    return this.#bindings.has(sessionId) ? this.#bindings.get(sessionId) : this.requestBinding(sessionId);
+    return this.#bindings.get(sessionId) ?? this.requestBinding(sessionId);
   }
 
   emitCompleted(event: Omit<AtlasCompleted, "v" | "at">): void {

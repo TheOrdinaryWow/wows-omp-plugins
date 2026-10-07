@@ -69,7 +69,7 @@ Prometheus 要求在 OMP 设置中启用 Plan Mode（`plan.enabled`，默认开�
 | --- | --- |
 | [Magic Context](https://github.com/cortexkit/magic-context)（一个扩展，并非 OMP 的组成部分） | `ctx_reduce`、`ctx_expand`、`ctx_search`、`ctx_memory`、`ctx_note`，仅限由扩展注册的工具；同名 MCP 工具仍被阻止 |
 | `todo` 的扩展包装器，例如 [omp-herdr-dag](../omp-herdr-dag/README.zh.md) 支持依赖边的 `todo` | 由扩展重新注册的 `todo`；MCP `todo` 仍被阻止 |
-| [roadmap](../roadmap/README.zh.md) | `roadmap_*`，仅限来自同步 roadmap 绑定握手所验证的扩展源路径；其他扩展或 MCP 服务器提供的同名工具仍被阻止 |
+| [roadmap](../roadmap/README.zh.md) | `roadmap_*`，可直接调用，也可通过 `write xd://roadmap_*` 设备调用；仅限来自同步 roadmap 绑定握手所验证的扩展源路径；其他扩展或 MCP 服务器提供的同名工具仍被阻止 |
 
 Prometheus 计划的两种批准选项都会交接给 Atlas。“Approve and execute” 会开启一个新会话。为了在切换后保留交接信息，插件在提交计划时将标记写入 `local://prometheus/<slug>.proposal.json`，OMP 会将它与计划一起复制到新会话。普通 Plan Mode 中批准的计划没有该标记，插件不会干预。
 
@@ -203,9 +203,9 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 
 安装 [roadmap](../roadmap/README.zh.md) 后，Prometheus 使用独立于 `herdrDag` 的带版本 `pi.events` 契约。提交计划时，它发出 `roadmap:binding-request {v:1, sessionId, requestId}`，仅接受与该会话和请求匹配的同步 `roadmap:binding` 回复。回复包含 `repoRoot`、`toolSourcePath` 和可选的已绑定活跃阶段。
 
-新的 Atlas 计划包写入版本 2 的批准记录，可包含 `roadmapStage: {repoRoot, id}`。版本 1 的批准记录仍可恢复，无需重写其字节或重新批准。Atlas 仅允许来自扩展的 `roadmap_*` 工具，来源路径必须与握手中的 `toolSourcePath` 完全一致。工具守卫可以在首次调用 roadmap 工具时请求该绑定。
+新的 Atlas 计划包写入版本 2 的批准记录，可包含 `roadmapStage: {repoRoot, id}`。版本 1 的批准记录仍可恢复，无需重写其字节或重新批准。无论直接调用还是通过 `write xd://roadmap_*` 调用，Atlas 仅允许来自扩展的 `roadmap_*` 工具，来源路径必须与握手中的 `toolSourcePath` 完全一致。工具守卫在首次调用 roadmap 工具时请求该绑定，roadmap 尚未应答时会再次请求；拒绝提示会说明是握手缺失，还是工具来自其他来源。在此范围内，Atlas 可以执行计划所需的全部 roadmap 动作：开始或加入阶段、修订阶段、变更 ADR 和 TODO，以及关闭阶段。
 
-当某次账本写入首次使绑定阶段的计划达到完成状态后，Prometheus 发出 `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, at}`，附带已验证的关卡结论与摘要。Roadmap 为执行会话的下一轮记录一个待关闭提醒。会话仍须将这些证据对应到阶段验收条件并加以验证，然后携带 TODO/ADR 处置结果调用常规阶段关闭工具；计划完成不会自动关闭阶段。可以检查计划包 `approval.json` 中的 `roadmapStage`，确认计划是否包含此集成。
+当某次账本写入首次使绑定阶段的计划达到完成状态后，Prometheus 发出 `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, at}`，附带已验证的关卡结论与摘要。批准时没有绑定阶段的计划，改用执行会话此时绑定的阶段，例如 Atlas 在执行期间开始的阶段。Roadmap 为执行会话的下一轮记录一个待关闭提醒。会话仍须将这些证据对应到阶段验收条件并加以验证，然后携带 TODO/ADR 处置结果调用常规阶段关闭工具；计划完成不会自动关闭阶段。可以检查计划包 `approval.json` 中的 `roadmapStage`，确认提案时是否已绑定阶段。
 
 完成事件只按生产方实例去重，因此无法提供持久化的恰好一次投递。生产方重启后，如果计划重新打开并再次完成，可能再次发出事件。Roadmap 在同一接收会话保留的状态中按 `planId` 对待关闭条目去重；其他会话可能收到各自的提醒。
 

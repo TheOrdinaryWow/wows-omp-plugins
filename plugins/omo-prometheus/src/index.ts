@@ -1850,7 +1850,12 @@ export default function prometheus(pi: ExtensionAPI): void {
             item.evidence = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
             item.status = "done";
             item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
-            if (!wasComplete && isComplete(ledger) && plan.roadmapStage) {
+            const completedNow = !wasComplete && isComplete(ledger);
+            // A plan proposed before its stage was started has no approved stage; the executing session's live binding stands in.
+            const liveStage = completedNow && !plan.roadmapStage ? roadmap.requestBinding(ctx.sessionManager.getSessionId()) : undefined;
+            const roadmapStage =
+              plan.roadmapStage ?? (liveStage?.stage ? { repoRoot: liveStage.repoRoot, id: liveStage.stage.id } : undefined);
+            if (completedNow && roadmapStage) {
               const gates = await Promise.all(
                 ledger.gates.map(async (gate) => {
                   if (!gate.receipt) throw new Error(`Missing verified gate receipt for ${gate.id}`);
@@ -1860,7 +1865,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                   return { gateId: output.gateId, verdict: output.verdict, summary: output.summary };
                 }),
               );
-              completion = { sessionId: ctx.sessionManager.getSessionId(), planId: plan.id, roadmapStage: plan.roadmapStage, gates };
+              completion = { sessionId: ctx.sessionManager.getSessionId(), planId: plan.id, roadmapStage, gates };
             }
           } else {
             if (params.action === "block" && !evidence) throw new Error("Blocking a row requires an explanation");
@@ -2170,13 +2175,14 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     if (record?.phase !== "executing") return undefined;
 
-    const roadmapToolSourcePath = event.toolName.startsWith("roadmap_")
-      ? roadmap.binding(ctx.sessionManager.getSessionId())?.toolSourcePath
-      : undefined;
+    const nested = event.toolName === "write" ? nestedXdevToolCall(event.input) : undefined;
+    const roadmapToolSourcePath =
+      event.toolName.startsWith("roadmap_") || nested?.toolName.startsWith("roadmap_")
+        ? roadmap.binding(ctx.sessionManager.getSessionId())?.toolSourcePath
+        : undefined;
     let detail = executionBlockReason(event.toolName, event.input, roadmapToolSourcePath);
     if (!detail) detail = provenanceBlockReason(event.toolName, roadmapToolSourcePath);
-    const nested = event.toolName === "write" ? nestedXdevToolCall(event.input) : undefined;
-    if (!detail && nested) detail = provenanceBlockReason(nested.toolName);
+    if (!detail && nested) detail = provenanceBlockReason(nested.toolName, roadmapToolSourcePath);
     // Native xdev task dispatch is intercepted again at its inner task boundary.
     if (!detail && event.toolName === "task") {
       const originSessionId = ctx.sessionManager.getSessionId();

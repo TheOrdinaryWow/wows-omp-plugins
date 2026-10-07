@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +116,14 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     const provenance = extensionsResult.runtime.getAllTools().find((tool) => tool.name === "roadmap_stage")?.sourceInfo;
     assert.equal(provenance?.source, "extension");
     assert.equal(provenance.path, binding?.toolSourcePath);
+    // A broken roadmap document must not hide the trusted tool source from the Atlas guard.
+    const index = join(root, "docs/roadmap/README.md");
+    const indexText = await readFile(index, "utf8");
+    await writeFile(index, "not a roadmap index");
+    const degraded = consumer.requestBinding(sessionId);
+    assert.equal(degraded?.toolSourcePath, ROADMAP_ENTRY);
+    assert.equal(degraded.stage, undefined);
+    await writeFile(index, indexText);
     const store = new AtlasStore(sessionManager.getSessionDir());
     const plan = await store.create({
       name: "Integration",
@@ -137,6 +145,12 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
       input: { action: "close", id: "S01" },
     });
     assert.notEqual(admitted?.block, true, JSON.stringify(admitted));
+    // The host classifies the outer `write` and then the inner device dispatch; Atlas must admit both.
+    const write = session.getToolByName("write");
+    assert(write);
+    const device = await write.execute("sdk-roadmap-device", { path: "xd://roadmap_status", content: JSON.stringify({ stage: "S01" }) });
+    assert.notEqual(device.isError, true, JSON.stringify(device.content));
+    assert.match(JSON.stringify(device.content), /S01/);
     const completion: AtlasCompleted = {
       v: 1,
       sessionId,
