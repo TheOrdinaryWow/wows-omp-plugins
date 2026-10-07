@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -245,7 +246,9 @@ class DagExtension {
         this.#runtimeNoticeSession = sessionId;
         return;
       }
-      const root = join(ctx.sessionManager.getSessionDir(), "herdr-dag");
+      // In-memory sessions have no session directory; a relative root would land in the project.
+      const sessionDir = ctx.sessionManager.getSessionDir();
+      const root = sessionDir ? join(sessionDir, "herdr-dag") : join(tmpdir(), "omp-herdr-dag", "sessions");
       const dir = join(root, sessionId);
       if (options.start) await pruneRetention({ root, currentSessionId: sessionId, retentionDays: this.#settings.retentionDays });
       if (this.#writer) await this.#writer.flush();

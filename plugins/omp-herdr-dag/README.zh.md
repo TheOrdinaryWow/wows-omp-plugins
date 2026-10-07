@@ -203,7 +203,7 @@ Hello 回复是同步的；如果已绑定计划，随后会发送快照。绑�
 
 ## 本地存储与隐私
 
-持久化文件位于 `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionId>/` 下，采用带版本的 JSON，通过临时文件替换写入。`snapshot.json` 和 `pane.json` 使用版本 2，加载时会升级版本 1，保留恢复数据、所有权和主动关闭状态。v1 窗格记录缺少 socket 路径时，连接信息保持未知，只重新启动自己记录的窗格，不接管其他窗格。
+持久化文件位于 `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionId>/` 下；内存会话（`--no-session`）没有会话目录，改用 `os.tmpdir()/omp-herdr-dag/sessions/<sessionId>/`。文件采用带版本的 JSON，通过临时文件替换写入。`snapshot.json` 和 `pane.json` 使用版本 2，加载时会升级版本 1，保留恢复数据、所有权和主动关闭状态。v1 窗格记录缺少 socket 路径时，连接信息保持未知，只重新启动自己记录的窗格，不接管其他窗格。
 
 `view-state.json` 保持版本 1。未知版本或更新版本会被忽略并替换。允许存储的字段如下：
 

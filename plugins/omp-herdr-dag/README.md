@@ -203,7 +203,7 @@ Hello replies are synchronous; a bound plan is followed by a snapshot. Binding a
 
 ## Local storage and privacy
 
-Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionId>/`. They are versioned JSON, written with temporary-file replacement. `snapshot.json` and `pane.json` use version 2 and upgrade version 1 on load, preserving recovery data, ownership, and dismissal. A v1 pane record without a socket path leaves the connection unknown and relaunches only its recorded pane. It never adopts other panes.
+Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionId>/`; in-memory sessions (`--no-session`) have no session directory and use `os.tmpdir()/omp-herdr-dag/sessions/<sessionId>/` instead. They are versioned JSON, written with temporary-file replacement. `snapshot.json` and `pane.json` use version 2 and upgrade version 1 on load, preserving recovery data, ownership, and dismissal. A v1 pane record without a socket path leaves the connection unknown and relaunches only its recorded pane. It never adopts other panes.
 
 `view-state.json` stays at version 1. Unknown/newer versions are ignored and replaced. The stored field allowlist is:
 
