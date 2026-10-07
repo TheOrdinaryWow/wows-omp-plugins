@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.0...audit-goal@0.3.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* write plugin state sidecars to a private runtime directory instead of the session directory ([ad085bc](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/ad085bce8fe43c78de16625d9a3e821d6f69e16d))
+
 ## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.2.1...audit-goal@0.3.0) (2026-10-07)
 
 
