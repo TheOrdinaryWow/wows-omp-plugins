@@ -1,6 +1,6 @@
 {
   "name": "roadmap",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",
   "author": {
     "name": "TheOrdinaryWow"
