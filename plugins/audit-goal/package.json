@@ -1,6 +1,6 @@
 {
   "name": "wows-omp-plugin-audit-goal",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "private": true,
   "description": "Goal-driven audit-and-fix loop with a round ledger, intensity levels, and reserved audit agents",

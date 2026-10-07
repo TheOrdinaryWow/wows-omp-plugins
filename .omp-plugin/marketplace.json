@@ -15,7 +15,7 @@
       "name": "audit-goal",
       "source": "./audit-goal",
       "description": "Goal-driven audit-and-fix loop with a round ledger, intensity levels, and reserved audit agents",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -48,7 +48,7 @@
       "name": "omp-herdr-dag",
       "source": "./omp-herdr-dag",
       "description": "Live todo, plan, Atlas DAG and subagent views in a Herdr side pane",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -65,7 +65,7 @@
       "name": "omo-prometheus",
       "source": "./omo-prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
-      "version": "0.13.0",
+      "version": "0.13.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -85,7 +85,7 @@
       "name": "omo-ultrawork",
       "source": "./omo-ultrawork",
       "description": "Port of oh-my-openagent ultrawork mode, mass-ulw, hyperplan, and ulw-research for OMP",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -123,7 +123,7 @@
       "name": "roadmap",
       "source": "./roadmap",
       "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "TheOrdinaryWow"
       },

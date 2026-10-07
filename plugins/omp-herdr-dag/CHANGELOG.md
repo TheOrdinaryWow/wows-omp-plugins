@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.1...omp-herdr-dag@0.4.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** keep in-memory session snapshots out of the project directory ([6491b16](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/6491b1638e09ec9422f9e37034681db8dc71ee8d))
+
 ## [0.4.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.0...omp-herdr-dag@0.4.1) (2026-10-07)
 
 
