@@ -10,6 +10,7 @@ import { DIRECTIVE_ASSET, HYPERPLAN_ASSET, loadPromptAsset, RESEARCH_ASSET } fro
 import { readHostSetting } from "#src/host-settings.ts";
 import { detectPointers, detectUltrawork, hasEmbeddedDirective } from "#src/keywords.ts";
 import { triggersOrchestrate } from "#src/orchestrate.ts";
+import { PluginStatePublisher } from "#src/plugin-state.ts";
 
 const STATE_ENTRY = "wows-omp-omo-ultrawork.state";
 const DIRECTIVE_MESSAGE = "wows-omp-omo-ultrawork.directive";
@@ -78,6 +79,27 @@ function errorMessage(error: unknown): string {
 export default function ultrawork(pi: ExtensionAPI): void {
   const states = new Map<string, ArmingState>();
   const settings = new Map<string, Promise<UltraworkSettings>>();
+  const warnedSessions = new Set<string>();
+  const publisher = new PluginStatePublisher("omo-ultrawork", (error, target) => {
+    if (warnedSessions.has(target.sessionId)) return;
+    warnedSessions.add(target.sessionId);
+    pi.logger.warn("ultrawork could not publish plugin state", { error: errorMessage(error), sessionId: target.sessionId });
+  });
+
+  const publish = (ctx: ExtensionContext, state: ArmingState | undefined): void => {
+    publisher.publish(
+      { sessionDir: ctx.sessionManager.getSessionDir(), sessionId: ctx.sessionManager.getSessionId() },
+      state?.mode || state?.armed ? { kind: "omo-ultrawork/mode", version: 1, mode: state.mode, armed: state.armed } : null,
+    );
+  };
+
+  const commandNotice = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void => {
+    if (ctx.hasUI) {
+      ctx.ui.notify(message, type);
+      return;
+    }
+    pi.sendMessage({ customType: "wows-omp-omo-ultrawork.command-status", content: message, display: true, attribution: "agent" });
+  };
 
   const settingsFor = (ctx: ExtensionContext): Promise<UltraworkSettings> => {
     const sessionId = ctx.sessionManager.getSessionId();
@@ -118,12 +140,13 @@ export default function ultrawork(pi: ExtensionAPI): void {
     return created;
   };
 
-  const persist = (state: ArmingState): void => {
+  const persist = (ctx: ExtensionContext, state: ArmingState): void => {
     try {
       pi.appendEntry(STATE_ENTRY, { version: 2, ...state });
     } catch (error) {
       pi.logger.warn("ultrawork could not persist arming state", { error: errorMessage(error) });
     }
+    publish(ctx, state);
   };
 
   const rehydrate = (ctx: ExtensionContext): void => {
@@ -144,6 +167,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
       });
     }
     status(ctx, states.get(sessionId));
+    publish(ctx, states.get(sessionId));
   };
 
   const startSession = (ctx: ExtensionContext): void => {
@@ -164,14 +188,18 @@ export default function ultrawork(pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", (_event, ctx) => startSession(ctx));
-  pi.on("session_switch", (_event, ctx) => startSession(ctx));
+  pi.on("session_switch", async (_event, ctx) => {
+    await publisher.flush();
+    startSession(ctx);
+  });
   pi.on("session_branch", (_event, ctx) => rehydrate(ctx));
   pi.on("session_tree", (_event, ctx) => rehydrate(ctx));
 
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_shutdown", async (_event, ctx) => {
     states.delete(ctx.sessionManager.getSessionId());
     settings.delete(ctx.sessionManager.getSessionId());
     if (mainSession(ctx)) status(ctx, undefined);
+    await publisher.flush();
   });
 
   pi.on("session_compact", (_event, ctx) => {
@@ -179,7 +207,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
     const state = stateFor(ctx.sessionManager.getSessionId());
     state.rearmPending = true;
     state.reminderSent = false;
-    persist(state);
+    persist(ctx, state);
   });
 
   pi.on("input", async (event, ctx) => {
@@ -194,13 +222,13 @@ export default function ultrawork(pi: ExtensionAPI): void {
     if (embedded) {
       state.armed = true;
       state.rearmPending = false;
-      persist(state);
+      persist(ctx, state);
       status(ctx, state);
       return undefined;
     }
     if (!state.mode && !keyword && pointers.length === 0) return undefined;
     if (await orchestrateConflict(session, event.text)) {
-      ctx.ui.notify(`Ultrawork skipped for this message: ${ORCHESTRATE_CONFLICT}`, "warning");
+      commandNotice(ctx, `Ultrawork skipped for this message: ${ORCHESTRATE_CONFLICT}`, "warning");
       return undefined;
     }
 
@@ -210,7 +238,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
         try {
           content = `<ultrawork-mode>\n${await loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
         } catch (error) {
-          ctx.ui.notify(`Ultrawork directive could not be loaded (${errorMessage(error)}); input ignored.`, "error");
+          commandNotice(ctx, `Ultrawork directive could not be loaded (${errorMessage(error)}); input ignored.`, "error");
           return undefined;
         }
       } else {
@@ -226,7 +254,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
     if (state.mode || keyword) {
       state.armed = true;
       state.rearmPending = false;
-      persist(state);
+      persist(ctx, state);
       status(ctx, state);
     }
     return undefined;
@@ -242,7 +270,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
       { deliverAs: "aside" },
     );
     state.reminderSent = true;
-    persist(state);
+    persist(ctx, state);
     return undefined;
   });
 
@@ -251,7 +279,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
     handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
       const session = mainSession(ctx);
       if (!session) {
-        ctx.ui.notify("ultrawork runs in the main session only", "warning");
+        commandNotice(ctx, "ultrawork runs in the main session only", "warning");
         return;
       }
       const state = stateFor(ctx.sessionManager.getSessionId());
@@ -260,9 +288,9 @@ export default function ultrawork(pi: ExtensionAPI): void {
         state.armed = false;
         state.rearmPending = false;
         state.reminderSent = false;
-        persist(state);
+        persist(ctx, state);
         status(ctx, state);
-        ctx.ui.notify("Ultrawork mode off", "info");
+        commandNotice(ctx, "Ultrawork mode off");
         pi.sendMessage(
           { customType: EXIT_MESSAGE, content: EXIT_NOTICE, display: false, attribution: "user" },
           { deliverAs: ctx.isIdle() ? "nextTurn" : "aside" },
@@ -271,7 +299,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
       }
       const request = args.trim();
       if (await orchestrateConflict(session, request)) {
-        ctx.ui.notify(`Ultrawork mode not enabled: ${ORCHESTRATE_CONFLICT}`, "warning");
+        commandNotice(ctx, `Ultrawork mode not enabled: ${ORCHESTRATE_CONFLICT}`, "warning");
         return;
       }
       // With nothing to submit now, leave the directive to the next ordinary input so its orchestrate check applies.
@@ -279,9 +307,9 @@ export default function ultrawork(pi: ExtensionAPI): void {
         state.mode = true;
         state.armed = false;
         state.rearmPending = false;
-        persist(state);
+        persist(ctx, state);
         status(ctx, state);
-        ctx.ui.notify("Ultrawork mode on", "info");
+        commandNotice(ctx, "Ultrawork mode on");
         return;
       }
 
@@ -290,16 +318,16 @@ export default function ultrawork(pi: ExtensionAPI): void {
         state.mode = true;
         state.armed = true;
         state.rearmPending = false;
-        persist(state);
+        persist(ctx, state);
         status(ctx, state);
-        ctx.ui.notify("Ultrawork mode on", "info");
+        commandNotice(ctx, "Ultrawork mode on");
         pi.sendMessage(
           { customType: DIRECTIVE_MESSAGE, content, display: false, attribution: "user" },
           { deliverAs: ctx.isIdle() ? "nextTurn" : "aside" },
         );
         if (request) pi.sendUserMessage(request);
       } catch (error) {
-        ctx.ui.notify(`Ultrawork directive could not be loaded (${errorMessage(error)}).`, "error");
+        commandNotice(ctx, `Ultrawork directive could not be loaded (${errorMessage(error)}).`, "error");
       }
     },
   };
@@ -311,18 +339,18 @@ export default function ultrawork(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const request = args.trim();
       if (!request) {
-        ctx.ui.notify("Usage: /hyperplan <request>", "warning");
+        commandNotice(ctx, "Usage: /hyperplan <request>", "warning");
         return;
       }
       if (!mainSession(ctx)) {
-        ctx.ui.notify("hyperplan runs in the main session only", "warning");
+        commandNotice(ctx, "hyperplan runs in the main session only", "warning");
         return;
       }
       try {
         const body = await loadPromptAsset(HYPERPLAN_ASSET);
         pi.sendUserMessage(`<hyperplan-request>\n${request}\n</hyperplan-request>\n\n${body}`);
       } catch (error) {
-        ctx.ui.notify(`Hyperplan procedure could not be loaded (${errorMessage(error)}).`, "error");
+        commandNotice(ctx, `Hyperplan procedure could not be loaded (${errorMessage(error)}).`, "error");
       }
     },
   });
@@ -332,11 +360,11 @@ export default function ultrawork(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const request = args.trim();
       if (!request) {
-        ctx.ui.notify("Usage: /ulw-research <request>", "warning");
+        commandNotice(ctx, "Usage: /ulw-research <request>", "warning");
         return;
       }
       if (!mainSession(ctx)) {
-        ctx.ui.notify("ulw-research runs in the main session only", "warning");
+        commandNotice(ctx, "ulw-research runs in the main session only", "warning");
         return;
       }
       try {
@@ -350,7 +378,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
           `<ulw-research-request>\n${request}\n</ulw-research-request>\n\n${body}\n\nResearch assets directory: ${dir}\nResearch scratch root: ${scratchRoot}`,
         );
       } catch (error) {
-        ctx.ui.notify(`Research procedure could not be loaded (${errorMessage(error)}).`, "error");
+        commandNotice(ctx, `Research procedure could not be loaded (${errorMessage(error)}).`, "error");
       }
     },
   });

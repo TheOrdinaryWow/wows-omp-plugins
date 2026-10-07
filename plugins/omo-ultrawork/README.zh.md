@@ -56,6 +56,14 @@ omp config set magicKeywords.orchestrate false
 
 需要完整审查的工作应遵循负责该工作的计划。独立的合规、代码质量和真实界面 QA 报告可以并行生成，最终的证据关卡审查者在这些报告完成后开始。不要在已批准的计划之外另加一套审查流程。轻量工作只需限定范围的自查和真实界面证据，无需安排并行审查者。
 
+## 宿主模式与客户端状态
+
+命令和关键词流程可用于 TUI、RPC/rpc-ui、ACP、SDK 和无界面/CI 会话。TUI 保留底栏和通知反馈；RPC/rpc-ui 使用状态与通知帧，ACP 通知是否可见取决于编辑器。`hasUI: false` 时，用法错误、冲突和模式开关反馈通过可见的自定义文本消息（`wows-omp-omo-ultrawork.command-status`）输出，不再作为通知被丢弃。流程不依赖终端专用对话框。
+
+所有命令都无需交互选择：`/ultrawork` 或 `/ulw` 切换持续模式；模式关闭时，`/ultrawork <request>` 开启模式并提交请求；`/hyperplan <request>` 和 `/ulw-research <request>` 要求非空请求。命令仅在主会话运行。
+
+主会话使用共享插件状态封装发布 `omo-ultrawork.json`。载荷为 `{ "kind": "omo-ultrawork/mode", "version": 1, "mode": boolean, "armed": boolean }`：`mode` 表示持续模式开关，`armed` 表示指令已进入会话上下文。两者均为 false 时载荷为 `null`。它只是现有会话状态的只读投影，涵盖恢复和分支导航；切换或关闭宿主不会清空已进入待触发状态的会话所保存的状态。`mass-ulw` 文件和研究临时产物不属于该模式载荷。
+
 ## 设置
 
 `omp plugin config` 使用的包名：`wows-omp-plugin-omo-ultrawork`。

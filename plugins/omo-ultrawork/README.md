@@ -56,6 +56,14 @@ Install `omo-toolkit` for the named category agents and `omo-prometheus` for the
 
 Work that needs a full review follows its governing plan. Independent compliance, code-quality, and real-surface QA reports may run in parallel; the final evidence-gate reviewer starts once those reports exist. Do not add a second review pipeline alongside an approved plan. Light work gets a scoped self-review and real-surface proof without parallel reviewers.
 
+## Host modes and client state
+
+The commands and keyword workflow work in TUI, RPC/rpc-ui, ACP, SDK, and headless/CI sessions. TUI keeps its footer and notification feedback. RPC/rpc-ui uses status and notification frames; ACP notification visibility depends on the editor. With `hasUI: false`, usage errors, conflicts, and mode on/off feedback are visible custom text messages (`wows-omp-omo-ultrawork.command-status`), not dropped notifications. No terminal-only dialog is required.
+
+All command forms are non-interactive: `/ultrawork` or `/ulw` toggles persistent mode, `/ultrawork <request>` enables it and submits the request when mode is off, and `/hyperplan <request>` / `/ulw-research <request>` require a nonempty request. Commands run only in the main session.
+
+The main session publishes `omo-ultrawork.json` using the shared plugin-state envelope. Its payload is `{ "kind": "omo-ultrawork/mode", "version": 1, "mode": boolean, "armed": boolean }`: `mode` is the persistent toggle and `armed` means the directive is already in session context. The payload is `null` when both are false. It is an output-only projection of existing session state, including resume and branch navigation; switching or shutting down does not clear an armed session's saved state. `mass-ulw` files and research scratch artifacts remain separate from this mode payload.
+
 ## Settings
 
 Package name for `omp plugin config`: `wows-omp-plugin-omo-ultrawork`.
