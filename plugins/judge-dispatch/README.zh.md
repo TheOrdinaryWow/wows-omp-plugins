@@ -26,6 +26,12 @@ omp plugin install judge-dispatch@wows-omp-plugins
 
 插件依据 OMP 的代理工具元数据判断权限，只读代理只能被另一只读代理替换。
 
+## 宿主模式
+
+TUI、RPC/rpc-ui、ACP、SDK 和无界面/CI 中，路由与启动模型选择均不依赖界面。TUI 显示工作与状态提示；RPC 客户端接收宿主支持的通知帧，ACP 可能仅记录通知日志。`hasUI: false` 时跳过路由指示器。插件没有交互式对话框，也没有需要参数化的斜杠命令。
+
+插件不保留每会话路由历史或工作流状态，因此不发布插件状态 sidecar。模型切换使用有数量限制的一次性待启动交接记录，而非决策历史。当前路由状态不会保存或发送给模型；旧版会话记录仅为兼容而保留渲染和上下文过滤。
+
 ## 设置
 
 `omp plugin config` 使用的包名：`wows-omp-plugin-judge-dispatch`。

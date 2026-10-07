@@ -26,6 +26,12 @@ These calls are left exactly as they are, effort and model included:
 
 A read-only agent is only ever replaced by another read-only agent, based on OMP's agent tool metadata.
 
+## Host modes
+
+Routing and spawn-model selection run independently of presentation in TUI, RPC/rpc-ui, ACP, SDK, and headless/CI. TUI shows the working/status indicators; RPC clients receive supported notification frames, while ACP may only log them. With `hasUI: false`, routing indicators are skipped. There are no interactive dialogs or slash commands to parameterize.
+
+The plugin does not keep per-session routing history or workflow state, so it publishes no plugin-state sidecar. Model changes use bounded, one-shot pending spawn handoffs, not decision records. Current routing status is neither saved nor sent to the model; legacy transcript records are only rendered and filtered for compatibility.
+
 ## Settings
 
 Package name for `omp plugin config`: `wows-omp-plugin-judge-dispatch`.
