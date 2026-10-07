@@ -41,7 +41,7 @@ omp plugin install roadmap@wows-omp-plugins
 5. 使用 `amend` 记录活跃阶段的范围或标准变更，并说明原因。后续工作记入 TODO，决策记入 ADR。
 6. 提供证据和处置结果后关闭阶段；所有阶段都已关闭或放弃后，再关闭轮次。
 
-初始化和开启轮次都需要用户显式输入命令、主会话获得相应授权，并确认预览。确认后，插件会重新验证文件，拒绝过期预览。写入成功后，该授权即被消耗。无界面上下文无法回答预览、重叠处理或轮次关闭对话框；取消或无法取得回答都不构成写入授权。
+初始化和开启轮次都需要用户显式输入命令、主会话获得相应授权，并确认预览。确认后，插件会重新验证文件，拒绝过期预览。写入成功后，该授权即被消耗。取消或无法取得回答都不构成写入授权。没有 UI 时，每个对话框都有对应的命令形式，见[宿主模式](#宿主模式)。
 
 ### 关闭阶段
 
@@ -74,6 +74,9 @@ omp plugin install roadmap@wows-omp-plugins
 | `/roadmap check --fix` | 重新生成符合条件的生成块，绝不修改人工编写的正文或冻结轮次。 |
 | `/roadmap new-round` | 要求没有活跃轮次且检查无错误，然后授予开启下一轮次的权限并开始访谈。 |
 | `/roadmap close-round` | 收集 TODO 处置结果，在所有阶段结束后冻结活跃轮次。 |
+| `/roadmap close-round <todo>=<disposition>[:<reference>] ...` | 在命令中直接回答处置对话框：`T001=resolved:abc1234`、`T002=wontfix:"out of scope"`、`T003=carried`。每个开放 TODO 都需要一项；`resolved` 必须带引用。含空格的文本用双引号括起。 |
+| `/roadmap overlap <stage> roadmap\|free\|unrelated [intent]` | 为本会话回答重叠问题：`roadmap` 开始或加入并绑定该阶段；`free` 把意图记为自由工作（必须提供意图）；`unrelated` 不再就该阶段询问。该阶段已有的回答保持不变。 |
+| `/roadmap confirm <token>` | 写入 `roadmap_init` 或 `roadmap_round_open` 因无 UI 可确认而保留的预览。 |
 
 ## 工具
 
@@ -150,6 +153,28 @@ ADR 的 `create` 要求 `title` 和 `sections`，其中须包含 `context`、非
 
 按照项目规则提交变更后的文档。每个分支都以当前检出的 Markdown 为事实来源。工作树仅共享 git common directory 下 `roadmap/` 中的锁和带版本的 ID 计数器；新 ID 会高于存储计数器和磁盘上已有 ID。不同克隆不共享计数器，因此跨克隆冲突可以在合并时发现，但无法预防。
 
+## 宿主模式
+
+| 宿主模式 | 行为 |
+| --- | --- |
+| TUI | 使用上文所述的对话框。 |
+| RPC（`--mode rpc`、`rpc-ui`）与 ACP | 相同的对话框，以 `select`、`input`、`editor` 请求发给客户端。提示走宿主的 notify 帧；ACP 客户端可能只在日志中显示。 |
+| 无 UI（`--no-ui`、print、JSON、无 UI 的 SDK） | 没有对话框。提示和错误以显示在会话中的消息呈现。不带参数的 `/roadmap` 输出状态和命令用法。`roadmap_init` 与 `roadmap_round_open` 返回完整预览和一个令牌，但不写入；用户用 `/roadmap confirm <token>` 写入，其他任何回复都视为拒绝。令牌只对应所展示的这些文件，在会话重建（start、switch、branch、tree）或同类新预览替换它之前有效。`roadmap_overlap` 报告没有回答，并指出 `/roadmap overlap`。不带参数的 `/roadmap close-round` 只在没有开放 TODO 时关闭轮次；否则列出这些 TODO，并要求以参数给出处置。 |
+
+### 状态 sidecar
+
+主会话以共享的插件状态信封发布 `roadmap.json`（见[根 README](../../README.zh.md)）。其 `state` 为 `roadmap/status` 载荷，版本 1，由磁盘上的文件推导；仓库没有已初始化的 roadmap 时为 `null`。它在会话 start、switch、branch、tree 时，每次 `roadmap_*` 工具调用和 `/roadmap` 命令之后，以及每轮代理开始时重写，因此子代理或外部编辑造成的变化也会体现。
+
+| 字段 | 内容 |
+| --- | --- |
+| `kind`、`version` | `"roadmap/status"`、`1` |
+| `repoRoot` | roadmap 所在 git 工作树的根目录。 |
+| `project` | 来自 `docs/roadmap/README.md` 的项目标题。 |
+| `activeRound` | 活跃轮次的 `{ id, title }`，或 `null`。 |
+| `stages` | 所有阶段，形如 `{ id, title, status, round }`；`status` 为 `planned`、`active`、`closed` 或 `dropped`。 |
+| `openTodos` | `{ total, byStage, untargeted }`：所有轮次的开放 TODO 总数、按目标阶段 ID 的计数，以及以触发条件代替目标的数量。 |
+| `boundStage` | 本会话绑定且仍处于活跃状态的阶段 ID，或 `null`。 |
+
 ## 可选的 Prometheus 集成
 
 将 [omo-prometheus](../omo-prometheus/README.zh.md) 与 roadmap 一起安装，即可规划并执行已绑定阶段。两个插件都不依赖对方，此集成也不受 `herdrDag` 设置控制。
@@ -173,7 +198,7 @@ ADR 的 `create` 要求 `title` 和 `sections`，其中须包含 `context`、非
 - 无法防止跨克隆 ID 冲突。即使工作树共享编号，检出的不同分支也可以有不同的 roadmap 状态。
 - `check` 验证引用、元数据、生成块和关闭完整性，不验证代码是否满足文档。真实的关闭证据和边界检查仍然必不可少。
 - 逐文件原子写入不提供整个操作的回滚。即使预览被拒绝，预览中的 ID 也可能已被消耗，因此编号可能存在空缺。
-- 对话框需要交互式 UI。无界面执行无法提供确认或重叠处理回答。
+- 没有 UI 时，代理不能自行确认预览或回答重叠问题。用户通过 `/roadmap confirm`、`/roadmap overlap` 以及 `/roadmap close-round` 参数作答。保留的预览只存在于内存中，进程退出即丢失。
 - Atlas 完成提醒存在前文所述的按生产方和按会话去重限制。
 
 以下格式说明复制自 `src/documents.ts` 中的 `HOW_THIS_DIRECTORY_WORKS`。初始化会将相同文本写入项目的 [docs/roadmap/README.md](../../docs/roadmap/README.md)，该文件同时作为初始化标记和生成索引。初始化前，该项目文件不存在。

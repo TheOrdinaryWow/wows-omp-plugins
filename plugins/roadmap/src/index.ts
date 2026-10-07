@@ -5,8 +5,10 @@ import { loadAll, loadRepo } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import { renderInjection } from "#src/handoff.ts";
 import { interceptionReason } from "#src/interception.ts";
+import { PluginStatePublisher } from "#src/plugin-state.ts";
 import { registerPrometheusContract } from "#src/prometheus.ts";
 import { RoadmapSession, type UiFactory } from "#src/ses.ts";
+import { roadmapStatus } from "#src/state.ts";
 import { registerTools } from "#src/tools.ts";
 import { createTuiUi } from "#src/ui.ts";
 
@@ -21,13 +23,37 @@ export function __setUiFactory(factory?: UiFactory): void {
 
 export default function roadmap(pi: ExtensionAPI): void {
   const ses = new RoadmapSession(pi);
-  const uiFor: UiFactory = (ctx) => (testUiFactory ?? createTuiUi)(ctx);
-  registerTools(pi, ses, uiFor);
-  const commands = registerCommands(pi, ses, uiFor);
+  const uiFor: UiFactory = (ctx) => (testUiFactory ?? ((host) => createTuiUi(host, pi)))(ctx);
+  let warned = false;
+  const warn = (error: unknown): void => {
+    if (warned) return;
+    warned = true;
+    pi.logger.warn("Roadmap state sidecar could not be published", { error: error instanceof Error ? error.message : String(error) });
+  };
+  const publisher = new PluginStatePublisher("roadmap", warn);
+  let publishing = Promise.resolve();
+  /** Re-derives the sidecar from the files on disk; serialized so a slower read never overwrites a newer state. */
+  const changed = (ctx: ExtensionContext): void => {
+    if (ctx.agent.kind !== "main") return;
+    const target = { sessionDir: ctx.sessionManager.getSessionDir(), sessionId: ctx.sessionManager.getSessionId() };
+    const git = discoverRepo(ctx.cwd);
+    const binding = git ? ses.getBinding(git.repoRoot) : undefined;
+    publishing = publishing.then(async () => {
+      try {
+        const repo = git && (await loadRepo(git.repoRoot));
+        publisher.publish(target, repo ? roadmapStatus(repo.repoRoot, await loadAll(repo), binding) : null);
+      } catch (error) {
+        warn(error);
+      }
+    });
+  };
+  registerTools(pi, ses, uiFor, changed);
+  const commands = registerCommands(pi, ses, uiFor, changed);
   registerPrometheusContract(pi, ses);
 
   async function rebuild(_event: unknown, ctx: ExtensionContext): Promise<void> {
     ses.rebuild(ctx);
+    changed(ctx);
     try {
       await commands.refresh(ctx);
     } catch (error) {
@@ -38,6 +64,10 @@ export default function roadmap(pi: ExtensionAPI): void {
   pi.on("session_switch", rebuild);
   pi.on("session_branch", rebuild);
   pi.on("session_tree", rebuild);
+  pi.on("session_shutdown", async () => {
+    await publishing;
+    await publisher.flush();
+  });
 
   pi.on("tool_call", async (event, ctx) => {
     try {
@@ -69,6 +99,8 @@ export default function roadmap(pi: ExtensionAPI): void {
       if (!repo) return;
       const model = await loadAll(repo);
       const notice = ses.validateBinding(ctx, repo.repoRoot, model);
+      // Subagents and external edits change files without this session's tools; resync once per turn.
+      changed(ctx);
       const block = renderInjection(model, ses.getBinding(repo.repoRoot));
       await commands.refresh(ctx);
       if (!block) return;

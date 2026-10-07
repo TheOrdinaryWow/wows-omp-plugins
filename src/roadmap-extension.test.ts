@@ -70,6 +70,7 @@ class ScriptedUi implements RoadmapUi {
   confirmed: boolean | undefined = true;
   menu: StatusMenuChoice | undefined;
   preview?: RoadmapUi["previewConfirm"];
+  readonly interactive = true;
   dispositions: RoundTodoDispositionChoice[] | undefined = [];
 
   async overlap(q: OverlapQuestion) {
@@ -379,7 +380,7 @@ const CASES: Record<string, string> = {
   "overlap-lock-start": "a queued native start binds before a late free-work answer can write",
   "overlap-lock-terminal": "a queued terminal transition invalidates a late overlap mutation under the lock",
   binding: "roadmap overlap starts, binds and returns its handoff",
-  headless: "headless overlap and previews report no answer available",
+  headless: "without a UI, previews wait for /roadmap confirm, overlaps and round close take command arguments, and notices are messages",
   "bound-start": "started stages bypass the overlap dialog and free-work log",
   "bound-join": "joined stages bypass the overlap dialog and free-work log",
   "bound-start-headless": "started stages remain in-system without a UI",
@@ -1492,18 +1493,77 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.equal(await readFile(join(repo.roadmapDir, "external.md"), "utf8"), "External write\n");
         assert.equal(await loadRepo(root), null);
       } else {
-        h.setUi(() => new HeadlessUi());
-        const receipt = await call(h, "roadmap_init", draft);
-        assert(!receipt.ok);
-        assert.match(receipt.reason, /no answer available/);
+        // The real factory: the SDK harness runs without a UI, so the plugin takes its headless paths.
+        h.setUi();
+        const confirmToken = (receipt: ToolReceipt): string => {
+          assert(!receipt.ok);
+          const token = /\/roadmap confirm ([0-9a-f]{12})/.exec(receipt.hints.join("\n"))?.[1];
+          assert(token, JSON.stringify(receipt));
+          return token;
+        };
+        const preview = await call(h, "roadmap_init", draft);
+        assert(!preview.ok);
+        assert.match(preview.reason, /Nothing was written/);
+        assert.match(preview.reason, /--- docs\/roadmap\/README\.md\n/);
+        const token = confirmToken(preview);
         assert.equal(await loadRepo(root), null);
-        const repo = await initialized(root);
-        const current = (await loadAll(repo)).stages[0];
-        assert(current);
-        const overlap = await call(h, "roadmap_overlap", { stage: current.id, intent: "Fix checkout" });
+        await command(h, "roadmap", "confirm 000000000000");
+        assert.match(h.messages.at(-1) ?? "", /^Roadmap error: No pending Roadmap preview 000000000000/);
+        assert.equal(await loadRepo(root), null);
+        await command(h, "roadmap", `confirm ${token}`);
+        assert.match(h.messages.at(-1) ?? "", /Changed: /);
+        const repo = await loadRepo(root);
+        assert(repo);
+        assert(
+          h.session.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === `${ENTRY_PREFIX}disarmed`),
+        );
+        await command(h, "roadmap", `confirm ${token}`);
+        assert.match(h.messages.at(-1) ?? "", /No pending Roadmap preview/);
+
+        const overlap = await call(h, "roadmap_overlap", { stage: "S01", intent: "Fix checkout" });
         assert(!overlap.ok);
         assert.match(overlap.reason, /no answer available/);
-        assert.equal(h.ui.overlapCalls.length, 0);
+        assert.match(overlap.hints.join("\n"), /\/roadmap overlap S01 roadmap\|free\|unrelated/);
+        await command(h, "roadmap", "overlap S01 free");
+        assert.match(h.messages.at(-1) ?? "", /intent/);
+        assert.equal((await loadAll(repo)).stages[0]?.free_work_log, "");
+        await command(h, "roadmap", 'overlap S01 free "Fix checkout copy"');
+        assert.match(h.messages.at(-1) ?? "", /Recorded free work for S01/);
+        assert.match((await loadAll(repo)).stages[0]?.free_work_log ?? "", /"Fix checkout copy"/);
+        const stored = await call(h, "roadmap_overlap", { stage: "S01", intent: "Fix checkout" });
+        assert(stored.ok, JSON.stringify(stored));
+        assert.equal(stored.answer, "free");
+
+        await command(h, "roadmap");
+        assert.match(h.messages.at(-1) ?? "", /Stages:\n- S01 \[planned\]/);
+        assert.match(h.messages.at(-1) ?? "", /Usage: \/roadmap/);
+
+        assert(
+          (await call(h, "roadmap_todo", { action: "add", title: "Later", severity: "normal", source: "User", trigger: "Next round" })).ok,
+        );
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
+        await command(h, "roadmap", "close-round");
+        assert.match(h.messages.at(-1) ?? "", /needs a disposition for every open TODO: T001 Later/);
+        await command(h, "roadmap", "close-round T001=maybe");
+        assert.match(h.messages.at(-1) ?? "", /Invalid round-close disposition "T001=maybe"/);
+        assert.equal((await loadAll(repo)).rounds[0]?.status, "active");
+        await command(h, "roadmap", 'close-round T001=wontfix:"Out of scope for launch"');
+        assert.match(h.messages.at(-1) ?? "", /Closed and froze R1/);
+        const closed = await loadAll(repo);
+        assert.equal(closed.rounds[0]?.status, "closed");
+        assert.equal(closed.todos[0]?.items[0]?.status, "wontfix");
+        assert.match(closed.rounds[0]?.known_limitations ?? "", /Out of scope for launch/);
+
+        await command(h, "roadmap", "new-round");
+        const input = { round: { ...draft.round, title: "Next" }, import_todos: [] };
+        const stale = confirmToken(await call(h, "roadmap_round_open", input));
+        await h.runner.emit({ type: "session_start" });
+        await command(h, "roadmap", `confirm ${stale}`);
+        assert.match(h.messages.at(-1) ?? "", /No pending Roadmap preview/);
+        assert.equal((await loadAll(repo)).rounds.length, 1);
+        await command(h, "roadmap", `confirm ${confirmToken(await call(h, "roadmap_round_open", input))}`);
+        assert.match(h.messages.at(-1) ?? "", /Changed: /);
+        assert.equal((await loadAll(repo)).rounds.find((round) => round.status === "active")?.title, "Next");
       }
     } else if (name === "menu") {
       const repo = await initialized(root);
@@ -1865,7 +1925,7 @@ async function acceptance(name: string, root: string): Promise<void> {
         let uiCalls = 0;
         h.setUi(() => {
           uiCalls++;
-          return name.endsWith("headless") ? new HeadlessUi() : h.ui;
+          return name.endsWith("headless") ? new HeadlessUi({ sendMessage: () => {} }) : h.ui;
         });
         for (const stored of [false, true]) {
           if (stored) {
@@ -1897,17 +1957,20 @@ async function acceptance(name: string, root: string): Promise<void> {
         const dialogs: Array<{ title: string; options: unknown[] }> = [];
         h.setUi((ctx) =>
           ctx.sessionManager.getSessionId() === h.session.sessionManager.getSessionId()
-            ? createTuiUi({
-                hasUI: true,
-                ui: {
-                  ...ctx.ui,
-                  select: async (title, options) => {
-                    dialogs.push({ title, options });
-                    shown.resolve();
-                    return picked.promise;
+            ? createTuiUi(
+                {
+                  hasUI: true,
+                  ui: {
+                    ...ctx.ui,
+                    select: async (title, options) => {
+                      dialogs.push({ title, options });
+                      shown.resolve();
+                      return picked.promise;
+                    },
                   },
                 },
-              })
+                { sendMessage: () => {} },
+              )
             : other.ui,
         );
         try {

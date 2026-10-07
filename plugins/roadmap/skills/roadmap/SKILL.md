@@ -29,7 +29,7 @@ The user starts initialization with `/init-project`. Gather facts from the repos
 2. Define the round goal, constraints, non-goals, and principles. Principles cite ADR ids; they never restate the decisions.
 3. Identify decisions already made. Capture their context, genuine alternatives, rationale, and consequences as initial ADRs. Don't invent options or approval history.
 4. Break the round into stages. For each, record an objective, scope in and out, done criteria with a specific verification method, and dependencies. Separate prerequisites from work that merely follows another stage.
-5. Confirm the interview summary with the user. Submit the agreed project, charter, ADRs, and stages through `roadmap_init`; let the plugin show the rendered file preview and obtain confirmation before writing. Cancellation or no answer isn't approval.
+5. Confirm the interview summary with the user. Submit the agreed project, charter, ADRs, and stages through `roadmap_init`; let the plugin show the rendered file preview and obtain confirmation before writing. Cancellation or no answer isn't approval. Without a UI, the tool returns the preview and a `/roadmap confirm <token>` command instead of writing: show both to the user, and never run or claim the confirmation yourself. The same applies to `roadmap_round_open`. When `roadmap_overlap` has no answer without a UI, ask the user and name `/roadmap overlap <stage> roadmap|free|unrelated [intent]`.
 
 Rounds are sequential, with at most one active. Opening and closing them are user-command decisions, not autonomous agent actions. For later rounds, the user uses `/roadmap new-round`; discuss the new charter and which carried TODOs to import without changing the frozen prior round.
 

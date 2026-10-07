@@ -41,7 +41,7 @@ While a round is active, the plugin reads the checked-out documents on each turn
 5. Record scope or criterion changes on an active stage with `amend` and a reason. Keep later work in TODOs and decisions in ADRs.
 6. Close the stage with evidence and dispositions, then close the round when all stages are closed or dropped.
 
-Initialization and opening a round require explicit user commands, an armed main session, and a confirmed preview. The plugin revalidates the files after confirmation and rejects stale previews. A successful write consumes that authorization. Headless contexts cannot answer the preview, overlap or round-close dialogs; cancellation or an unavailable answer does not authorize a write.
+Initialization and opening a round require explicit user commands, an armed main session, and a confirmed preview. The plugin revalidates the files after confirmation and rejects stale previews. A successful write consumes that authorization. Cancellation or an unavailable answer does not authorize a write. Without a UI, every dialog has a command form instead; see [Host modes](#host-modes).
 
 ### Stage close
 
@@ -74,6 +74,9 @@ All commands below require the main session. Stage IDs have argument completions
 | `/roadmap check --fix` | Regenerate eligible generated blocks, never authored bodies or frozen rounds. |
 | `/roadmap new-round` | Require no active round and no check errors, then arm and interview for the next round. |
 | `/roadmap close-round` | Collect TODO dispositions and freeze the active round after its stages finish. |
+| `/roadmap close-round <todo>=<disposition>[:<reference>] ...` | Answer the disposition dialog in the command: `T001=resolved:abc1234`, `T002=wontfix:"out of scope"`, `T003=carried`. Every open TODO needs one; `resolved` needs a reference. Double quotes group text with spaces. |
+| `/roadmap overlap <stage> roadmap\|free\|unrelated [intent]` | Answer the overlap question for this session: `roadmap` starts or joins and binds the stage, `free` logs the intent as free work (intent required), `unrelated` stops asking for that stage. An answer already stored for the stage is kept. |
+| `/roadmap confirm <token>` | Write a preview that `roadmap_init` or `roadmap_round_open` held because no UI could confirm it. |
 
 ## Tools
 
@@ -150,6 +153,28 @@ Cancellation stops before the next temporary write or rename and removes uncommi
 
 Commit the changed documents according to your project's rules. Checked-out Markdown is the source of truth on each branch. Worktrees share only the lock and versioned ID counters under the git common directory's `roadmap/`; IDs are allocated above both the stored counter and IDs on disk. Separate clones do not share counters, so cross-clone collisions can be detected when combined, not prevented.
 
+## Host modes
+
+| Host mode | Behavior |
+| --- | --- |
+| TUI | Dialogs as described above. |
+| RPC (`--mode rpc`, `rpc-ui`) and ACP | The same dialogs, sent to the client as `select`, `input` and `editor` requests. Notices are host notify frames; ACP clients may show them only in their log. |
+| No UI (`--no-ui`, print, JSON, SDK without a UI) | No dialogs. Notices and errors become displayed session messages. Bare `/roadmap` prints the status and the command usage. `roadmap_init` and `roadmap_round_open` return the full preview and a token without writing; the user writes it with `/roadmap confirm <token>`, and any other reply declines it. The token covers exactly the shown files and lasts until the session is rebuilt (start, switch, branch, tree) or a newer preview of the same kind replaces it. `roadmap_overlap` reports no answer and names `/roadmap overlap`. `/roadmap close-round` without arguments closes a round only when it has no open TODOs; otherwise it lists them and expects dispositions as arguments. |
+
+### State sidecar
+
+The main session publishes `roadmap.json` in the shared plugin-state envelope (see the [root README](../../README.md)). Its `state` is the `roadmap/status` payload, version 1, derived from the files on disk, or `null` when the repository has no initialized roadmap. It is rewritten at session start, switch, branch and tree, after every `roadmap_*` tool call and `/roadmap` command, and at the start of each agent turn so changes from subagents or external edits appear.
+
+| Field | Content |
+| --- | --- |
+| `kind`, `version` | `"roadmap/status"`, `1` |
+| `repoRoot` | Git work tree root of the roadmap. |
+| `project` | Project title from `docs/roadmap/README.md`. |
+| `activeRound` | `{ id, title }` of the active round, or `null`. |
+| `stages` | Every stage as `{ id, title, status, round }`; `status` is `planned`, `active`, `closed` or `dropped`. |
+| `openTodos` | `{ total, byStage, untargeted }`: open TODOs across rounds, counts per target stage ID, and those with a trigger instead of a target. |
+| `boundStage` | Stage ID this session is bound to while that stage is active, or `null`. |
+
 ## Optional Prometheus integration
 
 Install [omo-prometheus](../omo-prometheus/README.md) alongside roadmap to plan and execute a bound stage. Neither plugin requires the other, and this integration is not controlled by the `herdrDag` setting.
@@ -173,7 +198,7 @@ Completion deduplication is per Prometheus producer instance, not a durable exac
 - Cross-clone ID collisions are not prevented. Checked-out branches can have different roadmap state even when their worktrees share numbering.
 - `check` verifies references, metadata, generated blocks and closure integrity, not whether code satisfies the documents. Honest close evidence and boundary checks remain necessary.
 - Per-file atomic writes do not provide operation-wide rollback. Previewed IDs can be consumed even when a preview is declined, so numbering can have gaps.
-- Dialogs need an interactive UI. Headless execution does not supply confirmation or an overlap answer.
+- Without a UI, the agent cannot confirm previews or answer overlaps by itself. The user answers with `/roadmap confirm`, `/roadmap overlap` and `/roadmap close-round` arguments. A held preview lives only in memory and is lost when the process exits.
 - Atlas completion reminders have the per-producer and per-session deduplication limits described above.
 
 The following format description is copied from `HOW_THIS_DIRECTORY_WORKS` in `src/documents.ts`. Initialization writes the same text into your project's [docs/roadmap/README.md](../../docs/roadmap/README.md), which also serves as its initialization marker and generated index. That project file does not exist until initialization.

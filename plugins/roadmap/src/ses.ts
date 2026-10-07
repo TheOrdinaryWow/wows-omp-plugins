@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
+
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import type { Model } from "#src/documents.ts";
-import type { Actor } from "#src/operations.ts";
+import type { Model, Repo } from "#src/documents.ts";
+import type { Actor, PreparedOperation } from "#src/operations.ts";
 import type { OverlapAnswer, RoadmapUi } from "#src/ui.ts";
 
 export type UiFactory = (ctx: ExtensionContext) => RoadmapUi;
@@ -19,7 +21,17 @@ export interface PendingClose extends Binding {
   gates: Array<{ gateId: string; verdict: string; summary: string }>;
 }
 
-type ArmedKind = "init" | "round";
+export type ArmedKind = "init" | "round";
+
+/** A prepared init/round-open preview awaiting `/roadmap confirm <token>` because no dialog could confirm it. */
+export interface PendingPreview {
+  token: string;
+  kind: ArmedKind;
+  repo: Repo;
+  prepared: PreparedOperation;
+  generation: number;
+}
+
 interface RepoState {
   binding?: Binding;
   armed?: ArmedKind;
@@ -40,6 +52,8 @@ export class RoadmapSession {
   private sessionId?: string;
   private generation = 0;
   private repos = new Map<string, RepoState>();
+  // In memory only: a restart or branch change requires a fresh preview, like an unanswered dialog.
+  private previews = new Map<string, PendingPreview>();
 
   constructor(private readonly pi: Pick<ExtensionAPI, "appendEntry">) {}
 
@@ -60,6 +74,7 @@ export class RoadmapSession {
     this.sessionId = ctx.sessionManager.getSessionId();
     this.generation++;
     this.repos.clear();
+    this.previews.clear();
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom" || !entry.customType.startsWith(ENTRY_PREFIX)) continue;
       this.restore(entry.customType.slice(ENTRY_PREFIX.length), entry.data);
@@ -119,6 +134,28 @@ export class RoadmapSession {
 
   disarm(ctx: ExtensionContext, repoRoot: string): void {
     this.append(ctx, "disarmed", { repoRoot });
+    for (const [token, preview] of this.previews) if (preview.repo.repoRoot === repoRoot) this.previews.delete(token);
+  }
+
+  /** Holds the latest preview per repository and kind; the token names its exact files. */
+  holdPreview(ctx: ExtensionContext, generation: number, kind: ArmedKind, repo: Repo, prepared: PreparedOperation): string {
+    this.ensure(ctx);
+    const token = createHash("sha256")
+      .update(JSON.stringify([kind, repo.repoRoot, prepared.files]))
+      .digest("hex")
+      .slice(0, 12);
+    for (const [held, preview] of this.previews) {
+      if (preview.kind === kind && preview.repo.repoRoot === repo.repoRoot) this.previews.delete(held);
+    }
+    this.previews.set(token, { token, kind, repo, prepared, generation });
+    return token;
+  }
+
+  takePreview(ctx: ExtensionContext, token: string): PendingPreview | undefined {
+    this.ensure(ctx);
+    const preview = this.previews.get(token);
+    this.previews.delete(token);
+    return preview?.generation === this.generation ? preview : undefined;
   }
 
   bind(ctx: ExtensionContext, repoRoot: string, stage: string): void {

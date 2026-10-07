@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 
 import type { Model, RoundDoc, StageDoc, StageStatus, TodoItem } from "../plugins/roadmap/src/documents.ts";
-import { createTuiUi, HeadlessUi, type RoadmapUiContext } from "../plugins/roadmap/src/ui.ts";
+import { createTuiUi, HeadlessUi, NOTICE_TYPE, type RoadmapMessenger, type RoadmapUiContext } from "../plugins/roadmap/src/ui.ts";
 
 type Answer = string | boolean | undefined;
 
 interface Stub {
   ctx: RoadmapUiContext;
+  pi: RoadmapMessenger;
+  sent: Array<Parameters<RoadmapMessenger["sendMessage"]>[0]>;
   calls: Array<{ kind: string; title: string; body: string | string[] | undefined }>;
   call(index: number): Stub["calls"][number];
   transcript(first?: number, count?: number): string;
@@ -25,8 +27,11 @@ function stubUi(answers: Answer[], hasUI = true): Stub {
     editor: (title: string, prefill?: string) => next("editor", title, prefill),
     notify: (message: string, level?: string) => void calls.push({ kind: "notify", title: level ?? "info", body: message }),
   };
+  const sent: Stub["sent"] = [];
   return {
     ctx: { hasUI, ui } as unknown as RoadmapUiContext,
+    pi: { sendMessage: (message) => void sent.push(message) },
+    sent,
     calls,
     call(index) {
       const call = calls[index];
@@ -80,7 +85,7 @@ test("overlap shows the stage and three options and maps answers", async () => {
     "Unrelated: do not ask again for this stage",
     undefined,
   ]);
-  const ui = createTuiUi(stub.ctx);
+  const ui = createTuiUi(stub.ctx, stub.pi);
   expect(await ui.overlap(OVERLAP)).toBe("roadmap");
   expect(await ui.overlap(OVERLAP)).toBe("free");
   expect(await ui.overlap(OVERLAP)).toBe("unrelated");
@@ -104,7 +109,7 @@ const PREVIEW = { title: "Initialize roadmap", root: ROOT, files: FILES };
 
 test("previewConfirm offers write, cancel and repo-relative file views from one menu, returning to it after each view", async () => {
   const stub = stubUi(["View docs/adr/0001-use-madr.md", "edited text that must be ignored", "Write 2 files"]);
-  const ui = createTuiUi(stub.ctx);
+  const ui = createTuiUi(stub.ctx, stub.pi);
   expect(await ui.previewConfirm(PREVIEW)).toBe(true);
   expect(stub.calls.map((call) => call.kind)).toEqual(["select", "editor", "select"]);
   expect(stub.call(0).title).toContain("Initialize roadmap");
@@ -114,14 +119,14 @@ test("previewConfirm offers write, cancel and repo-relative file views from one 
   evidence("previewConfirm", stub.transcript());
 
   const direct = stubUi(["Write 2 files"]);
-  expect(await createTuiUi(direct.ctx).previewConfirm(PREVIEW)).toBe(true);
+  expect(await createTuiUi(direct.ctx, direct.pi).previewConfirm(PREVIEW)).toBe(true);
   expect(direct.calls.map((call) => call.kind)).toEqual(["select"]);
 
   const declined = stubUi(["View docs/roadmap/README.md", undefined, "Cancel"]);
-  expect(await createTuiUi(declined.ctx).previewConfirm(PREVIEW)).toBe(false);
+  expect(await createTuiUi(declined.ctx, declined.pi).previewConfirm(PREVIEW)).toBe(false);
 
   const dismissed = stubUi([undefined]);
-  expect(await createTuiUi(dismissed.ctx).previewConfirm(PREVIEW)).toBeUndefined();
+  expect(await createTuiUi(dismissed.ctx, dismissed.pi).previewConfirm(PREVIEW)).toBeUndefined();
 });
 
 test("statusMenu lists round, stages with glyphs and TODO counts, and only valid actions", async () => {
@@ -136,7 +141,7 @@ test("statusMenu lists round, stages with glyphs and TODO counts, and only valid
     ],
   );
   const stub = stubUi(["◐ S02 Operations [active] · 2 open TODOs", "Close stage S02", "Run check", undefined]);
-  const ui = createTuiUi(stub.ctx);
+  const ui = createTuiUi(stub.ctx, stub.pi);
   expect(await ui.statusMenu(active)).toEqual({ action: "stage", stage: "S02" });
   expect(await ui.statusMenu(active)).toEqual({ action: "close", stage: "S02" });
   expect(await ui.statusMenu(active)).toEqual({ action: "check" });
@@ -154,16 +159,16 @@ test("statusMenu lists round, stages with glyphs and TODO counts, and only valid
 
   const finished = model([round("R1", "active")], [stage("S01", "closed", "Documents"), stage("S02", "dropped", "Operations")]);
   const done = stubUi([`Close round R1`]);
-  expect(await createTuiUi(done.ctx).statusMenu(finished)).toEqual({ action: "close-round" });
+  expect(await createTuiUi(done.ctx, done.pi).statusMenu(finished)).toEqual({ action: "close-round" });
   expect(done.call(0).body).toEqual(["● S01 Documents [closed]", "× S02 Operations [dropped]", "Run check", "Close round R1"]);
   evidence("statusMenu (all stages settled)", done.transcript());
 
   const planned = stubUi([undefined]);
-  await createTuiUi(planned.ctx).statusMenu(model([round("R1", "active")], [stage("S01", "planned")]));
+  await createTuiUi(planned.ctx, planned.pi).statusMenu(model([round("R1", "active")], [stage("S01", "planned")]));
   expect(planned.call(0).body).not.toContain("Close round R1");
 
   const between = stubUi(["Open a new round"]);
-  expect(await createTuiUi(between.ctx).statusMenu(model([round("R1", "closed")], [stage("S01", "closed")]))).toEqual({
+  expect(await createTuiUi(between.ctx, between.pi).statusMenu(model([round("R1", "closed")], [stage("S01", "closed")]))).toEqual({
     action: "new-round",
   });
   expect(between.call(0).title).toBe("Roadmap: no active round (last: R1 Foundation, closed)");
@@ -174,7 +179,7 @@ test("statusMenu lists round, stages with glyphs and TODO counts, and only valid
 test("closeRoundDispositions walks every open TODO and collects references", async () => {
   const items = [todo("T001", { target: "S02", severity: "high" }), todo("T002", { trigger: "after release" }), todo("T003")];
   const stub = stubUi(["Resolved", "  abc1234  ", "Won't fix", "", "Carry to the next round"]);
-  expect(await createTuiUi(stub.ctx).closeRoundDispositions(items)).toEqual([
+  expect(await createTuiUi(stub.ctx, stub.pi).closeRoundDispositions(items)).toEqual([
     { id: "T001", disposition: "resolved", reference: "abc1234" },
     { id: "T002", disposition: "wontfix" },
     { id: "T003", disposition: "carried" },
@@ -185,21 +190,32 @@ test("closeRoundDispositions walks every open TODO and collects references", asy
   expect(stub.call(0).body).toEqual(["Resolved", "Won't fix", "Carry to the next round"]);
   evidence("closeRoundDispositions", stub.transcript());
 
-  expect(await createTuiUi(stubUi(["Resolved", undefined]).ctx).closeRoundDispositions(items)).toBeUndefined();
-  expect(await createTuiUi(stubUi([undefined]).ctx).closeRoundDispositions(items)).toBeUndefined();
+  const partial = stubUi(["Resolved", undefined]);
+  expect(await createTuiUi(partial.ctx, partial.pi).closeRoundDispositions(items)).toBeUndefined();
+  const dismissed = stubUi([undefined]);
+  expect(await createTuiUi(dismissed.ctx, dismissed.pi).closeRoundDispositions(items)).toBeUndefined();
 });
 
-test("HeadlessUi returns undefined from every dialog and is used without a UI", async () => {
+test("HeadlessUi returns undefined from every dialog and turns notices into displayed messages", async () => {
   const stub = stubUi(["Resolved", true], false);
-  const ui = createTuiUi(stub.ctx);
+  const ui = createTuiUi(stub.ctx, stub.pi);
   expect(ui).toBeInstanceOf(HeadlessUi);
-  const headless = new HeadlessUi();
+  expect(ui.interactive).toBe(false);
+  expect(createTuiUi(stubUi([]).ctx, stub.pi).interactive).toBe(true);
+  const direct = stubUi([], false);
+  const headless = new HeadlessUi(direct.pi);
   for (const target of [ui, headless]) {
     expect(await target.overlap(OVERLAP)).toBeUndefined();
     expect(await target.previewConfirm(PREVIEW)).toBeUndefined();
     expect(await target.statusMenu(model([round("R1", "active")], []))).toBeUndefined();
     expect(await target.closeRoundDispositions([todo("T001")])).toBeUndefined();
-    target.notify("hello", "info");
   }
+  ui.notify("hello", "info");
+  ui.notify("Every stage must be closed", "error");
   expect(stub.calls).toEqual([]);
+  expect(stub.sent).toEqual([
+    { customType: NOTICE_TYPE, content: "hello", display: true, attribution: "agent" },
+    { customType: NOTICE_TYPE, content: "Roadmap error: Every stage must be closed", display: true, attribution: "agent" },
+  ]);
+  expect(direct.sent).toEqual([]);
 });

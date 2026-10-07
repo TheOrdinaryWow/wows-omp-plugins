@@ -1,9 +1,9 @@
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { check, type Diagnostics } from "#src/check.ts";
-import { loadAll, loadRepo, type Model, type Repo, renderStage } from "#src/documents.ts";
+import { loadAll, loadRepo, type Model, type Repo, renderStage, type StageDoc } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import { renderHandoff, renderInjection } from "#src/handoff.ts";
 import { withRepoLock } from "#src/numbering.ts";
@@ -11,6 +11,7 @@ import {
   type Actor,
   adr,
   applyPrepared,
+  type PreparedOperation,
   prepareInit,
   prepareRoundOpen,
   type Receipt,
@@ -18,7 +19,7 @@ import {
   stage,
   todo,
 } from "#src/operations.ts";
-import { actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
+import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
 import type { OverlapAnswer } from "#src/ui.ts";
 
 export type ToolReceipt = Receipt & { answer?: OverlapAnswer; diagnostics?: Diagnostics[]; changedFiles?: string[] };
@@ -100,7 +101,156 @@ export async function checkReceipt(repo: Repo, fix = false, signal?: AbortSignal
   };
 }
 
-export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFactory): void {
+export interface OverlapRequest {
+  ses: RoadmapSession;
+  ctx: ExtensionContext;
+  repo: Repo;
+  owner: Actor;
+  generation: number;
+  stage: string;
+  intent: string;
+  signal?: AbortSignal;
+  /** Asked only when this session is not bound to the stage and has no stored answer for it. */
+  ask(stage: StageDoc): Promise<OverlapAnswer | undefined>;
+}
+
+/** Applies the user's overlap answer (from the dialog or `/roadmap overlap`) once per stage and session. */
+export async function resolveOverlap(request: OverlapRequest): Promise<ToolReceipt> {
+  const { ses, ctx, repo, owner, generation, signal } = request;
+  const stale = (): ToolReceipt => ({
+    ok: false,
+    reason: "Roadmap overlap answer is stale: the session or stage changed while the answer was pending.",
+    hints: ["Call roadmap_overlap again to review the current session and stage."],
+  });
+  const model = await loadAll(repo);
+  if (!ses.isCurrent(ctx, generation)) return stale();
+  ses.validateBinding(ctx, repo.repoRoot, model);
+  const current = model.stages.find((candidate) => candidate.id === request.stage);
+  const roundId = current?.round;
+  if (
+    !current ||
+    (current.status !== "planned" && current.status !== "active") ||
+    !model.rounds.some((candidate) => candidate.id === roundId && candidate.status === "active")
+  ) {
+    return { ok: false, reason: `${request.stage} is not an unclosed stage in an active round.`, hints: [] };
+  }
+  let stored = ses.overlapAnswer(ctx, repo.repoRoot, current.id);
+  let answer = stored;
+  if (ses.getBinding(repo.repoRoot)?.stage !== current.id && !stored) answer = await request.ask(current);
+  const guard = (latest: Model): ToolReceipt | undefined => {
+    if (signal?.aborted) return { ok: false, reason: "Roadmap overlap cancelled.", hints: [] };
+    if (!ses.isCurrent(ctx, generation)) return stale();
+    const candidate = latest.stages.find((entry) => entry.id === request.stage);
+    if (
+      !candidate ||
+      candidate.round !== roundId ||
+      (candidate.status !== "planned" && candidate.status !== "active") ||
+      !latest.rounds.some((entry) => entry.id === roundId && entry.status === "active")
+    )
+      return stale();
+    ses.validateBinding(ctx, repo.repoRoot, latest);
+    stored = ses.overlapAnswer(ctx, repo.repoRoot, candidate.id);
+    answer = stored ?? answer;
+    if (ses.getBinding(repo.repoRoot)?.stage === candidate.id) {
+      answer = "roadmap";
+      return {
+        ok: true,
+        summary: `This session is already working in-system on ${candidate.id}.`,
+        answer,
+        handoff: renderHandoff(latest, candidate),
+        changedFiles: [],
+        warnings: [],
+      };
+    }
+    if (!answer)
+      return {
+        ok: false,
+        reason: "Roadmap overlap: no answer available.",
+        hints: [
+          "Ask the user before beginning overlapping work.",
+          `Without an interactive UI the user answers with /roadmap overlap ${candidate.id} roadmap|free|unrelated [intent]; free work needs the intent.`,
+        ],
+      };
+    if (stored && answer !== "roadmap")
+      return { ok: true, summary: `Overlap answer for ${candidate.id}: ${answer}.`, answer, changedFiles: [], warnings: [] };
+  };
+  const onSuccess = (): void => {
+    if (!ses.isCurrent(ctx, generation) || !answer) return;
+    if (answer === "roadmap") ses.bind(ctx, repo.repoRoot, current.id);
+    if (!stored) ses.answerOverlap(ctx, repo.repoRoot, current.id, answer);
+  };
+  let receipt: Receipt;
+  if (answer === "free" && !stored)
+    receipt = await recordFreeWork(repo, owner, { stage: request.stage, intent: request.intent }, { signal, guard, onSuccess });
+  else if (answer === "roadmap") receipt = await stage(repo, owner, { action: "start", id: current.id }, { signal, guard, onSuccess });
+  else
+    receipt = await withRepoLock(repo, async () => {
+      const guarded = guard(await loadAll(repo));
+      if (guarded) return guarded;
+      onSuccess();
+      return { ok: true, summary: `Overlap answer for ${current.id}: ${answer}.`, changedFiles: [], warnings: [] };
+    });
+  return receipt.ok ? { ...receipt, answer } : receipt;
+}
+
+/** A preview no dialog could confirm: held in memory until the user runs `/roadmap confirm <token>`. */
+export function awaitConfirmation(
+  ses: RoadmapSession,
+  ctx: ExtensionContext,
+  generation: number,
+  kind: ArmedKind,
+  repo: Repo,
+  prepared: PreparedOperation,
+): ToolReceipt {
+  const token = ses.holdPreview(ctx, generation, kind, repo, prepared);
+  const tool = kind === "init" ? "roadmap_init" : "roadmap_round_open";
+  return {
+    ok: false,
+    reason: [
+      `${prepared.summary}\nNothing was written: no interactive UI can confirm this preview.`,
+      ...prepared.files.map((file) => `--- ${relative(repo.repoRoot, file.path)}\n${file.content}`),
+    ].join("\n\n"),
+    hints: [
+      `Show this preview to the user. The user writes exactly these files with /roadmap confirm ${token}; any other reply declines it.`,
+      `Call ${tool} again only if the user asks for changes; a new preview replaces this one.`,
+    ],
+  };
+}
+
+/** Writes a confirmed init/round-open preview while the session that armed it is unchanged and still armed. */
+export async function applyPreview(
+  ses: RoadmapSession,
+  ctx: ExtensionContext,
+  kind: ArmedKind,
+  repo: Repo,
+  owner: Actor,
+  generation: number,
+  prepared: PreparedOperation,
+  signal?: AbortSignal,
+): Promise<Receipt> {
+  const guard = (): Receipt | undefined => {
+    if (ctx.sessionManager.getSessionId() !== owner.sessionId || !ses.isCurrent(ctx, generation) || !ses.isArmed(ctx, repo.repoRoot, kind))
+      return {
+        ok: false,
+        reason:
+          kind === "init"
+            ? "Initialization authorization changed; run /init-project again."
+            : "Round authorization changed; run /roadmap new-round again.",
+        hints: [],
+      };
+  };
+  const stale = guard();
+  if (stale) return stale;
+  return applyPrepared(repo, owner, prepared, {
+    guard,
+    signal,
+    onSuccess() {
+      if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, kind)) ses.disarm(ctx, repo.repoRoot);
+    },
+  });
+}
+
+export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFactory, changed: (ctx: ExtensionContext) => void): void {
   const z = pi.zod;
   const overlapFlights = new Map<string, Promise<ToolReceipt>>();
   const criterion = z.object({ id: z.string().optional(), statement: z.string(), verify: z.string() });
@@ -225,6 +375,8 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
         reason: error instanceof Error ? error.message : String(error),
         hints: ["Run roadmap_check to inspect managed files."],
       });
+    } finally {
+      changed(ctx);
     }
   }
 
@@ -307,82 +459,17 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
         const key = JSON.stringify([owner.sessionId, repo.repoRoot, params.stage, generation]);
         const pending = overlapFlights.get(key);
         if (pending) return pending;
-        const stale = (): ToolReceipt => ({
-          ok: false,
-          reason: "Roadmap overlap answer is stale: the session or stage changed while the dialog was open.",
-          hints: ["Call roadmap_overlap again to review the current session and stage."],
-        });
-        const resolve = async (): Promise<ToolReceipt> => {
-          const model = await loadAll(repo);
-          if (!ses.isCurrent(ctx, generation)) return stale();
-          ses.validateBinding(ctx, repo.repoRoot, model);
-          const current = model.stages.find((candidate) => candidate.id === params.stage);
-          const roundId = current?.round;
-          if (
-            !current ||
-            (current.status !== "planned" && current.status !== "active") ||
-            !model.rounds.some((candidate) => candidate.id === roundId && candidate.status === "active")
-          ) {
-            return { ok: false, reason: `${params.stage} is not an unclosed stage in an active round.`, hints: [] };
-          }
-          let stored = ses.overlapAnswer(ctx, repo.repoRoot, current.id);
-          let answer = stored;
-          if (ses.getBinding(repo.repoRoot)?.stage !== current.id && !stored) {
-            answer = await uiFor(ctx).overlap({ stage: current, intent: params.intent });
-          }
-          const guard = (latest: Model): ToolReceipt | undefined => {
-            if (signal?.aborted) return { ok: false, reason: "Roadmap overlap cancelled.", hints: [] };
-            if (!ses.isCurrent(ctx, generation)) return stale();
-            const candidate = latest.stages.find((entry) => entry.id === params.stage);
-            if (
-              !candidate ||
-              candidate.round !== roundId ||
-              (candidate.status !== "planned" && candidate.status !== "active") ||
-              !latest.rounds.some((entry) => entry.id === roundId && entry.status === "active")
-            )
-              return stale();
-            ses.validateBinding(ctx, repo.repoRoot, latest);
-            stored = ses.overlapAnswer(ctx, repo.repoRoot, candidate.id);
-            answer = stored ?? answer;
-            if (ses.getBinding(repo.repoRoot)?.stage === candidate.id) {
-              answer = "roadmap";
-              return {
-                ok: true,
-                summary: `This session is already working in-system on ${candidate.id}.`,
-                answer,
-                handoff: renderHandoff(latest, candidate),
-                changedFiles: [],
-                warnings: [],
-              };
-            }
-            if (!answer)
-              return {
-                ok: false,
-                reason: "Roadmap overlap: no answer available.",
-                hints: ["Ask the user in an interactive session before beginning overlapping work."],
-              };
-            if (stored && answer !== "roadmap")
-              return { ok: true, summary: `Overlap answer for ${candidate.id}: ${answer}.`, answer, changedFiles: [], warnings: [] };
-          };
-          const onSuccess = (): void => {
-            if (!ses.isCurrent(ctx, generation) || !answer) return;
-            if (answer === "roadmap") ses.bind(ctx, repo.repoRoot, current.id);
-            if (!stored) ses.answerOverlap(ctx, repo.repoRoot, current.id, answer);
-          };
-          let receipt: Receipt;
-          if (answer === "free" && !stored) receipt = await recordFreeWork(repo, owner, params, { signal, guard, onSuccess });
-          else if (answer === "roadmap")
-            receipt = await stage(repo, owner, { action: "start", id: current.id }, { signal, guard, onSuccess });
-          else
-            receipt = await withRepoLock(repo, async () => {
-              const guarded = guard(await loadAll(repo));
-              if (guarded) return guarded;
-              onSuccess();
-              return { ok: true, summary: `Overlap answer for ${current.id}: ${answer}.`, changedFiles: [], warnings: [] };
-            });
-          return receipt.ok ? { ...receipt, answer } : receipt;
-        };
-        const flight = resolve().finally(() => overlapFlights.delete(key));
+        const flight = resolveOverlap({
+          ses,
+          ctx,
+          repo,
+          owner,
+          generation,
+          stage: params.stage,
+          intent: params.intent,
+          signal,
+          ask: (current) => uiFor(ctx).overlap({ stage: current, intent: params.intent }),
+        }).finally(() => overlapFlights.delete(key));
         overlapFlights.set(key, flight);
         return flight;
       });
@@ -402,32 +489,18 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
         async (repo, owner) => {
           if (!ses.isArmed(ctx, repo.repoRoot, "init"))
             return { ok: false, reason: "roadmap_init is unarmed. Run /init-project first.", hints: [] };
-          const guard = (): Receipt | undefined => {
-            if (
-              ctx.sessionManager.getSessionId() !== owner.sessionId ||
-              !ses.isCurrent(ctx, generation) ||
-              !ses.isArmed(ctx, repo.repoRoot, "init")
-            )
-              return { ok: false, reason: "Initialization authorization changed; run /init-project again.", hints: [] };
-          };
           const prepared = await prepareInit(repo, owner, params);
           if (!prepared.ok) return prepared;
-          const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
+          const ui = uiFor(ctx);
+          if (!ui.interactive) return awaitConfirmation(ses, ctx, generation, "init", repo, prepared.prepared);
+          const confirmed = await ui.previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
           if (confirmed !== true || signal?.aborted)
             return {
               ok: false,
               reason: confirmed === false ? "Initialization preview declined." : "Initialization: no answer available or cancelled.",
               hints: [],
             };
-          const stale = guard();
-          if (stale) return stale;
-          return applyPrepared(repo, owner, prepared.prepared, {
-            guard,
-            signal,
-            onSuccess() {
-              if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, "init")) ses.disarm(ctx, repo.repoRoot);
-            },
-          });
+          return applyPreview(ses, ctx, "init", repo, owner, generation, prepared.prepared, signal);
         },
         true,
       );
@@ -445,32 +518,18 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
       return run(ctx, async (repo, owner) => {
         if (!ses.isArmed(ctx, repo.repoRoot, "round"))
           return { ok: false, reason: "roadmap_round_open is unarmed. Run /roadmap new-round first.", hints: [] };
-        const guard = (): Receipt | undefined => {
-          if (
-            ctx.sessionManager.getSessionId() !== owner.sessionId ||
-            !ses.isCurrent(ctx, generation) ||
-            !ses.isArmed(ctx, repo.repoRoot, "round")
-          )
-            return { ok: false, reason: "Round authorization changed; run /roadmap new-round again.", hints: [] };
-        };
         const prepared = await prepareRoundOpen(repo, owner, params);
         if (!prepared.ok) return prepared;
-        const confirmed = await uiFor(ctx).previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
+        const ui = uiFor(ctx);
+        if (!ui.interactive) return awaitConfirmation(ses, ctx, generation, "round", repo, prepared.prepared);
+        const confirmed = await ui.previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
         if (confirmed !== true || signal?.aborted)
           return {
             ok: false,
             reason: confirmed === false ? "Round preview declined." : "Round open: no answer available or cancelled.",
             hints: [],
           };
-        const stale = guard();
-        if (stale) return stale;
-        return applyPrepared(repo, owner, prepared.prepared, {
-          guard,
-          signal,
-          onSuccess() {
-            if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, "round")) ses.disarm(ctx, repo.repoRoot);
-          },
-        });
+        return applyPreview(ses, ctx, "round", repo, owner, generation, prepared.prepared, signal);
       });
     },
   });

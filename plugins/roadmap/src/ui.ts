@@ -1,6 +1,6 @@
 import { relative } from "node:path";
 
-import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { Model, StageDoc, StageStatus, TodoItem } from "#src/documents.ts";
 
@@ -30,6 +30,8 @@ export interface RoundTodoDispositionChoice {
 }
 
 export interface RoadmapUi {
+  /** False when no dialog can be answered (`hasUI === false`); callers then take their non-interactive path. */
+  readonly interactive: boolean;
   overlap(q: OverlapQuestion): Promise<OverlapAnswer | undefined>;
   previewConfirm(p: { title: string; root: string; files: PreviewFile[] }): Promise<boolean | undefined>;
   statusMenu(m: Model): Promise<StatusMenuChoice | undefined>;
@@ -38,8 +40,15 @@ export interface RoadmapUi {
 }
 
 export type RoadmapUiContext = Pick<ExtensionContext, "ui" | "hasUI">;
+export type RoadmapMessenger = Pick<ExtensionAPI, "sendMessage">;
+export const NOTICE_TYPE = "wows-omp-roadmap.notice";
 
+/** No dialogs; notices become displayed session messages so headless and SDK clients still see them. */
 export class HeadlessUi implements RoadmapUi {
+  readonly interactive = false;
+
+  constructor(private readonly pi: RoadmapMessenger) {}
+
   async overlap(): Promise<undefined> {
     return undefined;
   }
@@ -56,7 +65,14 @@ export class HeadlessUi implements RoadmapUi {
     return undefined;
   }
 
-  notify(): void {}
+  notify(message: string, level: "info" | "warning" | "error"): void {
+    this.pi.sendMessage({
+      customType: NOTICE_TYPE,
+      content: level === "info" ? message : `Roadmap ${level}: ${message}`,
+      display: true,
+      attribution: "agent",
+    });
+  }
 }
 
 export const STATUS_GLYPHS: Record<StageStatus, string> = {
@@ -92,8 +108,8 @@ function byId(a: { id: string }, b: { id: string }): number {
   return Number(a.id.replace(/\D/g, "")) - Number(b.id.replace(/\D/g, "")) || a.id.localeCompare(b.id);
 }
 
-export function createTuiUi(ctx: RoadmapUiContext): RoadmapUi {
-  if (!ctx.hasUI) return new HeadlessUi();
+export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger): RoadmapUi {
+  if (!ctx.hasUI) return new HeadlessUi(pi);
   const ui = ctx.ui;
 
   async function choose<T>(title: string, options: ReadonlyArray<readonly [string, T]>): Promise<T | undefined> {
@@ -105,6 +121,7 @@ export function createTuiUi(ctx: RoadmapUiContext): RoadmapUi {
   }
 
   return {
+    interactive: true,
     overlap: (q) =>
       choose(`This request overlaps stage ${q.stage.id} "${q.stage.title}" [${q.stage.status}]\nRequest: ${q.intent}`, OVERLAP_OPTIONS),
 
