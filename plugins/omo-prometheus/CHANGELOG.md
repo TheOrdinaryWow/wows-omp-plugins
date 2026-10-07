@@ -9,6 +9,18 @@
 - Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.14.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.13.1...omo-prometheus@0.14.0) (2026-10-07)
+
+
+### Features
+
+* **omo-prometheus:** collect read-only git evidence for the F1 compliance gate ([a708bcd](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/a708bcdaab0391dbee0ec3ab7aa349178ec987fe))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** let Atlas use authenticated roadmap devices and bind late-started stages ([6829cb1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/6829cb14fe30f4c31c2249f61c8184d80fb301ac))
+
 ## [0.13.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.13.0...omo-prometheus@0.13.1) (2026-10-07)
 
 

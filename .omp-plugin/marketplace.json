@@ -65,7 +65,7 @@
       "name": "omo-prometheus",
       "source": "./omo-prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
-      "version": "0.13.1",
+      "version": "0.14.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -123,7 +123,7 @@
       "name": "roadmap",
       "source": "./roadmap",
       "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "author": {
         "name": "TheOrdinaryWow"
       },

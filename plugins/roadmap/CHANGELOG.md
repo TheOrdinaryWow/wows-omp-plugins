@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.2.1...roadmap@0.2.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** let Atlas use authenticated roadmap devices and bind late-started stages ([6829cb1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/6829cb14fe30f4c31c2249f61c8184d80fb301ac))
+* **roadmap:** keep answering the Prometheus handshake when stage docs are unreadable ([e7b7afe](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e7b7afee41766f401777e723d42e589a78aacd7e))
+
 ## [0.2.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.2.0...roadmap@0.2.1) (2026-10-07)
 
 
