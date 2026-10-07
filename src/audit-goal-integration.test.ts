@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,13 +13,20 @@ import { type AuditState, createConclusion, type RoundRecord } from "../plugins/
 
 const ENTRY = "wows-omp-audit-goal.state";
 const registrations: string[] = [];
-const sessionDirs: string[] = [];
+const runtimeDir = mkdtempSync(join(tmpdir(), "audit-goal-runtime-"));
+const previousRuntimeDir = process.env.XDG_RUNTIME_DIR;
+process.env.XDG_RUNTIME_DIR = runtimeDir;
 let serial = 0;
 
 afterEach(() => {
   const registry = AgentRegistry.global();
   for (const id of registrations.splice(0)) registry.unregister(id);
-  for (const dir of sessionDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  if (previousRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
+  else process.env.XDG_RUNTIME_DIR = previousRuntimeDir;
+  rmSync(runtimeDir, { recursive: true, force: true });
 });
 
 function finding(round: number, severity: "critical" | "major") {
@@ -88,9 +95,7 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
     { type: "custom", customType: ENTRY, data: structuredClone(seed) },
   ];
   let activeTools: string[] = [];
-  const sessionDir = mkdtempSync(join(tmpdir(), "audit-goal-session-"));
-  sessionDirs.push(sessionDir);
-  const sessionManager = { getSessionId: () => id, getBranch: () => branch, getSessionDir: () => sessionDir };
+  const sessionManager = { getSessionId: () => id, getBranch: () => branch };
   const goal = { id: "g1", objective: "Audit loop (/audit): checkout restart path", status: "active" };
   const session = { sessionManager, getGoalModeState: () => ({ goal }) } as unknown as AgentSession;
   AgentRegistry.global().register({ id, displayName: id, kind: "main", session });
@@ -158,7 +163,10 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
     messages,
     command: (args: string) => command?.(args, ctx),
     sidecar: async () =>
-      JSON.parse(await readFile(join(sessionDir, "plugin-state", id, "audit-goal.json"), "utf8")) as Record<string, unknown>,
+      JSON.parse(await readFile(join(runtimeDir, "wows-omp-plugins", "plugin-state", id, "audit-goal.json"), "utf8")) as Record<
+        string,
+        unknown
+      >,
     sessionId: id,
     active: () => activeTools,
     failNextPersist: () => {

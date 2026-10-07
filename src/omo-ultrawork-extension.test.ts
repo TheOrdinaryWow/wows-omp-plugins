@@ -71,7 +71,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(handler);
     await handler(args, ctx);
   };
-  const stateFile = () => join(manager.getSessionDir(), "plugin-state", manager.getSessionId(), "omo-ultrawork.json");
+  const stateFile = () => join(root, "run", "wows-omp-plugins", "plugin-state", manager.getSessionId(), "omo-ultrawork.json");
   const snapshot = async () => {
     // Switching to the same branch flushes pending writes and restores the authoritative session entry.
     await hook("session_switch");
@@ -79,8 +79,8 @@ async function scenario(name: string, root: string): Promise<void> {
   };
   const payload = (mode: boolean, armed: boolean) => ({ kind: "omo-ultrawork/mode", version: 1, mode, armed });
   if (name === "publish-failure") {
-    await mkdir(manager.getSessionDir(), { recursive: true });
-    await Bun.write(join(manager.getSessionDir(), "plugin-state"), "not a directory");
+    await mkdir(join(root, "run", "wows-omp-plugins"), { recursive: true, mode: 0o700 });
+    await Bun.write(join(root, "run", "wows-omp-plugins", "plugin-state"), "not a directory");
     try {
       await hook("session_start");
       await command("ulw");
@@ -184,6 +184,7 @@ if (process.env[CHILD_ENV]) {
               [CHILD_ENV]: name,
               ULTRAWORK_EXTENSION_ROOT: root,
               HOME: root,
+              XDG_RUNTIME_DIR: join(root, "run"),
               PI_CODING_AGENT_DIR: join(root, "agent"),
             },
             stdout: "pipe",

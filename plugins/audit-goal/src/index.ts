@@ -139,13 +139,12 @@ export default function auditGoal(pi: ExtensionAPI): void {
   const publishState = (ctx: ExtensionContext): void => {
     try {
       const sessionId = ctx.sessionManager.getSessionId();
-      const target = { sessionDir: ctx.sessionManager.getSessionDir(), sessionId };
       const state = states.get(sessionId);
       const payload = invalidStates.has(sessionId) ? invalidAuditPayload() : state ? auditPayload(state) : null;
-      const file = pluginStatePath(target, PLUGIN_NAME);
+      const file = pluginStatePath(sessionId, PLUGIN_NAME);
       if (payload === null && !publishedFiles.has(file) && !existsSync(file)) return;
       publishedFiles.add(file);
-      publisher.publish(target, payload);
+      publisher.publish(sessionId, payload);
     } catch (error) {
       warnPublish(error);
     }

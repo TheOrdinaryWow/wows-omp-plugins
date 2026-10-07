@@ -41,13 +41,13 @@ omp plugin upgrade <name>@wows-omp-plugins
 
 The plugins also run under `omp --mode rpc`, `rpc-ui`, ACP editors, the SDK, and headless runs. Terminal-only views fall back to plain dialogs, and every interactive action also has a command form. Each plugin's README covers its own fallbacks.
 
-Plugins that hold workflow state also write a JSON snapshot of that state for client programs. They write it to `<session dir>/plugin-state/<session id>/<plugin>.json` and replace the file atomically on every change. Each snapshot is wrapped in the same envelope:
+Plugins that hold workflow state also write a JSON snapshot of that state for client programs, at `<runtime dir>/plugin-state/<session id>/<plugin>.json`. The runtime dir is `$XDG_RUNTIME_DIR/wows-omp-plugins`, or `<os tmpdir>/wows-omp-plugins-<uid>` when `XDG_RUNTIME_DIR` is unset. It is private to the current user and lies outside the project and the host session store, so snapshots do not survive a reboot. Each file is replaced atomically on every change and wrapped in the same envelope:
 
 ```json
 { "schema": "wows-omp-plugins/plugin-state", "version": 1, "plugin": "audit-goal", "sessionId": "…", "seq": 12, "updatedAt": "…", "state": { "kind": "audit-goal/audit", "version": 1 } }
 ```
 
-In RPC mode, take the session directory and id from `get_state` (`sessionFile`, `sessionId`). When `state` is `null`, the plugin has nothing active in that session. Each plugin README describes its own `state` payload.
+Take the session id from RPC `get_state` (`sessionId`); in-memory sessions (`--no-session`) publish too. When `state` is `null`, the plugin has nothing active in that session. Each plugin README describes its own `state` payload.
 
 ## Repository layout
 

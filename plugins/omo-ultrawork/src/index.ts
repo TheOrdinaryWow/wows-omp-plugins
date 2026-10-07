@@ -80,15 +80,15 @@ export default function ultrawork(pi: ExtensionAPI): void {
   const states = new Map<string, ArmingState>();
   const settings = new Map<string, Promise<UltraworkSettings>>();
   const warnedSessions = new Set<string>();
-  const publisher = new PluginStatePublisher("omo-ultrawork", (error, target) => {
-    if (warnedSessions.has(target.sessionId)) return;
-    warnedSessions.add(target.sessionId);
-    pi.logger.warn("ultrawork could not publish plugin state", { error: errorMessage(error), sessionId: target.sessionId });
+  const publisher = new PluginStatePublisher("omo-ultrawork", (error, sessionId) => {
+    if (warnedSessions.has(sessionId)) return;
+    warnedSessions.add(sessionId);
+    pi.logger.warn("ultrawork could not publish plugin state", { error: errorMessage(error), sessionId });
   });
 
   const publish = (ctx: ExtensionContext, state: ArmingState | undefined): void => {
     publisher.publish(
-      { sessionDir: ctx.sessionManager.getSessionDir(), sessionId: ctx.sessionManager.getSessionId() },
+      ctx.sessionManager.getSessionId(),
       state?.mode || state?.armed ? { kind: "omo-ultrawork/mode", version: 1, mode: state.mode, armed: state.armed } : null,
     );
   };

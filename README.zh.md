@@ -41,13 +41,13 @@ omp plugin upgrade <name>@wows-omp-plugins
 
 这些插件也可以在 `omp --mode rpc`、`rpc-ui`、ACP 编辑器、SDK 和 headless 环境中运行。终端专用视图会改用普通对话框，交互操作也都有对应的命令。各插件 README 说明了具体处理方式。
 
-有工作流状态的插件会将状态写成 JSON 快照，供客户端程序读取。文件位于 `<session dir>/plugin-state/<session id>/<plugin>.json`，每次状态变化时原子替换。所有快照使用同一个外层结构：
+有工作流状态的插件会将状态写成 JSON 快照，供客户端程序读取，路径为 `<runtime dir>/plugin-state/<session id>/<plugin>.json`。runtime dir 是 `$XDG_RUNTIME_DIR/wows-omp-plugins`；未设置 `XDG_RUNTIME_DIR` 时为 `<os tmpdir>/wows-omp-plugins-<uid>`。该目录仅当前用户可访问，位于项目和宿主会话存储之外，因此快照在重启后不保留。每次状态变化时原子替换文件。所有快照使用同一个外层结构：
 
 ```json
 { "schema": "wows-omp-plugins/plugin-state", "version": 1, "plugin": "audit-goal", "sessionId": "…", "seq": 12, "updatedAt": "…", "state": { "kind": "audit-goal/audit", "version": 1 } }
 ```
 
-在 RPC 模式下，会话目录和会话 id 从 `get_state` 的 `sessionFile`、`sessionId` 获取。`state` 为 `null` 表示插件在该会话中没有活动的工作流。`state` 的具体内容见各插件 README。
+会话 id 从 RPC `get_state` 的 `sessionId` 获取；内存会话（`--no-session`）同样会发布。`state` 为 `null` 表示插件在该会话中没有活动的工作流。`state` 的具体内容见各插件 README。
 
 ## 仓库结构
 

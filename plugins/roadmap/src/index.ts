@@ -35,13 +35,13 @@ export default function roadmap(pi: ExtensionAPI): void {
   /** Re-derives the sidecar from the files on disk; serialized so a slower read never overwrites a newer state. */
   const changed = (ctx: ExtensionContext): void => {
     if (ctx.agent.kind !== "main") return;
-    const target = { sessionDir: ctx.sessionManager.getSessionDir(), sessionId: ctx.sessionManager.getSessionId() };
+    const sessionId = ctx.sessionManager.getSessionId();
     const git = discoverRepo(ctx.cwd);
     const binding = git ? ses.getBinding(git.repoRoot) : undefined;
     publishing = publishing.then(async () => {
       try {
         const repo = git && (await loadRepo(git.repoRoot));
-        publisher.publish(target, repo ? roadmapStatus(repo.repoRoot, await loadAll(repo), binding) : null);
+        publisher.publish(sessionId, repo ? roadmapStatus(repo.repoRoot, await loadAll(repo), binding) : null);
       } catch (error) {
         warn(error);
       }

@@ -295,8 +295,6 @@ export default function prometheus(pi: ExtensionAPI): void {
   const publishState = (ctx: ExtensionContext): void => {
     if (!mainSession(ctx)) return;
     const sessionId = ctx.sessionManager.getSessionId();
-    const sessionDir = typeof ctx.sessionManager.getSessionDir === "function" ? ctx.sessionManager.getSessionDir() : undefined;
-    if (!sessionDir) return;
     const record = records.get(sessionId);
     const state = prometheusState({
       phase: record?.phase ?? "idle",
@@ -310,7 +308,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const serialized = JSON.stringify(state);
     if ((publishedStates.get(sessionId) ?? "null") === serialized) return;
     publishedStates.set(sessionId, serialized);
-    statePublisher.publish({ sessionDir, sessionId }, state);
+    statePublisher.publish(sessionId, state);
   };
 
   const rehydrate = (ctx: ExtensionContext, force = false): SessionRecord | undefined => {

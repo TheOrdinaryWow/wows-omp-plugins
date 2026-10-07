@@ -163,7 +163,7 @@ async function scenario(name: "rpc" | "headless", root: string): Promise<void> {
     assert(command);
     await command(args, ctx);
   };
-  const stateFile = join(dir, "plugin-state", sessionId, "omo-prometheus.json");
+  const stateFile = join(root, "run", "wows-omp-plugins", "plugin-state", sessionId, "omo-prometheus.json");
   // AtlasLive and the publisher coalesce on real timers and the file is the observable output, so poll it.
   const sidecar = async (predicate: (envelope: Envelope) => boolean): Promise<Envelope> => {
     const deadline = Date.now() + 5_000;
@@ -309,7 +309,14 @@ if (process.env[CHILD]) {
         const root = await mkdtemp(join(tmpdir(), "prometheus-non-tui-"));
         try {
           const child = Bun.spawn([process.execPath, fileURLToPath(import.meta.url)], {
-            env: { ...process.env, [CHILD]: name, PROMETHEUS_NON_TUI_ROOT: root, HOME: root, PI_CODING_AGENT_DIR: join(root, "agent") },
+            env: {
+              ...process.env,
+              [CHILD]: name,
+              PROMETHEUS_NON_TUI_ROOT: root,
+              HOME: root,
+              XDG_RUNTIME_DIR: join(root, "run"),
+              PI_CODING_AGENT_DIR: join(root, "agent"),
+            },
             stdout: "pipe",
             stderr: "pipe",
           });
