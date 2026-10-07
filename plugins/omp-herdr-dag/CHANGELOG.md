@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.0...omp-herdr-dag@0.4.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** keep the viewer inactive outside the terminal UI ([cd0520b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/cd0520b080294146baa2419f02d74e29a404faf2))
+
 ## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.3.0...omp-herdr-dag@0.4.0) (2026-10-06)
 
 

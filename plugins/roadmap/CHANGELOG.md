@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.1.1...roadmap@0.2.0) (2026-10-07)
+
+
+### Features
+
+* **roadmap:** add command forms for every dialog and publish roadmap status for clients ([0833867](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0833867b9e983bf7c35f6d424914cff50b2750a7))
+
 ## [0.1.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.1.0...roadmap@0.1.1) (2026-10-06)
 
 

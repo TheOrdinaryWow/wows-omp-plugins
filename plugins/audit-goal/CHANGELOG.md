@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.2.1...audit-goal@0.3.0) (2026-10-07)
+
+
+### Features
+
+* **audit-goal:** report command errors without a UI and publish audit state for clients ([df261f7](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/df261f75eb9b7842a76e01978b00b66c08ba9388))
+
 ## [0.2.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.2.0...audit-goal@0.2.1) (2026-10-04)
 
 
