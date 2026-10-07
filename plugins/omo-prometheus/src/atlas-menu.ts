@@ -133,6 +133,34 @@ export function singleLine(text: string): string {
 }
 
 const ROW_STATUS: Record<string, string> = { open: "Not started", in_progress: "In progress", done: "Done", blocked: "Blocked" };
+const TEXT_MARK: Record<string, string> = { open: "[ ]", in_progress: "[~]", done: "[x]", blocked: "[!]" };
+
+/** One line per plan for dialog-free hosts: name, id, status and workspace. */
+export function atlasPlanList(details: readonly AtlasPlanDetail[]): string {
+  if (!details.length) return "No shared approved plans are available.";
+  return details.map(({ plan, status }) => `- ${plan.name} (${plan.id}) — ${status}${plan.cwd ? ` — ${plan.cwd}` : ""}`).join("\n");
+}
+
+/** Read-only text form of the plan inspector for hosts without terminal components. */
+export function atlasPlanText(detail: AtlasPlanDetail): string {
+  const { plan } = detail;
+  const lines = [
+    `${plan.name} (${plan.id})`,
+    `Status: ${detail.status}`,
+    `Progress: ${detail.done}/${detail.total}${detail.inUse ? " · in use by another session" : ""}`,
+    `Workspace: ${plan.cwd || "unavailable"}`,
+    `Plan file: ${plan.planFilePath}`,
+  ];
+  if (detail.startedAt !== undefined) lines.push(`Started: ${formatTime(detail.startedAt)}`);
+  for (const row of detail.rows) {
+    lines.push("", `${TEXT_MARK[row.status] ?? "[?]"} ${row.id}. ${row.title} — ${ROW_STATUS[row.status] ?? row.status} — ${row.agent}`);
+    if (row.dependsOn.length) lines.push(`    Depends on: ${row.dependsOn.join(", ")}`);
+    if (row.acceptance) lines.push(`    Acceptance: ${singleLine(row.acceptance)}`);
+    if (row.evidence) lines.push(`    Evidence: ${singleLine(row.evidence)}`);
+    if (row.outputPath) lines.push(`    Output: ${row.outputPath}`);
+  }
+  return lines.join("\n");
+}
 
 /** Native OMP panel chrome (same frame as the ask/hook selector) around a host SelectList. */
 export class AtlasMenu extends OverlayPanel {

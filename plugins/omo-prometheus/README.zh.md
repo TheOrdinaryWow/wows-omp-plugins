@@ -76,11 +76,19 @@ Prometheus 计划的两种批准选项都会交接给 Atlas。“Approve and exe
 ### 使用 `/atlas` 调度
 
 ```text
-/atlas                   # while inactive: open Atlas Dispatch, the interactive plan menu
-/atlas <plan-name-or-id> # while inactive: enter a plan in this session and start executing (name/ID completion available)
-/atlas                   # while active: open the running plan's view (read-only)
-/atlas exit              # while active: exit (asks first if the plan is unfinished)
+/atlas                          # while inactive: open Atlas Dispatch, the interactive plan menu
+/atlas <plan-name-or-id>        # while inactive: enter a plan in this session and start executing (name/ID completion available)
+/atlas start <plan-name-or-id>  # same as above
+/atlas list                     # while inactive: list approved plans with their status
+/atlas show <plan-name-or-id>   # while inactive: show a plan's rows, acceptance and evidence
+/atlas resume <plan-name-or-id> # while inactive: resume a started plan
+/atlas rename <id> <new name>   # while inactive: change a plan's display label
+/atlas delete <id> [--yes]      # while inactive: delete a plan and its evidence; --yes is required without dialogs
+/atlas                          # while active: open the running plan's view (read-only)
+/atlas exit                     # while active: exit (asks first if the plan is unfinished)
 ```
+
+开头的 `list`、`show`、`start`、`resume`、`rename`、`delete` 或 `exit` 总是被当作子命令，而不是计划名。名称以这些词开头的计划仍可通过 ID 或 `/atlas start <name>` 选择。
 
 Atlas Dispatch 是将 Prometheus 计划交给 Atlas 的菜单。打开时，它显示当前工作区中未完成的计划。Tab 切换到 All，额外显示已完成、无效及其他工作区的计划。All 仅供查看，只有在 Unfinished 视图中才能开始或恢复执行。菜单显示各计划的进度，以及当前选中计划的 T/F 行。
 
@@ -109,7 +117,7 @@ Space 或 Shift+I 打开全屏计划视图，进度变化时它会保留选中�
 
 Atlas 激活时，不带参数的 `/atlas` 会打开同一个全屏查看器，作为实时、只读的观察页面。已提交的账本变更、子代理生命周期和宿主进度都会实时更新，无需重新打开。页头显示正在运行的子代理和计划已用时间。进行中的行会在侧栏显示已用时间，并在 Live 区域中展示宿主提供的子代理身份、模型/思考级别、工具及参数、意图、用量、费用、重试次数和近期活动。Tab 切换到持久化的时间线。此时不能启动、恢复、删除或重命名。Shift+X 与 `/atlas exit` 一样退出 Atlas，Esc 关闭页面。如果宿主没有进度通道，账本和生命周期详情仍然可用。
 
-没有交互式 UI 时，不带参数的 `/atlas` 只报告当前运行的计划。如果还有未完成行或无法验证进度，退出前会先询问。`/atlas` 携带任何其他参数都会报错，即使参数指向当前计划也一样：先退出，再从同一会话进入其他计划。Atlas 不会在规划期间进入，也不会运行未经批准的计划。如果进入失败，会话会保持暂停，直到你运行 `/atlas exit`；Atlas 绝不会退回到仅靠提示词约束的执行方式。
+没有交互式 UI 时，不带参数的 `/atlas` 会输出当前运行的计划及其各行。如果还有未完成行或无法验证进度，退出前会先询问。`/atlas` 携带任何其他参数都会报错，即使参数指向当前计划也一样：先退出，再从同一会话进入其他计划。Atlas 不会在规划期间进入，也不会运行未经批准的计划。如果进入失败，会话会保持暂停，直到你运行 `/atlas exit`；Atlas 绝不会退回到仅靠提示词约束的执行方式。
 
 执行期间，编辑器上方的 Atlas 小组件显示计划进度条、已完成/总数及关卡数量、正在运行的子代理，以及各行的精简实时用量。使用普通编辑器时它仍然可见，退出、切换会话或关闭宿主后消失。可以通过 `atlasWidget` 禁用；`/atlas` 观察页面仍然可用。
 
@@ -120,6 +128,40 @@ Atlas 还会根据经过验证的账本维护会话待办阶段：任务、修�
 部分宿主无法向 Atlas 提供可靠信号，证明子代理的最终处理已经结束；被取消的唤醒调用也可能先于子代理返回。在这些情况下，计划会一直由原会话持有，直到原 OMP 进程退出；关闭该进程后再启动新会话。
 
 Atlas 持有计划时，会话的计划引用为 `atlas://<plan-id>/plan.md`，这是已批准 `plan.md` 的只读视图，子代理通过 OMP 的计划交接机制加载它。其他会话无法读取；如果计划内容的字节发生变化，该引用将无法继续解析。
+
+### 宿主模式
+
+| 宿主 | `/atlas` 的行为 |
+| --- | --- |
+| TUI | Atlas Dispatch 菜单、全屏计划视图和编辑器上方的小组件，如上所述。 |
+| RPC（`--mode rpc`、rpc-ui） | Atlas Dispatch 改为一系列 `select` 对话框：先选择计划（标签附带状态；切换项可显示全部计划，此时仅供查看），再选择 Start、Resume、View details、Rename、Delete 或 Back。View details 在只读 `editor` 对话框中显示计划文本。拒绝规则与 TUI 菜单相同。Atlas 激活时，不带参数的 `/atlas` 显示摘要，并提供 Keep running、View details 和 Exit。小组件以文本行发送（进度条、已完成/总数、运行中的子代理、当前行），每秒最多两次。 |
+| ACP 编辑器 | 与 RPC 相同的对话框，通过表单征询实现。不显示小组件。 |
+| SDK、`--no-ui`、print | 没有对话框。使用上面的子命令；输出以 `wows-omp-omo-prometheus.command-status` 消息显示。删除需要 `--yes`。只有当前会话是唯一执行过该计划的会话时，`/atlas resume` 才会恢复；需要选择会话时，它列出候选会话并停止，请打开对应会话后在其中恢复。 |
+
+Prometheus 规划本身依赖原生计划模式及其交互式批准，因此只在 TUI、RPC 和 ACP 中运行；`prometheus_activate` 和 `atlas_release` 的确认使用普通的 `select`/`confirm` 对话框。
+
+### 客户端状态文件
+
+主会话使用共享的插件状态信封（见[仓库 README](../../README.zh.md)）发布 `omo-prometheus.json`。既没有规划也没有 Atlas 激活时，`state` 为 `null`；否则为：
+
+```json
+{
+  "kind": "omo-prometheus/state",
+  "version": 1,
+  "phase": "planning | awaiting-approval | executing",
+  "planFilePath": "local://… (planning only)",
+  "atlas": {
+    "planId": "…", "name": "…", "paused": "reason, when execution is paused",
+    "status": "In progress 1/6", "done": 1, "total": 6, "startedAt": 1760000000000, "runningChildren": 1,
+    "rows": [{ "id": "T1", "title": "…", "status": "open | in_progress | done | blocked", "kind": "task | fix | gate",
+               "agent": "task", "dependsOn": [], "attempt": "…", "startedAt": 0, "evidence": "…", "origin": "F1",
+               "child": { "id": "…", "status": "running", "currentTool": "read" } }],
+    "gates": [{ "id": "F1", "title": "…", "status": "done", "evidence": "…" }]
+  }
+}
+```
+
+`awaiting-approval` 表示 Prometheus 已提交计划、尚未做出原生批准选择。`atlas` 只在执行时出现；其中的进度字段与 Herdr DAG 契约使用同一实时账本观察，观察加载后才出现；暂停的计划可能只有 `planId` 和 `paused`。状态为 `done` 的关卡表示已通过。切换会话或关闭宿主不会改动执行中会话的文件，因为该计划仍可在那里恢复。
 
 ## 设置
 

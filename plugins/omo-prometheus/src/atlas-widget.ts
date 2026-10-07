@@ -7,6 +7,33 @@ import { formatElapsed, progressBar, rowMark, singleLine } from "./atlas-menu.ts
 /** Header plus row lines; the overflow notice takes the last row slot only when it hides two or more rows. */
 const MAX_LINES = 6;
 
+/** Plain-text widget lines for hosts that only accept string-array widgets (RPC clients). */
+export function atlasWidgetLines({ detail, rows, runningChildren }: AtlasLiveSnapshot): string[] {
+  const width = 10;
+  const filled = detail.total ? Math.round((detail.done / detail.total) * width) : 0;
+  const gates = detail.rows.filter((item) => /^F[1-4]$/.test(item.id));
+  const passed = gates.filter((item) => item.status === "done").length;
+  const title = `Atlas ${detail.plan.name} [${"#".repeat(filled)}${"-".repeat(width - filled)}] ${detail.done}/${detail.total} · ${runningChildren} running${gates.length ? ` · gates ${passed}/${gates.length}` : ""}`;
+  const active = detail.rows.filter((item) => item.status === "in_progress");
+  const listed = active.length > MAX_LINES - 1 ? active.slice(0, MAX_LINES - 2) : active;
+  const lines = listed.map((item) => {
+    const current = rows.get(item.id);
+    const child = current?.attempt === item.attempt ? current : undefined;
+    const activity = !child
+      ? "waiting for child"
+      : child.progress?.currentTool
+        ? child.progress.currentTool
+        : child.progress?.lastIntent
+          ? singleLine(child.progress.lastIntent)
+          : child.status === "started" || child.status === "running"
+            ? "running"
+            : `child ${child.status}`;
+    return `${item.id} ${item.title} (${item.agent}) · ${activity}`;
+  });
+  if (listed.length < active.length) lines.push(`+${active.length - listed.length} more in progress`);
+  return [title, ...lines];
+}
+
 /** A compact observation above the editor. The editor and the agent retain keyboard focus. */
 export class AtlasStatusWidget implements Component {
   #snapshot: AtlasLiveSnapshot;

@@ -76,11 +76,19 @@ Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execu
 ### Dispatching with `/atlas`
 
 ```text
-/atlas                   # while inactive: open Atlas Dispatch, the interactive plan menu
-/atlas <plan-name-or-id> # while inactive: enter a plan in this session and start executing (name/ID completion available)
-/atlas                   # while active: open the running plan's view (read-only)
-/atlas exit              # while active: exit (asks first if the plan is unfinished)
+/atlas                          # while inactive: open Atlas Dispatch, the interactive plan menu
+/atlas <plan-name-or-id>        # while inactive: enter a plan in this session and start executing (name/ID completion available)
+/atlas start <plan-name-or-id>  # same as above
+/atlas list                     # while inactive: list approved plans with their status
+/atlas show <plan-name-or-id>   # while inactive: show a plan's rows, acceptance and evidence
+/atlas resume <plan-name-or-id> # while inactive: resume a started plan (see below)
+/atlas rename <id> <new name>   # while inactive: change a plan's display label
+/atlas delete <id> [--yes]      # while inactive: delete a plan and its evidence; asks first, or needs --yes without dialogs
+/atlas                          # while active: open the running plan's view (read-only)
+/atlas exit                     # while active: exit (asks first if the plan is unfinished)
 ```
+
+A leading `list`, `show`, `start`, `resume`, `rename`, `delete` or `exit` is always the subcommand, never a plan name. A plan whose name starts with one of these words is still reachable by its ID or with `/atlas start <name>`.
 
 Atlas Dispatch is the menu for handing a Prometheus plan to Atlas. It opens on unfinished plans in the current workspace. Tab switches to All, which adds complete, invalid, and other-workspace plans. All is display-only, so start and resume work only from the Unfinished view. The menu shows each plan's progress and the highlighted plan's T/F rows.
 
@@ -109,7 +117,7 @@ A plan can be selected by its display label, its original name, or either name w
 
 While Atlas is active, bare `/atlas` opens the same fullscreen inspector as a live, read-only observation page. Committed ledger changes, child lifecycle, and host progress update without reopening it. The header reports running children and plan elapsed time. In-progress rows show elapsed time in the sidebar and a Live section with child identity, model/thinking, tool and arguments, intent, usage, cost, retries, and recent activity when the host supplies it. Tab switches to the persisted timeline. Start, resume, delete, and rename are unavailable. Shift+X exits Atlas as `/atlas exit` does, and Esc closes the page. If the host has no progress channel, ledger and lifecycle details still work.
 
-Without an interactive UI, bare `/atlas` only says which plan is running. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`, and Atlas never falls back to prompt-only execution.
+Without an interactive UI, bare `/atlas` prints which plan is running with its rows. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`, and Atlas never falls back to prompt-only execution.
 
 During execution an above-editor Atlas widget shows the plan bar, done/total and gate counts, running children, and compact live per-row usage. It remains visible while you use the normal editor and disappears on exit, session switch, or shutdown. Disable it with `atlasWidget`; the `/atlas` observation page remains available.
 
@@ -120,6 +128,40 @@ Session A can finish part of a plan and exit, and session B can pick it up with 
 Some hosts do not give Atlas a reliable signal that a child's final processing has finished, and a cancelled wake-up can settle before the child does. In those cases the plan stays owned until the original OMP process exits; start a new session after closing it.
 
 While Atlas owns a plan, the session's plan reference is `atlas://<plan-id>/plan.md`, a read-only view of the approved `plan.md` that child agents load through OMP's plan handoff. Other sessions cannot read it, and it stops resolving if the plan bytes change.
+
+### Host modes
+
+| Host | `/atlas` behavior |
+| --- | --- |
+| TUI | Atlas Dispatch menu, fullscreen plan view, and the above-editor widget, as described above. |
+| RPC (`--mode rpc`, rpc-ui) | Atlas Dispatch becomes a chain of `select` dialogs: pick a plan (labels carry the status; a toggle switches to all plans, which is display-only), then Start, Resume, View details, Rename, Delete or Back. View details opens a read-only `editor` dialog with the plan text. The same refusals apply as in the TUI menu. While active, bare `/atlas` shows a summary with Keep running, View details and Exit. The widget is sent as text lines (plan bar, done/total, running children, current rows) at most twice a second. |
+| ACP editors | Same dialogs as RPC, through form elicitation. Widgets are not shown. |
+| SDK, `--no-ui`, print | No dialogs. Use the subcommands above; output arrives as `wows-omp-omo-prometheus.command-status` messages. Deleting needs `--yes`. `/atlas resume` works only when the current session is the one session that executed the plan; when a choice of session would be needed it names the sessions and stops, so open the right one and resume there. |
+
+Prometheus planning itself needs native plan mode and its interactive approval, so it runs in TUI, RPC and ACP; the `prometheus_activate` and `atlas_release` confirmations use plain `select`/`confirm` dialogs.
+
+### Client state file
+
+The main session publishes `omo-prometheus.json` with the shared plugin-state envelope (see the [repository README](../../README.md)). `state` is `null` while neither planning nor Atlas is active. Otherwise it is:
+
+```json
+{
+  "kind": "omo-prometheus/state",
+  "version": 1,
+  "phase": "planning | awaiting-approval | executing",
+  "planFilePath": "local://… (planning only)",
+  "atlas": {
+    "planId": "…", "name": "…", "paused": "reason, when execution is paused",
+    "status": "In progress 1/6", "done": 1, "total": 6, "startedAt": 1760000000000, "runningChildren": 1,
+    "rows": [{ "id": "T1", "title": "…", "status": "open | in_progress | done | blocked", "kind": "task | fix | gate",
+               "agent": "task", "dependsOn": [], "attempt": "…", "startedAt": 0, "evidence": "…", "origin": "F1",
+               "child": { "id": "…", "status": "running", "currentTool": "read" } }],
+    "gates": [{ "id": "F1", "title": "…", "status": "done", "evidence": "…" }]
+  }
+}
+```
+
+`awaiting-approval` covers the time between a Prometheus proposal and the native approval choice. `atlas` appears only while executing. Its progress fields come from the same live ledger observation that feeds the Herdr DAG contract and appear once that observation has loaded; a paused plan may carry only `planId` and `paused`. A gate with status `done` has passed. Session switches and shutdown leave an executing session's file as it was, because the plan can be resumed there.
 
 ## Settings
 

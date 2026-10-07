@@ -185,6 +185,11 @@ export class HerdrDagContract {
     this.#emit(sessionId, "atlas:snapshot", binding.snapshot);
   }
 
+  /** The last snapshot built for the session's bound plan, published or not. */
+  snapshot(sessionId: string): AtlasSnapshot | undefined {
+    return this.#bindings.get(sessionId)?.snapshot;
+  }
+
   release(sessionId: string, reason: AtlasReleased["reason"]): void {
     const binding = this.#bindings.get(sessionId);
     if (!binding) return;

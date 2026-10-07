@@ -177,6 +177,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const ctx = {
     cwd: root,
     hasUI: true,
+    mode: "tui",
     sessionManager,
     newSession: async () => await switchTo(`fresh-${sequence++}`, [], "new"),
     switchSession: async (file: string) => {

@@ -31,6 +31,59 @@ export function parseAtlasCommand(text: string): { selector: string } | undefine
   return match ? { selector: (match[1] ?? "").trim() } : undefined;
 }
 
+/**
+ * `/atlas` argument forms. A leading keyword always wins over a plan name, so a plan literally named
+ * `list`, `show`, … stays reachable by id or through `start <name>`; anything else is a plan selector.
+ */
+export type AtlasSubcommand =
+  | { kind: "menu" }
+  | { kind: "exit" }
+  | { kind: "list" }
+  | { kind: "enter"; selector: string }
+  | { kind: "show"; selector: string }
+  | { kind: "start"; selector: string }
+  | { kind: "resume"; selector: string }
+  | { kind: "rename"; planId: string; name: string }
+  | { kind: "delete"; planId: string; confirmed: boolean }
+  | { kind: "usage"; message: string };
+
+export const ATLAS_USAGE =
+  "Usage: /atlas [list | show <name-or-id> | start <name-or-id> | resume <name-or-id> | rename <id> <new name> | delete <id> --yes | exit | <name-or-id>]";
+
+export function parseAtlasSubcommand(selector: string): AtlasSubcommand {
+  const text = selector.trim();
+  if (!text) return { kind: "menu" };
+  const [, keyword = "", rest = ""] = /^(\S+)(?:\s+([\s\S]*))?$/.exec(text) ?? [];
+  const argument = rest.trim();
+  switch (keyword) {
+    case "exit":
+    case "list":
+      return argument ? { kind: "usage", message: `/atlas ${keyword} takes no arguments. ${ATLAS_USAGE}` } : { kind: keyword };
+    case "show":
+    case "start":
+    case "resume":
+      return argument
+        ? { kind: keyword, selector: argument }
+        : { kind: "usage", message: `/atlas ${keyword} needs a plan name or id. ${ATLAS_USAGE}` };
+    case "rename": {
+      const [, planId = "", name = ""] = /^(\S+)(?:\s+([\s\S]*))?$/.exec(argument) ?? [];
+      return planId && name.trim()
+        ? { kind: "rename", planId, name: name.trim() }
+        : { kind: "usage", message: `/atlas rename needs a plan id and a new name. ${ATLAS_USAGE}` };
+    }
+    case "delete": {
+      const words = argument.split(/\s+/).filter(Boolean);
+      const confirmed = words.includes("--yes");
+      const ids = words.filter((word) => word !== "--yes");
+      return ids.length === 1 && ids[0]
+        ? { kind: "delete", planId: ids[0], confirmed }
+        : { kind: "usage", message: `/atlas delete needs exactly one plan id. ${ATLAS_USAGE}` };
+    }
+    default:
+      return { kind: "enter", selector: text };
+  }
+}
+
 export const PROMETHEUS_OPT_IN_QUESTION_ID = "prometheus-workflow-opt-in";
 export const PROMETHEUS_STANDARD_OPTION_INDEX = 0;
 export const PROMETHEUS_DEEP_OPTION_INDEX = 1;

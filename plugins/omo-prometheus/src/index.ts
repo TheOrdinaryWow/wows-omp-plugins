@@ -22,6 +22,9 @@ import {
   AtlasPlanView,
   type AtlasPlanViewAction,
   type AtlasPlanViewMode,
+  atlasPlanList,
+  atlasPlanText,
+  dispatchBlock,
   formatTime,
 } from "./atlas-menu.ts";
 import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
@@ -29,7 +32,7 @@ import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, resto
 import { findPlanSessions } from "./atlas-sessions.ts";
 import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
-import { AtlasStatusWidget } from "./atlas-widget.ts";
+import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
 import {
@@ -46,8 +49,11 @@ import {
   startRow,
 } from "./ledger.ts";
 import { writeLedgerAtomic } from "./ledger-store.ts";
+import { PluginStatePublisher } from "./plugin-state.ts";
+import { prometheusState } from "./prometheus-state.ts";
 import { type AtlasCompleted, isRoadmapStage, RoadmapContract, type RoadmapStage } from "./roadmap-contract.ts";
 import {
+  ATLAS_USAGE,
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
   EXECUTION_PREAMBLE,
@@ -65,6 +71,7 @@ import {
   PROMETHEUS_DEEP_OPTION_INDEX,
   PROMETHEUS_OPT_IN_QUESTION_ID,
   parseAtlasCommand,
+  parseAtlasSubcommand,
   parsePrometheusCommand,
   planReferencesMatch,
   prometheusArtifactUrl,
@@ -160,6 +167,14 @@ export default function prometheus(pi: ExtensionAPI): void {
   const herdrDag = new HerdrDagContract(pi.events);
   const roadmap = new RoadmapContract(pi.events);
   const WIDGET_KEY = "atlas";
+  let stateWarned = false;
+  const statePublisher = new PluginStatePublisher("omo-prometheus", (error) => {
+    if (stateWarned) return;
+    stateWarned = true;
+    pi.logger.warn("prometheus could not write its plugin state file", { error: errorMessage(error) });
+  });
+  /** Last serialized sidecar state per session; an unpublished session counts as `null`. */
+  const publishedStates = new Map<string, string>();
   let atlasCompletions: AutocompleteItem[] = [];
   let planReferences = new AtlasPlanReferences();
   const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
@@ -254,7 +269,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     return created;
   };
 
-  const persist = (record: SessionRecord): void => {
+  const persist = (ctx: ExtensionContext, record: SessionRecord): void => {
     try {
       pi.appendEntry(STATE_ENTRY, {
         version: 3,
@@ -273,6 +288,29 @@ export default function prometheus(pi: ExtensionAPI): void {
     } catch (error) {
       pi.logger.warn("prometheus could not persist workflow state", { error: errorMessage(error) });
     }
+    publishState(ctx);
+  };
+
+  /** Output-only sidecar for RPC/ACP/SDK clients, derived from the session record and the Herdr DAG snapshot. */
+  const publishState = (ctx: ExtensionContext): void => {
+    if (!mainSession(ctx)) return;
+    const sessionId = ctx.sessionManager.getSessionId();
+    const sessionDir = typeof ctx.sessionManager.getSessionDir === "function" ? ctx.sessionManager.getSessionDir() : undefined;
+    if (!sessionDir) return;
+    const record = records.get(sessionId);
+    const state = prometheusState({
+      phase: record?.phase ?? "idle",
+      proposalAwaitingApproval: record?.proposalAwaitingApproval,
+      planFilePath: record?.planFilePath,
+      atlasPlanId: record?.atlasPlanId,
+      planName: record?.ownership?.plan.name,
+      ledgerError: record?.ledgerError,
+      snapshot: herdrDag.snapshot(sessionId),
+    });
+    const serialized = JSON.stringify(state);
+    if ((publishedStates.get(sessionId) ?? "null") === serialized) return;
+    publishedStates.set(sessionId, serialized);
+    statePublisher.publish({ sessionDir, sessionId }, state);
   };
 
   const rehydrate = (ctx: ExtensionContext, force = false): SessionRecord | undefined => {
@@ -406,7 +444,6 @@ export default function prometheus(pi: ExtensionAPI): void {
   const installObservation = async (ctx: ExtensionContext, store: AtlasStore, plan: AtlasPlan): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
     clearObservation(ctx, sessionId);
-    if (!ctx.hasUI && !herdrDag.enabled(sessionId)) return;
     try {
       const detail = (await store.details(plan.cwd)).find((item) => item.plan.id === plan.id);
       if (!detail || detail.status.startsWith("Invalid")) return;
@@ -419,9 +456,33 @@ export default function prometheus(pi: ExtensionAPI): void {
       });
       liveModels.set(sessionId, live);
       herdrDag.bind(sessionId, plan);
-      live.subscribe((snapshot) => herdrDag.publish(sessionId, snapshot));
-      if (ctx.hasUI && atlasWidgets.get(sessionId) !== false)
-        ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => new AtlasStatusWidget(live, tui, theme), { placement: "aboveEditor" });
+      live.subscribe((snapshot) => {
+        herdrDag.publish(sessionId, snapshot);
+        if (ctx.sessionManager.getSessionId() === sessionId) publishState(ctx);
+      });
+      if (ctx.hasUI && atlasWidgets.get(sessionId) !== false) {
+        if (ctx.mode === "tui") {
+          ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => new AtlasStatusWidget(live, tui, theme), { placement: "aboveEditor" });
+        } else if (ctx.mode === "rpc") {
+          // RPC clients accept only string-array widgets; publish the latest snapshot at most twice a second.
+          let latest = live.snapshot;
+          let shown = "";
+          let timer: NodeJS.Timeout | undefined;
+          live.subscribe((snapshot) => {
+            latest = snapshot;
+            timer ??= setTimeout(() => {
+              timer = undefined;
+              if (liveModels.get(sessionId) !== live) return;
+              const lines = atlasWidgetLines(latest);
+              const text = lines.join("\n");
+              if (text === shown) return;
+              shown = text;
+              ctx.ui.setWidget(WIDGET_KEY, lines);
+            }, 500);
+            timer.unref?.();
+          });
+        }
+      }
     } catch (error) {
       pi.logger.warn("Atlas live observation could not start", { error: errorMessage(error) });
     }
@@ -545,6 +606,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return result;
     } catch (error) {
       if (record.ownership === ownership) record.ledgerError = errorMessage(error);
+      publishState(ctx);
       throw error;
     } finally {
       if (ownership) ownership.operations -= 1;
@@ -640,7 +702,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.sourceSessionId = plan.sourceSessionId;
       record.roadmapStage = plan.roadmapStage;
       record.ledgerError = undefined;
-      persist(record);
+      persist(ctx, record);
       if (validatedLedger) syncLedgerTodos(ctx, validatedLedger);
       await installObservation(ctx, store, plan);
     } catch (error) {
@@ -693,6 +755,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       await bindPlan(ctx, record, store, plan, true);
     } catch (error) {
       record.ledgerError = errorMessage(error);
+      publishState(ctx);
       notify(ctx, pauseMessage(record), "error");
     }
   };
@@ -740,7 +803,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.ledgerPath = undefined;
     record.lastContinuationLedgerStamp = undefined;
     record.stallCount = 0;
-    persist(record);
+    persist(ctx, record);
     await syncTools(false, false, false);
     if (proposalPath) await clearProposalMarker(ctx, proposalPath);
     await settleDetached();
@@ -754,7 +817,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const atlasCommand = async (args: string, ctx: ExtensionContext): Promise<void> => {
-    const selector = args.trim();
+    const command = parseAtlasSubcommand(args);
     const live = mainSession(ctx);
     if (!live) {
       commandNotice(ctx, "Atlas requires the registered main session.", "error");
@@ -762,32 +825,32 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const current = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (current?.phase === "executing") {
-      if (selector === "exit") {
+      if (command.kind === "exit") {
         await exitAtlas(ctx, current);
         return;
       }
       const activePlan = current.ownership?.plan.name ?? current.atlasPlanId ?? "the current plan";
-      if (selector) {
+      if (command.kind !== "menu") {
         commandNotice(
           ctx,
-          `Already in an Atlas session for ${activePlan}. Switching plans is not allowed; run /atlas exit first, then enter ${selector}.`,
+          `Already in an Atlas session for ${activePlan}. Switching plans is not allowed; run /atlas exit first, then /atlas ${args.trim()}.`,
           "error",
         );
-        return;
-      }
-      if (!ctx.hasUI) {
-        commandNotice(ctx, `Atlas is executing ${activePlan}. Run /atlas exit to leave it.`);
         return;
       }
       await showActivePlan(ctx, current);
       return;
     }
-    if (selector === "exit") {
+    if (command.kind === "exit") {
       commandNotice(ctx, "Atlas is not active; there is nothing to exit.");
       return;
     }
-    if (selector) {
-      await enterPlan(ctx, selector, true);
+    if (command.kind === "usage") {
+      commandNotice(ctx, command.message, "error");
+      return;
+    }
+    if (command.kind === "enter" || command.kind === "start") {
+      await enterPlan(ctx, command.selector, true);
       return;
     }
     let store: AtlasStore;
@@ -797,23 +860,101 @@ export default function prometheus(pi: ExtensionAPI): void {
       commandNotice(ctx, `Atlas entry refused: ${errorMessage(error)}`, "error");
       return;
     }
-    if (!ctx.hasUI) {
-      const plans = await store.list();
-      commandNotice(
-        ctx,
-        `Atlas is inactive. Use /atlas <plan-name-or-id> to enter an approved plan.\n${
-          plans.length
-            ? plans.map((plan) => `- ${plan.name} (${plan.id}) — ${plan.cwd}`).join("\n")
-            : "No shared approved plans are available."
-        }`,
-      );
-      return;
-    }
     try {
-      await dispatchMenu(ctx, store);
+      if (command.kind === "menu") {
+        if (!ctx.hasUI) {
+          const details = await store.details(await fs.realpath(ctx.cwd));
+          commandNotice(
+            ctx,
+            `Atlas is inactive. Use /atlas <plan-name-or-id> to enter an approved plan.\n${ATLAS_USAGE}\n${atlasPlanList(details)}`,
+          );
+        } else if (ctx.mode === "tui") {
+          await dispatchMenu(ctx, store);
+        } else {
+          await selectDispatchMenu(ctx, store);
+        }
+      } else if (command.kind === "list") {
+        await showText(ctx, "Atlas plans", atlasPlanList(await store.details(await fs.realpath(ctx.cwd))));
+      } else if (command.kind === "show") {
+        const target = await planDetail(ctx, store, command.selector);
+        if (ctx.mode === "tui") await openPlanView(ctx, target, "display");
+        else await showText(ctx, `Atlas plan ${target.plan.name}`, atlasPlanText(target));
+      } else if (command.kind === "resume") {
+        await resumeCommand(ctx, await planDetail(ctx, store, command.selector));
+      } else if (command.kind === "rename") {
+        await store.rename(command.planId, command.name);
+        commandNotice(ctx, `Atlas plan ${command.planId} renamed to ${command.name}.`);
+      } else if (command.confirmed || (ctx.hasUI && (await confirmDelete(ctx, (await store.find(command.planId)).name, command.planId)))) {
+        await deletePlan(store, command.planId);
+        commandNotice(ctx, `Atlas plan ${command.planId} deleted with its evidence.`);
+      } else {
+        commandNotice(
+          ctx,
+          ctx.hasUI
+            ? "Atlas plan deletion cancelled."
+            : `Deleting an Atlas plan is permanent; run /atlas delete ${command.planId} --yes to confirm.`,
+          ctx.hasUI ? "info" : "error",
+        );
+      }
+    } catch (error) {
+      commandNotice(ctx, `Atlas command refused: ${errorMessage(error)}`, "error");
     } finally {
       await refreshAtlasCompletions(ctx);
     }
+  };
+
+  /** Read-only text: an editor dialog when a client can show one, otherwise a transcript message. */
+  const showText = async (ctx: ExtensionContext, title: string, text: string): Promise<void> => {
+    if (ctx.hasUI) await ctx.ui.editor(`${title} (read-only)`, text);
+    else commandNotice(ctx, text);
+  };
+
+  const planDetail = async (ctx: ExtensionContext, store: AtlasStore, selector: string): Promise<AtlasPlanDetail> => {
+    const plan = await store.find(selector);
+    const detail = (await store.details(await fs.realpath(ctx.cwd))).find((item) => item.plan.id === plan.id);
+    if (!detail) throw new Error(`Atlas plan ${plan.id} disappeared from the shared store`);
+    return detail;
+  };
+
+  const confirmDelete = (ctx: ExtensionContext, name: string, planId: string): Promise<boolean> =>
+    ctx.ui.confirm("Delete Atlas plan?", `Permanently remove ${name} (${planId}) and all its evidence?`);
+
+  const deletePlan = (store: AtlasStore, planId: string): Promise<void> =>
+    store.delete(
+      planId,
+      () =>
+        [...ownerships].some((ownership) => ownership.store === store && ownership.plan.id === planId) ||
+        [...records.values()].some((record) => record.phase === "executing" && record.atlasPlanId === planId),
+    );
+
+  /** Same refusals as the dispatch menu, worded for a command line. */
+  const resumeRefusal = (target: AtlasPlanDetail): string | undefined =>
+    target.started ? dispatchBlock(target, "resume", false) : `Cannot resume ${target.plan.name}: it has not started yet; start it instead`;
+
+  /** `/atlas resume`: dialogs may pick a session; without them only the current session can resume. */
+  const resumeCommand = async (ctx: ExtensionContext, target: AtlasPlanDetail): Promise<void> => {
+    const blocked = resumeRefusal(target);
+    if (blocked) {
+      commandNotice(ctx, blocked, "error");
+      return;
+    }
+    if (!ctx.hasUI) {
+      const sessionDir = ctx.sessionManager.getSessionDir();
+      const sessions = sessionDir ? await findPlanSessions(sessionDir, STATE_ENTRY, target.plan.id) : [];
+      const only = sessions.length === 1 ? sessions[0] : undefined;
+      if (only?.id !== ctx.sessionManager.getSessionId()) {
+        commandNotice(
+          ctx,
+          sessions.length
+            ? `Resuming ${target.plan.name} needs a session choice, which requires an interactive client. Open the session to resume and run /atlas resume ${target.plan.id} there:\n${sessions.map((session) => `- ${session.id} ${formatTime(session.modified)} ${session.path}`).join("\n")}`
+            : `Cannot resume: no session in this project has executed ${target.plan.name}; run /atlas start ${target.plan.id}.`,
+          "error",
+        );
+        return;
+      }
+    }
+    const refusal = await resumePlan(ctx, target);
+    if (refusal) commandNotice(ctx, refusal, "error");
   };
 
   const openPlanView = async (ctx: ExtensionContext, detail: AtlasPlanDetail, mode: AtlasPlanViewMode): Promise<AtlasPlanViewAction> => {
@@ -891,7 +1032,28 @@ export default function prometheus(pi: ExtensionAPI): void {
       );
       return;
     }
-    if ((await openPlanView(ctx, detail, "active")) === "exit") await exitAtlas(ctx, record);
+    if (ctx.mode === "tui") {
+      if ((await openPlanView(ctx, detail, "active")) === "exit") await exitAtlas(ctx, record);
+      return;
+    }
+    if (!ctx.hasUI) {
+      commandNotice(ctx, `Atlas is executing ${detail.plan.name}. Run /atlas exit to leave it.\n\n${atlasPlanText(detail)}`);
+      return;
+    }
+    const keep = "Keep Atlas running";
+    const view = "View plan details";
+    const exit = "Exit Atlas";
+    const running = detail.rows.filter((row) => row.status === "in_progress").map((row) => `${row.id} ${row.title} (${row.agent})`);
+    const summary = [`Atlas is executing ${detail.plan.name} (${detail.plan.id})`, detail.status, ...running].join("\n");
+    while (true) {
+      const choice = await ctx.ui.select(summary, [keep, view, exit]);
+      if (choice === view) {
+        await ctx.ui.editor(`Atlas plan ${detail.plan.name} (read-only)`, atlasPlanText(detail));
+        continue;
+      }
+      if (choice === exit) await exitAtlas(ctx, record);
+      return;
+    }
   };
 
   const planningBlocks = (ctx: ExtensionContext): boolean => {
@@ -913,7 +1075,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const record = recordFor(ctx.sessionManager.getSessionId());
     record.phase = "executing";
     record.activation = activation;
-    persist(record);
+    persist(ctx, record);
     try {
       const store = storeFor(ctx);
       const plan = await store.find(selector);
@@ -923,7 +1085,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.proposedByToolCallId = plan.proposedByToolCallId;
       record.sourceSessionId = plan.sourceSessionId;
       record.roadmapStage = plan.roadmapStage;
-      persist(record);
+      persist(ctx, record);
       await bindPlan(ctx, record, store, plan, true);
       await syncTools(false, true, true);
       let modelNotice = "";
@@ -951,6 +1113,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     } catch (error) {
       if (record.activation !== activation) return;
       record.ledgerError = errorMessage(error);
+      publishState(ctx);
       await syncTools(false, true, true);
       await refreshAtlasCompletions(ctx);
       commandNotice(ctx, pauseMessage(record), "error");
@@ -1030,6 +1193,32 @@ export default function prometheus(pi: ExtensionAPI): void {
     return undefined;
   };
 
+  /** Start, resume, delete or rename one plan; `done` closes the dispatch flow, `message` is a refusal to show. */
+  const runPlanAction = async (
+    ctx: ExtensionContext,
+    store: AtlasStore,
+    target: AtlasPlanDetail,
+    kind: "start" | "resume" | "delete" | "rename",
+  ): Promise<{ done: boolean; message?: string }> => {
+    try {
+      if (kind === "start") {
+        if (await startPlan(ctx, target)) return { done: true };
+      } else if (kind === "resume") {
+        const refusal = await resumePlan(ctx, target);
+        if (refusal === undefined) return { done: true };
+        if (refusal) return { done: false, message: refusal };
+      } else if (kind === "delete") {
+        if (await confirmDelete(ctx, target.plan.name, target.plan.id)) await deletePlan(store, target.plan.id);
+      } else {
+        const name = await ctx.ui.input("Rename Atlas plan", target.plan.name);
+        if (name !== undefined) await store.rename(target.plan.id, name);
+      }
+    } catch (error) {
+      return { done: false, message: `Atlas plan change refused: ${errorMessage(error)}` };
+    }
+    return { done: false };
+  };
+
   const dispatchMenu = async (ctx: ExtensionContext, store: AtlasStore): Promise<void> => {
     let filter: AtlasFilter = "unfinished";
     let query = "";
@@ -1039,7 +1228,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const workspace = await fs.realpath(ctx.cwd);
       const details = await store.details(workspace);
       const options = { selectedId, message };
-      let action = await ctx.ui.custom<AtlasMenuAction>(
+      const action = await ctx.ui.custom<AtlasMenuAction>(
         (tui, theme, _keys, done) => new AtlasMenu(details, filter, query, theme, tui, done, options),
       );
       filter = action.filter;
@@ -1049,35 +1238,77 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (action.kind === "cancel") return;
       const target = details.find((detail) => detail.plan.id === action.planId);
       if (!target) continue;
-      if (action.kind === "inspect") {
+      let kind = action.kind;
+      if (kind === "inspect") {
         const next = await openPlanView(ctx, target, action.filter === "all" ? "display" : "dispatch");
         if (next === "back" || next === "exit") continue;
-        action = { ...action, kind: next };
+        kind = next;
       }
-      try {
-        if (action.kind === "start") {
-          if (await startPlan(ctx, target)) return;
-        } else if (action.kind === "resume") {
-          const refusal = await resumePlan(ctx, target);
-          if (refusal === undefined) return;
-          if (refusal) message = refusal;
-        } else if (action.kind === "delete") {
-          if (
-            await ctx.ui.confirm("Delete Atlas plan?", `Permanently remove ${target.plan.name} (${target.plan.id}) and all its evidence?`)
-          ) {
-            await store.delete(
-              target.plan.id,
-              () =>
-                [...ownerships].some((ownership) => ownership.store === store && ownership.plan.id === target.plan.id) ||
-                [...records.values()].some((record) => record.phase === "executing" && record.atlasPlanId === target.plan.id),
-            );
-          }
-        } else if (action.kind === "rename") {
-          const name = await ctx.ui.input("Rename Atlas plan", target.plan.name);
-          if (name !== undefined) await store.rename(target.plan.id, name);
+      const outcome = await runPlanAction(ctx, store, target, kind);
+      if (outcome.done) return;
+      message = outcome.message;
+    }
+  };
+
+  /** The dispatch menu composed from select/confirm/input/editor for clients without terminal components (RPC, ACP). */
+  const selectDispatchMenu = async (ctx: ExtensionContext, store: AtlasStore): Promise<void> => {
+    const actions = {
+      start: "Start",
+      resume: "Resume",
+      view: "View details",
+      rename: "Rename",
+      delete: "Delete",
+      back: "Back",
+    } as const;
+    let filter: AtlasFilter = "unfinished";
+    let message: string | undefined;
+    while (true) {
+      const details = (await store.details(await fs.realpath(ctx.cwd))).filter((detail) => filter === "all" || detail.unfinished);
+      const labels = details.map(({ plan, status }) => `${plan.name} — ${status} (${plan.id})`);
+      const toggle = filter === "unfinished" ? "Show all plans (display only)" : "Show unfinished plans";
+      const close = "Close";
+      const heading =
+        filter === "all"
+          ? "All plans; display only. Show unfinished plans to start or resume."
+          : details.length
+            ? "Unfinished plans"
+            : "No unfinished plans";
+      const choice = await ctx.ui.select([`Atlas Dispatch: ${heading}`, message].filter(Boolean).join("\n"), [...labels, toggle, close]);
+      message = undefined;
+      if (choice === undefined || choice === close) return;
+      if (choice === toggle) {
+        filter = filter === "unfinished" ? "all" : "unfinished";
+        continue;
+      }
+      const target = details[labels.indexOf(choice)];
+      if (!target) continue;
+      const offered =
+        filter === "all"
+          ? [actions.view, actions.rename, actions.delete, actions.back]
+          : [actions.start, actions.resume, actions.view, actions.rename, actions.delete, actions.back];
+      let note: string | undefined;
+      while (true) {
+        const picked = await ctx.ui.select(
+          [`${target.plan.name} (${target.plan.id})`, target.status, note].filter(Boolean).join("\n"),
+          offered,
+        );
+        note = undefined;
+        if (picked === undefined || picked === actions.back) break;
+        if (picked === actions.view) {
+          await ctx.ui.editor(`Atlas plan ${target.plan.name} (read-only)`, atlasPlanText(target));
+          continue;
         }
-      } catch (error) {
-        message = `Atlas plan change refused: ${errorMessage(error)}`;
+        const kind =
+          picked === actions.start ? "start" : picked === actions.resume ? "resume" : picked === actions.rename ? "rename" : "delete";
+        const blocked = kind === "start" ? dispatchBlock(target, "start", false) : kind === "resume" ? resumeRefusal(target) : undefined;
+        if (blocked) {
+          note = blocked;
+          continue;
+        }
+        const outcome = await runPlanAction(ctx, store, target, kind);
+        if (outcome.done) return;
+        message = outcome.message;
+        break;
       }
     }
   };
@@ -1121,7 +1352,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.lastContinuationLedgerStamp = undefined;
       record.stallCount = 0;
     }
-    persist(record);
+    persist(ctx, record);
     return true;
   };
 
@@ -1214,7 +1445,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.planningModeEntryId = undefined;
     record.lastContinuationLedgerStamp = undefined;
     record.stallCount = 0;
-    persist(record);
+    persist(ctx, record);
     try {
       const live = mainSession(ctx);
       if (!sourcePlanPath?.startsWith("local://") || !sourceSessionId || !proposedByToolCallId || !planSha256) {
@@ -1242,12 +1473,13 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (record.phase !== "executing" || record.activation !== activation)
         throw new Error("Atlas exited while the approved plan was being stored");
       record.atlasPlanId = plan.id;
-      persist(record);
+      persist(ctx, record);
       await bindPlan(ctx, record, store, plan, false);
       notify(ctx, `${EXECUTION_START_NOTICE} Plan: ${plan.name} (${plan.id}).`);
     } catch (error) {
       if (record.activation === activation) {
         record.ledgerError = errorMessage(error);
+        publishState(ctx);
         notify(ctx, pauseMessage(record), "error");
       }
     }
@@ -1260,8 +1492,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (current && event.source !== "extension") current.stallCount = 0;
     const atlas = parseAtlasCommand(event.text);
     if (atlas) {
-      // The dispatch menu can open a new session or switch to one, which only the host command context allows.
-      if (!atlas.selector && event.source === "interactive" && current?.phase !== "executing") return undefined;
+      // Plan selectors run here; the registered command handles the rest.
+      // The dispatch menu and session-switching resume need the host command context, which only the registered command gets.
+      const needsCommandContext = !atlas.selector || parseAtlasSubcommand(atlas.selector).kind === "resume";
+      if (needsCommandContext && event.source === "interactive" && current?.phase !== "executing") return undefined;
       await atlasCommand(atlas.selector, ctx);
       return { handled: true };
     }
@@ -1274,6 +1508,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const trimmed = event.text.trim();
       if (trimmed.startsWith("/") && current?.phase === "planning") current.proposalAwaitingApproval = false;
       if (trimmed.startsWith("/") && current?.phase === "planning") current.approvalCompactionPending = false;
+      if (trimmed.startsWith("/") && current?.phase === "planning") publishState(ctx);
       if (/^\/plan(?:[ \t]|$)/.test(trimmed)) {
         const record = current ?? rehydrate(ctx);
         if (live?.getPlanModeState()?.enabled === true && record?.phase === "planning") {
@@ -1287,7 +1522,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           record.proposalAwaitingApproval = false;
           record.approvalCompactionPending = false;
           record.offerPendingForModeEntryId = undefined;
-          persist(record);
+          persist(ctx, record);
           await syncTools(false, false, false);
         }
       }
@@ -1767,10 +2002,10 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.proposalAwaitingApproval = false;
         record.approvalCompactionPending = false;
         record.offerPendingForModeEntryId = undefined;
-        persist(record);
+        persist(ctx, record);
       } else if (!record.planningModeEntryId && episodeId) {
         record.planningModeEntryId = episodeId;
-        persist(record);
+        persist(ctx, record);
       }
     }
     if (
@@ -1803,7 +2038,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.proposalAwaitingApproval = false;
         record.approvalCompactionPending = false;
         record.offerPendingForModeEntryId = undefined;
-        persist(record);
+        persist(ctx, record);
       }
     } else if (!executing && planModeActive) {
       const episodeId = planModeEpisodeId(ctx);
@@ -1832,7 +2067,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!record?.offerPendingForModeEntryId) return;
     record.offeredForModeEntryId = record.offerPendingForModeEntryId;
     record.offerPendingForModeEntryId = undefined;
-    persist(record);
+    persist(ctx, record);
   });
 
   pi.on("context", async (event, ctx) => {
@@ -2019,7 +2254,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           record.pendingConsent = { askToolCallId: event.toolCallId, modeEntryId: episodeId };
         } else {
           record.suppressedForModeEntryId = episodeId;
-          persist(record);
+          persist(ctx, record);
           await syncTools(false, false, false);
         }
       }
@@ -2052,7 +2287,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     } catch (error) {
       pi.logger.warn("prometheus could not write the proposal marker", { error: errorMessage(error) });
     }
-    persist(record);
+    persist(ctx, record);
     // The native approval overlay opens after this hook and offers cycleOrder roles as execution tiers.
     exposeAtlasApprovalTier(live);
 
@@ -2149,6 +2384,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const executing = restored?.phase === "executing";
     await syncTools(false, executing, executing);
+    publishState(ctx);
   };
 
   const registerRole = (ctx: ExtensionContext): void => {
@@ -2202,6 +2438,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
     }
     records.delete(sessionId);
+    await statePublisher.flush();
+    publishedStates.delete(sessionId);
     reviewLevels.delete(sessionId);
     atlasWidgets.delete(sessionId);
     herdrDag.forget(sessionId);
