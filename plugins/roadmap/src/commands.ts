@@ -17,6 +17,7 @@ const CLOSE_ROUND_USAGE =
   'Usage: /roadmap close-round [<todo>=resolved:<reference> | <todo>=wontfix[:<reason>] | <todo>=carried ...]; quote text with spaces, e.g. T03=wontfix:"out of scope".';
 const USAGE =
   "Usage: /roadmap [check [--fix] | new-round | close-round [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | confirm <token>]";
+const OVERLAP_ANSWERS = ["roadmap", "free", "unrelated"];
 
 /** Splits command arguments on whitespace; double quotes group text with spaces and are removed. */
 export function splitArgs(args: string): string[] {
@@ -225,13 +226,12 @@ export function registerCommands(
   pi.registerCommand("roadmap", {
     description: "View Roadmap status, check documents, open/close a round, view a stage, answer an overlap or confirm a preview",
     getArgumentCompletions(prefix) {
-      const options = [
-        "check",
-        "check --fix",
-        "new-round",
-        "close-round",
-        ...stageIds.flatMap((id) => [`stage ${id}`, `overlap ${id} roadmap`, `overlap ${id} free`, `overlap ${id} unrelated`]),
-      ];
+      const overlap = /^overlap (\S+) /.exec(prefix);
+      let options: string[];
+      if (overlap) options = OVERLAP_ANSWERS.map((answer) => `overlap ${overlap[1]} ${answer}`);
+      else if (prefix.startsWith("overlap ")) options = stageIds.map((id) => `overlap ${id} `);
+      else if (prefix.startsWith("stage ")) options = stageIds.map((id) => `stage ${id}`);
+      else options = ["check", "check --fix", "new-round", "close-round", "stage ", "overlap ", "confirm "];
       const matches = options.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
       return matches.length ? matches : null;
     },

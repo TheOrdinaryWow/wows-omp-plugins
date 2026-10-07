@@ -1902,8 +1902,15 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.equal(h.ui.overlapCalls.length, 1);
           await command(h, "roadmap", "stage S01");
           assert.match(h.messages.at(-1) ?? "", /DC1/);
-          const options = h.runner.getCommand("roadmap")?.getArgumentCompletions?.("stage S");
-          assert(options?.some((option) => option.value === "stage S01"));
+          const complete = (prefix: string) =>
+            h.runner
+              .getCommand("roadmap")
+              ?.getArgumentCompletions?.(prefix)
+              ?.map((option) => option.value);
+          assert.deepEqual(complete(""), ["check", "check --fix", "new-round", "close-round", "stage ", "overlap ", "confirm "]);
+          assert.deepEqual(complete("stage S"), ["stage S01"]);
+          assert.deepEqual(complete("overlap "), ["overlap S01 "]);
+          assert.deepEqual(complete("overlap S01 f"), ["overlap S01 free"]);
           const status = await call(h, "roadmap_status", { stage: "S01" });
           assert(status.ok);
           assert.match(status.handoff ?? "", /DC1/);
