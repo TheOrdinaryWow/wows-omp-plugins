@@ -25,7 +25,8 @@ jobs:
         uses: googleapis/release-please-action@v5
 
   # Pushes made with GITHUB_TOKEN do not trigger other workflows, so the release PR
-  # would otherwise carry no checks. Verify its branch here instead.
+  # would otherwise carry no checks. Verify its branch here; ci.yml runs only lint and
+  # the catalog check for it, since main's CI already tested the same code.
   verify-release-pr:
     needs: release-please
     if: needs.release-please.outputs.prs_created == 'true'

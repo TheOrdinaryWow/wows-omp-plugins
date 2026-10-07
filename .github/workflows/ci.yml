@@ -19,6 +19,38 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  scope:
+    name: Decide test scope
+    runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.scope.outputs.tests }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - id: scope
+        env:
+          RELEASE_PR_REF: ${{ inputs.ref }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        # Types and tests are skipped when they would re-test code main's CI already covers:
+        # the release PR and its merge only bump versions and changelogs, and README,
+        # CHANGELOG and AGENTS.md files are read by no test.
+        run: |
+          tests=true
+          if [ -n "$RELEASE_PR_REF" ]; then
+            tests=false
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [[ "$COMMIT_MESSAGE" == "chore: release main"* ]]; then
+            tests=false
+          elif git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            if ! git diff --name-only "$BASE...$HEAD" | grep -qvE '(^|/)(README(\.[A-Za-z-]+)?|CHANGELOG|AGENTS)\.md$'; then
+              tests=false
+            fi
+          fi
+          echo "tests=$tests" | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: Lint and catalog
     runs-on: ubuntu-latest
@@ -35,6 +67,8 @@ jobs:
 
   test:
     name: Types and tests (omp ${{ matrix.omp }})
+    needs: scope
+    if: needs.scope.outputs.tests == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

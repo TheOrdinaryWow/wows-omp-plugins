@@ -40,7 +40,11 @@ src/                           repo tooling and tests; never shipped to users
 - `.github/workflows/ci.yml` runs lint, the catalog check, type check, and tests
   on every push and PR. Types and tests run twice: against the omp version in
   `bun.lock` and against 18.3.5, the oldest host the plugins support. Raise
-  that matrix entry only together with the documented floor.
+  that matrix entry only together with the documented floor. Types and tests
+  are skipped for the release PR, for its `chore: release main` merge, and for
+  changes that touch only `README*.md`, `CHANGELOG.md`, or `AGENTS.md`, since no
+  test reads those files. If a test starts reading one, narrow the filter in
+  the `scope` job.
 - `.github/workflows/release.yml` runs release-please on `main`. Versions come
   from Conventional Commits scoped by path: a `feat`/`fix` touching
   `plugins/<name>/` bumps that plugin only. The release PR updates the plugin's
@@ -48,8 +52,9 @@ src/                           repo tooling and tests; never shipped to users
   `CHANGELOG.md` together, so never bump versions by hand. Merging the PR tags
   `<name>@<version>` and publishes a GitHub Release.
 - The release PR is pushed with `GITHUB_TOKEN`, which triggers no workflows, so
-  `release.yml` calls `ci.yml` on the PR branch itself. Check that run in
-  Actions before merging; the PR shows no status checks.
+  `release.yml` calls `ci.yml` on the PR branch itself, running lint and the
+  catalog check only. Before merging, check that run and the `main` CI run for
+  the commit the release PR was cut from; the PR shows no status checks.
 - Plugin JSON manifests and `.release-please-manifest.json` are formatted with
   expanded arrays (`biome.json` override) because release-please rewrites them
   that way.
