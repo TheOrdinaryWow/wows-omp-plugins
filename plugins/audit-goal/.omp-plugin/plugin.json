@@ -1,6 +1,6 @@
 {
   "name": "audit-goal",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Goal-driven audit-and-fix loop with a round ledger, intensity levels, and reserved audit agents",
   "author": {
     "name": "TheOrdinaryWow"

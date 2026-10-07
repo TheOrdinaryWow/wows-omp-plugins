@@ -7,6 +7,13 @@
 - Preflight the complete mass-ulw graph and saved status before launching any child; execute one inspected dependency frontier at a time and distinguish returned reports from verified acceptance.
 - Sequence heavy review synthesis after independent review reports while leaving ultrawork mode, keywords, and commands unchanged.
 
+## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-ultrawork@0.3.0...omo-ultrawork@0.4.0) (2026-10-07)
+
+
+### Features
+
+* **omo-ultrawork:** show command feedback without a UI and publish mode state for clients ([0111348](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0111348278f91f06bd81abc02d548ee1f43dba5e))
+
 ## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-ultrawork@0.2.1...omo-ultrawork@0.3.0) (2026-09-29)
 
 
