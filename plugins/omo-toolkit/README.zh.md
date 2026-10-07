@@ -14,7 +14,7 @@ omp plugin install omo-toolkit@wows-omp-plugins
 
 ## 代理
 
-分类代理以 OMP 内置 `task` 代理的工作者提示词为基础，再加入 oh-my-openagent 的分类指导。
+分类代理使用与 OMP 内置 `task` 代理相同的工作提示词，并加入 oh-my-openagent 的分类指导。
 
 | 代理 | 适用场景 | 默认模型角色 | 思考级别 |
 | --- | --- | --- | --- |
@@ -27,7 +27,9 @@ omp plugin install omo-toolkit@wows-omp-plugins
 | `writing` | 文档、文章和技术写作 | `@writer`，然后是 `@task` | `low` |
 | `librarian` | 只读的开源研究，附 GitHub 永久链接和官方文档 | `@tiny`，然后是 `@smol` | `off` |
 
-模型角色来自你的 OMP `modelRoles` 配置，列表中的角色会按顺序尝试。`designer` 和 `writer` 是自定义角色；如果它们未配置为可用模型，相应代理会使用 `@task`。`librarian` 使用 `@tiny`，在未设置 `tiny` 时回退到 `@smol`。它需要能够调用工具的聊天模型，因此，如果 `tiny` 指向设备上的 `local/` 标题模型，请将 `librarian` 覆盖为 `@smol`。
+模型角色来自你的 OMP `modelRoles` 配置，列表中的角色会按顺序尝试。`designer` 和 `writer` 是自定义角色；未配置为可用模型时，相应代理会使用 `@task`。
+
+`librarian` 使用 `@tiny`，在未设置 `tiny` 时回退到 `@smol`。它需要能够调用工具的聊天模型。如果 `tiny` 指向设备上的 `local/` 标题模型，请将 `librarian` 的模型覆盖为 `@smol`。
 
 要在不修改插件文件的情况下更改某个代理的模型，请在 `~/.omp/agent/config.yml` 中设置 `task.agentModelOverrides`：
 
@@ -37,7 +39,9 @@ task:
     ultrabrain: anthropic/claude-opus-5-5
 ```
 
-安装这些代理后，`omo-prometheus` 和 `omo-ultrawork` 会使用它们；未安装时回退到 `task`（`librarian` 先回退到 `scout`，再回退到 `task`）。用户尚未批准的权衡交给工作者的父代理处理，工作者不会自行取舍，也不会直接询问用户。最终的代码质量检查、真实界面 QA 和证据关卡由新建的 `deep-high` 或 `deep-low` 子代理执行（回退为 `task`），其任务说明包含完整的验证要求。
+安装这些代理后，`omo-prometheus` 和 `omo-ultrawork` 会使用它们；未安装时回退到 `task`（`librarian` 先回退到 `scout`，再回退到 `task`）。用户尚未批准的取舍交给父代理处理，执行任务的代理不会自行决定，也不会直接询问用户。
+
+最终的代码质量检查、真实界面 QA 和证据关卡由新启动的 `deep-high` 或 `deep-low` 子代理执行（回退为 `task`）。任务说明包含完整的验证要求。
 
 ## 技能
 
@@ -56,7 +60,7 @@ task:
 
 ## MCP 服务器
 
-`.mcp.json` 注册了两个 HTTP MCP 服务器，OMP 将它们暴露为 `omo-toolkit:context7` 和 `omo-toolkit:grep_app`：
+`.mcp.json` 注册了两个 HTTP MCP 服务器，在 OMP 中的名称为 `omo-toolkit:context7` 和 `omo-toolkit:grep_app`：
 
 - `context7`（`https://mcp.context7.com/mcp`）：设置 `CONTEXT7_API_KEY` 即可使用密钥访问。未设置时，请求头为空，使用匿名访问。
 - `grep_app`（`https://mcp.grep.app`）：匿名的公开代码搜索。

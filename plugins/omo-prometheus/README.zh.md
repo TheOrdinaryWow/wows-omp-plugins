@@ -56,7 +56,7 @@ Prometheus 要求在 OMP 设置中启用 Plan Mode（`plan.enabled`，默认开�
 | `github` | `repo_view`、`file_read`、`search_*`、`run_watch` |
 | `debug` | 仅允许检查状态（`threads`、`stack_trace`、`scopes`、`variables`、`output`、…），不允许 `launch`、`continue` 或断点操作 |
 | `ida` | `list` |
-| `recall`、`reflect`、`retain`、`memory_edit`、`learn`、`manage_skill` | 始终允许：它们写入记忆后端和受管理的技能，而不是工作区 |
+| `recall`、`reflect`、`retain`、`memory_edit`、`learn`、`manage_skill` | 始终允许：它们写入记忆后端和受管理的技能，不写工作区 |
 | `goal`、`context_notes`、`new_context` | 始终允许 |
 | `write` | `agent://` 代理间消息、`proc://<id>/kill`，以及通过 `xd://` 调用任何已获准的工具 |
 | `hub` | 观察类操作和向代理执行 `send`，不允许向进程发送输入 |
@@ -88,7 +88,7 @@ Prometheus 计划的两种批准选项都会交接给 Atlas。“Approve and exe
 /atlas exit                     # while active: exit (asks first if the plan is unfinished)
 ```
 
-开头的 `list`、`show`、`start`、`resume`、`rename`、`delete` 或 `exit` 总是被当作子命令，而不是计划名。名称以这些词开头的计划仍可通过 ID 或 `/atlas start <name>` 选择。
+开头的 `list`、`show`、`start`、`resume`、`rename`、`delete` 或 `exit` 一律按子命令解析。名称以这些词开头的计划需通过 ID 或 `/atlas start <name>` 选择。
 
 Atlas Dispatch 是将 Prometheus 计划交给 Atlas 的菜单。打开时，它显示当前工作区中未完成的计划。Tab 切换到 All，额外显示已完成、无效及其他工作区的计划。All 仅供查看，只有在 Unfinished 视图中才能开始或恢复执行。菜单显示各计划的进度，以及当前选中计划的 T/F 行。
 
@@ -115,7 +115,9 @@ Space 或 Shift+I 打开全屏计划视图，进度变化时它会保留选中�
 
 可以使用显示标签、原始名称，或去掉 `-plan` 后缀的任一名称来选择计划，因此 `checkout` 和 `checkout-plan` 会匹配同一计划。如果多个计划同名，请使用列表中的完整 ID。
 
-Atlas 激活时，不带参数的 `/atlas` 会打开同一个全屏查看器，作为实时、只读的观察页面。已提交的账本变更、子代理生命周期和宿主进度都会实时更新，无需重新打开。页头显示正在运行的子代理和计划已用时间。进行中的行会在侧栏显示已用时间，并在 Live 区域中展示宿主提供的子代理身份、模型/思考级别、工具及参数、意图、用量、费用、重试次数和近期活动。Tab 切换到持久化的时间线。此时不能启动、恢复、删除或重命名。Shift+X 与 `/atlas exit` 一样退出 Atlas，Esc 关闭页面。如果宿主没有进度通道，账本和生命周期详情仍然可用。
+Atlas 激活时，不带参数的 `/atlas` 会打开全屏查看器，实时显示只读信息。已提交的账本变更、子代理生命周期和宿主进度会自动更新，无需重新打开。页头显示正在运行的子代理和计划已用时间，侧栏显示各进行中行的已用时间。宿主提供进度信息时，Live 区域会显示子代理身份、模型/思考级别、工具及参数、意图、用量、费用、重试次数和近期活动。
+
+Tab 切换到持久化的时间线。此时不能启动、恢复、删除或重命名。Shift+X 与 `/atlas exit` 一样退出 Atlas，Esc 关闭页面。宿主没有进度通道时，账本和生命周期详情仍然可用。
 
 没有交互式 UI 时，不带参数的 `/atlas` 会输出当前运行的计划及其各行。如果还有未完成行或无法验证进度，退出前会先询问。`/atlas` 携带任何其他参数都会报错，即使参数指向当前计划也一样：先退出，再从同一会话进入其他计划。Atlas 不会在规划期间进入，也不会运行未经批准的计划。如果进入失败，会话会保持暂停，直到你运行 `/atlas exit`；Atlas 绝不会退回到仅靠提示词约束的执行方式。
 
@@ -123,7 +125,9 @@ Atlas 激活时，不带参数的 `/atlas` 会打开同一个全屏查看器，�
 
 Atlas 还会根据经过验证的账本维护会话待办阶段：任务、修正任务（如有）和最终关卡。现有的非 Atlas 阶段保持不变。附加计划及账本变更后会恢复 Atlas 阶段，请不要手动编辑。每次改变行状态的 `atlas_ledger` 结果都会给出一个可重复执行的 `todo` 调用，用于刷新宿主 HUD。退出 Atlas 不会清除待办列表。
 
-会话 A 可以完成计划的一部分后退出，会话 B 再通过 `/atlas <name>` 接手，前提是两者使用相同的宿主会话目录和工作区。退出立即生效：不会取消子代理，不会将任何内容标记为完成，也不会阻止关闭宿主。只要原生子代理工作仍在运行，计划就继续归所属会话持有，直到该工作报告最终结果，因此其他会话无法同时写入。持有计划的会话若已被证实终止，可以恢复其计划；所有权不明确或由其他宿主持有时，恢复会被拒绝。
+会话 A 可以完成计划的一部分后退出，会话 B 再通过 `/atlas <name>` 接手，前提是两者使用相同的宿主会话目录和工作区。退出立即生效，不会取消子代理或将工作标记为完成，也不会阻止关闭宿主。
+
+原生子代理工作仍在运行时，所属会话继续持有计划，直到该工作报告最终结果。在此期间，其他会话无法写入计划。持有计划的会话若已被证实终止，可以恢复其计划；所有权不明确或由其他宿主持有时，恢复会被拒绝。
 
 部分宿主无法向 Atlas 提供可靠信号，证明子代理的最终处理已经结束；被取消的唤醒调用也可能先于子代理返回。在这些情况下，计划会一直由原会话持有，直到原 OMP 进程退出；关闭该进程后再启动新会话。
 
@@ -142,7 +146,7 @@ Prometheus 规划本身依赖原生计划模式及其交互式批准，因此只
 
 ### 客户端状态文件
 
-主会话使用共享的插件状态信封（见[仓库 README](../../README.zh.md)）发布 `omo-prometheus.json`。既没有规划也没有 Atlas 激活时，`state` 为 `null`；否则为：
+主会话按共享插件状态格式（见[仓库 README](../../README.zh.md)）写出 `omo-prometheus.json`。既没有规划也没有 Atlas 激活时，`state` 为 `null`；否则为：
 
 ```json
 {
@@ -197,7 +201,9 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 
 ## Roadmap 契约
 
-安装 [roadmap](../roadmap/README.zh.md) 后，Prometheus 使用独立于 `herdrDag` 的带版本 `pi.events` 契约。提交计划时，它发出 `roadmap:binding-request {v:1, sessionId, requestId}`，仅接受与该会话和请求匹配的同步 `roadmap:binding` 回复。回复包含 `repoRoot`、`toolSourcePath` 和可选的已绑定活跃阶段。新的 Atlas 计划包写入版本 2 的批准记录，可包含 `roadmapStage: {repoRoot, id}`；版本 1 的批准记录仍可恢复，无需重写其字节或重新批准。Atlas 仅允许来自扩展的 `roadmap_*` 工具，且其来源路径必须与握手中的 `toolSourcePath` 完全一致；工具守卫可以在首次调用 roadmap 工具时按需请求该绑定。
+安装 [roadmap](../roadmap/README.zh.md) 后，Prometheus 使用独立于 `herdrDag` 的带版本 `pi.events` 契约。提交计划时，它发出 `roadmap:binding-request {v:1, sessionId, requestId}`，仅接受与该会话和请求匹配的同步 `roadmap:binding` 回复。回复包含 `repoRoot`、`toolSourcePath` 和可选的已绑定活跃阶段。
+
+新的 Atlas 计划包写入版本 2 的批准记录，可包含 `roadmapStage: {repoRoot, id}`。版本 1 的批准记录仍可恢复，无需重写其字节或重新批准。Atlas 仅允许来自扩展的 `roadmap_*` 工具，来源路径必须与握手中的 `toolSourcePath` 完全一致。工具守卫可以在首次调用 roadmap 工具时请求该绑定。
 
 当某次账本写入首次使绑定阶段的计划达到完成状态后，Prometheus 发出 `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, at}`，附带已验证的关卡结论与摘要。Roadmap 为执行会话的下一轮记录一个待关闭提醒。会话仍须将这些证据对应到阶段验收条件并加以验证，然后携带 TODO/ADR 处置结果调用常规阶段关闭工具；计划完成不会自动关闭阶段。可以检查计划包 `approval.json` 中的 `roadmapStage`，确认计划是否包含此集成。
 
@@ -225,7 +231,9 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 - [ ] F4. Success-criteria fidelity
 ```
 
-Prometheus 根据会话中 `task` 工具实际列出的代理制定计划，此列表已应用派生策略和禁用代理设置；Momus 也根据同一列表审查。每个 `Agent:` 行都应指定列表中最贴合任务的专业代理；已安装的 omo-toolkit 代理优先于通用的 `task` 或 `sonic`。用户自定义代理只有在列表中出现才有效；未列出的名称只有具备已知回退代理时才有效。如果无法解析工具描述，仍可使用已知名称规划，但无法检查用户自定义名称，已知名称会按原样保留。
+Prometheus 根据会话中 `task` 工具实际列出的代理制定计划，该列表已应用启动策略和禁用代理设置。Momus 也根据同一列表审查。每个 `Agent:` 行应指定列表中最适合任务的专业代理；已安装的 omo-toolkit 代理优先于通用的 `task` 或 `sonic`。
+
+用户自定义代理只有出现在列表中才有效，未列出的名称需要具备已知回退代理。如果无法解析工具描述，仍可使用已知名称规划并按原样保留，但无法检查用户自定义名称。
 
 调度时先尝试请求的代理，再按顺序尝试其回退代理，只选择实时列表中的代理：
 
@@ -260,7 +268,7 @@ Atlas 通过 `atlas_ledger`（`status`、`start`、`done`、`block`、`reopen`�
 
 如果账本或计划产物缺失、损坏或不再匹配已批准计划，Atlas 会暂停，且不重建任何内容。请恢复已批准的产物，或通过 `/atlas` 退出，再让修改后的计划重新获批。
 
-当 Atlas 停止时仍有未完成行，插件会使用包含账本摘要的隐藏 `<atlas-continuation>` 消息让它继续。OMP 每个用户轮次最多允许八次连续续执行。连续两次续执行都没有进展时会停止循环并通知你；通过 `/atlas` 退出或发送新指令即可。你发送的任何消息都会重置计数。
+Atlas 停止时若仍有未完成行，插件会用包含账本摘要的隐藏 `<atlas-continuation>` 消息让它继续。OMP 每个用户轮次最多允许八次连续执行。连续两次没有进展时会停止循环并通知你；可通过 `/atlas` 退出或发送新指令。你发送的任何消息都会重置计数。
 
 进度保存在共享计划包中。子代理输出会复制到 `evidence/`，并重新核对摘要值，因此即使删除原会话，已验证进度仍然保留。`atlas_ledger status` 显示这些输出的位置。只保留子代理自身的输出；仅在输出中链接的文件不会复制。如果某行的证明缺失或发生变化，该行会重新打开；旧会话分支无法回滚共享进度。
 
@@ -289,7 +297,9 @@ Atlas 通过 `atlas_ledger`（`status`、`start`、`done`、`block`、`reopen`�
 
 Metis、Oracle 和 Momus 作为子代理运行，使用 OMP 的 `@slow` 角色，该角色通过你的 OMP 模型配置解析。插件不会硬编码任何提供商或模型。
 
-Atlas 是批准后的主会话，不是子代理。插件注册一个 `atlas` 模型角色，在 `/model` 中显示为 Atlas，可以像其他角色一样为其指定模型。它不参与 Ctrl+P 轮换。Prometheus 提案等待批准时，`atlas` 会临时加入 `cycleOrder` 最前面，因此批准滑块会在 `smol`、`default` 和 `slow` 旁边提供它，而 Ctrl+P 仍会跳过它。滑块仍从 `default` 开始；将其移到 `atlas` 即可使用该角色执行。对 `cycleOrder` 的修改会在下一次输入、代理轮次或规划结束时撤销。普通 Plan Mode 批准不会显示 `atlas`，没有可用模型的角色也不会出现在滑块上。
+批准后，Atlas 在主会话中运行。插件注册一个 `atlas` 模型角色，在 `/model` 中显示为 Atlas，可以像其他角色一样为其指定模型。它不参与 Ctrl+P 轮换。
+
+Prometheus 提案等待批准时，`atlas` 会临时加入 `cycleOrder` 最前面。批准滑块因此会在 `smol`、`default` 和 `slow` 旁边提供它，Ctrl+P 仍会跳过它。滑块从 `default` 开始；移到 `atlas` 即可使用该角色执行。插件会在下一次输入、代理轮次或规划结束时恢复 `cycleOrder`。普通 Plan Mode 批准不会显示 `atlas`，没有可用模型的角色也不会出现在滑块上。
 
 如果已为 `atlas` 角色指定模型，`/atlas <plan>` 会切换到该角色，否则保留当前模型。如果无法解析指定模型，Atlas 仍会启动，并报告已保留当前模型。
 

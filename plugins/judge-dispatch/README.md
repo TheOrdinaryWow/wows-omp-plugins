@@ -30,7 +30,7 @@ A read-only agent is only ever replaced by another read-only agent, based on OMP
 
 Routing and spawn-model selection run independently of presentation in TUI, RPC/rpc-ui, ACP, SDK, and headless/CI. TUI shows the working/status indicators; RPC clients receive supported notification frames, while ACP may only log them. With `hasUI: false`, routing indicators are skipped. There are no interactive dialogs or slash commands to parameterize.
 
-The plugin does not keep per-session routing history or workflow state, so it publishes no plugin-state sidecar. Model changes use bounded, one-shot pending spawn handoffs, not decision records. Current routing status is neither saved nor sent to the model; legacy transcript records are only rendered and filtered for compatibility.
+The plugin keeps no per-session routing history or workflow state and publishes no plugin-state sidecar. It holds a bounded set of pending model choices, each consumed once when the child spawns. Current routing status is neither saved nor sent to the model. Legacy transcript records are still rendered and filtered for compatibility.
 
 ## Settings
 
@@ -85,7 +85,7 @@ When the difficulty judgment's confidence reaches `minimumConfidence`, the plugi
 
 ## Model selection
 
-With `selectModel` on, the plugin picks each child's model from the spawning agent's **model pool** rather than always starting from its primary model.
+With `selectModel` on, the plugin picks each child's model from the spawning agent's model pool. The chosen model can differ from its primary model.
 
 ### The pool
 
@@ -95,11 +95,13 @@ The pool flattens everything the agent may run on, in order:
 2. the `retry.fallbackChains` entry of every role alias among those selectors;
 3. for a single selector, the fallback chain OMP itself would give the child (its role's chain, or `default`).
 
-Entries resolving to the same `provider/id` count once, and the first one wins, so its thinking suffix is kept. OMP's model registry resolves every entry. It has prices from models.dev and intelligence scores from OMP's live model catalog, and it maps custom and proxy provider ids to scored catalog entries, so the plugin keeps no model data of its own. Models without credentials are dropped, and models without a score or price are never chosen. If the primary model has no score, the spawn keeps its configured model.
+Entries resolving to the same `provider/id` count once. The first entry wins, including its thinking suffix. OMP's model registry resolves every entry, using prices from models.dev and intelligence scores from OMP's live model catalog. It maps custom and proxy provider ids to scored catalog entries, so the plugin keeps no model data of its own.
+
+Models without credentials are dropped. Models without a score or price are never chosen, and if the primary model has no score, the spawn keeps its configured model.
 
 ### Which models are eligible
 
-`modelBudget` decides eligibility relative to the **primary model**, the first entry in the pool. Your configuration declares the primary as the baseline, whether it is your strongest model, a cheaper second choice, or a "good enough" model with stronger and weaker ones in the chain. The budget only sets a lower bound, so a model stronger than the primary is always eligible, and the primary itself always is.
+`modelBudget` decides eligibility relative to the primary model, the first entry in the pool. Your configuration sets this baseline: it might be your strongest model, a cheaper second choice, or a "good enough" model with stronger and weaker models in the chain. The budget sets only a lower bound. Models stronger than the primary are always eligible, as is the primary itself.
 
 | Budget | Routine | Standard | Demanding |
 | --- | --- | --- | --- |

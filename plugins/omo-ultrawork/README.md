@@ -46,9 +46,13 @@ For independent work without dependencies, use one plain `task` batch instead. R
 
 ## Commands
 
-`/hyperplan <request>` runs a three-round adversarial debate between five roles, then hands off to a separate planner. The skeptic uses `task`, the validator `task` with `effort: "hi"`, and the researcher, architect, and creative use `deep-low`, `ultrabrain`, and `artistry` when those agents are listed. Without `deep-low` the debate runs with four roles; missing `ultrabrain` or `artistry` fall back to `task`. The planner uses `ultrabrain`, or `task`. The first visible line is `HYPERPLAN MODE ENABLED!`.
+`/hyperplan <request>` runs a three-round adversarial debate between five roles, then hands off to a separate planner. The skeptic uses `task`, the validator `task` with `effort: "hi"`, and the researcher, architect, and creative use `deep-low`, `ultrabrain`, and `artistry` when those agents are listed.
 
-`/ulw-research <request>` builds a claim graph through expansion and counter-search, writes a cited synthesis, runs ordered QA gates, and checks the deliverable. Mechanical work goes to `sonic`, bounded judgment to `task`, and high-effort work to `task` with `effort: "hi"`. `scout` does local discovery, `librarian` (or `scout`) does source research, and `writing` (or `task`) proofreads; other category agents fall back to `task`. Scratch files go to `<tmpdir>/ulw-research/` or the configured `researchScratchDir`, and the final output goes wherever you asked. The first visible line is `ULW-RESEARCH MODE ENABLED!`.
+Without `deep-low`, the debate runs with four roles. Missing `ultrabrain` or `artistry` fall back to `task`. The planner uses `ultrabrain`, or `task`. The first visible line is `HYPERPLAN MODE ENABLED!`.
+
+`/ulw-research <request>` builds a claim graph through expansion and counter-search, writes a cited synthesis, runs ordered QA gates, and checks the deliverable. Mechanical work goes to `sonic`, bounded judgment to `task`, and high-effort work to `task` with `effort: "hi"`. `scout` does local discovery, `librarian` (or `scout`) does source research, and `writing` (or `task`) proofreads; other category agents fall back to `task`.
+
+Scratch files go to `<tmpdir>/ulw-research/` or the configured `researchScratchDir`, and the final output goes wherever you asked. The first visible line is `ULW-RESEARCH MODE ENABLED!`.
 
 Both commands reject an empty request and run only in the main session. Their procedures are private prompt assets and are not registered as skills. Children and the model cannot find or invoke them through `skill://` or `/skill:`. `mass-ulw` is the only skill this plugin exposes.
 
@@ -58,11 +62,13 @@ Work that needs a full review follows its governing plan. Independent compliance
 
 ## Host modes and client state
 
-The commands and keyword workflow work in TUI, RPC/rpc-ui, ACP, SDK, and headless/CI sessions. TUI keeps its footer and notification feedback. RPC/rpc-ui uses status and notification frames; ACP notification visibility depends on the editor. With `hasUI: false`, usage errors, conflicts, and mode on/off feedback are visible custom text messages (`wows-omp-omo-ultrawork.command-status`), not dropped notifications. No terminal-only dialog is required.
+The commands and keyword workflow work in TUI, RPC/rpc-ui, ACP, SDK, and headless/CI sessions. TUI shows the footer and notifications. RPC/rpc-ui uses status and notification frames; ACP notification visibility depends on the editor. With `hasUI: false`, usage errors, conflicts, and mode on/off feedback appear as visible custom text messages (`wows-omp-omo-ultrawork.command-status`). The workflow requires no terminal-only dialogs.
 
 All command forms are non-interactive: `/ultrawork` or `/ulw` toggles persistent mode, `/ultrawork <request>` enables it and submits the request when mode is off, and `/hyperplan <request>` / `/ulw-research <request>` require a nonempty request. Commands run only in the main session.
 
-The main session publishes `omo-ultrawork.json` using the shared plugin-state envelope. Its payload is `{ "kind": "omo-ultrawork/mode", "version": 1, "mode": boolean, "armed": boolean }`: `mode` is the persistent toggle and `armed` means the directive is already in session context. The payload is `null` when both are false. It is an output-only projection of existing session state, including resume and branch navigation; switching or shutting down does not clear an armed session's saved state. `mass-ulw` files and research scratch artifacts remain separate from this mode payload.
+The main session publishes `omo-ultrawork.json` using the shared plugin-state envelope. Its payload is `{ "kind": "omo-ultrawork/mode", "version": 1, "mode": boolean, "armed": boolean }`: `mode` is the persistent toggle and `armed` means the directive is already in session context. The payload is `null` when both are false.
+
+The file reports existing session state, including resume and branch navigation, and is output-only. Switching or shutting down does not clear an armed session's saved state. `mass-ulw` files and research scratch artifacts are separate from this mode payload.
 
 ## Settings
 

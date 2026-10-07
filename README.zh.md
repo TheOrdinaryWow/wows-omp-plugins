@@ -16,7 +16,7 @@ omp plugin install <name>@wows-omp-plugins
 
 在会话中，可以改用 `/marketplace add`、`/marketplace discover` 和 `/marketplace install`。
 
-插件默认安装到当前用户，传入 `--scope project` 时除外。安装后运行 `/reload-plugins` 加载新的技能和斜杠命令；新的工具、钩子和扩展要重启会话才生效。
+插件默认安装到当前用户；传入 `--scope project` 可安装到项目。安装后运行 `/reload-plugins` 加载新的技能和斜杠命令。新的工具、钩子和扩展要重启会话才生效。
 
 更新：
 
@@ -39,9 +39,9 @@ omp plugin upgrade <name>@wows-omp-plugins
 
 ## 无终端 UI 的客户端
 
-这些插件也可以在 `omp --mode rpc`、`rpc-ui`、ACP 编辑器、SDK 以及 headless 运行中使用。只能在终端里显示的视图会退化为普通对话框，所有交互操作也都能用命令形式完成。各插件的退化方式见对应的 README。
+这些插件也可以在 `omp --mode rpc`、`rpc-ui`、ACP 编辑器、SDK 和 headless 环境中运行。终端专用视图会改用普通对话框，交互操作也都有对应的命令。各插件 README 说明了具体处理方式。
 
-有工作流状态的插件会额外把状态以 JSON 快照写出，供客户端程序读取。快照路径为 `<session dir>/plugin-state/<session id>/<plugin>.json`，每次状态变化时原子替换。所有快照都使用同一个外层结构：
+有工作流状态的插件会将状态写成 JSON 快照，供客户端程序读取。文件位于 `<session dir>/plugin-state/<session id>/<plugin>.json`，每次状态变化时原子替换。所有快照使用同一个外层结构：
 
 ```json
 { "schema": "wows-omp-plugins/plugin-state", "version": 1, "plugin": "audit-goal", "sessionId": "…", "seq": 12, "updatedAt": "…", "state": { "kind": "audit-goal/audit", "version": 1 } }
@@ -57,7 +57,7 @@ plugins/<name>/                one directory per plugin, with its own README
 src/                           repo tooling and tests
 ```
 
-安装插件时只复制插件自己的目录，所以每个插件都自包含，没有运行时依赖。
+安装时只复制插件自己的目录，因此每个插件都能独立运行，没有运行时依赖。
 
 ## 开发
 

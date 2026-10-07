@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh.md)
 
-Adds `/audit <audit-target>`, an OMP goal that runs rounds of independent audits and fixes until the audit reaches a recorded conclusion or you stop it. Each round is written to a persisted evidence ledger, and the loop uses two reserved agents.
+Adds `/audit <audit-target>`, an OMP goal that repeats independent audits and fixes until it records a conclusion or you stop it. The loop uses two reserved agents and saves each round to an evidence ledger.
 
 ## Install
 
@@ -54,12 +54,12 @@ Package name for `omp plugin config`: `wows-omp-plugin-audit-goal`.
 
 ### How an audit ends
 
-Each round records the auditor models, coverage, and checks run. It also records verified findings with source evidence, their open or resolved status, repairs of earlier findings, and the reasons for rejecting claims. Severity counts cover new findings only; the ledger lists remaining open findings separately.
+Each ledger round includes the auditor models, coverage, checks run, and verified findings with source evidence and open or resolved status. It also lists repairs of earlier findings and reasons for rejecting claims. Severity counts cover new findings only; remaining open findings are listed separately.
 
 The audit can end in three ways:
 
 - Threshold convergence. Once the intensity's exit gate is met, the agent records `threshold-convergence` with its reasoning, reports, and completes the goal. The gate only says the audit stopped finding problems. It does not prove the code is bug-free, and earlier Critical or Major findings stay open until a recorded repair closes them.
-- Capability saturation. With unlimited rounds, the agent may record `capability-saturation` when the same auditor models have completed at least three comparable rounds across varied audit axes, and cited observations show that another round is unlikely to find more. Open Critical and Major findings stay open. Finding counts or a self-feeding signal alone do not justify saturation.
+- Capability saturation. With unlimited rounds, the agent may record `capability-saturation` after the same auditor models complete at least three comparable rounds across varied audit axes, with cited observations showing that another round is unlikely to find more. Any open Critical and Major findings remain open. Finding counts or a self-feeding signal alone do not justify saturation.
 - Stop. When a finite round limit runs out before convergence, the agent says the audit is not finished and asks whether to add rounds, remove the limit, or stop. Stopping records `stop` with the reason and the remaining findings. Cancelling that question leaves the choice pending and blocks model completion. Headless sessions record a separate noninteractive stop.
 
 `/goal budget` limits tokens, not rounds; this plugin counts rounds itself.

@@ -18,9 +18,11 @@ Herdr supplies `HERDR_ENV=1`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`; all thre
 
 ## Host modes
 
-Pane management, the viewer, transport subscriptions, and snapshot publishing run only with `mode: "tui"`, `hasUI: true`, and all three Herdr environment variables. RPC/rpc-ui and ACP are inactive even when `hasUI` is true or Herdr variables were inherited. SDK/headless sessions with `hasUI: false` never start or split panes. A missing `HERDR_PANE_ID` also prevents pane startup. `/dag-pane [open|close|toggle]` is a TUI command; there is no headless pane equivalent. The native todo wrapper remains available in every mode as described below.
+Pane management, the viewer, transport subscriptions, and snapshot publishing require `mode: "tui"`, `hasUI: true`, and all three Herdr environment variables. RPC/rpc-ui and ACP stay inactive even with `hasUI` true or inherited Herdr variables. SDK/headless sessions with `hasUI: false` never start or split panes. A missing `HERDR_PANE_ID` also prevents startup.
 
-There is no plugin-state sidecar for this viewer: its graph projects native todo/subagent state and Atlas state, available through host RPC data and omo-prometheus's sidecar. Its existing Herdr snapshot is viewer recovery data, not another workflow authority.
+`/dag-pane [open|close|toggle]` is a TUI command with no headless pane equivalent. The native todo wrapper remains available in every mode, as described below.
+
+The viewer publishes no plugin-state sidecar. Its graph displays native todo/subagent state and Atlas state, which clients can read through host RPC data and omo-prometheus's sidecar. The Herdr snapshot stores viewer recovery data; workflow state still comes from those sources.
 
 ## Commands and automatic opening
 
@@ -55,11 +57,19 @@ Queued synthetic developer approval messages use the same checks as a new turn's
 
 While Atlas is bound, the mirrored phases named exactly `Atlas tasks`, `Atlas fixes`, and `Atlas final gates` are hidden from the native todo view. An all-mirror list cannot claim or consume an armed native plan approval. The mirrors reappear as plain blue todos when Atlas releases or integration is disabled; a later new native list can still claim the approval.
 
-Forward dependencies use solid connectors in a subdued color, so the boxes stand out more than the lines. The selected node's incoming and outgoing edges switch to the run's source color in bold. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted. The critical path uses observed node elapsed time, or unit weight for unstarted nodes, across explicit dependency edges only. It is drawn with heavy lines. Where it crosses other connectors, only its own arms stay heavy, and where it shares a stroke with the selection, the critical path wins. Runs without those edges have no critical path. Completed layers can be folded.
+Forward dependencies use subdued solid connectors so the boxes stand out. The selected node's incoming and outgoing edges become bold and use the run's source color. Backward dependencies remain valid, with a dotted connector and an `↑ after <label>` annotation on their target. Fix edges are dotted.
 
-By default the graph shows the transitive reduction of the forward dependencies. When a longer forward path already orders two nodes, the direct edge between them is not drawn. For example, final gates that depend on every task hang off the last task as one fan-out. Fix and backward edges are always drawn, and the critical path still weighs every dependency. `e` draws every dependency, and the footer always lists the selected node's direct dependencies (`deps: T4, T6, T7`). A long edge runs as one vertical trunk per source through the layers it skips and branches off at each target. Edges converging on one node share a single arrowhead.
+The critical path follows explicit dependency edges only, using observed node elapsed time or unit weight for unstarted nodes. It uses heavy lines. At crossings, only its own arms stay heavy; when it shares a stroke with the selection, the critical path wins. Runs without explicit edges have no critical path. Completed layers can be folded.
 
-Node boxes are 30 columns wide, shrinking to no less than 20 when that lets the widest layer fit the pane. The viewer pans and follows the selection, so a layer wider than the pane stays a single row as long as it fits twice the pane's width, or 120 columns in narrower panes. Four boxes need 86 columns, so a 50-column pane keeps four final gates in one row and scrolls sideways to the selected one. Only a wider layer wraps onto extra rows inside its band, spread evenly and kept in their usual order: left to right, then top to bottom. Eight boxes in a 50-column pane, for example, make two rows of four. The trunks feeding later rows run down the middle of the earlier rows, never around the outside. Several edges from one node, or into one node, share a connector there. Arrow keys move between the drawn boxes, and paging follows the drawn order. A folded layer stays a single summary row.
+By default the graph shows the transitive reduction of forward dependencies: a direct edge is hidden when a longer forward path already orders the same two nodes. For example, final gates that depend on every task hang off the last task as one fan-out. Fix and backward edges are always drawn, and critical-path calculations still use every dependency.
+
+Press `e` to draw every dependency. The footer always lists the selected node's direct dependencies (`deps: T4, T6, T7`). Long edges share one vertical trunk per source through skipped layers, branching at each target. Edges converging on one node share an arrowhead.
+
+Node boxes are 30 columns wide. They shrink to no less than 20 when that lets the widest layer fit the pane. The viewer pans to follow the selection, so a layer stays on one row if it fits twice the pane's width, or 120 columns in narrower panes. Four boxes need 86 columns: a 50-column pane keeps four final gates in one row and scrolls sideways to the selected gate.
+
+Wider layers wrap inside their bands, spread evenly from left to right, then top to bottom. Eight boxes in a 50-column pane form two rows of four. Trunks feeding later rows pass through the middle of earlier rows without going around the outside. Several edges from or into one node share a connector there.
+
+Arrow keys move between drawn boxes, and paging follows the drawn order. A folded layer occupies one summary row.
 
 Each node sits under the median of its parents, so chains run straight down. With `layoutAlign` set to `centered` (the default), siblings that would overlap spread evenly on both sides of their parent, and the whole graph is centered on the canvas axis, which is the pane's axis when the graph fits. With `left`, overlapping siblings move only rightwards and the graph sits against the left edge.
 
@@ -76,7 +86,9 @@ State colors come from the OMP theme, separately from source colors:
 
 A running node linked to a stalled child uses warning color. Running task cards, linked or unlinked, also use warning borders and a `stalled` label until new progress arrives. Child failure does not mark a todo or ledger row failed or done.
 
-The Tasks view shows direct children from native `task`, eval agents, and workpool: tool and arguments, recent output, model, retry details, elapsed time, tokens, and cost when supplied by the host. A child is attached to the native todo in progress when it starts. Repeated activations of the same child keep completed usage and add the current activation, so cumulative progress frames are not counted twice. Run usage counts each linked child once. Unavailable metrics use a missing-value marker, not zero.
+The Tasks view shows direct children from native `task`, eval agents, and workpool, including tools and arguments, recent output, model, retry details, elapsed time, tokens, and cost when supplied by the host. A child attaches to the native todo in progress when it starts.
+
+Repeated activations keep the child's completed usage and add the current activation, avoiding double-counting cumulative progress frames. Run usage counts each linked child once. Unavailable metrics appear as missing values, never zero.
 
 ## Explicit todo dependencies
 
@@ -166,7 +178,11 @@ Pressing `q` always closes the viewer's own pane, regardless of finish behavior.
 | Esc | Return from transcript or dismiss help. |
 | `?` | Toggle help. |
 
-The viewer turns terminal mouse reporting on while it runs and off again on every exit path, including signals. The wheel scrolls the DAG in either mode, the Tasks list, and transcripts; Shift+wheel or a horizontal wheel scrolls the DAG sideways. Clicking a node selects it, and double-clicking opens its transcript like `o`. Panning or scrolling detaches the DAG from the selection, so live updates keep the scrolled position until a node-mode arrow key, paging, or a click selects a node again. Switching runs or views starts at the top, following the selection. Every action is also available from the keyboard. The mode, the scroll position, and the edge toggle are not persisted. While mouse reporting is on, a plain drag no longer selects text in the pane; most terminals still select while Shift is held.
+The viewer enables terminal mouse reporting while running and disables it on every exit path, including signals. The wheel scrolls the DAG in either mode, the Tasks list, and transcripts. Shift+wheel or a horizontal wheel scrolls the DAG sideways. Clicking a node selects it; double-clicking opens its transcript like `o`.
+
+Panning or scrolling stops the DAG from following the selection. Live updates preserve that position until a node-mode arrow key, paging, or a click selects a node again. Switching runs or views starts at the top, following the selection. Every action is also available from the keyboard. The mode, scroll position, and edge toggle are not persisted.
+
+While mouse reporting is on, a plain drag no longer selects text in the pane. Most terminals still allow text selection while Shift is held.
 
 Transcript drill-down reads the existing child session file incrementally, showing assistant text, tool calls, and short result previews. It does not open a writable host session. User text and output have terminal control sequences stripped; labels use display-width-aware wrapping.
 
@@ -187,7 +203,9 @@ Hello replies are synchronous; a bound plan is followed by a snapshot. Binding a
 
 ## Local storage and privacy
 
-Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionId>/`. They are versioned JSON, written with temporary-file replacement. `snapshot.json` and `pane.json` use version 2 and upgrade version 1 on load without losing recovery data, ownership, or dismissal. A v1 pane record without a socket path keeps that connection unknown and relaunches only its recorded pane; it never adopts other panes. `view-state.json` stays at version 1. Unknown/newer versions are ignored and replaced. The stored field allowlist is:
+Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionId>/`. They are versioned JSON, written with temporary-file replacement. `snapshot.json` and `pane.json` use version 2 and upgrade version 1 on load, preserving recovery data, ownership, and dismissal. A v1 pane record without a socket path leaves the connection unknown and relaunches only its recorded pane. It never adopts other panes.
+
+`view-state.json` stays at version 1. Unknown/newer versions are ignored and replaced. The stored field allowlist is:
 
 | File | Stored fields |
 | --- | --- |

@@ -115,7 +115,9 @@ Deleting asks for confirmation and permanently removes the plan and its evidence
 
 A plan can be selected by its display label, its original name, or either name without the `-plan` suffix, so `checkout` and `checkout-plan` match the same plan. If several plans share a name, use the full ID from the list.
 
-While Atlas is active, bare `/atlas` opens the same fullscreen inspector as a live, read-only observation page. Committed ledger changes, child lifecycle, and host progress update without reopening it. The header reports running children and plan elapsed time. In-progress rows show elapsed time in the sidebar and a Live section with child identity, model/thinking, tool and arguments, intent, usage, cost, retries, and recent activity when the host supplies it. Tab switches to the persisted timeline. Start, resume, delete, and rename are unavailable. Shift+X exits Atlas as `/atlas exit` does, and Esc closes the page. If the host has no progress channel, ledger and lifecycle details still work.
+While Atlas is active, bare `/atlas` opens the fullscreen inspector as a live, read-only view. Committed ledger changes, child lifecycle, and host progress update without reopening it. The header shows running children and plan elapsed time. In-progress rows show elapsed time in the sidebar. When the host supplies progress, the Live section shows child identity, model/thinking, tool and arguments, intent, usage, cost, retries, and recent activity.
+
+Tab switches to the persisted timeline. Start, resume, delete, and rename are unavailable. Shift+X exits Atlas as `/atlas exit` does, and Esc closes the page. Ledger and lifecycle details remain available when the host has no progress channel.
 
 Without an interactive UI, bare `/atlas` prints which plan is running with its rows. Exiting asks first if rows are unfinished or progress cannot be verified. `/atlas` with any other argument, even the current plan, is an error: exit first, then enter the other plan from the same session. Atlas will not enter during planning or run an unapproved plan. If entering fails, the session stays paused until you run `/atlas exit`, and Atlas never falls back to prompt-only execution.
 
@@ -123,7 +125,9 @@ During execution an above-editor Atlas widget shows the plan bar, done/total and
 
 Atlas also maintains session todo phases from the validated ledger: tasks, corrections when present, and final gates. Existing non-Atlas phases remain in place. Atlas phases are restored on attach and after ledger changes; do not edit them manually. Each changed-row `atlas_ledger` result names a repeatable `todo` call to refresh the host HUD. Exiting Atlas leaves the todo list intact.
 
-Session A can finish part of a plan and exit, and session B can pick it up with `/atlas <name>`, as long as both use the same host session directory and workspace. Exiting is immediate: it neither cancels children nor marks anything complete, and it does not block closing the host. While native child work is still running, the plan stays owned by its session until that work reports a final result, so no other session can write to it at the same time. A session that owns a plan and has provably died can be recovered; unclear ownership, or ownership by another host, is refused.
+Session A can finish part of a plan and exit, and session B can pick it up with `/atlas <name>`, as long as both use the same host session directory and workspace. Exit takes effect immediately and does not cancel children or mark work complete. It does not block closing the host.
+
+While native child work is running, its session keeps ownership of the plan until that work reports a final result. Other sessions cannot write to the plan during that time. A plan can be recovered if its owning session has provably died. Recovery is refused when ownership is unclear or belongs to another host.
 
 Some hosts do not give Atlas a reliable signal that a child's final processing has finished, and a cancelled wake-up can settle before the child does. In those cases the plan stays owned until the original OMP process exits; start a new session after closing it.
 
@@ -197,7 +201,9 @@ Detaching emits `atlas:released` with `reason: "exit"`, `"session-switch"`, or `
 
 ## Roadmap contract
 
-With [roadmap](../roadmap/README.md) installed, Prometheus uses a versioned `pi.events` contract independent of `herdrDag`. At proposal time it emits `roadmap:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `roadmap:binding` reply matching that session and request. The reply includes `repoRoot`, `toolSourcePath` and an optional bound active stage. New Atlas bundles write approval version 2 with optional `roadmapStage: {repoRoot, id}`; version 1 approvals still resume without rewriting their bytes or requiring fresh approval. Atlas admits `roadmap_*` tools only with extension provenance whose path exactly matches the handshake's `toolSourcePath`; the guard can request that binding lazily on its first roadmap tool call.
+With [roadmap](../roadmap/README.md) installed, Prometheus uses a versioned `pi.events` contract independent of `herdrDag`. At proposal time it emits `roadmap:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `roadmap:binding` reply matching that session and request. The reply includes `repoRoot`, `toolSourcePath` and an optional bound active stage.
+
+New Atlas bundles write approval version 2 with optional `roadmapStage: {repoRoot, id}`. Version 1 approvals still resume without rewriting their bytes or requiring fresh approval. Atlas admits `roadmap_*` tools only when their extension source path exactly matches the handshake's `toolSourcePath`. The guard can request that binding on its first roadmap tool call.
 
 After the ledger write that first makes a stage-bound plan complete, Prometheus emits `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, at}` with verified gate verdicts and summaries. Roadmap records a pending-close reminder for the executing session's next turn. The session must still map and verify that evidence against the stage criteria and call the normal stage-close tool with TODO/ADR dispositions; completion does not close a stage automatically. Check the bundle's `approval.json` for `roadmapStage` to confirm the plan carries this integration.
 
@@ -225,7 +231,9 @@ Every Prometheus plan ends with two machine-readable sections. Tasks are uninden
 - [ ] F4. Success-criteria fidelity
 ```
 
-Prometheus plans against the agents the `task` tool actually lists in the session, after spawn policy and disabled agents are applied, and Momus reviews against the same list. Each `Agent:` row should name the most specific listed specialist; installed omo-toolkit agents are preferred over generic `task` or `sonic`. A user-defined agent is valid only if it is listed, and an unlisted name only if it has a known fallback. If the tool description cannot be parsed, planning still works with known names, but user-defined names cannot be checked and known names are kept as written.
+Prometheus plans against the agents the session's `task` tool lists after applying spawn policy and disabled-agent settings. Momus reviews against the same list. Each `Agent:` row should name the most specific listed specialist; installed omo-toolkit agents are preferred over generic `task` or `sonic`.
+
+A user-defined agent is valid only if listed. An unlisted name needs a known fallback. If the tool description cannot be parsed, planning can still use known names and keeps them as written, but cannot check user-defined names.
 
 At dispatch, the requested agent is tried first, then its fallbacks in order, choosing only agents in the live list:
 
@@ -289,7 +297,9 @@ When a gate rejects the work, Atlas records each correction as an X row (`atlas_
 
 Metis, Oracle, and Momus run as child agents on OMP's `@slow` role, which resolves through your OMP model configuration. The plugin hard-codes no provider or model.
 
-Atlas is the main session after approval, not a child agent. The plugin registers an `atlas` model role, shown in `/model` as Atlas, that you can assign like any other role. It is not part of the Ctrl+P cycle. While a Prometheus proposal waits for approval, `atlas` is temporarily added to the front of `cycleOrder`, so the approval slider offers it next to `smol`, `default`, and `slow`, while Ctrl+P still skips it. The slider still starts on `default`; move it to `atlas` to execute with that role. The change to `cycleOrder` is undone at the next input or agent turn, or when planning ends. Ordinary Plan Mode approvals never show `atlas`, and roles without an available model never appear on the slider.
+Atlas runs in the main session after approval. The plugin registers an `atlas` model role, shown in `/model` as Atlas, that you can assign like any other role. It is not part of the Ctrl+P cycle.
+
+While a Prometheus proposal waits for approval, `atlas` is temporarily added to the front of `cycleOrder`. The approval slider then offers it alongside `smol`, `default`, and `slow`, while Ctrl+P still skips it. The slider starts on `default`; move it to `atlas` to execute with that role. The plugin restores `cycleOrder` at the next input or agent turn, or when planning ends. Ordinary Plan Mode approvals never show `atlas`, and roles without an available model never appear on the slider.
 
 `/atlas <plan>` switches to the `atlas` role when it is assigned and keeps the current model otherwise. If the assigned model cannot be resolved, Atlas still starts and reports that it kept the current model.
 

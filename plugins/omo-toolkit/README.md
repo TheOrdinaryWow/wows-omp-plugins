@@ -27,7 +27,9 @@ Category agents start from the same worker prompt as OMP's bundled `task` agent 
 | `writing` | Documentation, prose, and technical writing | `@writer`, then `@task` | `low` |
 | `librarian` | Read-only open-source research with GitHub permalinks and official docs | `@tiny`, then `@smol` | `off` |
 
-Model roles come from your OMP `modelRoles`, and a list is tried in order. `designer` and `writer` are custom roles; when they are not set to an available model, those agents use `@task`. `librarian` uses `@tiny` and falls back to `@smol` when `tiny` is unset. It needs a chat model that can call tools, so if `tiny` points at an on-device `local/` title model, override `librarian` to `@smol`.
+Model roles come from your OMP `modelRoles`, and a list is tried in order. `designer` and `writer` are custom roles; when they are not set to an available model, those agents use `@task`.
+
+`librarian` uses `@tiny` and falls back to `@smol` when `tiny` is unset. It needs a chat model that can call tools. If `tiny` points at an on-device `local/` title model, override `librarian` to `@smol`.
 
 To change one agent's model without editing plugin files, set `task.agentModelOverrides` in `~/.omp/agent/config.yml`:
 
@@ -37,7 +39,9 @@ task:
     ultrabrain: anthropic/claude-opus-5-5
 ```
 
-`omo-prometheus` and `omo-ultrawork` use these agents when they are installed and fall back to `task` otherwise (`librarian` falls back to `scout`, then `task`). Trade-offs the user has not approved go to the worker's parent; workers do not settle them or ask the user directly. Final code-quality, real-surface QA, and evidence gates run on fresh `deep-high` or `deep-low` children (fallback `task`) whose assignments include the full verification requirements.
+`omo-prometheus` and `omo-ultrawork` use these agents when installed and fall back to `task` otherwise (`librarian` falls back to `scout`, then `task`). Workers pass trade-offs the user has not approved to their parent, without settling them or asking the user directly.
+
+Final code-quality, real-surface QA, and evidence gates run on fresh `deep-high` or `deep-low` children (fallback `task`). Their assignments include the full verification requirements.
 
 ## Skills
 

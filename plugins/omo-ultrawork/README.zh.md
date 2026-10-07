@@ -46,23 +46,29 @@ omp config set magicKeywords.orchestrate false
 
 ## 命令
 
-`/hyperplan <request>` 会让五种角色进行三轮对抗式辩论，然后交给独立的规划代理。质疑者使用 `task`，验证者使用带 `effort: "hi"` 的 `task`；研究者、架构师和创意角色在代理列表包含对应代理时，分别使用 `deep-low`、`ultrabrain` 和 `artistry`。没有 `deep-low` 时，辩论由四种角色进行；缺少 `ultrabrain` 或 `artistry` 时则回退到 `task`。规划代理使用 `ultrabrain`，不可用时使用 `task`。首条可见内容为 `HYPERPLAN MODE ENABLED!`。
+`/hyperplan <request>` 让五种角色进行三轮对抗式辩论，再交给独立的规划代理。质疑者使用 `task`，验证者使用带 `effort: "hi"` 的 `task`；研究者、架构师和创意角色在代理列表包含对应代理时，分别使用 `deep-low`、`ultrabrain` 和 `artistry`。
 
-`/ulw-research <request>` 通过扩展和反向检索构建论断图，撰写带引用的综合分析，按顺序运行 QA 关卡，并检查交付物。机械性工作交给 `sonic`，范围明确的判断交给 `task`，需要深入分析的工作交给带 `effort: "hi"` 的 `task`。`scout` 负责本地发现，`librarian`（或 `scout`）负责来源研究，`writing`（或 `task`）负责校对；其他分类代理不可用时回退到 `task`。临时文件存放在 `<tmpdir>/ulw-research/` 或配置的 `researchScratchDir` 中，最终输出存放在你指定的位置。首条可见内容为 `ULW-RESEARCH MODE ENABLED!`。
+没有 `deep-low` 时，辩论由四种角色进行；缺少 `ultrabrain` 或 `artistry` 时回退到 `task`。规划代理使用 `ultrabrain`，不可用时使用 `task`。首条可见内容为 `HYPERPLAN MODE ENABLED!`。
+
+`/ulw-research <request>` 通过扩展和反向检索构建论断图，撰写带引用的综合分析，按顺序运行 QA 关卡，并检查交付物。机械性工作交给 `sonic`，范围明确的判断交给 `task`，需要深入分析的工作交给带 `effort: "hi"` 的 `task`。`scout` 负责本地调查，`librarian`（或 `scout`）负责查找来源，`writing`（或 `task`）负责校对；其他分类代理不可用时回退到 `task`。
+
+临时文件存放在 `<tmpdir>/ulw-research/` 或配置的 `researchScratchDir` 中，最终输出存放在你指定的位置。首条可见内容为 `ULW-RESEARCH MODE ENABLED!`。
 
 两个命令都会拒绝空请求，且仅在主会话中运行。它们的流程保存在私有提示词资源中，没有注册为技能。子代理和模型无法通过 `skill://` 或 `/skill:` 发现或调用这些流程。`mass-ulw` 是本插件唯一公开的技能。
 
 安装 `omo-toolkit` 可获得上述指定的分类代理，安装 `omo-prometheus` 可获得经过审查的 `/prometheus` 规划选项；未安装时，上述回退机制仍能让所有命令正常工作。`metis` 仅用于 Prometheus 规划；`momus` 在规划之外仅用于明确要求的 Atlas 合规检查。
 
-需要完整审查的工作应遵循负责该工作的计划。独立的合规、代码质量和真实界面 QA 报告可以并行生成，最终的证据关卡审查者在这些报告完成后开始。不要在已批准的计划之外另加一套审查流程。轻量工作只需限定范围的自查和真实界面证据，无需安排并行审查者。
+需要完整审查的工作应遵循其所属计划。独立的合规、代码质量和真实界面 QA 报告可以并行生成，最终证据关卡的审查代理在这些报告完成后开始工作。不要在已批准的计划之外另加一套审查流程。轻量工作只需限定范围的自查和真实界面证据，无需安排并行审查代理。
 
 ## 宿主模式与客户端状态
 
-命令和关键词流程可用于 TUI、RPC/rpc-ui、ACP、SDK 和无界面/CI 会话。TUI 保留底栏和通知反馈；RPC/rpc-ui 使用状态与通知帧，ACP 通知是否可见取决于编辑器。`hasUI: false` 时，用法错误、冲突和模式开关反馈通过可见的自定义文本消息（`wows-omp-omo-ultrawork.command-status`）输出，不再作为通知被丢弃。流程不依赖终端专用对话框。
+命令和关键词流程可用于 TUI、RPC/rpc-ui、ACP、SDK 和无界面/CI 会话。TUI 显示底栏和通知；RPC/rpc-ui 使用状态与通知帧，ACP 通知是否可见取决于编辑器。`hasUI: false` 时，用法错误、冲突和模式开关反馈会显示为自定义文本消息（`wows-omp-omo-ultrawork.command-status`）。流程不需要终端专用对话框。
 
 所有命令都无需交互选择：`/ultrawork` 或 `/ulw` 切换持续模式；模式关闭时，`/ultrawork <request>` 开启模式并提交请求；`/hyperplan <request>` 和 `/ulw-research <request>` 要求非空请求。命令仅在主会话运行。
 
-主会话使用共享插件状态封装发布 `omo-ultrawork.json`。载荷为 `{ "kind": "omo-ultrawork/mode", "version": 1, "mode": boolean, "armed": boolean }`：`mode` 表示持续模式开关，`armed` 表示指令已进入会话上下文。两者均为 false 时载荷为 `null`。它只是现有会话状态的只读投影，涵盖恢复和分支导航；切换或关闭宿主不会清空已进入待触发状态的会话所保存的状态。`mass-ulw` 文件和研究临时产物不属于该模式载荷。
+主会话按共享插件状态格式写出 `omo-ultrawork.json`。内容为 `{ "kind": "omo-ultrawork/mode", "version": 1, "mode": boolean, "armed": boolean }`：`mode` 表示持续模式开关，`armed` 表示指令已进入会话上下文。两者均为 false 时为 `null`。
+
+文件只供外部读取，反映现有会话状态，也包含恢复和分支导航后的状态。切换会话或关闭宿主不会清空已进入待触发状态的会话所保存的状态。`mass-ulw` 文件和研究临时产物与该模式状态分开存储。
 
 ## 设置
 

@@ -57,9 +57,9 @@ The operation records the Outcome and closure hash. The plugin validates evidenc
 
 `/roadmap close-round` requires every stage to be closed or dropped and no document-check errors. Its dialog asks for a disposition for every open TODO: `resolved` with a reference, `wontfix` recorded under Known limitations, or `carried` for consideration in a later round. Closing freezes the directory in place; it does not move it.
 
-The dialog authorizes only the round and round-file snapshot reviewed before it opened. When closing through the status menu, that review starts when the menu is shown, not when its Close round option is selected. If that round closes, another round opens, or any of its files change while a menu or disposition dialog is pending, closing is refused as stale without writing. Run `/roadmap close-round` again to review the current state.
+The dialog authorizes closing only the round and file snapshot reviewed before it opened. For the status-menu path, the snapshot is taken when the menu appears, before you select Close round. If that round closes, another round opens, or any of its files change while the menu or disposition dialog is pending, the close is refused as stale and writes nothing. Run `/roadmap close-round` again to review the current state.
 
-`/roadmap new-round` interviews you for the next charter. The resulting `roadmap_round_open` preview can import selected carried TODO IDs from frozen rounds. Imported items get new IDs, retain their origin, and begin with a trigger rather than a stale target stage. The old round stays untouched.
+`/roadmap new-round` interviews you for the next charter. The resulting `roadmap_round_open` preview can import selected carried TODO IDs from frozen rounds. Imported items get new IDs and retain their origin. They begin with a trigger; the old target stage is not carried over. The old round stays untouched.
 
 ## Commands
 
@@ -109,11 +109,19 @@ These are agent tools, not slash commands. Mutating tools use write approval; `r
 
 TODO `add` requires `title`, `source`, `severity`, and either `target` or `trigger`; `body` is optional. `update` changes supplied fields of an open item in the active round. `resolve` requires a `reference`. `move` replaces its target or trigger and refuses a closed target stage.
 
-Tool-owned body text supports a small Markdown subset: plain paragraphs, flat bullet or ordered lists with single-line text items, and fully closed top-level fenced code blocks. Bullet markers are `-`, `+` or `*`; ordered markers have one to nine digits followed by `.` or `)`. Use one space after the marker. Nested lists and indented list continuations are refused. Ordinary punctuation is allowed, including `~20%`, `snake_case`, multiplication such as `quantity * unit price`, URLs with underscores or tildes, and comparisons such as `x < y` or `x > y`. A `<` is refused when immediately followed by an ASCII letter, `/`, `!` or `?`, which can begin HTML, an autolink, a comment or a processing instruction; a `>` cannot begin a line. Inline emphasis delimiters are allowed and matched pairs may render as formatting. Square brackets, backslash escapes and table pipes remain unsupported outside code. Same-line inline code spans are allowed; each opening backtick run must close with an equal-length run on that line. A multiline span cannot hide HTML or a fence on another line. Put literal unsupported syntax in code or use entities such as `&lt;script&gt;`.
+Tool-owned body text supports a small Markdown subset: plain paragraphs, flat bullet or ordered lists with single-line text items, and fully closed top-level fenced code blocks. Bullet markers are `-`, `+` or `*`; ordered markers have one to nine digits followed by `.` or `)`. Use one space after the marker. Nested lists and indented list continuations are refused.
 
-Fences use at least three backticks or tildes, with zero to three leading spaces. The optional info string is one language token made of ASCII letters, digits, `_`, `+`, `.` or `-`. A closer uses the same marker, is at least as long as the opener, has zero to three leading spaces and only spaces or tabs after it, and has no info string. Fence contents are literal and may contain otherwise refused syntax. Fences cannot begin inside lists or quotes. After a list, use an unindented fence, or a blank line followed by an unindented plain paragraph before an indented fence; this also applies to a TODO body's preceding metadata list. Plain paragraphs after a list require a blank separator; lazy list continuations are refused.
+Ordinary punctuation is allowed, including `~20%`, `snake_case`, multiplication such as `quantity * unit price`, URLs with underscores or tildes, and comparisons such as `x < y` or `x > y`. A `<` is refused when immediately followed by an ASCII letter, `/`, `!` or `?`, which can begin HTML, an autolink, a comment or a processing instruction. A `>` cannot begin a line.
 
-Outside fences and same-line code spans, raw HTML and comments, Markdown links and reference definitions, ATX and Setext headings, block quotes, tables, thematic breaks, indented code, tabs, malformed or unclosed fences and ambiguous constructs are refused with a repair hint before any managed bytes change. Tool-supplied scope items, criterion statements, verification methods and other single-line fields follow the same punctuation and inline rules but cannot contain lists or fences. Tools also reparse the rendered document to preserve intended IDs, metadata, body boundaries and fixed headings.
+Inline emphasis delimiters are allowed, and matched pairs may render as formatting. Square brackets, backslash escapes and table pipes remain unsupported outside code. Same-line inline code spans are allowed; each opening backtick run must close with an equal-length run on that line. A multiline span cannot hide HTML or a fence on another line. Put literal unsupported syntax in code or use entities such as `&lt;script&gt;`.
+
+Fences use at least three backticks or tildes, with zero to three leading spaces. The optional info string is one language token made of ASCII letters, digits, `_`, `+`, `.` or `-`. A closer uses the same marker, is at least as long as the opener, has zero to three leading spaces and only spaces or tabs after it, and has no info string. Fence contents are literal and may contain otherwise refused syntax.
+
+Fences cannot begin inside lists or quotes. After a list, use an unindented fence, or a blank line followed by an unindented plain paragraph before an indented fence. This also applies to a TODO body's preceding metadata list. Plain paragraphs after a list require a blank separator; lazy list continuations are refused.
+
+Outside fences and same-line code spans, the tools refuse raw HTML and comments, Markdown links and reference definitions, ATX and Setext headings, block quotes, tables, thematic breaks, indented code, tabs, malformed or unclosed fences and ambiguous constructs. They return a repair hint before changing any managed bytes.
+
+Tool-supplied scope items, criterion statements, verification methods and other single-line fields follow the same punctuation and inline rules but cannot contain lists or fences. Tools reparse the rendered document to check that intended IDs, metadata, body boundaries and fixed headings survive.
 
 ADR `create` requires `title` and `sections` with `context`, nonempty `options` and `outcome`. Optional sections include `drivers`, `consequences`, `confirmation`, `pros_cons` and `more_info`; participant lists and a stage association are also supported. The vendored MADR 4.0 template has a Confirmation section and no implementation checklist.
 
@@ -123,7 +131,11 @@ If an existing ADR ends inside an unterminated fence, `note` refuses without cha
 
 ## Managed-file protection
 
-After initialization, a tool-call hook protects `docs/roadmap/**` and `docs/adr/**` in main and subagent sessions. It discovers the target's own git work tree, checks lexical and resolved paths (including dangling symlink destinations), and blocks with guidance to use the roadmap tools. Existing file targets are also compared by device and inode against multiply linked managed files in the session and target worktrees, so native `write` and `edit` cannot change a managed original through a hardlink alias inside or outside the repository. Native paths use the host's normalization for `@`-prefixed absolute paths, stray `:` prefixes, home-relative `~` paths and `file://` URLs. Repositories without the initialization marker are unaffected. A validation, path-resolution or file-identity error in the hook refuses the call rather than allowing a potentially unmanaged mutation.
+After initialization, a tool-call hook protects `docs/roadmap/**` and `docs/adr/**` in main and subagent sessions. It discovers the target's git work tree, checks lexical and resolved paths (including dangling symlink destinations), and blocks edits with guidance to use the roadmap tools.
+
+For existing file targets, the hook compares device and inode against multiply linked managed files in the session and target worktrees. This blocks native `write` and `edit` from changing a managed original through a hardlink alias, inside or outside the repository. Native paths follow the host's normalization for `@`-prefixed absolute paths, stray `:` prefixes, home-relative `~` paths and `file://` URLs.
+
+Repositories without the initialization marker are unaffected. A validation, path-resolution or file-identity error in the hook refuses the call.
 
 | Surface | Coverage |
 | --- | --- |
@@ -137,7 +149,11 @@ This workflow protection does not provide a filesystem sandbox. It does not inte
 
 Hardlink identity checks cover existing named file targets. They do not enumerate aliases hidden inside an otherwise unrelated directory/glob or anticipate a link created by a later shell statement: the target filename must be projected and already exist for its inode to be compared.
 
-Your own editor is not intercepted. You can edit authored body text, but retain the front matter, managed comment, fixed headings and generated-block delimiters. `check` reports unsupported stored HTML, reference definitions, Setext/thematic-break lines, quotes, container fences and ambiguous indentation as non-fixable structure errors with an editor repair hint; it does not emulate their CommonMark behavior. Closed top-level fences are masked when locating fixed headings, and an unclosed fence is also a structure error. Tools refuse malformed structure, and changing a closed stage or frozen round is reported by its hash check. Use a new stage for corrective work instead of rewriting closed history.
+You can edit authored body text in your own editor, which the hook does not intercept. Retain the front matter, managed comment, fixed headings and generated-block delimiters.
+
+`check` reports unsupported stored HTML, reference definitions, Setext/thematic-break lines, quotes, container fences and ambiguous indentation as non-fixable structure errors, with an editor repair hint. It does not emulate their CommonMark behavior. Closed top-level fences are masked when locating fixed headings; an unclosed fence is a structure error.
+
+Tools refuse malformed structure. Hash checks detect changes to closed stages or frozen rounds. Use a new stage for corrective work instead of rewriting closed history.
 
 Closure hashes are verified whenever they are retained, even if the current status was changed. A status that contradicts retained closure metadata is also an error. Generated-block fixes and document mutations refuse these integrity errors; restore the affected history with git instead of reopening it by hand.
 
@@ -163,7 +179,9 @@ Commit the changed documents according to your project's rules. Checked-out Mark
 
 ### State sidecar
 
-The main session publishes `roadmap.json` in the shared plugin-state envelope (see the [root README](../../README.md)). Its `state` is the `roadmap/status` payload, version 1, derived from the files on disk, or `null` when the repository has no initialized roadmap. It is rewritten at session start, switch, branch and tree, after every `roadmap_*` tool call and `/roadmap` command, and at the start of each agent turn so changes from subagents or external edits appear.
+The main session publishes `roadmap.json` in the shared plugin-state envelope (see the [root README](../../README.md)). Its `state` is the `roadmap/status` payload, version 1, derived from files on disk. It is `null` when the repository has no initialized roadmap.
+
+The file is rewritten at session start, switch, branch and tree, after every `roadmap_*` tool call and `/roadmap` command, and at the start of each agent turn. This includes changes made by subagents or external edits.
 
 | Field | Content |
 | --- | --- |
@@ -185,7 +203,9 @@ Install [omo-prometheus](../omo-prometheus/README.md) alongside roadmap to plan 
 4. After a ledger write first makes the bound plan complete, Prometheus emits `atlas:completed` with the executing session ID, plan ID, stage and verified gate verdicts/summaries. Roadmap stores a pending-close entry in that session and adds a reminder on its next turn while the stage remains active.
 5. The executing session maps the gate results to stage criteria, verifies their relevance and calls `roadmap_stage` with `action: "close"`. Completion sends a reminder and does not close the stage automatically. The normal evidence and disposition gate still applies.
 
-To check whether the integration is active, call `roadmap_status` with the stage ID to confirm the stage is active. After a start/join, the next turn's status shows `Bound stage: S01`. For a proposed plan, inspect its Atlas bundle's `approval.json`: `roadmapStage` is the durable sign that the plan carries a binding. After completion, the executing session receives `Plan <id> completed for <stage>` and gate evidence candidates in its next-turn context. Merely installing both plugins does not attach an unbound proposal to a stage.
+Call `roadmap_status` with the stage ID to confirm the stage is active. After a start/join, the next turn's status shows `Bound stage: S01`.
+
+For a proposed plan, inspect its Atlas bundle's `approval.json`. The `roadmapStage` field records the binding. After completion, the executing session receives `Plan <id> completed for <stage>` and gate evidence candidates in its next-turn context. Installing both plugins alone does not attach an unbound proposal to a stage.
 
 Completion deduplication is per Prometheus producer instance, not a durable exactly-once marker. Restarting the producer, reopening a completed ledger row and recompleting the plan can emit `atlas:completed` again. Roadmap deduplicates pending-close entries by `planId` within the receiving session's retained state; a repeat in another session can create a reminder there.
 
