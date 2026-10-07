@@ -37,6 +37,18 @@ omp plugin upgrade <name>@wows-omp-plugins
 | `omo-toolkit` | 分类与研究代理、技能以及文档类 MCP 服务器 | [README](plugins/omo-toolkit/README.zh.md) |
 | `roadmap` | 由工具管理的项目轮次、阶段、TODO 和 MADR 架构决策 | [README](plugins/roadmap/README.zh.md) |
 
+## 无终端 UI 的客户端
+
+这些插件也可以在 `omp --mode rpc`、`rpc-ui`、ACP 编辑器、SDK 以及 headless 运行中使用。只能在终端里显示的视图会退化为普通对话框，所有交互操作也都能用命令形式完成。各插件的退化方式见对应的 README。
+
+有工作流状态的插件会额外把状态以 JSON 快照写出，供客户端程序读取。快照路径为 `<session dir>/plugin-state/<session id>/<plugin>.json`，每次状态变化时原子替换。所有快照都使用同一个外层结构：
+
+```json
+{ "schema": "wows-omp-plugins/plugin-state", "version": 1, "plugin": "audit-goal", "sessionId": "…", "seq": 12, "updatedAt": "…", "state": { "kind": "audit-goal/audit", "version": 1 } }
+```
+
+在 RPC 模式下，会话目录和会话 id 从 `get_state` 的 `sessionFile`、`sessionId` 获取。`state` 为 `null` 表示插件在该会话中没有活动的工作流。`state` 的具体内容见各插件 README。
+
 ## 仓库结构
 
 ```

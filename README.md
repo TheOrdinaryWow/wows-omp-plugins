@@ -37,6 +37,18 @@ omp plugin upgrade <name>@wows-omp-plugins
 | `omo-toolkit` | Category and research agents, skills, and documentation MCP servers | [README](plugins/omo-toolkit/README.md) |
 | `roadmap` | Tool-managed project rounds, stages, TODOs and MADR architecture decisions | [README](plugins/roadmap/README.md) |
 
+## Clients without a terminal UI
+
+The plugins also run under `omp --mode rpc`, `rpc-ui`, ACP editors, the SDK, and headless runs. Terminal-only views fall back to plain dialogs, and every interactive action also has a command form. Each plugin's README covers its own fallbacks.
+
+Plugins that hold workflow state also write a JSON snapshot of that state for client programs. They write it to `<session dir>/plugin-state/<session id>/<plugin>.json` and replace the file atomically on every change. Each snapshot is wrapped in the same envelope:
+
+```json
+{ "schema": "wows-omp-plugins/plugin-state", "version": 1, "plugin": "audit-goal", "sessionId": "…", "seq": 12, "updatedAt": "…", "state": { "kind": "audit-goal/audit", "version": 1 } }
+```
+
+In RPC mode, take the session directory and id from `get_state` (`sessionFile`, `sessionId`). When `state` is `null`, the plugin has nothing active in that session. Each plugin README describes its own `state` payload.
+
 ## Repository layout
 
 ```
