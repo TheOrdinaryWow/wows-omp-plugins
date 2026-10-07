@@ -209,10 +209,39 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(3);
+    expect(restored.version).toBe(4);
     expect(restored.fixes).toEqual([]);
     expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
+  });
+
+  test("upgrades a version-three ledger in place to version four without a Git baseline", () => {
+    const current = createLedger("local://example-plan.md", plan);
+    addFixRow(current, "F2", { title: "Tighten scope", acceptance: "scope matches", agent: "task", reason: "drift" });
+    const legacy = {
+      ...structuredClone(current),
+      version: 3,
+      items: current.items.map((row) => ({ ...row, status: row.id === "T2" ? "open" : "done", attempt: "a", startedAt: 1 })),
+    };
+    const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
+    expect(restored).toBe(legacy as unknown as typeof restored);
+    expect(restored.version).toBe(4);
+    expect(restored.gitBaseline).toBeUndefined();
+    expect(restored.fixes.map((row) => row.id)).toEqual(["X1"]);
+    expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
+  });
+
+  test("records an optional Git baseline and refuses a malformed one", () => {
+    const sha = "a".repeat(40);
+    const ledger = createLedger("local://example-plan.md", plan, undefined, sha);
+    expect(ledger.gitBaseline).toBe(sha);
+    expect(restoreLedger(ledger, ledger.planFilePath, plan, ledger.planSha256)).toBe(ledger);
+    expect(createLedger("local://example-plan.md", plan, undefined, "b".repeat(64)).gitBaseline).toBe("b".repeat(64));
+    expect("gitBaseline" in createLedger("local://example-plan.md", plan)).toBe(false);
+    expect(() => createLedger("local://example-plan.md", plan, undefined, "HEAD")).toThrow("Git baseline");
+    expect(() => restoreLedger({ ...ledger, gitBaseline: "not-a-sha" }, ledger.planFilePath, plan, ledger.planSha256)).toThrow(
+      "Git baseline",
+    );
   });
 
   test("refuses altered plan bytes and corrupt structural state on restore", () => {
@@ -234,7 +263,7 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(3);
+    expect(restored.version).toBe(4);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
   });
 });

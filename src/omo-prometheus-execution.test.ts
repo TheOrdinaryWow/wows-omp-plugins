@@ -65,6 +65,8 @@ interface PreparedAssignment {
   current: ExecutionLedger;
   toolCallId: string;
   input: Record<string, unknown>;
+  /** Text of the start result, including plugin-collected F1 Git evidence. */
+  startText?: string;
 }
 
 /** Real extension entry and native registry/event bus; model execution is a controlled terminal-result boundary. */
@@ -563,7 +565,8 @@ async function scenario(name: string, root: string): Promise<void> {
       ...(result.details?.outputSchema ? { outputSchema: result.details.outputSchema, schemaMode: "strict" } : {}),
     };
     assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
-    return { item, current, toolCallId, input };
+    const startText = result.content.map((part: { text?: string }) => part.text ?? "").join("\n");
+    return { item, current, toolCallId, input, startText };
   };
   const publish = async (
     prepared: PreparedAssignment,
@@ -1587,6 +1590,9 @@ async function scenario(name: string, root: string): Promise<void> {
   await tasksDone();
   if (name === "untrusted-children") {
     const review = await prepare("F1");
+    // The workspace is a plain temporary directory: F1 still starts, with a plain statement instead of a diff.
+    assert.match(review.startText ?? "", /Git evidence unavailable: the plan workspace is not a Git work tree/);
+    assert.doesNotMatch(review.startText ?? "", /\$ git diff --stat/);
     await writeFile(join(artifacts, "Bogus.md"), "PASS");
     refused(await done("F1", "Bogus"));
     for (const [child, options] of [

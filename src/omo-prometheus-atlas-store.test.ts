@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type AtlasPlan, AtlasStore } from "../plugins/omo-prometheus/src/atlas-store.ts";
+import { collectComplianceEvidence } from "../plugins/omo-prometheus/src/git-evidence.ts";
 import {
   addFixRow,
   type ChildReceipt,
@@ -335,7 +337,7 @@ describe("Atlas shared plan storage", () => {
       await finish(f, upgraded, "session-b", "T2");
       await finish(f, upgraded, "session-b", "F4");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(3);
+      expect(saved.version).toBe(4);
       expect(saved.fixes).toEqual([]);
       expect(saved.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
@@ -343,6 +345,105 @@ describe("Atlas shared plan storage", () => {
       expect(JSON.parse(await fs.readFile(checkpointPath, "utf8")).approvalSha256).toBe(planDigest(oldApproval));
       expect((await upgraded.find(f.plan.id)).roadmapStage).toBeUndefined();
     });
+  });
+
+  test("a bundle written by ledger version three resumes as version four with its progress", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      for (const id of ["T1", "T3"]) await finish(f, f.store, "session-a", id);
+      await f.store.release(f.plan.id, "session-a");
+      const { gitBaseline: _baseline, ...current } = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      await fs.writeFile(f.plan.ledgerPath, JSON.stringify({ ...current, version: 3 }));
+      const upgraded = new AtlasStore(f.root);
+      expect((await upgraded.details(f.root)).find((detail) => detail.plan.id === f.plan.id)?.done).toBe(2);
+      await upgraded.acquire(f.plan.id, "session-b");
+      const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
+      expect(resumed.version).toBe(4);
+      expect(resumed.gitBaseline).toBeUndefined();
+      expect(ledgerRows(resumed).map((row) => row.status)).toEqual(["done", "open", "done", "open", "open", "open", "open"]);
+      await finish(f, upgraded, "session-b", "T2");
+      const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      expect(saved.version).toBe(4);
+      expect(saved.items.map((row) => row.status)).toEqual(["done", "done", "done"]);
+      expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
+      expect(saved.items[1]?.receipt?.sessionId).toBe("session-b");
+    });
+  });
+
+  test("F1 Git evidence reports the diff, log, and status since the recorded or derived baseline", async () => {
+    const repo = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "atlas-git-")));
+    const plain = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "atlas-plain-")));
+    const git = (args: string[], at?: number) =>
+      execFileSync("git", ["-C", repo, ...args], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Test",
+          GIT_AUTHOR_EMAIL: "test@example.invalid",
+          GIT_COMMITTER_NAME: "Test",
+          GIT_COMMITTER_EMAIL: "test@example.invalid",
+          ...(at === undefined ? {} : { GIT_AUTHOR_DATE: `@${at} +0000`, GIT_COMMITTER_DATE: `@${at} +0000` }),
+        },
+      }).trim();
+    try {
+      git(["init", "--quiet"]);
+      await fs.writeFile(path.join(repo, "tracked.txt"), "one\n");
+      git(["add", "tracked.txt"]);
+      git(["commit", "--quiet", "--no-gpg-sign", "-m", "initial state"], 1_700_000_000);
+      const base = git(["rev-parse", "HEAD"]);
+      const store = new AtlasStore(plain);
+      const plan = await store.create({
+        name: "Git plan",
+        cwd: repo,
+        content,
+        sourcePlanPath: "local://PLAN.md",
+        sourceSessionId: "session-a",
+        proposedByToolCallId: "native-proposal",
+        availableAgents: ["deep-low", "task"],
+      });
+      expect((JSON.parse(await fs.readFile(plan.ledgerPath, "utf8")) as ExecutionLedger).gitBaseline).toBe(base);
+      await fs.writeFile(path.join(repo, "tracked.txt"), "one\ntwo\n");
+      git(["commit", "--quiet", "--no-gpg-sign", "-am", "committed change"], 1_700_001_000);
+      await fs.writeFile(path.join(repo, "tracked.txt"), "one\ntwo\nthree\n");
+      await fs.writeFile(path.join(repo, "untracked file.txt"), "new\n");
+
+      const recorded = await collectComplianceEvidence({ cwd: repo, baseline: base, since: 0 });
+      expect(recorded.baselineSource).toBe("recorded");
+      expect(recorded.baseline).toBe(base);
+      expect(recorded.text).toContain(`$ git diff --stat ${base}`);
+      expect(recorded.text).toMatch(/tracked\.txt \| 2 \+\+/);
+      expect(recorded.text).toMatch(/[0-9a-f]+ committed change/);
+      expect(recorded.text).not.toContain("initial state");
+      expect(recorded.text).toContain(" M tracked.txt");
+      expect(recorded.text).toContain('?? "untracked file.txt"');
+
+      const derived = await collectComplianceEvidence({ cwd: repo, since: 1_700_000_500_000 });
+      expect(derived.baselineSource).toBe("derived");
+      expect(derived.baseline).toBe(base);
+      expect(derived.text).toContain("derived from timestamps");
+      expect(derived.text).toMatch(/[0-9a-f]+ committed change/);
+
+      const missing = await collectComplianceEvidence({ cwd: repo, baseline: "f".repeat(40), since: 1_600_000_000_000 });
+      expect(missing.baselineSource).toBe("none");
+      expect(missing.text).toContain("is no longer in this repository");
+      expect(missing.text).toContain("No Git baseline");
+      expect(missing.text).not.toContain("$ git diff --stat");
+      expect(missing.text).toContain('?? "untracked file.txt"');
+
+      for (let index = 0; index < 250; index++) await fs.writeFile(path.join(repo, `extra-${index}.txt`), "x\n");
+      const capped = await collectComplianceEvidence({ cwd: repo, baseline: base, since: 0 });
+      const status = capped.text.slice(capped.text.indexOf("$ git status --short"));
+      expect(status).toContain("[truncated: output exceeds 200 lines or 16 KB]");
+      expect(status.split("\n").filter((line) => line.startsWith("??")).length).toBeLessThanOrEqual(200);
+
+      const unavailable = await collectComplianceEvidence({ cwd: plain, since: Date.now() });
+      expect(unavailable.baselineSource).toBe("none");
+      expect(unavailable.text).toContain("Git evidence unavailable: the plan workspace is not a Git work tree");
+      expect((await store.list()).length).toBe(1);
+    } finally {
+      await fs.rm(repo, { recursive: true, force: true });
+      await fs.rm(plain, { recursive: true, force: true });
+    }
   });
 
   test("checkpoint-leading interrupted writes cannot resurrect an old ledger receipt", async () => {

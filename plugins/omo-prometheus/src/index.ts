@@ -34,6 +34,7 @@ import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
+import { collectComplianceEvidence } from "./git-evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
 import {
   addFixRow,
@@ -1788,6 +1789,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const ownership = record.ownership;
       let changedRow: LedgerItem | undefined;
       let completion: Omit<AtlasCompleted, "v" | "at"> | undefined;
+      let compliance: { cwd: string; baseline?: string; since: number } | undefined;
       try {
         const result = await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
           const wasComplete = isComplete(ledger);
@@ -1821,6 +1823,11 @@ export default function prometheus(pi: ExtensionAPI): void {
             };
           }
           if (params.action === "start") {
+            if (item.id === "F1") {
+              // Git runs after the ledger lock is released; an unrecorded baseline is dated by the earliest execution start.
+              const starts = ledgerRows(ledger).flatMap((row) => (row.startedAt === undefined ? [] : [row.startedAt]));
+              compliance = { cwd: plan.cwd, baseline: ledger.gitBaseline, since: starts.length ? Math.min(...starts) : ledger.createdAt };
+            }
             startRow(ledger, item.id);
             if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
           } else if (params.action === "done") {
@@ -1887,13 +1894,16 @@ export default function prometheus(pi: ExtensionAPI): void {
           };
         });
         if (completion) roadmap.emitCompleted(completion);
+        const gitEvidence = compliance && (await collectComplianceEvidence(compliance));
         if (changedRow) {
           return {
             ...result,
             content: [
               ...result.content,
+              ...(gitEvidence ? [{ type: "text" as const, text: gitEvidence.text }] : []),
               { type: "text" as const, text: atlasTodoRefreshCall(params.action as Exclude<LedgerParams["action"], "status">, changedRow) },
             ],
+            details: gitEvidence ? { ...result.details, complianceEvidence: gitEvidence } : result.details,
           };
         }
         return result;

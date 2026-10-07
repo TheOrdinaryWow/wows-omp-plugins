@@ -254,7 +254,7 @@ Native approval creates a plan bundle at `ctx.sessionManager.getSessionDir()/atl
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, and plan identity
-ledger.json      task and gate progress
+ledger.json      task and gate progress, plus the workspace's Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of immutable approval
 checkpoint.json independent attempt and receipt bindings
@@ -272,7 +272,7 @@ When Atlas stops with unfinished rows, the plugin continues it with a hidden `<a
 
 Progress is stored in the shared bundle. Child outputs are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the original session. `atlas_ledger status` shows where those outputs are. Only the child's own output is kept; files it merely links to are not copied. If a row's proof goes missing or changes, that row reopens, and an old session branch cannot roll shared progress back.
 
-Updating the plugin keeps existing plans runnable. A ledger written by an earlier release is upgraded when it is loaded, keeping its verified progress, and needs no fresh approval.
+Updating the plugin keeps existing plans runnable. A ledger written by an earlier release is upgraded when it is loaded, keeping its verified progress, and needs no fresh approval. Ledgers from before version 4 have no recorded Git baseline, so F1 dates one from the earliest recorded row start and says so.
 
 `timeline.jsonl` records attachment and release, row starts, completion, blocking and reopening, correction rows, and gate verdicts. It is display-only: a missing or damaged timeline never invalidates approval, ownership, receipts, or progress. Bundles from earlier releases show derived history from their ledger until real timeline events are appended; derived events are not written back. A crash-truncated final line and unknown future event versions are ignored.
 
@@ -284,7 +284,7 @@ Once every T row is done, Atlas sends F1 to F4 together to four separate fresh v
 
 | Gate | Agent | Fallback | Checks |
 | --- | --- | --- | --- |
-| F1. Plan compliance review | `momus` (`review_kind: compliance`) | `reviewer` | executed changes match the approved plan, using the ledger summary and `git diff --stat` |
+| F1. Plan compliance review | `momus` (`review_kind: compliance`) | `reviewer` | executed changes match the approved plan, using the ledger summary and the Git evidence the plugin collects read-only when F1 starts (`git diff --stat`, `git log --oneline`, `git status --short` since the plan's baseline commit, or a plain "unavailable") |
 | F2. Code quality review | `deep-high` | `task` | maintainability, scope, test value, and evidence-backed blockers |
 | F3. Real-surface QA | `deep-low` | `task` | every scenario in the plan's Verification section run on the real surface with command and observed result |
 | F4. Success-criteria fidelity | `deep-high` | `task` | every named success criterion and adversarial case, tied to evidence |

@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { type AtlasEvent, derivedTimeline, ledgerEvents, parseTimeline, rowSnapshot } from "#src/atlas-timeline.ts";
 
 import { validateGateOutput } from "./evidence.ts";
+import { gitHead } from "./git-evidence.ts";
 import {
   type ChildReceipt,
   createLedger,
@@ -442,6 +443,8 @@ export class AtlasStore {
         .slice(0, 48)
         .replace(/^-+|-+$/g, "") || "plan";
     const id = `${slug}--${randomUUID()}`;
+    // The F1 gate measures executed changes from here; outside Git (or without commits) there is no baseline.
+    const gitBaseline = await gitHead(options.cwd);
     await this.#base(true);
     const stage = path.join(this.#root, `.pending-${randomUUID()}`);
     const final = path.join(this.#root, id);
@@ -450,7 +453,7 @@ export class AtlasStore {
       await fs.mkdir(path.join(stage, "evidence"), { mode: 0o700 });
       await fs.mkdir(path.join(stage, "ownership"), { mode: 0o700 });
       const planFilePath = path.join(final, "plan.md");
-      const ledger = createLedger(planFilePath, options.content, options.availableAgents);
+      const ledger = createLedger(planFilePath, options.content, options.availableAgents, gitBaseline);
       const approval: Approval = {
         version: 2,
         id,

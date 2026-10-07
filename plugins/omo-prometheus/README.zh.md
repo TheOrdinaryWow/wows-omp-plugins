@@ -254,7 +254,7 @@ Prometheus 根据会话中 `task` 工具实际列出的代理制定计划，该�
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, and plan identity
-ledger.json      task and gate progress
+ledger.json      task and gate progress, plus the workspace's Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of immutable approval
 checkpoint.json independent attempt and receipt bindings
@@ -272,7 +272,7 @@ Atlas 停止时若仍有未完成行，插件会用包含账本摘要的隐藏 `
 
 进度保存在共享计划包中。子代理输出会复制到 `evidence/`，并重新核对摘要值，因此即使删除原会话，已验证进度仍然保留。`atlas_ledger status` 显示这些输出的位置。只保留子代理自身的输出；仅在输出中链接的文件不会复制。如果某行的证明缺失或发生变化，该行会重新打开；旧会话分支无法回滚共享进度。
 
-更新插件后，现有计划仍可运行。早期版本写入的账本会在加载时升级，保留已验证进度，无需重新批准。
+更新插件后，现有计划仍可运行。早期版本写入的账本会在加载时升级，保留已验证进度，无需重新批准。版本 4 之前的账本没有记录 Git 基线，F1 会以最早记录的行启动时间推导基线，并在证据中注明。
 
 `timeline.jsonl` 记录附加与释放、行启动、完成、阻塞及重新打开、修正行和关卡结论。它仅用于显示：时间线缺失或损坏绝不会使批准、所有权、回执或进度失效。早期版本的计划包会根据账本展示推导历史，直到追加真实时间线事件；推导事件不会写回。因崩溃截断的最后一行及未知的未来事件版本会被忽略。
 
@@ -284,7 +284,7 @@ Atlas 停止时若仍有未完成行，插件会用包含账本摘要的隐藏 `
 
 | 关卡 | 代理 | 回退代理 | 检查内容 |
 | --- | --- | --- | --- |
-| F1. 计划合规审查 | `momus`（`review_kind: compliance`） | `reviewer` | 根据账本摘要和 `git diff --stat`，检查实际变更是否符合已批准计划 |
+| F1. 计划合规审查 | `momus`（`review_kind: compliance`） | `reviewer` | 根据账本摘要和 F1 启动时插件以只读方式收集的 Git 证据（自计划基线提交以来的 `git diff --stat`、`git log --oneline`、`git status --short`，或明确说明“不可用”），检查实际变更是否符合已批准计划 |
 | F2. 代码质量审查 | `deep-high` | `task` | 可维护性、范围、测试价值及有证据支持的阻塞问题 |
 | F3. 真实界面 QA | `deep-low` | `task` | 在真实界面或环境上执行计划 Verification 章节中的每个场景，记录命令和实际观察结果 |
 | F4. 成功标准忠实性 | `deep-high` | `task` | 逐一核查每项明确列出的成功标准和对抗性场景，并关联证据 |

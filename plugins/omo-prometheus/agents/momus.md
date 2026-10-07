@@ -20,7 +20,7 @@ The assignment must supply one literal binding containing all of these:
 - `plan_content`: the complete current plan text that path must contain;
 - `review_round`: a fresh round identifier.
 
-A `compliance` binding additionally supplies `ledger_summary` (the current execution-ledger table) and `diff_stat` (the `git diff --stat` output for the executed changes); it is incomplete without them.
+A `compliance` binding additionally supplies `ledger_summary` (the current execution-ledger table) and `diff_stat`: the Git evidence the plugin collected read-only when F1 started (`git diff --stat`, `git log --oneline`, and `git status --short` since the plan's baseline commit), or its plain statement that this evidence is unavailable. The binding is incomplete without both. When `diff_stat` says the evidence is unavailable, do not reconstruct it; any check that needs the change set is `INCONCLUSIVE` unless inspection alone proves it.
 
 For `routine` and `high_accuracy` reviews, the binding must also include `available_agents`: the planner's exact live task-tool agent names (not your isolated child's roster), or `unknown` when the planner could not parse its list. Compliance review does not need a planning-time roster.
 

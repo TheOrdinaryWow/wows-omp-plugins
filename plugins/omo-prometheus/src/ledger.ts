@@ -24,7 +24,7 @@ export interface LedgerItem {
 }
 
 export interface ExecutionLedger {
-  version: 3;
+  version: 4;
   ledgerId: string;
   planFilePath: string;
   planSha256: string;
@@ -33,6 +33,8 @@ export interface ExecutionLedger {
   fixes: LedgerItem[];
   gates: LedgerItem[];
   createdAt: number;
+  /** `HEAD` commit of the plan workspace when the bundle was created; absent outside Git or for upgraded ledgers. */
+  gitBaseline?: string;
 }
 
 export function ledgerRows(ledger: ExecutionLedger): LedgerItem[] {
@@ -61,6 +63,7 @@ export function planDigest(content: string): string {
 
 const ROW = /^- \[([ xX~])\] (T\d+|F[1-4])\. (.+)$/;
 const AGENT_NAME = /^[A-Za-z0-9_-]+$/;
+const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const GATES = [
   { id: "F1", title: "Plan compliance review", agent: "momus" },
   { id: "F2", title: "Code quality review", agent: "deep-high" },
@@ -193,7 +196,13 @@ export function parsePlanChecklist(
   return { items, gates, errors };
 }
 
-export function createLedger(planFilePath: string, planContent: string, availableAgents?: readonly string[]): ExecutionLedger {
+export function createLedger(
+  planFilePath: string,
+  planContent: string,
+  availableAgents?: readonly string[],
+  gitBaseline?: string,
+): ExecutionLedger {
+  if (gitBaseline !== undefined && !GIT_SHA.test(gitBaseline)) throw new Error("Invalid Git baseline commit");
   const parsed = parsePlanChecklist(planContent, availableAgents);
   if (parsed.errors.length) throw new Error(parsed.errors.join("; "));
   const now = Date.now();
@@ -205,7 +214,7 @@ export function createLedger(planFilePath: string, planContent: string, availabl
     updatedAt: now,
   });
   return {
-    version: 3,
+    version: 4,
     ledgerId: randomUUID(),
     planFilePath,
     planSha256: planDigest(planContent),
@@ -213,6 +222,7 @@ export function createLedger(planFilePath: string, planContent: string, availabl
     fixes: [],
     gates: parsed.gates.map(withDispatch),
     createdAt: now,
+    ...(gitBaseline === undefined ? {} : { gitBaseline }),
   };
 }
 
@@ -268,7 +278,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
 export function restoreLedger(data: unknown, planFilePath: string, planContent: string, approvedSha256: string): ExecutionLedger {
   if (!data || typeof data !== "object" || !("version" in data)) throw new Error("Execution ledger is not a versioned object");
   const version = data.version;
-  if (version !== 1 && version !== 2 && version !== 3) throw new Error("Unsupported execution ledger version");
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new Error("Unsupported execution ledger version");
   // Validate the complete persisted shape and its approved definition below before returning it.
   const saved = data as ExecutionLedger;
   if (saved.planFilePath !== planFilePath || saved.planSha256 !== approvedSha256 || planDigest(planContent) !== approvedSha256) {
@@ -277,12 +287,13 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   if (
     !Array.isArray(saved.items) ||
     !Array.isArray(saved.gates) ||
-    (version === 3 && !Array.isArray(saved.fixes)) ||
-    !Number.isFinite(saved.createdAt)
+    (version >= 3 && !Array.isArray(saved.fixes)) ||
+    !Number.isFinite(saved.createdAt) ||
+    (version !== 1 && saved.gitBaseline !== undefined && (typeof saved.gitBaseline !== "string" || !GIT_SHA.test(saved.gitBaseline)))
   ) {
-    throw new Error("Malformed execution ledger rows or creation time");
+    throw new Error("Malformed execution ledger rows, creation time, or Git baseline");
   }
-  const fixes: LedgerItem[] = version === 3 ? saved.fixes : [];
+  const fixes: LedgerItem[] = version >= 3 ? saved.fixes : [];
   const expected = createLedger(
     planFilePath,
     planContent,
@@ -353,10 +364,11 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   if (typeof saved.ledgerId !== "string" || !saved.ledgerId) throw new Error("Missing execution ledger identity");
   if (version === 2) {
     // Migrate in place: callers rely on receiving the same object they persisted.
-    saved.version = 3;
     saved.fixes = [];
     for (const gate of saved.gates) gate.dependsOn = gateDependencies(gate.id);
   }
+  // Version four only adds the optional Git baseline; upgraded ledgers stay without one.
+  saved.version = 4;
   return saved;
 }
 
