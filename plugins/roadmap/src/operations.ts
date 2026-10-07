@@ -663,7 +663,15 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
   const adrDisposed = new Set<string>();
   for (const disposition of input.adrs ?? []) {
     const adr = pendingAdrs.find((candidate) => candidate.id === disposition.id);
-    if (!adr || adrDisposed.has(adr.id)) throw new Refusal(`Unknown or repeated proposed ADR ${disposition.id}.`);
+    if (adrDisposed.has(disposition.id)) throw new Refusal(`ADR ${disposition.id} is listed more than once.`);
+    if (!adr) {
+      const known = model.adrs.find((candidate) => candidate.id === disposition.id);
+      throw new Refusal(
+        known
+          ? `${known.id} is ${known.status}${known.stage === stage.id ? "" : ` and tied to ${known.stage ?? "no stage"}`}, not a proposed ADR of ${stage.id}; list only this stage's proposed ADRs in adrs.`
+          : `Unknown ADR ${disposition.id}.`,
+      );
+    }
     if (disposition.status !== "accepted" && disposition.status !== "rejected")
       throw new Refusal("A proposed ADR needs accepted or rejected.");
     adrDisposed.add(adr.id);

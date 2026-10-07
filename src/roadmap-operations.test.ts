@@ -306,6 +306,10 @@ describe("roadmap stage lifecycle and close gate", () => {
     };
     refused(await stage(repo, main, close), "Every proposed ADR");
     refused(await stage(repo, sub, { ...close, adrs: [{ id: "ADR-0002", status: "accepted" }] }), "main agent");
+    const pending = { id: "ADR-0002", status: "accepted" } as const;
+    refused(await stage(repo, main, { ...close, adrs: [pending, { id: "ADR-0001", status: "accepted" }] }), "ADR-0001 is accepted");
+    refused(await stage(repo, main, { ...close, adrs: [pending, pending] }), "listed more than once");
+    refused(await stage(repo, main, { ...close, adrs: [pending, { id: "ADR-0099", status: "accepted" }] }), "Unknown ADR ADR-0099");
     expect(await managedBytes(repo)).toEqual(proposed);
     success(await stage(repo, main, { ...close, adrs: [{ id: "ADR-0002", status: "rejected" }] }));
     expect((await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002")?.status).toBe("rejected");

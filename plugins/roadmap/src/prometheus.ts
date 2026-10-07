@@ -14,8 +14,14 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+interface BoundStage {
+  id: string;
+  title: string;
+  round: string;
+}
+
 /** Read only the bound stage synchronously: pi.events cannot await a binding answer. */
-function boundStage(repoRoot: string, id: string): { id: string; title: string; round: string } | undefined {
+function boundStage(repoRoot: string, id: string): BoundStage | undefined {
   const roadmapDir = join(repoRoot, "docs/roadmap");
   const indexPath = join(roadmapDir, "README.md");
   parseRoadmapIndex(readFileSync(indexPath, "utf8"), indexPath);
@@ -65,22 +71,30 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
       !payload.requestId
     )
       return;
+    let repoRoot: string;
+    let stage: BoundStage | undefined;
     try {
       ses.ensure(ctx);
-      const repoRoot = discoverRepo(ctx.cwd)?.repoRoot ?? resolve(ctx.cwd);
-      const binding = ses.getBinding(repoRoot);
-      const stage = binding ? boundStage(repoRoot, binding.stage) : undefined;
-      pi.events.emit("roadmap:binding", {
-        v: 1,
-        sessionId: payload.sessionId,
-        requestId: payload.requestId,
-        repoRoot,
-        toolSourcePath: TOOL_SOURCE_PATH,
-        ...(stage ? { stage } : {}),
-      });
+      repoRoot = discoverRepo(ctx.cwd)?.repoRoot ?? resolve(ctx.cwd);
     } catch (error) {
       pi.logger.warn("roadmap could not answer the Prometheus binding request", { error: String(error) });
+      return;
     }
+    try {
+      const binding = ses.getBinding(repoRoot);
+      stage = binding ? boundStage(repoRoot, binding.stage) : undefined;
+    } catch (error) {
+      // Tool provenance must not depend on readable stage documents; answer without a stage.
+      pi.logger.warn("roadmap could not read the bound stage for Prometheus", { error: String(error) });
+    }
+    pi.events.emit("roadmap:binding", {
+      v: 1,
+      sessionId: payload.sessionId,
+      requestId: payload.requestId,
+      repoRoot,
+      toolSourcePath: TOOL_SOURCE_PATH,
+      ...(stage ? { stage } : {}),
+    });
   });
 
   const completionSubscription = pi.events.on("atlas:completed", (payload) => {
