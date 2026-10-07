@@ -68,6 +68,33 @@ Fixes can introduce new mechanisms that later rounds must audit, prolonging the 
 
 No outcome accepts the audited work. Recorded results always carry `artifactAccepted: false`; acceptance is up to you and your project's own process.
 
+## Host modes
+
+`/audit <target>` takes the target as its argument, so it works the same in the TUI, RPC (`--mode rpc`), ACP editors, the SDK, and headless runs.
+
+- TUI and RPC show the round count in the status line (`Audit 2/5 · standard`); ACP ignores it.
+- At a finite round limit, TUI, RPC, and ACP clients get the add/remove/stop choice as a select dialog. Without a UI, the plugin records the noninteractive stop described above.
+- Without a UI, `/audit` usage errors and refusals (no target, goal already set, plan mode, settings errors) appear as visible messages in the session instead of notifications.
+
+## State snapshot
+
+The plugin publishes `audit-goal.json` in the shared snapshot envelope (see the [marketplace README](../../README.md)) whenever it saves the ledger. Sessions that never ran `/audit` get no file. The `state` payload is:
+
+| Field | Meaning |
+| --- | --- |
+| `kind`, `version` | `"audit-goal/audit"`, `1` |
+| `status` | `running`, `awaiting-limit-decision` (finite limit reached, user choice pending), `converged`, `saturated`, `stopped`, or `invalid` (latest ledger entry is malformed or could not be saved; no other fields) |
+| `ended` | `true` once the audit goal completed, was dropped, or was replaced |
+| `target`, `intensity`, `maxRounds`, `laneLimit`, `baseline` | Audit setup; `maxRounds` and `laneLimit` are `null` when unlimited, `baseline` is `null` outside git |
+| `rounds[]` | `index`, `counts` (`critical`, `major`, `minor`, `picky`), `rejected`, `loopInduced`, and `verdict` (`continue`, `threshold-ready`, `cap-reached`; evaluated against the current round limit) |
+| `totals` | Sums of the round counts, plus `rejected` and `loopInduced` |
+| `openFindings` | `counts` by severity and `items[]` (`id`, `severity`, `summary`, `origin`) for findings still open |
+| `conclusion` | `null`, or `kind` (`threshold-convergence`, `capability-saturation`, `stop`), `reason`, and cited `evidence[]` |
+| `stopReason` | The conclusion reason when the audit stopped, otherwise `null` |
+| `artifactAccepted` | Always `false` |
+
+When a branch switch leaves the session without an audit ledger, the file is rewritten with `state: null`.
+
 ## Reserved agents
 
 `audit-auditor` (read-only) and `audit-fixer` appear in every session's `task` agent list because OMP cannot hide plugin agents. The plugin refuses to dispatch them outside a running `/audit` loop, from subagents, or through `eval` `agent()`. Both use blocking calls, so the main agent waits for each batch. `judge-dispatch` from this marketplace never routes to or away from them.

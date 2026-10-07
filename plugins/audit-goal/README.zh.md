@@ -68,6 +68,33 @@ omp plugin install audit-goal@wows-omp-plugins
 
 任何结束结果都不代表被审计的工作已经通过验收。记录的结果始终带有 `artifactAccepted: false`；是否验收由你和项目自身的流程决定。
 
+## 宿主模式
+
+`/audit <target>` 通过参数接收审计目标，因此在 TUI、RPC（`--mode rpc`）、ACP 编辑器、SDK 和无界面运行中用法相同。
+
+- TUI 和 RPC 会在状态栏显示轮次（`Audit 2/5 · standard`）；ACP 会忽略状态栏。
+- 达到有限轮数上限时，TUI、RPC 和 ACP 客户端会通过选择对话框询问增加轮数、取消上限或停止。没有界面时，插件会记录上文所述的非交互停止结果。
+- 没有界面时，`/audit` 的用法错误和拒绝原因（缺少目标、已有目标、处于计划模式、设置无效）会作为会话中的可见消息显示，而不是通知。
+
+## 状态快照
+
+插件每次保存账本时，都会以共享快照信封格式（见[市场 README](../../README.zh.md)）发布 `audit-goal.json`。从未运行过 `/audit` 的会话不会生成该文件。`state` 载荷如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `kind`、`version` | `"audit-goal/audit"`、`1` |
+| `status` | `running`、`awaiting-limit-decision`（已达到有限轮数上限，等待用户选择）、`converged`、`saturated`、`stopped`，或 `invalid`（最新账本条目格式无效或无法保存；此时没有其他字段） |
+| `ended` | 审计目标已完成、被放弃或被替换时为 `true` |
+| `target`、`intensity`、`maxRounds`、`laneLimit`、`baseline` | 审计配置；不限时 `maxRounds` 和 `laneLimit` 为 `null`，不在 git 仓库中时 `baseline` 为 `null` |
+| `rounds[]` | `index`、`counts`（`critical`、`major`、`minor`、`picky`）、`rejected`、`loopInduced` 和 `verdict`（`continue`、`threshold-ready`、`cap-reached`；按当前轮数上限计算） |
+| `totals` | 各轮计数之和，另含 `rejected` 和 `loopInduced` |
+| `openFindings` | 按严重程度统计的 `counts`，以及仍未解决问题的 `items[]`（`id`、`severity`、`summary`、`origin`） |
+| `conclusion` | `null`，或包含 `kind`（`threshold-convergence`、`capability-saturation`、`stop`）、`reason` 和引用的 `evidence[]` |
+| `stopReason` | 审计停止时为结论理由，否则为 `null` |
+| `artifactAccepted` | 始终为 `false` |
+
+切换分支后若会话中已没有审计账本，文件会被改写为 `state: null`。
+
 ## 专用代理
 
 `audit-auditor`（只读）和 `audit-fixer` 会出现在每个会话的 `task` 代理列表中，因为 OMP 无法隐藏插件代理。插件会拒绝在运行中的 `/audit` 循环之外派出它们，也会拒绝由子代理派出它们，或通过 `eval` 的 `agent()` 派出它们。两者都使用阻塞调用，主代理会等待每批执行结束。本市场中的 `judge-dispatch` 不会将其他代理路由为它们，也不会将它们路由为其他代理。

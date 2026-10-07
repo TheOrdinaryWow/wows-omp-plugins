@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -9,11 +13,13 @@ import { type AuditState, createConclusion, type RoundRecord } from "../plugins/
 
 const ENTRY = "wows-omp-audit-goal.state";
 const registrations: string[] = [];
+const sessionDirs: string[] = [];
 let serial = 0;
 
 afterEach(() => {
   const registry = AgentRegistry.global();
   for (const id of registrations.splice(0)) registry.unregister(id);
+  for (const dir of sessionDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 function finding(round: number, severity: "critical" | "major") {
@@ -82,7 +88,9 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
     { type: "custom", customType: ENTRY, data: structuredClone(seed) },
   ];
   let activeTools: string[] = [];
-  const sessionManager = { getSessionId: () => id, getBranch: () => branch };
+  const sessionDir = mkdtempSync(join(tmpdir(), "audit-goal-session-"));
+  sessionDirs.push(sessionDir);
+  const sessionManager = { getSessionId: () => id, getBranch: () => branch, getSessionDir: () => sessionDir };
   const goal = { id: "g1", objective: "Audit loop (/audit): checkout restart path", status: "active" };
   const session = { sessionManager, getGoalModeState: () => ({ goal }) } as unknown as AgentSession;
   AgentRegistry.global().register({ id, displayName: id, kind: "main", session });
@@ -90,13 +98,20 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
   const hooks = new Map<string, Hook>();
   let tool: Tool | undefined;
   let failNextPersist = false;
+  let command: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
+  const messages: Array<{ customType: string; content: string; display: boolean }> = [];
   const pi = {
     zod: z,
     on: (event: string, callback: Hook) => hooks.set(event, callback),
     registerTool: (registration: Tool) => {
       tool = registration;
     },
-    registerCommand: () => {},
+    registerCommand: (_name: string, options: { handler: typeof command }) => {
+      command = options.handler;
+    },
+    sendMessage: (message: { customType: string; content: string; display: boolean }) => {
+      messages.push(message);
+    },
     appendEntry: (customType: string, data: unknown) => {
       if (failNextPersist) {
         failNextPersist = false;
@@ -140,6 +155,11 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
     call,
     hook,
     latest,
+    messages,
+    command: (args: string) => command?.(args, ctx),
+    sidecar: async () =>
+      JSON.parse(await readFile(join(sessionDir, "plugin-state", id, "audit-goal.json"), "utf8")) as Record<string, unknown>,
+    sessionId: id,
     active: () => activeTools,
     failNextPersist: () => {
       failNextPersist = true;
@@ -314,5 +334,48 @@ describe("registered audit_round and goal hooks", () => {
     expect(await runtime.hook("tool_call", { toolName: "task", toolCallId: "reserved", input: { agent: "audit-fixer" } })).toMatchObject({
       block: true,
     });
+  });
+
+  test("every ledger save publishes the derived audit payload to the session sidecar", async () => {
+    const runtime = harness(initial({ maxRounds: 1 }), null);
+    await runtime.hook("session_start", {});
+    await runtime.call({ op: "record", ...round(1, 1) });
+    await runtime.hook("session_shutdown", {});
+    const recorded = await runtime.sidecar();
+    expect(recorded).toMatchObject({
+      schema: "wows-omp-plugins/plugin-state",
+      version: 1,
+      plugin: "audit-goal",
+      sessionId: runtime.sessionId,
+      state: {
+        kind: "audit-goal/audit",
+        version: 1,
+        status: "awaiting-limit-decision",
+        ended: false,
+        target: "checkout restart path",
+        maxRounds: 1,
+        rounds: [{ index: 1, counts: { critical: 0, major: 1, minor: 0, picky: 0 }, verdict: "cap-reached" }],
+        openFindings: { counts: { major: 1 }, items: [{ id: "r1-major", severity: "major" }] },
+        conclusion: null,
+        stopReason: null,
+        artifactAccepted: false,
+      },
+    });
+    await runtime.hook("session_start", {});
+    await runtime.call({ op: "extend" });
+    await runtime.hook("session_shutdown", {});
+    const stopped = await runtime.sidecar();
+    expect(stopped.seq).toBeGreaterThan(recorded.seq as number);
+    expect(stopped.state).toMatchObject({
+      status: "stopped",
+      stopReason: "Noninteractive finite round limit reached; the audit stopped without convergence.",
+      openFindings: { counts: { major: 1 } },
+    });
+  });
+
+  test("headless /audit usage errors are sent as visible messages", async () => {
+    const runtime = harness(initial(), null);
+    await runtime.command("   ");
+    expect(runtime.messages).toEqual([expect.objectContaining({ content: "Usage: /audit <audit-target>", display: true })]);
   });
 });

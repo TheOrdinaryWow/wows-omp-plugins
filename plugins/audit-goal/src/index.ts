@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -5,6 +6,7 @@ import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionCont
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
+import { auditPayload, invalidAuditPayload } from "#src/audit-payload.ts";
 import { readHostSetting } from "#src/host-settings.ts";
 import {
   type AuditSettings,
@@ -29,10 +31,13 @@ import {
   validateRound,
   verdict,
 } from "#src/ledger.ts";
+import { PluginStatePublisher, pluginStatePath } from "#src/plugin-state.ts";
 
+const PLUGIN_NAME = "audit-goal";
 const PACKAGE_NAME = "wows-omp-plugin-audit-goal";
 const STATE_ENTRY = "wows-omp-audit-goal.state";
 const PROTOCOL_MESSAGE = "wows-omp-audit-goal.protocol";
+const COMMAND_NOTICE = "wows-omp-audit-goal.command-status";
 const STATUS_KEY = "audit-goal";
 const ROUND_TOOL = "audit_round";
 const LOOP_TOOLS = ["goal", ROUND_TOOL];
@@ -120,6 +125,40 @@ export default function auditGoal(pi: ExtensionAPI): void {
   const invalidStates = new Set<string>();
   /** In-flight audit subagents per session, keyed by the dispatching task tool call. */
   const inflight = new Map<string, Map<string, number>>();
+  /** Sidecar files written by this process; a later null must replace them even before the first write lands. */
+  const publishedFiles = new Set<string>();
+  let publishWarned = false;
+  const warnPublish = (error: unknown): void => {
+    if (publishWarned) return;
+    publishWarned = true;
+    pi.logger.warn("audit-goal could not publish its state sidecar", { error: errorMessage(error) });
+  };
+  const publisher = new PluginStatePublisher(PLUGIN_NAME, warnPublish);
+
+  /** Mirrors the session's persisted ledger to the sidecar; sessions that never had an audit get no file. */
+  const publishState = (ctx: ExtensionContext): void => {
+    try {
+      const sessionId = ctx.sessionManager.getSessionId();
+      const target = { sessionDir: ctx.sessionManager.getSessionDir(), sessionId };
+      const state = states.get(sessionId);
+      const payload = invalidStates.has(sessionId) ? invalidAuditPayload() : state ? auditPayload(state) : null;
+      const file = pluginStatePath(target, PLUGIN_NAME);
+      if (payload === null && !publishedFiles.has(file) && !existsSync(file)) return;
+      publishedFiles.add(file);
+      publisher.publish(target, payload);
+    } catch (error) {
+      warnPublish(error);
+    }
+  };
+
+  /** Command feedback must stay visible without a UI, where notify is dropped. */
+  const commandNotice = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void => {
+    if (ctx.hasUI) {
+      ctx.ui.notify(message, type);
+      return;
+    }
+    pi.sendMessage({ customType: COMMAND_NOTICE, content: message, display: true, attribution: "agent" });
+  };
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
     try {
@@ -154,6 +193,8 @@ export default function auditGoal(pi: ExtensionAPI): void {
       invalidStates.add(sessionId);
       pi.logger.warn("audit-goal could not persist its ledger", { error: errorMessage(error) });
       throw error;
+    } finally {
+      publishState(ctx);
     }
   };
 
@@ -196,7 +237,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     try {
       persist(ctx, ended);
     } catch {
-      ctx.ui.notify("Audit ledger could not be saved; do not treat this audit as concluded.", "error");
+      commandNotice(ctx, "Audit ledger could not be saved; do not treat this audit as concluded.", "error");
       return;
     }
     showStatus(ctx, ended);
@@ -247,6 +288,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
         pi.logger.warn("audit-goal could not restore its ledger", { error: errorMessage(error) });
       }
     }
+    publishState(ctx);
     showStatus(ctx, states.get(sessionId));
   };
 
@@ -265,7 +307,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
       );
       return true;
     } catch (error) {
-      ctx.ui.notify(`Audit protocol could not be loaded (${errorMessage(error)}).`, "error");
+      commandNotice(ctx, `Audit protocol could not be loaded (${errorMessage(error)}).`, "error");
       return false;
     }
   };
@@ -274,7 +316,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     try {
       return parseSettings(await getPluginSettings(PACKAGE_NAME, ctx.cwd));
     } catch (error) {
-      ctx.ui.notify(`audit-goal settings are invalid (${errorMessage(error)}).`, "error");
+      commandNotice(ctx, `audit-goal settings are invalid (${errorMessage(error)}).`, "error");
       return undefined;
     }
   };
@@ -282,37 +324,37 @@ export default function auditGoal(pi: ExtensionAPI): void {
   const startAudit = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
     const target = args.trim();
     if (!target) {
-      ctx.ui.notify("Usage: /audit <audit-target>", "warning");
+      commandNotice(ctx, "Usage: /audit <audit-target>", "warning");
       return;
     }
     const session = mainSession(ctx);
     if (!session) {
-      ctx.ui.notify("/audit runs in the main session only", "warning");
+      commandNotice(ctx, "/audit runs in the main session only", "warning");
       return;
     }
     if (liveAudit(ctx)) {
-      ctx.ui.notify("An /audit loop is already running in this session. Use /goal to manage it.", "warning");
+      commandNotice(ctx, "An /audit loop is already running in this session. Use /goal to manage it.", "warning");
       return;
     }
     try {
       if ((await readHostSetting(session.settings, "goal.enabled")) === false) {
-        ctx.ui.notify("Goal mode is disabled. Enable it in settings (goal.enabled).", "warning");
+        commandNotice(ctx, "Goal mode is disabled. Enable it in settings (goal.enabled).", "warning");
         return;
       }
     } catch (error) {
       pi.logger.warn("audit-goal could not read goal.enabled; assuming enabled", { error: errorMessage(error) });
     }
     if (session.getPlanModeState()?.enabled) {
-      ctx.ui.notify("Exit plan mode before starting /audit.", "warning");
+      commandNotice(ctx, "Exit plan mode before starting /audit.", "warning");
       return;
     }
     if (vibeModeActive(session)) {
-      ctx.ui.notify("Exit vibe mode before starting /audit.", "warning");
+      commandNotice(ctx, "Exit vibe mode before starting /audit.", "warning");
       return;
     }
     const existing = session.getGoalModeState()?.goal;
     if (existing && existing.status !== "complete" && existing.status !== "dropped") {
-      ctx.ui.notify("This session already has a goal. Finish it or run /goal drop before starting /audit.", "warning");
+      commandNotice(ctx, "This session already has a goal. Finish it or run /goal drop before starting /audit.", "warning");
       return;
     }
     const settings = await loadSettings(ctx);
@@ -350,7 +392,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     try {
       await buildProtocol(state);
     } catch (error) {
-      ctx.ui.notify(`Audit protocol could not be loaded (${errorMessage(error)}).`, "error");
+      commandNotice(ctx, `Audit protocol could not be loaded (${errorMessage(error)}).`, "error");
       return;
     }
 
@@ -360,7 +402,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
       state.goalId = created.goal.id;
     } catch (error) {
       await syncLoopTools(state, false);
-      ctx.ui.notify(`Could not start the audit goal (${errorMessage(error)}).`, "error");
+      commandNotice(ctx, `Could not start the audit goal (${errorMessage(error)}).`, "error");
       return;
     }
     try {
@@ -369,7 +411,8 @@ export default function auditGoal(pi: ExtensionAPI): void {
       await syncLoopTools(state, false);
       await session.goalRuntime.dropGoal();
       invalidStates.delete(ctx.sessionManager.getSessionId());
-      ctx.ui.notify(`Could not save the audit ledger (${errorMessage(error)}); the goal was dropped.`, "error");
+      publishState(ctx);
+      commandNotice(ctx, `Could not save the audit ledger (${errorMessage(error)}); the goal was dropped.`, "error");
       return;
     }
     showStatus(ctx, state);
@@ -679,10 +722,11 @@ export default function auditGoal(pi: ExtensionAPI): void {
   pi.on("session_switch", (_event, ctx) => rehydrate(ctx));
   pi.on("session_branch", (_event, ctx) => rehydrate(ctx));
   pi.on("session_tree", (_event, ctx) => rehydrate(ctx));
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_shutdown", async (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     states.delete(sessionId);
     invalidStates.delete(sessionId);
     inflight.delete(sessionId);
+    await publisher.flush();
   });
 }
