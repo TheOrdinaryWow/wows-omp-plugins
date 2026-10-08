@@ -2,10 +2,11 @@ import { relative } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import type { Model, StageDoc, StageStatus, TodoItem } from "#src/documents.ts";
+import { type Model, overdue, type RoundDoc, type StageDoc, type StageStatus, type TodoItem, today } from "#src/documents.ts";
+import { byId, plannedRoundCounts, roundActual, schedule, stageActual } from "#src/state.ts";
 
 export type OverlapAnswer = "roadmap" | "free" | "unrelated";
-export type StatusMenuAction = "check" | "stage" | "new-round" | "close-round" | "close";
+export type StatusMenuAction = "check" | "stage" | "new-round" | "plan-round" | "round" | "close-round" | "close";
 export type RoundTodoDisposition = "resolved" | "wontfix" | "carried";
 
 export interface OverlapQuestion {
@@ -18,9 +19,11 @@ export interface PreviewFile {
   content: string;
 }
 
+/** `stage` is set for `stage`/`close`, `round` for `round` (a planned round); other actions carry neither. */
 export interface StatusMenuChoice {
   action: StatusMenuAction;
   stage?: string;
+  round?: string;
 }
 
 export interface RoundTodoDispositionChoice {
@@ -34,7 +37,8 @@ export interface RoadmapUi {
   readonly interactive: boolean;
   overlap(q: OverlapQuestion): Promise<OverlapAnswer | undefined>;
   previewConfirm(p: { title: string; root: string; files: PreviewFile[] }): Promise<boolean | undefined>;
-  statusMenu(m: Model): Promise<StatusMenuChoice | undefined>;
+  /** `on` (YYYY-MM-DD, default today) decides which unfinished targets are overdue. */
+  statusMenu(m: Model, on?: string): Promise<StatusMenuChoice | undefined>;
   closeRoundDispositions(todos: TodoItem[]): Promise<RoundTodoDispositionChoice[] | undefined>;
   notify(message: string, level: "info" | "warning" | "error"): void;
 }
@@ -98,14 +102,20 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function stageLabel(stage: StageDoc, todos: readonly TodoItem[]): string {
+function stageLabel(stage: StageDoc, todos: readonly TodoItem[], on: string): string {
   const count = todos.filter((item) => item.target === stage.id).length;
-  const suffix = count > 0 ? ` · ${plural(count, "open TODO")}` : "";
+  const dates = schedule(stage, stageActual(stage), on);
+  const suffix = `${dates ? ` · ${dates}` : ""}${count > 0 ? ` · ${plural(count, "open TODO")}` : ""}`;
   return `${STATUS_GLYPHS[stage.status]} ${stage.id} ${stage.title} [${stage.status}]${suffix}`;
 }
 
-function byId(a: { id: string }, b: { id: string }): number {
-  return Number(a.id.replace(/\D/g, "")) - Number(b.id.replace(/\D/g, "")) || a.id.localeCompare(b.id);
+/** One compact row per planned round: id, title, stage count, open TODOs and target. */
+function plannedRoundLabel(m: Model, round: RoundDoc, on: string): string {
+  const { stageCount, openTodos } = plannedRoundCounts(m, round.id);
+  const dates = schedule(round, null, on);
+  return `${STATUS_GLYPHS[round.status]} ${round.id} ${round.title} [planned] · ${plural(stageCount, "stage")}${
+    openTodos > 0 ? ` · ${plural(openTodos, "open TODO")}` : ""
+  }${dates ? ` · ${dates}` : ""}`;
 }
 
 export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger): RoadmapUi {
@@ -141,9 +151,13 @@ export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger): Roadma
       }
     },
 
-    statusMenu(m) {
+    statusMenu(m, on = today()) {
       const round = m.rounds.find((candidate) => candidate.status === "active");
+      const planned = m.rounds.filter((candidate) => candidate.status === "planned").sort(byId);
       const options: Array<readonly [string, StatusMenuChoice]> = [];
+      const plannedOptions = planned.map(
+        (candidate) => [plannedRoundLabel(m, candidate, on), { action: "round", round: candidate.id }] as const,
+      );
       let title: string;
       if (round) {
         const stages = m.stages.filter((stage) => stage.round === round.id).sort(byId);
@@ -151,20 +165,38 @@ export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger): Roadma
         const untargeted = todos.filter((item) => !stages.some((stage) => stage.id === item.target)).length;
         title = `Roadmap ${round.id} ${round.title} [active] · ${plural(stages.length, "stage")} · ${plural(todos.length, "open TODO")}`;
         if (untargeted > 0) title += ` (${untargeted} by trigger)`;
-        for (const stage of stages) options.push([stageLabel(stage, todos), { action: "stage", stage: stage.id }]);
+        const dates = schedule(round, roundActual(round), on);
+        if (dates) title += ` · ${dates}`;
+        const late = stages.filter((stage) => overdue(stage, on)).length;
+        if (late > 0) title += ` · ${plural(late, "overdue stage")}`;
+        if (planned.length) title += ` · ${plural(planned.length, "planned round")}`;
+        for (const stage of stages) options.push([stageLabel(stage, todos, on), { action: "stage", stage: stage.id }]);
         for (const stage of stages.filter((candidate) => candidate.status === "active")) {
           options.push([`Close stage ${stage.id}`, { action: "close", stage: stage.id }]);
         }
+        options.push(...plannedOptions);
         options.push(["Run check", { action: "check" }]);
         if (stages.every((stage) => stage.status === "closed" || stage.status === "dropped")) {
           options.push([`Close round ${round.id}`, { action: "close-round" }]);
         }
       } else {
-        const last = [...m.rounds].sort(byId).at(-1);
-        title = last ? `Roadmap: no active round (last: ${last.id} ${last.title}, closed)` : "Roadmap: no rounds yet";
+        const last = m.rounds
+          .filter((candidate) => candidate.status !== "planned")
+          .sort(byId)
+          .at(-1);
+        title = last
+          ? `Roadmap: no active round (last: ${last.id} ${last.title}, ${last.status})`
+          : planned.length
+            ? "Roadmap: no active round"
+            : "Roadmap: no rounds yet";
+        if (planned.length) title += ` · ${plural(planned.length, "planned round")}`;
+        options.push(...plannedOptions);
         options.push(["Run check", { action: "check" }]);
-        options.push(["Open a new round", { action: "new-round" }]);
+        // Only the lowest-numbered planned round can be activated; a brand-new round is refused while any is planned.
+        const next = planned[0];
+        options.push([next ? `Activate ${next.id} ${next.title}` : "Open a new round", { action: "new-round" }]);
       }
+      options.push(["Plan a future round", { action: "plan-round" }]);
       return choose(title, options);
     },
 

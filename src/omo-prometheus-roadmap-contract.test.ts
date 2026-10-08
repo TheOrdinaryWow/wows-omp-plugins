@@ -385,6 +385,16 @@ if (process.env[CHILD]) {
     expect(executionBlockReason("bash", {}, ROADMAP_ENTRY)).toBeTruthy();
     expect(executionToolSourceBlockReason("task", "extension", false, ROADMAP_ENTRY, ROADMAP_ENTRY)).toBeTruthy();
   });
+  test("Atlas admits the planned-round tool and device only from authenticated roadmap provenance", () => {
+    const name = "roadmap_round_plan";
+    const device = { path: `xd://${name}`, content: JSON.stringify({ round: { title: "Later" } }) };
+    expect(executionBlockReason(name, {}, ROADMAP_ENTRY)).toBeUndefined();
+    expect(executionBlockReason("write", device, ROADMAP_ENTRY)).toBeUndefined();
+    expect(executionBlockReason(name, {})).toBeTruthy();
+    expect(executionBlockReason("write", device)).toBeTruthy();
+    expect(executionToolSourceBlockReason(name, "extension", false, ROADMAP_ENTRY, ROADMAP_ENTRY)).toBeUndefined();
+    expect(executionToolSourceBlockReason(name, "extension", false, ROADMAP_ENTRY, "/shadow.ts")).toBeTruthy();
+  });
   test("Atlas roadmap policy keeps the authenticated roadmap exception separate from direct workspace writes", () => {
     const close = { action: "close", id: "S01" };
     expect(executionBlockReason("roadmap_stage", close, ROADMAP_ENTRY)).toBeUndefined();

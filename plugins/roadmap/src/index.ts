@@ -72,13 +72,13 @@ export default function roadmap(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     try {
       ses.ensure(ctx);
-      if (event.toolName === "roadmap_init" || event.toolName === "roadmap_round_open") {
+      if (event.toolName === "roadmap_init" || event.toolName === "roadmap_round_open" || event.toolName === "roadmap_round_plan") {
         const git = discoverRepo(ctx.cwd);
-        const kind = event.toolName === "roadmap_init" ? "init" : "round";
+        const kind = event.toolName === "roadmap_init" ? "init" : event.toolName === "roadmap_round_plan" ? "plan" : "round";
         if (!git || !ses.isArmed(ctx, git.repoRoot, kind)) {
           return {
             block: true,
-            reason: `${event.toolName} is unarmed; use ${kind === "init" ? "/init-project" : "/roadmap new-round"} in the main session first.`,
+            reason: `${event.toolName} is unarmed; use ${kind === "init" ? "/init-project" : kind === "plan" ? "/roadmap plan-round" : "/roadmap new-round"} in the main session first.`,
           };
         }
       }

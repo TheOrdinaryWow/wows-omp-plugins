@@ -21,9 +21,9 @@ export interface PendingClose extends Binding {
   gates: Array<{ gateId: string; verdict: string; summary: string }>;
 }
 
-export type ArmedKind = "init" | "round";
+export type ArmedKind = "init" | "round" | "plan" | "upgrade" | "drop-round" | "retarget";
 
-/** A prepared init/round-open preview awaiting `/roadmap confirm <token>` because no dialog could confirm it. */
+/** A prepared command preview awaiting `/roadmap confirm <token>` because no dialog could confirm it. */
 export interface PendingPreview {
   token: string;
   kind: ArmedKind;
@@ -93,7 +93,12 @@ export class RoadmapSession {
   private restore(type: string, data: unknown): void {
     if (!object(data) || data.v !== 1 || typeof data.repoRoot !== "string" || !data.repoRoot || typeof data.at !== "string") return;
     const state = this.state(data.repoRoot);
-    if (type === "armed" && (data.kind === "init" || data.kind === "round")) state.armed = data.kind;
+    if (
+      type === "armed" &&
+      typeof data.kind === "string" &&
+      ["init", "round", "plan", "upgrade", "drop-round", "retarget"].includes(data.kind)
+    )
+      state.armed = data.kind as ArmedKind;
     if (type === "disarmed") delete state.armed;
     if (typeof data.stage !== "string" || !/^S\d+$/.test(data.stage)) return;
     const binding: Binding = { v: 1, repoRoot: data.repoRoot, stage: data.stage, at: data.at };
@@ -175,7 +180,16 @@ export class RoadmapSession {
   validateBinding(ctx: ExtensionContext, repoRoot: string, model: Model): string | undefined {
     this.ensure(ctx);
     const binding = this.getBinding(repoRoot);
-    if (!binding || model.stages.some((stage) => stage.id === binding.stage && stage.status === "active")) return;
+    if (
+      !binding ||
+      model.stages.some(
+        (stage) =>
+          stage.id === binding.stage &&
+          stage.status === "active" &&
+          model.rounds.some((round) => round.id === stage.round && round.status === "active"),
+      )
+    )
+      return;
     this.dropBinding(ctx, repoRoot, binding.stage);
     return `Previous binding ${binding.stage} is no longer active on disk; dropped this session's binding.`;
   }

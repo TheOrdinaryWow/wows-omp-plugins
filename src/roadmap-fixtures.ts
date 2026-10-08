@@ -28,6 +28,7 @@ export function stageFixture(overrides: Partial<StageDoc> = {}): StageDoc {
     title: "Launch: usable | increment",
     round: "R1",
     status: "planned",
+    target: null,
     depends_on: [],
     follows: null,
     created: "2026-10-06",
@@ -53,6 +54,7 @@ export function roundFixture(overrides: Partial<RoundDoc> = {}): RoundDoc {
     id: "R1",
     title: "Launchable v1",
     status: "active",
+    target: null,
     opened: "2026-10-06",
     closed: null,
     frozen_sha256: null,
@@ -60,7 +62,7 @@ export function roundFixture(overrides: Partial<RoundDoc> = {}): RoundDoc {
     constraints: "- Keep the host floor",
     non_goals: "- No new storage engine",
     principles: "- Use the documented choice (ADR-0001).",
-    stages: generatedBlock("stages", renderStageTable([])),
+    stages: generatedBlock("stages", renderStageTable([], 1)),
     known_limitations: "",
     ...overrides,
   };
@@ -117,7 +119,7 @@ export function adrFixture(overrides: Partial<AdrDoc> = {}): AdrDoc {
 
 export function modelFixture(): Model {
   const stages = [stageFixture()];
-  const rounds = [roundFixture({ stages: generatedBlock("stages", renderStageTable(stages)) })];
+  const rounds = [roundFixture({ stages: generatedBlock("stages", renderStageTable(stages, 1)) })];
   const index = { format: 1 as const, path: "docs/roadmap/README.md", title: "Example project", body: "" };
   const adrIndex = { format: 1 as const, path: "docs/adr/README.md", body: "" };
   return { index, rounds, stages, todos: [todoFixture()], adrs: [adrFixture()], adrIndex };

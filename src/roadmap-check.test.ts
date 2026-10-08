@@ -551,7 +551,7 @@ describe("generated blocks and fix scope", () => {
     const stale = replaceGenerated(await readFile(index, "utf8"), "rounds", "stale");
     await writeFile(index, stale);
     const adr = model.adrs[0] as (typeof model.adrs)[number];
-    await writeFile(adr.path, renderAdr(adr).replace("format: 1", "format: 2"));
+    await writeFile(adr.path, renderAdr(adr).replace("format: 1", "format: 3"));
     const result = await check(await loadAll(repo), { fix: true });
     expect(result.map((item) => item.rule)).toContain("format");
     expect(await readFile(index, "utf8")).toBe(stale);

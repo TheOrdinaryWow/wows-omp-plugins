@@ -447,11 +447,11 @@ describe("roadmap stage lifecycle and close gate", () => {
     );
     expect(await managedBytes(repo)).toEqual(before);
     const path = (await loadAll(repo)).stages[0]?.path as string;
-    await writeFile(path, (await readFile(path, "utf8")).replace(/^format: 1$/m, "format: 2"));
+    await writeFile(path, (await readFile(path, "utf8")).replace(/^format: 1$/m, "format: 3"));
     const newer = await managedBytes(repo);
     refused(
       await todo(repo, main, { action: "add", title: "Ignored", severity: "low", source: "S01", trigger: "Later" }),
-      "Unsupported roadmap format 2",
+      "Unsupported roadmap format 3",
     );
     expect(await managedBytes(repo)).toEqual(newer);
   });
@@ -2374,7 +2374,7 @@ describe("literal generated delimiters in authored bodies", () => {
     round.constraints += `\n\n${example}`;
     round.non_goals += `\n\n${example}`;
     round.principles += `\n\n${example}`;
-    round.stages = `${example}\n\n${generatedBlock("stages", renderStageTable(model.stages))}\n\n${example}`;
+    round.stages = `${example}\n\n${generatedBlock("stages", renderStageTable(model.stages, round.format))}\n\n${example}`;
     round.known_limitations = example;
     const roundText = renderRound(round);
     const rootText = (await readFile(model.index.path, "utf8")).replace(

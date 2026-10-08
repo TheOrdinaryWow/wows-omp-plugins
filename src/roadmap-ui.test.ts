@@ -154,13 +154,20 @@ test("statusMenu lists round, stages with glyphs and TODO counts, and only valid
     "○ S03 UI [planned]",
     "Close stage S02",
     "Run check",
+    "Plan a future round",
   ]);
   evidence("statusMenu (stage active)", stub.transcript(0, 1));
 
   const finished = model([round("R1", "active")], [stage("S01", "closed", "Documents"), stage("S02", "dropped", "Operations")]);
   const done = stubUi([`Close round R1`]);
   expect(await createTuiUi(done.ctx, done.pi).statusMenu(finished)).toEqual({ action: "close-round" });
-  expect(done.call(0).body).toEqual(["● S01 Documents [closed]", "× S02 Operations [dropped]", "Run check", "Close round R1"]);
+  expect(done.call(0).body).toEqual([
+    "● S01 Documents [closed]",
+    "× S02 Operations [dropped]",
+    "Run check",
+    "Close round R1",
+    "Plan a future round",
+  ]);
   evidence("statusMenu (all stages settled)", done.transcript());
 
   const planned = stubUi([undefined]);
@@ -172,8 +179,81 @@ test("statusMenu lists round, stages with glyphs and TODO counts, and only valid
     action: "new-round",
   });
   expect(between.call(0).title).toBe("Roadmap: no active round (last: R1 Foundation, closed)");
-  expect(between.call(0).body).toEqual(["Run check", "Open a new round"]);
+  expect(between.call(0).body).toEqual(["Run check", "Open a new round", "Plan a future round"]);
   evidence("statusMenu (no active round)", between.transcript());
+});
+
+test("statusMenu shows target versus actual dates, flags overdue unfinished items and lists planned rounds compactly", async () => {
+  const r1 = { ...round("R1", "active"), opened: "2026-09-01", target: "2026-10-01" };
+  const r2 = { ...round("R2", "planned", "Scale"), opened: null, target: "2026-12-01" };
+  const r3 = { ...round("R3", "planned", "Polish"), opened: null, target: "2026-09-15" };
+  const stages = [
+    { ...stage("S01", "closed", "Documents"), target: "2026-09-10", closed: "2026-09-12" },
+    { ...stage("S02", "active", "Operations"), target: "2026-09-30", started: "2026-09-05" },
+    { ...stage("S03", "planned", "UI"), target: "2026-12-01" },
+    { ...stage("S04", "planned", "Scale A"), round: "R2" },
+    { ...stage("S05", "planned", "Scale B"), round: "R2", target: "2026-11-01" },
+    { ...stage("S06", "dropped", "Scale C"), round: "R2" },
+  ];
+  const m = model([r3, r2, r1], stages, [todo("T001", { target: "S02" }), todo("T002", { target: "S04" })]);
+  m.todos.push({ format: 2, path: "", round: "R2", items: [todo("T003", { trigger: "after launch" })] });
+  const stub = stubUi(["○ R2 Scale [planned] · 2 stages · 2 open TODOs · target 2026-12-01", "Plan a future round"]);
+  const ui = createTuiUi(stub.ctx, stub.pi);
+  expect(await ui.statusMenu(m, "2026-10-08")).toEqual({ action: "round", round: "R2" });
+  expect(await ui.statusMenu(m, "2026-10-08")).toEqual({ action: "plan-round" });
+  expect(stub.call(0).title).toBe(
+    "Roadmap R1 Foundation [active] · 3 stages · 2 open TODOs (1 by trigger) · target 2026-10-01, opened 2026-09-01, overdue · 1 overdue stage · 2 planned rounds",
+  );
+  expect(stub.call(0).body).toEqual([
+    "● S01 Documents [closed] · target 2026-09-10, closed 2026-09-12",
+    "◐ S02 Operations [active] · target 2026-09-30, started 2026-09-05, overdue · 1 open TODO",
+    "○ S03 UI [planned] · target 2026-12-01",
+    "Close stage S02",
+    "○ R2 Scale [planned] · 2 stages · 2 open TODOs · target 2026-12-01",
+    "○ R3 Polish [planned] · 0 stages · target 2026-09-15, overdue",
+    "Run check",
+    "Plan a future round",
+  ]);
+  evidence("statusMenu (targets and planned rounds)", stub.transcript(0, 1));
+
+  const early = stubUi([undefined]);
+  await createTuiUi(early.ctx, early.pi).statusMenu(m, "2026-09-01");
+  expect(early.call(0).title).toBe(
+    "Roadmap R1 Foundation [active] · 3 stages · 2 open TODOs (1 by trigger) · target 2026-10-01, opened 2026-09-01 · 2 planned rounds",
+  );
+  expect((early.call(0).body as string[]).filter((label) => label.includes("overdue"))).toEqual([]);
+});
+
+test("statusMenu without an active round offers the lowest planned round for activation and planning another", async () => {
+  const closed = { ...round("R1", "closed"), closed: "2026-10-01" };
+  const r2 = { ...round("R2", "planned", "Scale"), opened: null, target: null };
+  const r3 = { ...round("R3", "planned", "Polish"), opened: null, target: "2026-11-01" };
+  const m = model(
+    [r3, closed, r2],
+    [
+      { ...stage("S01", "closed"), round: "R1" },
+      { ...stage("S02", "planned"), round: "R2" },
+    ],
+  );
+  const stub = stubUi(["Activate R2 Scale", "○ R3 Polish [planned] · 0 stages · target 2026-11-01", "Plan a future round"]);
+  const ui = createTuiUi(stub.ctx, stub.pi);
+  expect(await ui.statusMenu(m, "2026-10-08")).toEqual({ action: "new-round" });
+  expect(await ui.statusMenu(m, "2026-10-08")).toEqual({ action: "round", round: "R3" });
+  expect(await ui.statusMenu(m, "2026-10-08")).toEqual({ action: "plan-round" });
+  expect(stub.call(0).title).toBe("Roadmap: no active round (last: R1 Foundation, closed) · 2 planned rounds");
+  expect(stub.call(0).body).toEqual([
+    "○ R2 Scale [planned] · 1 stage",
+    "○ R3 Polish [planned] · 0 stages · target 2026-11-01",
+    "Run check",
+    "Activate R2 Scale",
+    "Plan a future round",
+  ]);
+  evidence("statusMenu (planned rounds, none active)", stub.transcript(0, 1));
+
+  const fresh = stubUi([undefined]);
+  await createTuiUi(fresh.ctx, fresh.pi).statusMenu(model([r2], []), "2026-10-08");
+  expect(fresh.call(0).title).toBe("Roadmap: no active round · 1 planned round");
+  expect(fresh.call(0).body).toEqual(["○ R2 Scale [planned] · 0 stages", "Run check", "Activate R2 Scale", "Plan a future round"]);
 });
 
 test("closeRoundDispositions walks every open TODO and collects references", async () => {

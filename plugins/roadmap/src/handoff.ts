@@ -1,6 +1,7 @@
 import { relative } from "node:path";
 
-import { type AdrDoc, type Model, parseDoneCriteria, renderStage, type StageDoc } from "./documents.ts";
+import { type AdrDoc, type Model, overdue, parseDoneCriteria, renderStage, type StageDoc, today } from "./documents.ts";
+import { byId, plannedRoundCounts, roundActual, schedule, stageActual } from "./state.ts";
 
 export interface StageBinding {
   stage: string;
@@ -22,7 +23,7 @@ function successor(model: Model, initial: AdrDoc): AdrDoc {
   return adr;
 }
 
-export function renderHandoff(model: Model, stage: StageDoc): string {
+export function renderHandoff(model: Model, stage: StageDoc, on = today()): string {
   const round = model.rounds.find((candidate) => candidate.id === stage.round);
   const todos = model.todos.flatMap((doc) => doc.items).filter((item) => item.status === "open" && item.target === stage.id);
   const citations = new Set(
@@ -41,7 +42,7 @@ export function renderHandoff(model: Model, stage: StageDoc): string {
   }
   const parts = [
     `# Planning handoff: ${stage.id} — ${stage.title}`,
-    `Round: ${stage.round}${round ? ` — ${round.title}` : ""}\nStage document: ${pathFor(model, stage.path)}`,
+    `Round: ${stage.round}${round ? ` — ${round.title}` : ""}\nStage document: ${pathFor(model, stage.path)}${scheduleLines(stage, round, on)}`,
     `## Objective\n\n${stage.objective}`,
     `## Scope\n\n### In\n\n${stage.scope_in || "None."}\n\n### Out\n\n${stage.scope_out || "None."}`,
     `## Done criteria\n\n${parseDoneCriteria(stage.done_criteria)
@@ -82,23 +83,59 @@ function oneLine(value: string, limit: number): string {
   return line.length > limit ? `${line.slice(0, limit - 3)}...` : line;
 }
 
-export function renderInjection(model: Model, binding?: StageBinding): string {
+/** Target versus actual lines for the handoff header; empty when neither the stage nor its round has a target. */
+function scheduleLines(stage: StageDoc, round: Model["rounds"][number] | undefined, on: string): string {
+  const stageDates = schedule(stage, stageActual(stage), on);
+  const roundDates = round ? schedule(round, roundActual(round), on) : "";
+  return `${stageDates ? `\nStage schedule: ${stageDates}` : ""}${roundDates ? `\nRound schedule: ${roundDates}` : ""}`;
+}
+
+const STAGE_CAP = 12;
+const PLANNED_ROUND_CAP = 3;
+
+export function renderInjection(model: Model, binding?: StageBinding, on = today()): string {
   const round = model.rounds.find((candidate) => candidate.status === "active");
   if (!round) return "";
   const stages = model.stages
     .filter((stage) => stage.round === round.id && (stage.status === "planned" || stage.status === "active"))
     .sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
   const todos = model.todos.filter((doc) => doc.round === round.id).flatMap((doc) => doc.items.filter((item) => item.status === "open"));
+  const roundDates = schedule(round, null, on);
+  const tag = (stage: StageDoc) => {
+    const dates = schedule(stage, null, on);
+    return dates ? `${stage.status}, ${dates}` : stage.status;
+  };
   const lines = [
     "[Roadmap status]",
-    `Active round: ${round.id} — ${oneLine(round.title, 120)}`,
+    `Active round: ${round.id} — ${oneLine(round.title, 120)}${roundDates ? ` (${roundDates})` : ""}`,
     `Goal: ${oneLine(round.goal, 180)}`,
     `Open TODOs: ${todos.length} (${todos.filter((item) => item.severity === "high").length} high severity).`,
     "Unclosed stages:",
-    ...stages.slice(0, 12).map((stage) => `- ${stage.id} [${stage.status}] ${oneLine(stage.title, 80)} — ${oneLine(stage.objective, 160)}`),
+    ...stages
+      .slice(0, STAGE_CAP)
+      .map((stage) => `- ${stage.id} [${tag(stage)}] ${oneLine(stage.title, 80)} — ${oneLine(stage.objective, 160)}`),
   ];
   if (!stages.length) lines.push("- None.");
-  if (stages.length > 12) lines.push(`${stages.length - 12} more, see roadmap_status.`);
+  if (stages.length > STAGE_CAP) lines.push(`${stages.length - STAGE_CAP} more, see roadmap_status.`);
+  // Overdue stages can sit beyond the cap, so name them separately (ids only, bounded like the stage list).
+  const late = stages.filter((stage) => overdue(stage, on)).map((stage) => stage.id);
+  if (late.length) {
+    lines.push(
+      `Overdue stages: ${late.slice(0, STAGE_CAP).join(", ")}${late.length > STAGE_CAP ? `, ${late.length - STAGE_CAP} more` : ""}.`,
+    );
+  }
+  const planned = model.rounds.filter((candidate) => candidate.status === "planned").sort(byId);
+  if (planned.length) {
+    lines.push(
+      "Planned rounds:",
+      ...planned.slice(0, PLANNED_ROUND_CAP).map((candidate) => {
+        const count = plannedRoundCounts(model, candidate.id).stageCount;
+        const dates = schedule(candidate, null, on);
+        return `- ${candidate.id} [planned${dates ? `, ${dates}` : ""}] ${oneLine(candidate.title, 80)} — ${count} stage${count === 1 ? "" : "s"}`;
+      }),
+    );
+    if (planned.length > PLANNED_ROUND_CAP) lines.push(`${planned.length - PLANNED_ROUND_CAP} more, see roadmap_status.`);
+  }
   if (binding) {
     const stage = model.stages.find((candidate) => candidate.id === binding.stage);
     lines.push(

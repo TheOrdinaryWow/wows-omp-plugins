@@ -20,7 +20,10 @@ import {
   type InitInput,
   initProject,
   openRound,
+  type PreparationReceipt,
   prepareInit,
+  prepareRoundPlan,
+  prepareUpgrade,
   stage,
 } from "../plugins/roadmap/src/operations.ts";
 import { ENTRY_PREFIX, type UiFactory } from "../plugins/roadmap/src/ses.ts";
@@ -61,6 +64,26 @@ const closeInput = {
   deviations: "None.",
   evidence: [{ criterion: "DC1", result: "pass" as const, method: "bun test checkout", summary: "Pass", commit: "abc1234" }],
 };
+const growth = { title: "Growth", goal: "Customers return", constraints: [], non_goals: [], principles: [] };
+const plannedStage = (round: string, title: string) => ({
+  action: "add" as const,
+  round,
+  title,
+  objective: `${title} ships`,
+  scope_in: [title],
+  scope_out: [],
+  done_criteria: [{ statement: `${title} works`, verify: "bun test" }],
+});
+
+function tokenIn(text: string): string | undefined {
+  return /\/roadmap confirm ([0-9a-f]{12})/.exec(text)?.[1];
+}
+
+async function applyPreparation(repo: Repo, preparation: PreparationReceipt): Promise<void> {
+  assert(preparation.ok, JSON.stringify(preparation));
+  const receipt = await applyPrepared(repo, main, preparation.prepared);
+  assert(receipt.ok, JSON.stringify(receipt));
+}
 
 class ScriptedUi implements RoadmapUi {
   overlapCalls: OverlapQuestion[] = [];
@@ -87,7 +110,7 @@ class ScriptedUi implements RoadmapUi {
     return this.menu;
   }
 
-  async closeRoundDispositions() {
+  async closeRoundDispositions(_todos: Parameters<RoadmapUi["closeRoundDispositions"]>[0]) {
     return this.dispositions;
   }
 
@@ -189,6 +212,7 @@ async function createHarness(
     "roadmap_overlap",
     "roadmap_init",
     "roadmap_round_open",
+    "roadmap_round_plan",
   ]) {
     assert(session.getToolByName(name), `Real loader must register ${name}`);
   }
@@ -272,7 +296,7 @@ function observeLockWaits() {
 async function confirmedPreviewBehindLock(
   h: Harness,
   repo: Repo,
-  toolName: "roadmap_init" | "roadmap_round_open",
+  toolName: "roadmap_init" | "roadmap_round_open" | "roadmap_round_plan",
   input: object,
   whileLocked: (preview: ScriptedUi["previewCalls"][number]) => Promise<void>,
   signal?: AbortSignal,
@@ -387,6 +411,12 @@ const CASES: Record<string, string> = {
   "bound-join-headless": "joined stages remain in-system without a UI",
   external: "an externally closed stage drops its binding with a one-turn notice",
   round: "round commands collect dispositions, arm previews and import carried TODOs",
+  "plan-round": "planned rounds need command arming and one confirmed preview that upgrades format 1, and can be revised",
+  "plan-stale": "planned-round previews refuse session resets and changed files, then succeed when retried",
+  "planning-headless": "without a UI, upgrade, plan-round, retarget and drop-round apply only through fresh confirm tokens",
+  "planned-carry":
+    "round close auto-carries planned-stage TODOs outside the disposition prompt and new-round activates the lowest planned round",
+  "subagent-planning": "subagents cannot arm, run or prepare planned-round and format commands",
   "round-close-stale": "round-close dialogs cannot authorize closing a replacement round",
   "round-menu-stale": "status-menu close cannot authorize closing a replacement round",
   "round-menu-changed": "status-menu close cannot authorize changed round files",
@@ -399,7 +429,7 @@ const CASES: Record<string, string> = {
 
 async function acceptance(name: string, root: string): Promise<void> {
   const h = await createHarness(root, {
-    sub: name === "subagent",
+    sub: name === "subagent" || name === "subagent-planning",
     lsp: name === "interception-lsp-rename",
     editMode:
       EDIT_MODES.find((mode) => name === `interception-mode-${mode}`) ??
@@ -1907,7 +1937,20 @@ async function acceptance(name: string, root: string): Promise<void> {
               .getCommand("roadmap")
               ?.getArgumentCompletions?.(prefix)
               ?.map((option) => option.value);
-          assert.deepEqual(complete(""), ["check", "check --fix", "new-round", "close-round", "stage ", "overlap ", "confirm "]);
+          assert.deepEqual(complete(""), [
+            "check",
+            "check --fix",
+            "upgrade",
+            "plan-round",
+            "plan-round ",
+            "new-round",
+            "drop-round ",
+            "retarget ",
+            "close-round",
+            "stage ",
+            "overlap ",
+            "confirm ",
+          ]);
           assert.deepEqual(complete("stage S"), ["stage S01"]);
           assert.deepEqual(complete("overlap "), ["overlap S01 "]);
           assert.deepEqual(complete("overlap S01 f"), ["overlap S01 free"]);
@@ -2083,6 +2126,339 @@ async function acceptance(name: string, root: string): Promise<void> {
         h.ui.menu = { action: "check" };
         await command(h, "roadmap");
         assert.match(h.messages.at(-1) ?? "", /check passed/);
+      } else if (name === "plan-round") {
+        const r1Path = (await loadAll(repo)).rounds[0]?.path;
+        assert(r1Path);
+        const r1Before = await readFile(r1Path, "utf8");
+        const before = (await loadAll(repo)).files;
+        const unarmed = await h.runner.emitToolCall({
+          type: "tool_call",
+          toolName: "roadmap_round_plan",
+          toolCallId: "unarmed-plan",
+          input: { round: growth },
+        });
+        assert.equal(unarmed?.block, true);
+        assert.match(unarmed?.reason ?? "", /unarmed/);
+        await assert.rejects(call(h, "roadmap_round_plan", { round: growth }), /unarmed/);
+        h.ui.confirmed = false;
+        await command(h, "roadmap", "upgrade");
+        assert.equal(h.ui.previewCalls.length, 1, "upgrade previews before writing");
+        assert.deepEqual((await loadAll(repo)).files, before, "a declined upgrade preview writes nothing");
+        assert.equal((await loadAll(repo)).index.format, 1);
+        await command(h, "roadmap", "plan-round R1");
+        assert.equal(h.ui.notifications.at(-1)?.level, "error", "only planned rounds can be revised");
+        assert.equal(h.kickoffs.length, 0);
+        await command(h, "roadmap", "plan-round");
+        assert.equal(h.kickoffs.length, 1);
+        assert.match(h.kickoffs[0] ?? "", /roadmap_round_plan/);
+        const input = { round: growth, target: "2027-03-01" };
+        assert.equal(
+          await h.runner.emitToolCall({ type: "tool_call", toolName: "roadmap_round_plan", toolCallId: "armed-plan", input }),
+          undefined,
+        );
+        const declined = await call(h, "roadmap_round_plan", input);
+        assert(!declined.ok);
+        assert.deepEqual((await loadAll(repo)).files, before, "a declined plan preview writes nothing");
+        h.ui.confirmed = true;
+        const planned = await call(h, "roadmap_round_plan", input);
+        assert(planned.ok, JSON.stringify(planned));
+        const preview = h.ui.previewCalls.at(-1);
+        assert(preview);
+        assert.match(preview.title, /0\.2\.3/, "the first planned round warns that older plugins cannot read format 2");
+        assert(preview.files.some((file) => file.path === join(repo.roadmapDir, "README.md")));
+        assert.deepEqual([...planned.changedFiles].sort(), preview.files.map((file) => relative(root, file.path)).sort());
+        for (const file of preview.files) assert.equal(await readFile(file.path, "utf8"), file.content);
+        const model = await loadAll(repo);
+        assert.equal(model.index.format, 2);
+        // Refused and declined previews may consume round numbers; find the round this preview planned.
+        const r2 = model.rounds.find((round) => round.status === "planned");
+        assert(r2);
+        const plannedId = r2.id;
+        assert.deepEqual([r2.opened, r2.target, r2.title], [null, "2027-03-01", "Growth"]);
+        assert(
+          model.todos.some((doc) => doc.round === plannedId),
+          "planned rounds own a TODO.md from creation",
+        );
+        const r1 = model.rounds.find((round) => round.id === "R1");
+        assert.deepEqual([r1?.status, r1?.format], ["active", 1]);
+        assert.equal(await readFile(r1Path, "utf8"), r1Before, "the active format-1 round is not rewritten");
+        const consumed = await h.runner.emitToolCall({
+          type: "tool_call",
+          toolName: "roadmap_round_plan",
+          toolCallId: "consumed-plan",
+          input,
+        });
+        assert.equal(consumed?.block, true);
+        assert.match(consumed?.reason ?? "", /unarmed/);
+        assert((await call(h, "roadmap_check", {})).ok);
+
+        await command(h, "roadmap", `plan-round ${plannedId}`);
+        assert.match(h.kickoffs.at(-1) ?? "", new RegExp(plannedId));
+        const revised = await call(h, "roadmap_round_plan", {
+          id: plannedId,
+          round: { ...growth, title: "Growth revised" },
+          target: "none",
+        });
+        assert(revised.ok, JSON.stringify(revised));
+        const after = await loadAll(repo);
+        assert.equal(after.rounds.length, 2);
+        const revisedRound = after.rounds.find((round) => round.id === plannedId);
+        assert.deepEqual([revisedRound?.status, revisedRound?.title, revisedRound?.target], ["planned", "Growth revised", null]);
+        await command(h, "roadmap", "check");
+        const complete = (prefix: string) =>
+          h.runner
+            .getCommand("roadmap")
+            ?.getArgumentCompletions?.(prefix)
+            ?.map((option) => option.value);
+        assert.deepEqual(complete("p"), ["plan-round", "plan-round "]);
+        assert.deepEqual(complete("plan-round "), [`plan-round ${plannedId}`]);
+        assert.deepEqual(complete("drop-round "), [`drop-round ${plannedId} `]);
+        assert.deepEqual(complete("retarget R"), ["retarget R1 ", `retarget ${plannedId} `]);
+        assert.deepEqual(complete("retarget S"), ["retarget S01 "]);
+        assert.deepEqual(complete(`retarget ${plannedId} `), [`retarget ${plannedId} none`]);
+      } else if (name === "plan-stale") {
+        await command(h, "roadmap", "plan-round");
+        const before = (await loadAll(repo)).files;
+        h.ui.preview = async () => {
+          await h.runner.emit({ type: "session_start" });
+          return true;
+        };
+        const reset = await call(h, "roadmap_round_plan", { round: growth });
+        assert(!reset.ok, JSON.stringify(reset));
+        assert.match(reset.reason, /changed|stale/i);
+        assert.deepEqual((await loadAll(repo)).files, before, "a reset session cannot apply its earlier preview");
+        h.ui.preview = async () => {
+          assert((await stage(repo, main, { action: "edit", id: "S01", objective: "Customers pay by card" })).ok);
+          return true;
+        };
+        const stale = await call(h, "roadmap_round_plan", { round: growth });
+        assert(!stale.ok, JSON.stringify(stale));
+        assert.match(stale.reason, /stale/);
+        const unchanged = await loadAll(repo);
+        assert.deepEqual([unchanged.index.format, unchanged.rounds.length], [1, 1]);
+        const locked = await confirmedPreviewBehindLock(h, repo, "roadmap_round_plan", { round: growth }, async () => {
+          await h.runner.emit({ type: "session_branch", previousSessionFile: undefined });
+        });
+        assert(!locked.receipt.ok, JSON.stringify(locked.receipt));
+        assert.match(locked.receipt.reason, /changed|stale/i);
+        assert.equal((await loadAll(repo)).rounds.length, 1);
+        h.ui.preview = undefined;
+        const retry = await call(h, "roadmap_round_plan", { round: growth });
+        assert(retry.ok, JSON.stringify(retry));
+        const plannedRounds = (await loadAll(repo)).rounds.filter((round) => round.status === "planned");
+        assert.deepEqual(
+          plannedRounds.map((round) => round.title),
+          ["Growth"],
+          "only the successful retry plans a round",
+        );
+      } else if (name === "planning-headless") {
+        h.setUi();
+        const last = () => h.messages.at(-1) ?? "";
+        const r1Path = (await loadAll(repo)).rounds[0]?.path;
+        assert(r1Path);
+        const r1Before = await readFile(r1Path, "utf8");
+        const before = (await loadAll(repo)).files;
+        await command(h, "roadmap", "retarget S01 2027-02-01");
+        assert.match(last(), /\/roadmap upgrade/, "format 1 refuses targets with an upgrade hint");
+        assert.equal(tokenIn(last()), undefined);
+        assert.deepEqual((await loadAll(repo)).files, before);
+
+        await command(h, "roadmap", "upgrade");
+        assert.match(last(), /0\.2\.3/);
+        const upgrade = tokenIn(last());
+        assert(upgrade, last());
+        assert.deepEqual((await loadAll(repo)).files, before, "a pending upgrade writes nothing");
+        await command(h, "roadmap", `confirm ${upgrade}`);
+        assert.match(last(), /Changed: /);
+        let model = await loadAll(repo);
+        assert.equal(model.index.format, 2);
+        assert.equal(model.rounds[0]?.format, 1);
+        assert.equal(model.stages[0]?.format, 1);
+        assert.equal(await readFile(r1Path, "utf8"), r1Before);
+        await command(h, "roadmap", "upgrade");
+        assert.equal(tokenIn(last()), undefined, "an upgraded repository has nothing to upgrade");
+
+        await command(h, "roadmap", "plan-round");
+        assert.match(h.kickoffs.at(-1) ?? "", /roadmap_round_plan/);
+        const input = { round: growth, target: "2027-03-01" };
+        const held = await call(h, "roadmap_round_plan", input);
+        assert(!held.ok);
+        const stale = tokenIn(held.hints.join("\n"));
+        assert(stale, JSON.stringify(held));
+        await h.runner.emit({ type: "session_start" });
+        await command(h, "roadmap", `confirm ${stale}`);
+        assert.match(last(), /No pending Roadmap preview/);
+        assert.equal((await loadAll(repo)).rounds.length, 1);
+        const fresh = await call(h, "roadmap_round_plan", input);
+        assert(!fresh.ok);
+        const token = tokenIn(fresh.hints.join("\n"));
+        assert(token, JSON.stringify(fresh));
+        await command(h, "roadmap", `confirm ${token}`);
+        assert.match(last(), /Changed: /);
+        const plannedRound = (await loadAll(repo)).rounds.find((round) => round.status === "planned");
+        assert(plannedRound);
+        const plannedId = plannedRound.id;
+        assert.deepEqual([plannedRound.title, plannedRound.target], ["Growth", "2027-03-01"]);
+        await command(h, "roadmap", `confirm ${token}`);
+        assert.match(last(), /No pending Roadmap preview/);
+
+        for (const [id, target] of [
+          [plannedId, "2027-05-01"],
+          ["S01", "2027-02-01"],
+        ] as const) {
+          await command(h, "roadmap", `retarget ${id} ${target}`);
+          const retarget = tokenIn(last());
+          assert(retarget, last());
+          await command(h, "roadmap", `confirm ${retarget}`);
+          assert.match(last(), /Changed: /);
+        }
+        model = await loadAll(repo);
+        assert.equal(model.rounds.find((round) => round.id === plannedId)?.target, "2027-05-01");
+        const s01 = model.stages.find((current) => current.id === "S01");
+        assert.deepEqual([s01?.target, s01?.format], ["2027-02-01", 2], "a target promotes only the retargeted file");
+
+        assert((await call(h, "roadmap_stage", plannedStage(plannedId, "Loyalty"))).ok);
+        await command(h, "roadmap", "drop-round R1 Not needed");
+        assert.equal(tokenIn(last()), undefined);
+        assert.equal((await loadAll(repo)).rounds.find((round) => round.id === "R1")?.status, "active");
+        await command(h, "roadmap", `drop-round ${plannedId} "No longer needed"`);
+        const drop = tokenIn(last());
+        assert(drop, last());
+        assert.equal((await loadAll(repo)).rounds.find((round) => round.id === plannedId)?.status, "planned");
+        await command(h, "roadmap", `confirm ${drop}`);
+        assert.match(last(), /Changed: /);
+        model = await loadAll(repo);
+        const dropped = model.rounds.find((round) => round.id === plannedId);
+        assert.equal(dropped?.status, "dropped");
+        assert(dropped?.frozen_sha256);
+        assert(existsSync(dropped.path), "dropped rounds keep their files");
+        assert.deepEqual(
+          model.stages.filter((current) => current.round === plannedId).map((current) => current.status),
+          ["dropped"],
+        );
+        assert((await call(h, "roadmap_check", {})).ok);
+      } else if (name === "planned-carry") {
+        await applyPreparation(repo, await prepareRoundPlan(repo, main, { round: { ...growth, title: "Loyalty" } }));
+        await applyPreparation(repo, await prepareRoundPlan(repo, main, { round: { ...growth, title: "Referrals" } }));
+        assert((await call(h, "roadmap_stage", plannedStage("R2", "Points"))).ok);
+        const todoId = async (input: { title: string; target?: string; trigger?: string }): Promise<string> => {
+          assert((await call(h, "roadmap_todo", { action: "add", severity: "normal", source: "User", ...input })).ok);
+          const items = (await loadAll(repo)).todos.flatMap((doc) => doc.items);
+          const id = items.find((item) => item.title === input.title)?.id;
+          assert(id);
+          return id;
+        };
+        const automatic = await todoId({ title: "Award points", target: "S02" });
+        const manual = await todoId({ title: "Later", trigger: "Next round" });
+        assert.equal((await loadAll(repo)).todos.find((doc) => doc.round === "R1")?.items.length, 2, "new TODOs go to the active round");
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
+        const offered: string[][] = [];
+        h.ui.closeRoundDispositions = async (todos) => {
+          offered.push(todos.map((item) => item.id));
+          return [{ id: manual, disposition: "carried" }];
+        };
+        await command(h, "roadmap", "close-round");
+        assert.deepEqual(offered, [[manual]], "auto-carried TODOs are not offered for a disposition");
+        let model = await loadAll(repo);
+        assert.equal(model.rounds.find((round) => round.id === "R1")?.status, "closed");
+        const source = model.todos.find((doc) => doc.round === "R1")?.items.find((item) => item.id === automatic);
+        assert.deepEqual([source?.status, source?.reference], ["carried", "R2"]);
+        const copy = model.todos.find((doc) => doc.round === "R2")?.items.find((item) => item.id === automatic);
+        assert.deepEqual([copy?.status, copy?.carried_from, copy?.target], ["open", `${automatic} (R1)`, "S02"]);
+        assert((await call(h, "roadmap_check", {})).ok);
+
+        await command(h, "roadmap", "new-round");
+        assert.match(h.kickoffs.at(-1) ?? "", /R2/);
+        const closedFiles = model.files;
+        assert(!(await call(h, "roadmap_round_open", { activate: "R3", import_todos: [] })).ok, "only the lowest planned round activates");
+        assert(
+          !(await call(h, "roadmap_round_open", { activate: "R2", import_todos: [automatic] })).ok,
+          "auto-carried TODOs cannot be imported",
+        );
+        assert.deepEqual((await loadAll(repo)).files, closedFiles);
+        assert.equal(h.ui.previewCalls.length, 0);
+        const opened = await call(h, "roadmap_round_open", {
+          activate: "R2",
+          round: { ...growth, title: "Loyalty revised" },
+          import_todos: [manual],
+        });
+        assert(opened.ok, JSON.stringify(opened));
+        model = await loadAll(repo);
+        const r2 = model.rounds.find((round) => round.id === "R2");
+        assert.deepEqual([r2?.status, r2?.title], ["active", "Loyalty revised"]);
+        assert(r2?.opened);
+        const r3 = model.rounds.find((round) => round.id === "R3");
+        assert.deepEqual([r3?.status, r3?.opened], ["planned", null]);
+        const r2Items = model.todos.find((doc) => doc.round === "R2")?.items ?? [];
+        const imported = r2Items.find((item) => item.carried_from === `${manual} (R1)`);
+        assert(imported && imported.id !== manual && imported.status === "open");
+        assert(r2Items.some((item) => item.id === automatic && item.status === "open"));
+        assert((await call(h, "roadmap_check", {})).ok);
+
+        // Headless close: only the manual TODO needs a typed disposition; the R3-targeted one carries automatically.
+        assert((await call(h, "roadmap_todo", { action: "resolve", id: automatic, reference: "abc1234" })).ok);
+        assert((await call(h, "roadmap_stage", plannedStage("R3", "Invites"))).ok);
+        const later = await todoId({ title: "Invite rewards", target: "S03" });
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S02", reason: "Defer" })).ok);
+        h.setUi();
+        await command(h, "roadmap", "close-round");
+        const prompt = h.messages.at(-1) ?? "";
+        assert.match(prompt, new RegExp(`needs a disposition for every open TODO: ${imported.id} `));
+        assert(!prompt.includes(later), "auto-carried TODOs are not part of the headless prompt");
+        assert.equal((await loadAll(repo)).rounds.find((round) => round.id === "R2")?.status, "active");
+        await command(h, "roadmap", `close-round ${imported.id}=wontfix`);
+        model = await loadAll(repo);
+        assert.equal(model.rounds.find((round) => round.id === "R2")?.status, "closed");
+        const carried = model.todos.find((doc) => doc.round === "R3")?.items.find((item) => item.id === later);
+        assert.deepEqual([carried?.status, carried?.carried_from], ["open", `${later} (R2)`]);
+
+        await command(h, "roadmap", "new-round");
+        assert.match(h.kickoffs.at(-1) ?? "", /R3/);
+        const held = await call(h, "roadmap_round_open", { import_todos: [] });
+        assert(!held.ok);
+        const token = tokenIn(held.hints.join("\n"));
+        assert(token, JSON.stringify(held));
+        await command(h, "roadmap", `confirm ${token}`);
+        assert.match(h.messages.at(-1) ?? "", /Changed: /);
+        model = await loadAll(repo);
+        const r3Active = model.rounds.find((round) => round.id === "R3");
+        assert.deepEqual([r3Active?.status, r3Active?.title], ["active", "Referrals"], "the lowest planned round keeps its charter");
+        assert.equal(model.rounds.length, 3);
+        assert((await call(h, "roadmap_check", {})).ok);
+      } else if (name === "subagent-planning") {
+        const before = (await loadAll(repo)).files;
+        const blocked = async () => {
+          const result = await h.runner.emitToolCall({
+            type: "tool_call",
+            toolName: "roadmap_round_plan",
+            toolCallId: crypto.randomUUID(),
+            input: { round: growth },
+          });
+          assert.equal(result?.block, true);
+          assert.match(result?.reason ?? "", /unarmed/);
+          await assert.rejects(call(h, "roadmap_round_plan", { round: growth }), /unarmed/);
+        };
+        await blocked();
+        for (const args of ["plan-round", "upgrade", "retarget S01 none", "drop-round R1 reason", "new-round"]) {
+          await command(h, "roadmap", args);
+          assert.equal(h.ui.notifications.at(-1)?.level, "error", args);
+          assert.match(h.ui.notifications.at(-1)?.message ?? "", /main session/);
+        }
+        assert.deepEqual([h.kickoffs.length, h.messages.length, h.ui.previewCalls.length], [0, 0, 0]);
+        h.session.sessionManager.appendCustomEntry(`${ENTRY_PREFIX}armed`, {
+          v: 1,
+          repoRoot: repo.repoRoot,
+          kind: "plan",
+          at: new Date().toISOString(),
+        });
+        await h.runner.emit({ type: "session_start" });
+        await blocked();
+        const child: Actor = { sessionId: h.session.sessionManager.getSessionId(), kind: "sub" };
+        for (const preparation of [await prepareUpgrade(repo, child), await prepareRoundPlan(repo, child, { round: growth })]) {
+          assert(!preparation.ok);
+          assert.match(preparation.reason, /main session/);
+        }
+        assert.deepEqual((await loadAll(repo)).files, before);
       } else if (name === "rebuild") {
         assert((await call(h, "roadmap_overlap", { stage: "S01", intent: "Free" })).ok);
         for (const type of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {

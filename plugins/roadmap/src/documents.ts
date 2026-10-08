@@ -6,11 +6,17 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { discoverRepo } from "./git.ts";
 import { parseFrontmatter } from "./host.ts";
 
-const FORMAT = 1;
-export const MANAGED_COMMENT =
-  "<!-- Managed by the roadmap OMP plugin (format v1). Change it through roadmap_* tools. Format: docs/roadmap/README.md -->";
+export type Format = 1 | 2;
+const FORMATS: readonly Format[] = [1, 2];
 
-const HOW_THIS_DIRECTORY_WORKS = `## How this directory works
+/** Each managed file names its own format here; format-1 files keep the bytes 0.2.3 wrote. */
+export function managedComment(format: Format): string {
+  return `<!-- Managed by the roadmap OMP plugin (format v${format}). Change it through roadmap_* tools. Format: docs/roadmap/README.md -->`;
+}
+const MANAGED_COMMENTS: Readonly<Record<string, true>> = { [managedComment(1)]: true, [managedComment(2)]: true };
+
+/** Format-1 repositories keep this text; /init-project writes it, since a new repository starts at format 1. */
+const HOW_THIS_DIRECTORY_WORKS_V1 = `## How this directory works
 
 This directory records structured build rounds, their stages and carry-over TODOs. ADRs in docs/adr/ record decisions and outlive rounds. Plans describe implementation steps and do not live here.
 
@@ -29,7 +35,31 @@ Writes use one repository lock and per-file atomic replacement. An interrupted m
 Check verifies document consistency. It cannot determine whether code implements the documents. Close evidence and boundary checks help keep them aligned.
 `;
 
+const HOW_THIS_DIRECTORY_WORKS_V2 = `## How this directory works
+
+This directory records structured build rounds, their stages and carry-over TODOs. ADRs in docs/adr/ record decisions and outlive rounds. Plans describe implementation steps and do not live here.
+
+The root README is the initialization marker and rounds index. Each NN-slug round directory contains its charter README, TODO.md and stages/NN-slug.md. Rounds use R1, R2 and so on in creation order and are never renumbered; stages use S01, TODOs T001 and ADRs ADR-0001. Stage and TODO numbers are global across rounds, monotonic and never reused. ADR files use NNNN-slug.md. Slugs contain lowercase ASCII letters, digits and hyphens.
+
+This README carries roadmap: { format: 2 }, the repository format; roadmap plugin 0.2.3 and earlier cannot read a format 2 repository. Every managed file has format: 1 or format: 2 front matter and a managed-by comment naming the same format. Format 1 files keep their bytes until a write needs a format 2 field: a target date, or a planned or dropped round. Front matter and fixed headings are structure. Tool-owned bodies allow plain paragraphs, flat text lists and closed top-level fences, with ordinary punctuation, plain URLs, inline emphasis and same-line code spans; structural Markdown, Markdown links and raw HTML syntax are refused. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages, Known limitations and, for a dropped round, Outcome. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
+
+Agents change managed files through roadmap_* tools. Body text can be edited by a user in an editor; malformed structure must be repaired before tools can write. Generated blocks are marked with \`<!-- roadmap:generated:<name> -->\` and \`<!-- /roadmap:generated -->\`. The tools own numbering, metadata, headings and generated indexes.
+
+Rounds are planned, active, closed or dropped. A planned round is drafted ahead with its charter, planned stages and TODOs; only the lowest-numbered planned round can be activated, and an unneeded planned round is dropped together with its planned stages. Stages are planned, active, closed or dropped; only stages of the active round start. A stage depends only on stages in its own or an earlier round. Closed stages never reopen; corrective work uses a new stage with follows. Dependencies must be closed before a stage starts. Done criteria state what must pass and how to verify it; closing records evidence, TODO dispositions and ADR dispositions. Open TODOs need severity, source and either an unclosed target stage in the active or a planned round, or a trigger. A planned round's TODO.md holds only TODOs for its own stages or with a trigger. When a round closes, its open TODOs that target a planned round's stage continue in that round's TODO.md with the same ID and a Carried from line, and the original is marked carried to that round. Rounds and stages may carry an optional target date; status views compare it with the actual dates and flag unfinished work past its target. Charter principles cite ADRs rather than restating decisions. Accepted ADRs change through status transitions, supersession and dated append-only notes.
+
+Same-ID carry-over may continue through multiple later rounds: every earlier occurrence is carried to the next round with matching Carried from metadata, and only one occurrence is not carried. These continuations cannot be imported again with import_todos. Moving a TODO out of a planned round to another round leaves a moved record naming a fresh ID; the destination keeps the target and records Carried from with the original ID and round.
+
+Closed stages carry closed_sha256; closed and dropped rounds carry frozen_sha256 and remain read-only history. There is at most one active round. With none active, free work is unrestricted and roadmap context is not injected; ADR management remains available.
+
+Writes use one repository lock and per-file atomic replacement. An interrupted multi-file operation can leave stale indexes: run roadmap_check or /roadmap check, then check --fix to regenerate generated blocks. Fix never changes authored bodies, a closed round or a dropped round. Restore other damage with git. The shared git common directory stores only the lock and versioned id counters; the checked-out Markdown is the source of truth on each branch.
+
+Check verifies document consistency. It cannot determine whether code implements the documents. Close evidence and boundary checks help keep them aligned.
+`;
+
+const HOW_THIS_DIRECTORY_WORKS: Readonly<Record<Format, string>> = { 1: HOW_THIS_DIRECTORY_WORKS_V1, 2: HOW_THIS_DIRECTORY_WORKS_V2 };
+
 export type StageStatus = "planned" | "active" | "closed" | "dropped";
+export type RoundStatus = "planned" | "active" | "closed" | "dropped";
 type TodoStatus = "open" | "resolved" | "moved" | "wontfix" | "carried";
 type AdrStatus = "proposed" | "accepted" | "rejected" | "deprecated" | "superseded";
 export interface Repo {
@@ -40,7 +70,7 @@ export interface Repo {
 }
 
 interface Document {
-  format: 1;
+  format: Format;
   path: string;
 }
 
@@ -52,6 +82,7 @@ export interface StageDoc extends Document {
   depends_on: string[];
   follows: string | null;
   created: string;
+  target: string | null;
   started: string | null;
   closed: string | null;
   closed_sha256: string | null;
@@ -75,8 +106,10 @@ export interface DoneCriterion {
 export interface RoundDoc extends Document {
   id: string;
   title: string;
-  status: "active" | "closed";
-  opened: string;
+  status: RoundStatus;
+  target: string | null;
+  /** Null until a planned round is activated; dropped rounds were never activated. */
+  opened: string | null;
   closed: string | null;
   frozen_sha256: string | null;
   goal: string;
@@ -85,6 +118,8 @@ export interface RoundDoc extends Document {
   principles: string;
   stages: string;
   known_limitations: string;
+  /** Only a dropped round has one: the drop date is `closed` and the reason is under Deviations. */
+  outcome?: string;
 }
 
 export interface TodoItem {
@@ -164,8 +199,9 @@ function invalid(message: string): never {
   throw new DocumentError("structure", message);
 }
 
-function supported(format: unknown): asserts format is 1 {
-  if (format !== FORMAT) throw new DocumentError("format", `Unsupported roadmap format ${String(format)}; supported format is ${FORMAT}.`);
+function supported(format: unknown): asserts format is Format {
+  if (!FORMATS.includes(format as Format))
+    throw new DocumentError("format", `Unsupported roadmap format ${String(format)}; supported formats are ${FORMATS.join(" and ")}.`);
 }
 
 function text(value: unknown, key: string): string {
@@ -189,12 +225,14 @@ function strings(value: unknown, key: string, kind?: "stage" | "adr"): string[] 
   return value.map((entry) => (kind ? id(entry, kind, key) : text(entry, key)));
 }
 
+export function isCalendarDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+}
+
 function date(value: unknown, key: string, nullable = false): string | null {
   if (nullable && value === null) return null;
   const result = text(value, key);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(result) || Number.isNaN(Date.parse(result)) || new Date(result).toISOString().slice(0, 10) !== result) {
-    invalid(`${key} must be an ISO calendar date.`);
-  }
+  if (!isCalendarDate(result)) invalid(`${key} must be an ISO calendar date.`);
   return result;
 }
 
@@ -260,7 +298,12 @@ function scalar(value: string): unknown {
   return clean;
 }
 
-function header(content: string, keys: readonly string[], marker = false): { fm: Record<string, unknown>; body: string } {
+/** Key sets are per file format: format-1 files keep exactly the keys 0.2.3 wrote. */
+type KeySet = readonly string[] | Readonly<Record<Format, readonly string[]>>;
+
+function header(content: string, keySet: KeySet, marker = false): { fm: Record<string, unknown>; body: string; format: Format } {
+  const perFormat = Array.isArray(keySet) ? undefined : (keySet as Readonly<Record<Format, readonly string[]>>);
+  const known = perFormat ? FORMATS.flatMap((format) => perFormat[format]) : (keySet as readonly string[]);
   const normalized = lf(content);
   const match = /^---\n([\s\S]*?)\n---\n/.exec(normalized);
   if (!match) invalid("Managed files require delimited front matter at the start.");
@@ -270,7 +313,7 @@ function header(content: string, keys: readonly string[], marker = false): { fm:
     if (!field) invalid("Unsupported or malformed front matter line.");
     const key = field[1] as string;
     if (Object.hasOwn(fields, key)) invalid(`Duplicate front matter key ${key}.`);
-    if (!keys.includes(key)) invalid(`Unknown front matter key ${key}.`);
+    if (!known.includes(key)) invalid(`Unknown front matter key ${key}.`);
     let value = (field[2] as string).trim();
     let quote = "";
     for (let index = 0; index < value.length; index++) {
@@ -288,14 +331,22 @@ function header(content: string, keys: readonly string[], marker = false): { fm:
     fields[key] =
       key === "roadmap" && /^\{\s*format:\s*\d+\s*\}$/.test(value) ? { format: Number(value.match(/\d+/)?.[0]) } : scalar(value);
   }
+  supported(fields.format);
+  const format = fields.format;
+  const keys = perFormat ? perFormat[format] : known;
+  for (const key of Object.keys(fields)) if (!keys.includes(key)) invalid(`Front matter key ${key} is not part of format ${format}.`);
   for (const key of keys) if (!Object.hasOwn(fields, key)) invalid(`Missing front matter key ${key}.`);
   const { frontmatter } = parseFrontmatter(normalized, { rawKeys: true, repair: false, level: "off" });
   if (JSON.stringify(frontmatter) !== JSON.stringify(fields)) invalid("Front matter does not match the supported YAML subset.");
-  supported(fields.format);
-  if (marker) supported((fields.roadmap as { format?: unknown } | undefined)?.format);
+  if (marker) {
+    const repository = (fields.roadmap as { format?: unknown } | undefined)?.format;
+    supported(repository);
+    if (repository !== format) invalid(`The roadmap marker format ${repository} must equal this README's format ${format}.`);
+  }
   const body = normalized.slice(match[0].length);
-  if (!body.startsWith(`${MANAGED_COMMENT}\n\n`)) invalid("Missing or altered managed-by comment.");
-  return { fm: fields, body: body.slice(MANAGED_COMMENT.length + 2) };
+  const comment = managedComment(format);
+  if (!body.startsWith(`${comment}\n\n`)) invalid("Missing or altered managed-by comment.");
+  return { fm: fields, body: body.slice(comment.length + 2), format };
 }
 
 function yaml(value: unknown): string {
@@ -307,8 +358,11 @@ function yaml(value: unknown): string {
 
 function frontmatter(fields: Record<string, unknown>, marker = false): string {
   supported(fields.format);
-  const lines = Object.entries(fields).map(([key, value]) => `${key}: ${marker && key === "roadmap" ? "{ format: 1 }" : yaml(value)}`);
-  return `---\n${lines.join("\n")}\n---\n${MANAGED_COMMENT}\n\n`;
+  const format = fields.format;
+  const lines = Object.entries(fields).map(
+    ([key, value]) => `${key}: ${marker && key === "roadmap" ? `{ format: ${format} }` : yaml(value)}`,
+  );
+  return `---\n${lines.join("\n")}\n---\n${managedComment(format)}\n\n`;
 }
 
 function section(heading: string, body: string): string {
@@ -410,7 +464,7 @@ function markdownMatches(body: string, pattern: RegExp, validate: boolean): RegE
         list = false;
       } else {
         const managed =
-          raw === MANAGED_COMMENT ||
+          MANAGED_COMMENTS[raw] === true ||
           /^<!-- roadmap:generated:(?:stages|rounds|status|adrs) -->$/.test(raw) ||
           raw === "<!-- /roadmap:generated -->";
         const line = raw.trimStart();
@@ -474,8 +528,14 @@ function sections(body: string, title: string, headings: readonly string[], opti
   return result;
 }
 
-const STAGE_KEYS = ["format", "id", "title", "round", "status", "depends_on", "follows", "created", "started", "closed", "closed_sha256"];
-const ROUND_KEYS = ["format", "id", "title", "status", "opened", "closed", "frozen_sha256"];
+const STAGE_KEYS: Readonly<Record<Format, readonly string[]>> = {
+  1: ["format", "id", "title", "round", "status", "depends_on", "follows", "created", "started", "closed", "closed_sha256"],
+  2: ["format", "id", "title", "round", "status", "target", "depends_on", "follows", "created", "started", "closed", "closed_sha256"],
+};
+const ROUND_KEYS: Readonly<Record<Format, readonly string[]>> = {
+  1: ["format", "id", "title", "status", "opened", "closed", "frozen_sha256"],
+  2: ["format", "id", "title", "status", "target", "opened", "closed", "frozen_sha256"],
+};
 const ADR_KEYS = ["format", "id", "supersedes", "superseded_by", "stage", "status", "date", "decision-makers", "consulted", "informed"];
 const STAGE_HEADINGS = [
   "## Objective",
@@ -490,6 +550,10 @@ const STAGE_HEADINGS = [
   "## Outcome",
 ];
 const ROUND_HEADINGS = ["## Goal", "## Constraints", "## Non-goals", "## Principles", "## Stages", "## Known limitations"];
+const ROUND_STATUSES: Readonly<Record<Format, readonly RoundStatus[]>> = {
+  1: ["active", "closed"],
+  2: ["planned", "active", "closed", "dropped"],
+};
 const original = new WeakMap<object, { raw: string; rendered: string }>();
 
 function remember<T extends object>(doc: T, raw: string, render: (doc: T) => string): T {
@@ -498,18 +562,19 @@ function remember<T extends object>(doc: T, raw: string, render: (doc: T) => str
 }
 
 export function parseStage(content: string, path = ""): StageDoc {
-  const { fm, body } = header(content, STAGE_KEYS);
+  const { fm, body, format } = header(content, STAGE_KEYS);
   const stageId = id(fm.id, "stage");
   const title = text(fm.title, "title");
   const parts = sections(body, `# ${stageId} — ${title}`, STAGE_HEADINGS, ["## Design constraints", "## Risks", "## Outcome"]);
   if (parts["## Scope"]) invalid("Scope body belongs under In or Out.");
   const doc: StageDoc = {
-    format: 1,
+    format,
     path,
     id: stageId,
     title,
     round: id(fm.round, "round", "round"),
     status: choice(fm.status, ["planned", "active", "closed", "dropped"], "status"),
+    target: format === 1 ? null : date(fm.target, "target", true),
     depends_on: strings(fm.depends_on, "depends_on", "stage"),
     follows: nullableId(fm.follows, "stage", "follows"),
     created: date(fm.created, "created") as string,
@@ -538,8 +603,21 @@ export function parseDoneCriteria(body: string): DoneCriterion[] {
   return matches.map((match) => ({ id: match[1] as string, statement: match[2] as string, verify: match[3] as string }));
 }
 
+/** The lowest file format that can express a stage or round; format-1 files are rewritten as format 2 only for these fields. */
+export function requiredFormat(doc: StageDoc | RoundDoc): Format {
+  if (doc.target !== null) return 2;
+  return "opened" in doc && (doc.status === "planned" || doc.status === "dropped" || doc.outcome !== undefined) ? 2 : 1;
+}
+
+function expressible(doc: StageDoc | RoundDoc): void {
+  supported(doc.format);
+  if (requiredFormat(doc) > doc.format)
+    throw new DocumentError("format", `${doc.id} uses a target date or a planned or dropped round, which need format 2.`);
+}
+
 export function renderStage(doc: StageDoc): string {
-  const meta = Object.fromEntries(STAGE_KEYS.map((key) => [key, doc[key as keyof StageDoc]]));
+  expressible(doc);
+  const meta = Object.fromEntries(STAGE_KEYS[doc.format].map((key) => [key, doc[key as keyof StageDoc]]));
   let output = `${frontmatter(meta)}# ${doc.id} — ${doc.title}\n\n`;
   output += section("## Objective", doc.objective) + section("## Scope", "");
   output += section("### In", doc.scope_in) + section("### Out", doc.scope_out) + section("## Done criteria", doc.done_criteria);
@@ -551,18 +629,30 @@ export function renderStage(doc: StageDoc): string {
 }
 
 export function parseRound(content: string, path = ""): RoundDoc {
-  const { fm, body } = header(content, ROUND_KEYS);
+  const { fm, body, format } = header(content, ROUND_KEYS);
   const roundId = id(fm.id, "round");
   const title = text(fm.title, "title");
-  const parts = sections(body, `# ${roundId} — ${title}`, ROUND_HEADINGS);
+  const parts = sections(
+    body,
+    `# ${roundId} — ${title}`,
+    format === 1 ? ROUND_HEADINGS : [...ROUND_HEADINGS, "## Outcome"],
+    format === 1 ? [] : ["## Outcome"],
+  );
   generatedContent(body, "stages");
+  const status = choice(fm.status, ROUND_STATUSES[format], "status");
+  const unopened = status === "planned" || status === "dropped";
+  const opened = date(fm.opened, "opened", unopened);
+  if (unopened && opened !== null) invalid(`A ${status} round has opened: null; only activation records an opened date.`);
+  if (status === "dropped" && (fm.closed === null || !parts["## Outcome"]?.trim()))
+    invalid("A dropped round records its drop date in closed and its reason in Outcome.");
   return {
-    format: 1,
+    format,
     path,
     id: roundId,
     title,
-    status: choice(fm.status, ["active", "closed"], "status"),
-    opened: date(fm.opened, "opened") as string,
+    status,
+    target: format === 1 ? null : date(fm.target, "target", true),
+    opened,
     closed: date(fm.closed, "closed", true),
     frozen_sha256: digest(fm.frozen_sha256, "frozen_sha256"),
     goal: parts["## Goal"] as string,
@@ -571,11 +661,13 @@ export function parseRound(content: string, path = ""): RoundDoc {
     principles: parts["## Principles"] as string,
     stages: parts["## Stages"] as string,
     known_limitations: parts["## Known limitations"] as string,
+    outcome: parts["## Outcome"],
   };
 }
 
 export function renderRound(doc: RoundDoc, stages?: readonly StageDoc[]): string {
-  const meta = Object.fromEntries(ROUND_KEYS.map((key) => [key, doc[key as keyof RoundDoc]]));
+  expressible(doc);
+  const meta = Object.fromEntries(ROUND_KEYS[doc.format].map((key) => [key, doc[key as keyof RoundDoc]]));
   return (
     `${frontmatter(meta)}# ${doc.id} — ${doc.title}\n\n` +
     section("## Goal", doc.goal) +
@@ -584,14 +676,23 @@ export function renderRound(doc: RoundDoc, stages?: readonly StageDoc[]): string
     section("## Principles", doc.principles) +
     section(
       "## Stages",
-      stages ? generatedBlock("stages", renderStageTable(stages.filter((stage) => stage.round === doc.id))) : doc.stages,
+      stages
+        ? generatedBlock(
+            "stages",
+            renderStageTable(
+              stages.filter((stage) => stage.round === doc.id),
+              doc.format,
+            ),
+          )
+        : doc.stages,
     ) +
-    section("## Known limitations", doc.known_limitations)
+    section("## Known limitations", doc.known_limitations) +
+    (doc.outcome === undefined ? "" : section("## Outcome", doc.outcome))
   );
 }
 
 export function parseTodo(content: string, path = ""): TodoDoc {
-  const { fm, body } = header(content, ["format", "round"]);
+  const { fm, body, format } = header(content, ["format", "round"]);
   const round = id(fm.round, "round", "round");
   if (!body.startsWith(`# ${round} — TODO\n\n`)) invalid("Malformed TODO title.");
   const rest = body.slice(`# ${round} — TODO\n\n`.length);
@@ -604,7 +705,7 @@ export function parseTodo(content: string, path = ""): TodoDoc {
   const split = headings[1]?.index as number;
   if (!rest.slice(split).startsWith(closedHeader)) invalid("Closed TODO heading requires a blank separator.");
   const items = [...todoItems(rest.slice(openHeader.length, split), true), ...todoItems(rest.slice(split + closedHeader.length), false)];
-  return { format: 1, path, round, items };
+  return { format, path, round, items };
 }
 
 function todoItems(body: string, open: boolean): TodoItem[] {
@@ -732,10 +833,10 @@ function validateAdrBody(body: string): string {
 }
 
 export function parseAdr(content: string, path = ""): AdrDoc {
-  const { fm, body } = header(content, ADR_KEYS);
+  const { fm, body, format } = header(content, ADR_KEYS);
   const title = validateAdrBody(body);
   return {
-    format: 1,
+    format,
     path,
     id: id(fm.id, "adr"),
     title,
@@ -826,39 +927,58 @@ function cell(value: string | null): string {
   return (value ?? "—").replaceAll("|", "\\|").replace(/\r?\n/g, "<br>");
 }
 
-export function renderStageTable(stages: readonly StageDoc[]): string {
+/** Format-1 files keep the 0.2.3 columns; format 2 adds Target. Generated blocks never depend on today's date. */
+export function renderStageTable(stages: readonly StageDoc[], format: Format): string {
+  const target = format === 2;
   return [
-    "| Stage | Title | Status | Dependencies | Created | Started | Closed |",
-    "| --- | --- | --- | --- | --- | --- | --- |",
+    `| Stage | Title | Status |${target ? " Target |" : ""} Dependencies | Created | Started | Closed |`,
+    `| --- | --- | --- |${target ? " --- |" : ""} --- | --- | --- | --- |`,
     ...ordered(stages).map(
       (stage) =>
-        `| ${stage.id} | ${cell(stage.title)} | ${stage.status} | ${stage.depends_on.join(", ") || "—"} | ${stage.created} | ${cell(stage.started)} | ${cell(stage.closed)} |`,
+        `| ${stage.id} | ${cell(stage.title)} | ${stage.status} |${target ? ` ${cell(stage.target)} |` : ""} ${stage.depends_on.join(", ") || "—"} | ${stage.created} | ${cell(stage.started)} | ${cell(stage.closed)} |`,
     ),
   ].join("\n");
 }
 
-export function renderRoundTable(rounds: readonly RoundDoc[]): string {
+export function renderRoundTable(rounds: readonly RoundDoc[], format: Format): string {
+  const target = format === 2;
   return [
-    "| Round | Title | Status | Opened | Closed |",
-    "| --- | --- | --- | --- | --- |",
-    ...ordered(rounds).map((round) => `| ${round.id} | ${cell(round.title)} | ${round.status} | ${round.opened} | ${cell(round.closed)} |`),
+    `| Round | Title | Status |${target ? " Target |" : ""} Opened | Closed |`,
+    `| --- | --- | --- |${target ? " --- |" : ""} --- | --- |`,
+    ...ordered(rounds).map(
+      (round) =>
+        `| ${round.id} | ${cell(round.title)} | ${round.status} |${target ? ` ${cell(round.target)} |` : ""} ${cell(round.opened)} | ${cell(round.closed)} |`,
+    ),
   ].join("\n");
 }
 
-export function renderCurrentStatus(rounds: readonly RoundDoc[], stages: readonly StageDoc[]): string {
-  const active = ordered(rounds.filter((round) => round.status === "active"));
-  if (!active.length) return "No active round. Free work is unrestricted; ADR management remains available.";
-  return active
-    .map((round) => {
-      const own = stages.filter((stage) => stage.round === round.id);
-      const done = own.filter((stage) => stage.status === "closed" || stage.status === "dropped").length;
-      return `${round.id} — ${round.title}: ${done}/${own.length} stages finished; ${own.filter((stage) => stage.status === "active").length} active.`;
-    })
-    .join("\n");
+export function renderCurrentStatus(rounds: readonly RoundDoc[], stages: readonly StageDoc[], format: Format): string {
+  const active = ordered(rounds.filter((round) => round.status === "active")).map((round) => {
+    const own = stages.filter((stage) => stage.round === round.id);
+    const done = own.filter((stage) => stage.status === "closed" || stage.status === "dropped").length;
+    const target = format === 2 && round.target ? `; target ${round.target}` : "";
+    return `${round.id} — ${round.title}: ${done}/${own.length} stages finished; ${own.filter((stage) => stage.status === "active").length} active${target}.`;
+  });
+  if (!active.length) active.push("No active round. Free work is unrestricted; ADR management remains available.");
+  if (format === 1) return active.join("\n");
+  const planned = ordered(rounds.filter((round) => round.status === "planned")).map((round) => {
+    const count = stages.filter((stage) => stage.round === round.id && stage.status !== "dropped").length;
+    return `${round.id} — ${round.title}: planned with ${count} stage${count === 1 ? "" : "s"}${round.target ? `; target ${round.target}` : ""}.`;
+  });
+  return [...active, ...planned].join("\n");
+}
+
+export function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Status views only: an unfinished round or stage whose target date has passed. */
+export function overdue(item: { status: string; target: string | null }, on: string): boolean {
+  return item.target !== null && item.target < on && (item.status === "planned" || item.status === "active");
 }
 
 export function parseRoadmapIndex(content: string, path = ""): RoadmapIndexDoc {
-  const { fm, body } = header(content, ["format", "roadmap", "title"], true);
+  const { fm, body, format } = header(content, ["format", "roadmap", "title"], true);
   const title = text(fm.title, "title");
   const headings = markdownHeadings(body, /^## .+$/gm).map((heading) => heading[0]);
   if (!body.startsWith(`# ${title}\n\n`) || headings.join("\n") !== "## How this directory works\n## Rounds\n## Current status") {
@@ -866,18 +986,28 @@ export function parseRoadmapIndex(content: string, path = ""): RoadmapIndexDoc {
   }
   generatedContent(body, "rounds");
   generatedContent(body, "status");
-  return { format: 1, path, title, body };
+  return { format, path, title, body };
 }
 
 export function renderRoadmapIndex(doc: RoadmapIndexDoc, rounds?: readonly RoundDoc[], stages: readonly StageDoc[] = []): string {
   let body =
     doc.body ||
-    `# ${doc.title}\n\n${HOW_THIS_DIRECTORY_WORKS}\n## Rounds\n\n${generatedBlock("rounds", renderRoundTable([]))}\n\n## Current status\n\n${generatedBlock("status", renderCurrentStatus([], []))}\n`;
+    `# ${doc.title}\n\n${HOW_THIS_DIRECTORY_WORKS[doc.format]}\n## Rounds\n\n${generatedBlock("rounds", renderRoundTable([], doc.format))}\n\n## Current status\n\n${generatedBlock("status", renderCurrentStatus([], [], doc.format))}\n`;
   if (rounds) {
-    body = replaceGenerated(body, "rounds", renderRoundTable(rounds));
-    body = replaceGenerated(body, "status", renderCurrentStatus(rounds, stages));
+    body = replaceGenerated(body, "rounds", renderRoundTable(rounds, doc.format));
+    body = replaceGenerated(body, "status", renderCurrentStatus(rounds, stages, doc.format));
   }
-  return frontmatter({ format: doc.format, roadmap: { format: 1 }, title: doc.title }, true) + lf(body);
+  return frontmatter({ format: doc.format, roadmap: { format: doc.format }, title: doc.title }, true) + lf(body);
+}
+
+/** Bumps the repository marker to format 2 and replaces the directory text; other authored README text stays. */
+export function upgradeRoadmapIndex(doc: RoadmapIndexDoc): void {
+  const headings = markdownHeadings(doc.body, /^## .+$/gm);
+  const how = headings.find((heading) => heading[0] === "## How this directory works")?.index;
+  const rounds = headings.find((heading) => heading[0] === "## Rounds")?.index;
+  if (how === undefined || rounds === undefined) invalid("Roadmap index missing How this directory works or Rounds headings.");
+  doc.body = `${doc.body.slice(0, how)}${HOW_THIS_DIRECTORY_WORKS[2]}\n${doc.body.slice(rounds)}`;
+  doc.format = 2;
 }
 
 const ADR_INDEX_CONVENTIONS = `# Architecture Decision Records
@@ -899,7 +1029,7 @@ export function renderAdrTable(adrs: readonly AdrDoc[]): string {
 }
 
 export function parseAdrIndex(content: string, path = ""): AdrIndexDoc {
-  const { body } = header(content, ["format"]);
+  const { body, format } = header(content, ["format"]);
   if (
     !body.startsWith("# Architecture Decision Records\n\n") ||
     markdownHeadings(body, /^## .+$/gm)
@@ -908,7 +1038,7 @@ export function parseAdrIndex(content: string, path = ""): AdrIndexDoc {
   )
     invalid("Malformed ADR index fixed headings.");
   generatedContent(body, "adrs");
-  return { format: 1, path, body };
+  return { format, path, body };
 }
 
 export function renderAdrIndex(doc: AdrIndexDoc, adrs?: readonly AdrDoc[]): string {

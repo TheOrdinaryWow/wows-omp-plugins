@@ -27,6 +27,7 @@ import {
   roundFiles,
   roundSha256,
   stageSha256,
+  type TodoItem,
 } from "./documents.ts";
 import { guardMutation } from "./mutation-guard.ts";
 import { withRepoLock } from "./numbering.ts";
@@ -54,17 +55,27 @@ function generated(model: Model): Generated[] {
     return bytes === undefined ? fallback : Buffer.from(bytes).toString("utf8");
   };
   const root = content(model.index.path, renderRoadmapIndex(model.index));
+  const format = model.index.format;
   blocks.push(
-    { path: model.index.path, name: "rounds", expected: renderRoundTable(model.rounds), source: root, frozen: false },
-    { path: model.index.path, name: "status", expected: renderCurrentStatus(model.rounds, model.stages), source: root, frozen: false },
+    { path: model.index.path, name: "rounds", expected: renderRoundTable(model.rounds, format), source: root, frozen: false },
+    {
+      path: model.index.path,
+      name: "status",
+      expected: renderCurrentStatus(model.rounds, model.stages, format),
+      source: root,
+      frozen: false,
+    },
   );
   for (const round of model.rounds) {
     blocks.push({
       path: round.path,
       name: "stages",
-      expected: renderStageTable(model.stages.filter((stage) => stage.round === round.id)),
+      expected: renderStageTable(
+        model.stages.filter((stage) => stage.round === round.id),
+        round.format,
+      ),
       source: content(round.path, renderRound(round)),
-      frozen: round.status === "closed" || round.closed !== null || round.frozen_sha256 !== null,
+      frozen: round.status === "closed" || round.status === "dropped" || round.closed !== null || round.frozen_sha256 !== null,
     });
   }
   if (model.adrIndex) {
@@ -104,20 +115,21 @@ export function checkClosureIntegrity(model: Model): Diagnostics[] {
     }
   }
   for (const round of model.rounds) {
-    if (round.status !== "closed" && (round.closed !== null || round.frozen_sha256 !== null)) {
+    const terminal = round.status === "closed" || round.status === "dropped";
+    if (!terminal && (round.closed !== null || round.frozen_sha256 !== null)) {
       report(
         "frozen-round-status",
         round.path,
         `${round.id} status ${round.status} is inconsistent with its closure metadata. Restore the frozen directory with git.`,
       );
     }
-    if (round.status === "closed" || round.frozen_sha256 !== null) {
+    if (terminal || round.frozen_sha256 !== null) {
       const files = roundFiles(model, round);
       if (!Object.keys(files).length || round.frozen_sha256 !== roundSha256(files)) {
         report(
           "frozen-round-hash",
           round.path,
-          `${round.id} frozen_sha256 mismatch: a closed round was edited. Restore the frozen directory with git.`,
+          `${round.id} frozen_sha256 mismatch: a ${round.status === "dropped" ? "dropped" : "closed"} round was edited. Restore the frozen directory with git.`,
         );
       }
     }
@@ -154,21 +166,54 @@ function diagnostics(model: Model): Diagnostics[] {
   for (const doc of model.todos) validate(doc, renderTodo, parseTodo);
   for (const doc of model.adrs) validate(doc, renderAdr, parseAdr);
   result.push(...checkClosureIntegrity(model));
+  const repository = model.index.format;
+  if (!model.parseErrors?.some((issue) => issue.path === model.index.path)) {
+    for (const doc of [...model.rounds, ...model.stages, ...model.todos, ...model.adrs, ...(model.adrIndex ? [model.adrIndex] : [])]) {
+      if (doc.format > repository)
+        report(
+          "error",
+          "format",
+          doc.path,
+          `This file uses roadmap format ${doc.format}, but the repository marker in docs/roadmap/README.md is format ${repository}. Run /roadmap upgrade to adopt format 2, or restore the file with git.`,
+        );
+    }
+  }
 
   const seen = new Map<string, string>();
-  for (const doc of [
-    ...model.rounds,
-    ...model.stages,
-    ...model.adrs,
-    ...model.todos.flatMap((todo) => todo.items.map((item) => ({ ...item, path: todo.path }))),
-  ]) {
+  const duplicate = (id: string, path: string, previous: string): void => {
+    const hint = id.startsWith("S")
+      ? "Renumber a planned stage; started stages require a manual decision."
+      : "Cross-branch or cross-clone collisions require a manual decision; ids are never reused.";
+    report("error", "duplicate-id", path, `Duplicate ${id}; also present in ${previous}. ${hint}`);
+  };
+  for (const doc of [...model.rounds, ...model.stages, ...model.adrs]) {
     const previous = seen.get(doc.id);
-    if (previous !== undefined) {
-      const hint = doc.id.startsWith("S")
-        ? "Renumber a planned stage; started stages require a manual decision."
-        : "Cross-branch or cross-clone collisions require a manual decision; ids are never reused.";
-      report("error", "duplicate-id", doc.path, `Duplicate ${doc.id}; also present in ${previous}. ${hint}`);
-    } else seen.set(doc.id, doc.path);
+    if (previous !== undefined) duplicate(doc.id, doc.path, previous);
+    else seen.set(doc.id, doc.path);
+  }
+  // Round close carries TODOs for a planned round's stages under the same id; only that chain may repeat an id.
+  const occurrences = new Map<string, Array<{ item: TodoItem; round: string; path: string }>>();
+  for (const todo of model.todos) {
+    for (const item of todo.items) {
+      const entries = occurrences.get(item.id) ?? [];
+      entries.push({ item, round: todo.round, path: todo.path });
+      occurrences.set(item.id, entries);
+    }
+  }
+  for (const [id, entries] of occurrences) {
+    const chain = [...entries].sort((a, b) => Number(a.round.slice(1)) - Number(b.round.slice(1)));
+    const carried = chain.every((entry, index) => {
+      const next = chain[index + 1];
+      return (
+        (next === undefined && entry.item.status !== "carried") ||
+        (next !== undefined &&
+          Number(next.round.slice(1)) > Number(entry.round.slice(1)) &&
+          entry.item.status === "carried" &&
+          entry.item.reference === next.round &&
+          next.item.carried_from === `${id} (${entry.round})`)
+      );
+    });
+    if (!carried) for (const entry of entries.slice(1)) duplicate(id, entry.path, (entries[0] as (typeof entries)[number]).path);
   }
   const rounds = new Map(model.rounds.map((round) => [round.id, round]));
   const stages = new Map(model.stages.map((stage) => [stage.id, stage]));
@@ -176,9 +221,30 @@ function diagnostics(model: Model): Diagnostics[] {
   if (model.rounds.filter((round) => round.status === "active").length > 1)
     report("error", "structure", model.index.path, "At most one round may be active.");
   for (const stage of model.stages) {
-    if (!rounds.has(stage.round)) report("error", "dangling-reference", stage.path, `${stage.id} has unknown round ${stage.round}.`);
+    const round = rounds.get(stage.round);
+    if (!round) report("error", "dangling-reference", stage.path, `${stage.id} has unknown round ${stage.round}.`);
+    else if (
+      (round.status === "planned" && stage.status !== "planned" && stage.status !== "dropped") ||
+      (round.status === "dropped" && stage.status !== "dropped")
+    )
+      report(
+        "error",
+        "round-state",
+        stage.path,
+        `${stage.id} is ${stage.status} in ${round.status} round ${round.id}; a planned round holds only planned or dropped stages and a dropped round only dropped stages.`,
+      );
     for (const dependency of [...stage.depends_on, ...(stage.follows ? [stage.follows] : [])]) {
       if (!stages.has(dependency)) report("error", "dangling-reference", stage.path, `${stage.id} refers to missing stage ${dependency}.`);
+    }
+    for (const dependency of stage.depends_on) {
+      const other = stages.get(dependency);
+      if (other && Number(other.round.slice(1)) > Number(stage.round.slice(1)))
+        report(
+          "error",
+          "dependency-order",
+          stage.path,
+          `${stage.id} in ${stage.round} depends on ${other.id} in the later round ${other.round}; a stage depends only on stages in its own or an earlier round.`,
+        );
     }
   }
   const visited = new Set<string>();
@@ -229,6 +295,13 @@ function diagnostics(model: Model): Diagnostics[] {
           todo.path,
           `${item.id} targets ${target.status} stage ${target.id}; move it to an unclosed stage or a trigger.`,
         );
+      } else if (target && rounds.get(todo.round)?.status === "planned" && target.round !== todo.round) {
+        report(
+          "error",
+          "todo-target",
+          todo.path,
+          `${item.id} in planned round ${todo.round} targets ${target.id} in ${target.round}; a planned round's TODO.md holds only TODOs for its own stages or with a trigger. Move it with roadmap_todo.`,
+        );
       }
     }
   }
@@ -264,7 +337,7 @@ function diagnostics(model: Model): Diagnostics[] {
           "error",
           "generated",
           block.path,
-          `Stale generated ${block.name} block.${block.frozen ? " Fix refused: this round is closed; restore its frozen contents with git." : " Run check --fix."}`,
+          `Stale generated ${block.name} block.${block.frozen ? " Fix refused: this round is closed or dropped; restore its frozen contents with git." : " Run check --fix."}`,
           !block.frozen,
         );
       }

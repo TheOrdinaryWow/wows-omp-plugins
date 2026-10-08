@@ -12,7 +12,7 @@ import {
   loadAll,
   loadRepo,
   MADR_BODY_TEMPLATE,
-  MANAGED_COMMENT,
+  managedComment,
   markdownHeadings,
   parseAdr,
   parseAdrIndex,
@@ -52,10 +52,10 @@ describe("roadmap managed documents", () => {
     test(`${name} round-trips byte-stably, preserving free bodies and normalizing CRLF`, () => {
       expect(roundtrip(raw)).toBe(raw);
       expect(roundtrip(raw.replaceAll("\n", "\r\n"))).toBe(raw);
-      expect(raw).toContain(MANAGED_COMMENT);
+      expect(raw).toContain(managedComment(1));
     });
     test(`${name} refuses unknown formats`, () => {
-      expect(() => roundtrip(raw.replace("format: 1", "format: 2"))).toThrow("Unsupported roadmap format 2");
+      expect(() => roundtrip(raw.replace("format: 1", "format: 3"))).toThrow("Unsupported roadmap format 3");
       expect(() => roundtrip(raw.replace("format: 1", "format: 0"))).toThrow("Unsupported roadmap format 0");
     });
   };
@@ -97,12 +97,12 @@ describe("roadmap managed documents", () => {
   );
 
   test("rendering refuses unsupported persisted versions for every kind", () => {
-    expect(() => renderStage({ ...stageFixture(), format: 2 as 1 })).toThrow("Unsupported");
-    expect(() => renderRound({ ...roundFixture(), format: 2 as 1 })).toThrow("Unsupported");
-    expect(() => renderTodo({ ...todoFixture(), format: 2 as 1 })).toThrow("Unsupported");
-    expect(() => renderAdr({ ...adrFixture(), format: 2 as 1 })).toThrow("Unsupported");
-    expect(() => renderRoadmapIndex({ ...model.index, format: 2 as 1 })).toThrow("Unsupported");
-    expect(() => renderAdrIndex({ ...(model.adrIndex as NonNullable<typeof model.adrIndex>), format: 2 as 1 })).toThrow("Unsupported");
+    expect(() => renderStage({ ...stageFixture(), format: 3 as 1 })).toThrow("Unsupported");
+    expect(() => renderRound({ ...roundFixture(), format: 3 as 1 })).toThrow("Unsupported");
+    expect(() => renderTodo({ ...todoFixture(), format: 3 as 1 })).toThrow("Unsupported");
+    expect(() => renderAdr({ ...adrFixture(), format: 3 as 1 })).toThrow("Unsupported");
+    expect(() => renderRoadmapIndex({ ...model.index, format: 3 as 1 })).toThrow("Unsupported");
+    expect(() => renderAdrIndex({ ...(model.adrIndex as NonNullable<typeof model.adrIndex>), format: 3 as 1 })).toThrow("Unsupported");
   });
 
   test("strict validation rejects YAML fallback, duplicate keys, invalid metadata and fixed headings", () => {
@@ -117,7 +117,7 @@ describe("roadmap managed documents", () => {
       raw.replace("## Objective", "## Wrong heading"),
       raw.replace("## Objective", "Misplaced authored text.\n\n## Objective"),
       raw.replace("### In", "### Not in"),
-      raw.replace(MANAGED_COMMENT, "<!-- edited -->"),
+      raw.replace(managedComment(1), "<!-- edited -->"),
       raw.replace("- Verify:", "- Test:"),
     ])
       expect(() => parseStage(broken)).toThrow();
@@ -609,14 +609,16 @@ describe("repository loading", () => {
     const { repo } = await diskFixture();
     const index = join(repo.roadmapDir, "README.md");
     const raw = await readFile(index, "utf8");
-    await writeFile(index, raw.replace("roadmap: { format: 1 }", "roadmap: { format: 2 }"));
-    await expect(loadRepo(repo.repoRoot)).rejects.toThrow("Unsupported roadmap format 2");
+    await writeFile(index, raw.replace("roadmap: { format: 1 }", "roadmap: { format: 3 }"));
+    await expect(loadRepo(repo.repoRoot)).rejects.toThrow("Unsupported roadmap format 3");
     await writeFile(index, raw);
     const stage = join(repo.roadmapDir, "01-launch/stages/01-launch.md");
     await writeFile(stage, renderStage(stageFixture()).replace("format: 1", "format: 99"));
     const model = await loadAll(repo);
     expect(model.stages).toEqual([]);
-    expect(model.parseErrors).toEqual([{ rule: "format", path: stage, message: "Unsupported roadmap format 99; supported format is 1." }]);
+    expect(model.parseErrors).toEqual([
+      { rule: "format", path: stage, message: "Unsupported roadmap format 99; supported formats are 1 and 2." },
+    ]);
   });
 
   test("file numbers and round membership must agree with their document metadata", async () => {

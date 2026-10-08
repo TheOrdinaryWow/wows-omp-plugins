@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { check, type Diagnostics } from "#src/check.ts";
-import { loadAll, loadRepo, type Model, type Repo, renderStage, type StageDoc } from "#src/documents.ts";
+import { loadAll, loadRepo, type Model, overdue, type Repo, renderRound, renderStage, type StageDoc, today } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import { renderHandoff, renderInjection } from "#src/handoff.ts";
 import { withRepoLock } from "#src/numbering.ts";
@@ -14,6 +14,7 @@ import {
   type PreparedOperation,
   prepareInit,
   prepareRoundOpen,
+  prepareRoundPlan,
   type Receipt,
   recordFreeWork,
   stage,
@@ -51,6 +52,17 @@ export async function requireRepo(ctx: ExtensionContext, initialize = false): Pr
 
 export async function statusReceipt(repo: Repo, id?: string): Promise<Receipt> {
   const model = await loadAll(repo);
+  const on = today();
+  if (id?.startsWith("R")) {
+    const round = model.rounds.find((round) => round.id === id);
+    if (!round) return { ok: false, reason: `Unknown round ${id}.`, hints: [] };
+    return {
+      ok: true,
+      summary: `${renderRound(round)}${overdue(round, on) ? "\nOverdue: this unfinished round is past its target.\n" : ""}`,
+      changedFiles: [],
+      warnings: [],
+    };
+  }
   if (id) {
     const current = model.stages.find((candidate) => candidate.id === id);
     if (!current) return { ok: false, reason: `Unknown stage ${id}.`, hints: ["Call roadmap_status for stage ids."] };
@@ -62,8 +74,16 @@ export async function statusReceipt(repo: Repo, id?: string): Promise<Receipt> {
     summary: [
       model.index.title,
       renderInjection(model) || "No active round. ADR management remains available.",
+      "Rounds (target versus actual):",
+      ...model.rounds.map(
+        (round) =>
+          `- ${round.id} [${round.status}] ${round.title} — target ${round.target ?? "none"}; opened ${round.opened ?? "—"}; closed ${round.closed ?? "—"}${overdue(round, on) ? "; overdue" : ""}; ${model.stages.filter((stage) => stage.round === round.id).length} stages`,
+      ),
       "Stages:",
-      ...model.stages.map((current) => `- ${current.id} [${current.status}] ${current.title} (${current.round})`),
+      ...model.stages.map(
+        (current) =>
+          `- ${current.id} [${current.status}] ${current.title} (${current.round})${current.target ? ` — target ${current.target}${overdue(current, on) ? "; overdue" : ""}` : ""}; started ${current.started ?? "—"}; closed ${current.closed ?? "—"}`,
+      ),
       "Open TODOs by target or trigger:",
       ...open.map((item) => `- ${item.id} [${item.severity}] ${item.target ?? item.trigger}: ${item.title}`),
     ].join("\n"),
@@ -203,7 +223,14 @@ export function awaitConfirmation(
   prepared: PreparedOperation,
 ): ToolReceipt {
   const token = ses.holdPreview(ctx, generation, kind, repo, prepared);
-  const tool = kind === "init" ? "roadmap_init" : "roadmap_round_open";
+  const again =
+    kind === "init"
+      ? "Call roadmap_init again"
+      : kind === "round"
+        ? "Call roadmap_round_open again"
+        : kind === "plan"
+          ? "Call roadmap_round_plan again"
+          : `Run /roadmap ${kind} again`;
   return {
     ok: false,
     reason: [
@@ -212,12 +239,12 @@ export function awaitConfirmation(
     ].join("\n\n"),
     hints: [
       `Show this preview to the user. The user writes exactly these files with /roadmap confirm ${token}; any other reply declines it.`,
-      `Call ${tool} again only if the user asks for changes; a new preview replaces this one.`,
+      `${again} only if the user asks for changes; a new preview replaces this one.`,
     ],
   };
 }
 
-/** Writes a confirmed init/round-open preview while the session that armed it is unchanged and still armed. */
+/** Writes a confirmed preview while the session that armed it is unchanged and still armed. */
 export async function applyPreview(
   ses: RoadmapSession,
   ctx: ExtensionContext,
@@ -232,10 +259,7 @@ export async function applyPreview(
     if (ctx.sessionManager.getSessionId() !== owner.sessionId || !ses.isCurrent(ctx, generation) || !ses.isArmed(ctx, repo.repoRoot, kind))
       return {
         ok: false,
-        reason:
-          kind === "init"
-            ? "Initialization authorization changed; run /init-project again."
-            : "Round authorization changed; run /roadmap new-round again.",
+        reason: `Roadmap authorization changed; run ${kind === "init" ? "/init-project" : `/roadmap ${kind === "round" ? "new-round" : kind === "plan" ? "plan-round" : kind}`} again.`,
         hints: [],
       };
   };
@@ -299,6 +323,8 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     title: z.string().optional(),
     objective: z.string().optional(),
     scope_in: z.array(z.string()).optional(),
+    round: z.string().optional(),
+    target: z.string().optional(),
     scope_out: z.array(z.string()).optional(),
     done_criteria: z.array(criterion).optional(),
     action: z.enum(["add", "edit", "amend", "start", "close", "drop", "renumber"]),
@@ -363,7 +389,8 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     adrs: z.array(z.object(adrFields)),
     stages: z.array(z.object(stageFields)),
   });
-  const roundParameters = z.object({ round, import_todos: z.array(z.string()) });
+  const roundParameters = z.object({ round: round.optional(), import_todos: z.array(z.string()), activate: z.string().optional() });
+  const planParameters = z.object({ id: z.string().optional(), round, target: z.string().optional() });
 
   async function run(ctx: ExtensionContext, operation: (repo: Repo, owner: Actor) => Promise<ToolReceipt>, initialize = false) {
     try {
@@ -530,6 +557,33 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
             hints: [],
           };
         return applyPreview(ses, ctx, "round", repo, owner, generation, prepared.prepared, signal);
+      });
+    },
+  });
+  pi.registerTool({
+    name: "roadmap_round_plan",
+    label: "Plan Roadmap round",
+    description:
+      "Draft or revise a planned round charter and optional target after a user-confirmed preview. Only available to the main session armed by /roadmap plan-round. The first planned round upgrades format 1 with a warning in the same preview.",
+    parameters: planParameters,
+    approval: "write",
+    async execute(_id, params: typeof planParameters.infer, signal, _onUpdate, ctx) {
+      const generation = ses.currentGeneration(ctx);
+      return run(ctx, async (repo, owner) => {
+        if (!ses.isArmed(ctx, repo.repoRoot, "plan"))
+          return { ok: false, reason: "roadmap_round_plan is unarmed. Run /roadmap plan-round first.", hints: [] };
+        const prepared = await prepareRoundPlan(repo, owner, params);
+        if (!prepared.ok) return prepared;
+        const ui = uiFor(ctx);
+        if (!ui.interactive) return awaitConfirmation(ses, ctx, generation, "plan", repo, prepared.prepared);
+        const confirmed = await ui.previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
+        if (confirmed !== true || signal?.aborted)
+          return {
+            ok: false,
+            reason: confirmed === false ? "Planned round preview declined." : "Planned round: no answer available or cancelled.",
+            hints: [],
+          };
+        return applyPreview(ses, ctx, "plan", repo, owner, generation, prepared.prepared, signal);
       });
     },
   });

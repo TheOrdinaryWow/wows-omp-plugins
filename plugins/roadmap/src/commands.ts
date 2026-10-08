@@ -3,10 +3,19 @@ import { lstat, readdir } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { check } from "#src/check.ts";
-import { loadAll, loadRepo, roundFiles, roundSha256 } from "#src/documents.ts";
-import { closeRound } from "#src/operations.ts";
-import { actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
-import { applyPreview, checkReceipt, requireRepo, resolveOverlap, statusReceipt, type ToolReceipt, toolResult } from "#src/tools.ts";
+import { loadAll, loadRepo, type Repo, roundFiles, roundSha256 } from "#src/documents.ts";
+import { autoCarryTodos, closeRound, type PreparationReceipt, prepareRetarget, prepareRoundDrop, prepareUpgrade } from "#src/operations.ts";
+import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
+import {
+  applyPreview,
+  awaitConfirmation,
+  checkReceipt,
+  requireRepo,
+  resolveOverlap,
+  statusReceipt,
+  type ToolReceipt,
+  toolResult,
+} from "#src/tools.ts";
 import type { RoundTodoDispositionChoice } from "#src/ui.ts";
 
 export interface RoadmapCommands {
@@ -16,7 +25,7 @@ export interface RoadmapCommands {
 const CLOSE_ROUND_USAGE =
   'Usage: /roadmap close-round [<todo>=resolved:<reference> | <todo>=wontfix[:<reason>] | <todo>=carried ...]; quote text with spaces, e.g. T03=wontfix:"out of scope".';
 const USAGE =
-  "Usage: /roadmap [check [--fix] | new-round | close-round [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | confirm <token>]";
+  "Usage: /roadmap [check [--fix] | upgrade | plan-round [<id>] | new-round | drop-round <id> <reason> | retarget <round-or-stage> <YYYY-MM-DD|none> | close-round [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | confirm <token>]";
 const OVERLAP_ANSWERS = ["roadmap", "free", "unrelated"];
 
 /** Splits command arguments on whitespace; double quotes group text with spaces and are removed. */
@@ -56,11 +65,21 @@ export function registerCommands(
   changed: (ctx: ExtensionContext) => void,
 ): RoadmapCommands {
   let stageIds: string[] = [];
+  let plannedIds: string[] = [];
+  let roundIds: string[] = [];
 
   async function refresh(ctx: ExtensionContext): Promise<void> {
     stageIds = [];
+    plannedIds = [];
+    roundIds = [];
     const repo = await loadRepo(ctx.cwd);
-    if (repo) stageIds = (await loadAll(repo)).stages.map((stage) => stage.id);
+    if (repo) {
+      const model = await loadAll(repo);
+      stageIds = model.stages.map((stage) => stage.id);
+      const rounds = [...model.rounds].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+      plannedIds = rounds.filter((round) => round.status === "planned").map((round) => round.id);
+      roundIds = rounds.map((round) => round.id);
+    }
   }
 
   pi.registerCommand("init-project", {
@@ -97,6 +116,32 @@ export function registerCommands(
     pi.sendMessage({ customType, content: [...text, ...(footer ? [footer] : [])].join("\n"), display: true });
   }
 
+  async function commandPreview(
+    ctx: ExtensionCommandContext,
+    repo: Repo,
+    kind: ArmedKind,
+    build: () => Promise<PreparationReceipt>,
+  ): Promise<void> {
+    ses.arm(ctx, repo.repoRoot, kind);
+    const generation = ses.currentGeneration(ctx);
+    const prepared = await build();
+    if (!prepared.ok) {
+      show(`wows-omp-roadmap.${kind}`, prepared);
+      return;
+    }
+    const ui = uiFor(ctx);
+    if (!ui.interactive) {
+      show(`wows-omp-roadmap.${kind}`, awaitConfirmation(ses, ctx, generation, kind, repo, prepared.prepared));
+      return;
+    }
+    const confirmed = await ui.previewConfirm({ title: prepared.summary, root: repo.repoRoot, files: prepared.files });
+    if (confirmed !== true) {
+      ui.notify(confirmed === false ? "Roadmap preview declined." : "Roadmap preview: no answer available.", "info");
+      return;
+    }
+    show(`wows-omp-roadmap.${kind}`, await applyPreview(ses, ctx, kind, repo, actor(ctx), generation, prepared.prepared));
+  }
+
   async function roadmapCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
     const ui = uiFor(ctx);
     try {
@@ -108,9 +153,7 @@ export function registerCommands(
         if (!token || words.length > 2) throw new Error("Usage: /roadmap confirm <token>");
         const preview = ses.takePreview(ctx, token);
         if (!preview) {
-          throw new Error(
-            `No pending Roadmap preview ${token} in this session. Ask the agent to call roadmap_init or roadmap_round_open again for a fresh preview.`,
-          );
+          throw new Error(`No pending Roadmap preview ${token} in this session. Run its Roadmap command again for a fresh preview.`);
         }
         show(
           "wows-omp-roadmap.confirm",
@@ -137,7 +180,7 @@ export function registerCommands(
           return;
         }
         action = choice.action;
-        selectedStage = choice.stage;
+        selectedStage = choice.stage ?? choice.round;
         if (action === "close-round" && !reviewedRound) throw new Error("There is no reviewed active round to close.");
       }
       if (action === "close") {
@@ -149,7 +192,33 @@ export function registerCommands(
         }
         return;
       }
-      if (action === "stage") {
+      if (action === "round") {
+        show("wows-omp-roadmap.status", await statusReceipt(repo, selectedStage));
+      } else if (action === "upgrade") {
+        if (words.length > 1) throw new Error("Usage: /roadmap upgrade");
+        await commandPreview(ctx, repo, "upgrade", () => prepareUpgrade(repo, actor(ctx)));
+      } else if (action === "drop-round") {
+        if (!words[1] || words.length < 3) throw new Error("Usage: /roadmap drop-round <id> <reason>");
+        await commandPreview(ctx, repo, "drop-round", () =>
+          prepareRoundDrop(repo, actor(ctx), { id: words[1] as string, reason: words.slice(2).join(" ") }),
+        );
+      } else if (action === "retarget") {
+        if (!words[1] || !words[2] || words.length !== 3) throw new Error("Usage: /roadmap retarget <round-or-stage> <YYYY-MM-DD|none>");
+        await commandPreview(ctx, repo, "retarget", () =>
+          prepareRetarget(repo, actor(ctx), { id: words[1] as string, target: words[2] as string }),
+        );
+      } else if (action === "plan-round") {
+        if (words.length > 2) throw new Error("Usage: /roadmap plan-round [<id>]");
+        model = await loadAll(repo);
+        if (selectedStage && !model.rounds.some((round) => round.id === selectedStage && round.status === "planned"))
+          throw new Error(`Only a planned round's charter can be revised: ${selectedStage}.`);
+        const errors = (await check(model)).filter((diagnostic) => diagnostic.severity === "error");
+        if (errors.length) throw new Error(`Roadmap check failed: ${errors.map((diagnostic) => diagnostic.message).join("; ")}`);
+        ses.arm(ctx, repo.repoRoot, "plan");
+        pi.sendUserMessage(
+          `Use the roadmap skill to interview me ${selectedStage ? `to revise planned round ${selectedStage}` : "for a future planned round"}: title, goal, constraints, non-goals, principles citing ADRs and an optional target date. Then call roadmap_round_plan with ${selectedStage ? `id=${selectedStage}, ` : ""}round and optional target; show the exact preview and wait for my confirmation. If this is the first format-2 feature, the same preview warns that roadmap plugin 0.2.3 and earlier cannot read the upgraded repository.`,
+        );
+      } else if (action === "stage") {
         if (!selectedStage || words.length > 2) throw new Error("Usage: /roadmap stage <id>");
         show("wows-omp-roadmap.status", await statusReceipt(repo, selectedStage));
       } else if (action === "check") {
@@ -178,8 +247,13 @@ export function registerCommands(
         const errors = (await check(model)).filter((diagnostic) => diagnostic.severity === "error");
         if (errors.length) throw new Error(`Roadmap check failed: ${errors.map((diagnostic) => diagnostic.message).join("; ")}`);
         ses.arm(ctx, repo.repoRoot, "round");
+        const first = model.rounds
+          .filter((round) => round.status === "planned")
+          .sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)))[0];
         pi.sendUserMessage(
-          "Use the roadmap skill to interview me for the next round's charter: title, goal, constraints, non-goals and principles citing ADRs. Review carried TODOs in frozen rounds and agree which to import as new TODO ids. Then call roadmap_round_open with round and import_todos; show the preview and wait for my confirmation before writing.",
+          first
+            ? `Use the roadmap skill to review the lowest-numbered planned round ${first.id} — ${first.title}. Only this planned round can be activated; revise its charter if agreed. Review trigger-based carried TODOs from frozen rounds and agree which to import as new IDs; same-ID auto-carried TODOs cannot be imported again. Call roadmap_round_open with activate=${first.id}, import_todos and optionally round to revise the charter. Show the preview and wait for my confirmation before writing.`
+            : "Use the roadmap skill to interview me for the next round's charter: title, goal, constraints, non-goals and principles citing ADRs. Review carried TODOs in frozen rounds and agree which to import as new TODO ids. Then call roadmap_round_open with round and import_todos; show the preview and wait for my confirmation before writing.",
         );
       } else if (action === "close-round") {
         // Typed dispositions answer the per-TODO dialog; the status menu never supplies arguments.
@@ -193,9 +267,10 @@ export function registerCommands(
         const errors = (await check(model)).filter((diagnostic) => diagnostic.severity === "error");
         if (errors.length) throw new Error(`Roadmap check failed: ${errors.map((diagnostic) => diagnostic.message).join("; ")}`);
         const expected = reviewedRound ?? { id: round.id, sha256: roundSha256(roundFiles(model, round)) };
+        const automatic = autoCarryTodos(model, round);
         const todos = model.todos
           .filter((doc) => doc.round === round.id)
-          .flatMap((doc) => doc.items.filter((item) => item.status === "open"));
+          .flatMap((doc) => doc.items.filter((item) => item.status === "open" && !automatic.includes(item)));
         if (!dispositions) {
           if (ui.interactive) dispositions = await ui.closeRoundDispositions(todos);
           else if (todos.length) {
@@ -224,14 +299,32 @@ export function registerCommands(
   }
 
   pi.registerCommand("roadmap", {
-    description: "View Roadmap status, check documents, open/close a round, view a stage, answer an overlap or confirm a preview",
+    description: "View Roadmap status, plan/activate/drop rounds, retarget dates, upgrade formats, check documents or confirm a preview",
     getArgumentCompletions(prefix) {
       const overlap = /^overlap (\S+) /.exec(prefix);
       let options: string[];
       if (overlap) options = OVERLAP_ANSWERS.map((answer) => `overlap ${overlap[1]} ${answer}`);
       else if (prefix.startsWith("overlap ")) options = stageIds.map((id) => `overlap ${id} `);
       else if (prefix.startsWith("stage ")) options = stageIds.map((id) => `stage ${id}`);
-      else options = ["check", "check --fix", "new-round", "close-round", "stage ", "overlap ", "confirm "];
+      else if (prefix.startsWith("plan-round ")) options = plannedIds.map((id) => `plan-round ${id}`);
+      else if (prefix.startsWith("drop-round ")) options = plannedIds.map((id) => `drop-round ${id} `);
+      else if (/^retarget \S+ /.test(prefix)) options = [`${prefix.split(" ").slice(0, 2).join(" ")} none`];
+      else if (prefix.startsWith("retarget ")) options = [...roundIds, ...stageIds].map((id) => `retarget ${id} `);
+      else
+        options = [
+          "check",
+          "check --fix",
+          "upgrade",
+          "plan-round",
+          "plan-round ",
+          "new-round",
+          "drop-round ",
+          "retarget ",
+          "close-round",
+          "stage ",
+          "overlap ",
+          "confirm ",
+        ];
       const matches = options.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
       return matches.length ? matches : null;
     },
