@@ -65,7 +65,7 @@
       "name": "omo-prometheus",
       "source": "./omo-prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
-      "version": "0.15.1",
+      "version": "0.16.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -104,7 +104,7 @@
       "name": "omo-toolkit",
       "source": "./omo-toolkit",
       "description": "Port of oh-my-openagent category agents, research agents, skills, and documentation MCPs for OMP",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "author": {
         "name": "TheOrdinaryWow"
       },

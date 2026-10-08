@@ -9,6 +9,13 @@
 - Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.16.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.15.1...omo-prometheus@0.16.0) (2026-10-08)
+
+
+### Features
+
+* **omo-prometheus:** show the atlas model role as ATLAS in green ([6bccd6e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/6bccd6e1df4c46dc75b40508bd808231c53770e5))
+
 ## [0.15.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.15.0...omo-prometheus@0.15.1) (2026-10-08)
 
 
