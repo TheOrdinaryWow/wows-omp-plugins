@@ -451,7 +451,8 @@ describe("roadmap managed documents", () => {
     expect(accepted).toBeGreaterThan(4_000);
     expect(rejected).toBeGreaterThan(4_000);
     console.log(`Markdown differential seed=0x${seed.toString(16)} cases=${bodies.size} accepted=${accepted} rejected=${rejected}`);
-  });
+    // 12,000 seeded bodies are CPU-bound; parallel CI workers on shared cores push this past the 5s default.
+  }, 30_000);
 
   test("allowed prose, lists, inline code and top-level fences round-trip through every managed document", () => {
     for (const body of allowedMarkdownBodies) {
