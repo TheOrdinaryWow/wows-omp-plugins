@@ -16,7 +16,7 @@
     "check-types": "tsc --noEmit",
     "check-catalog": "bun run src/check-catalog.ts",
     "dev:plugins": "bun run src/dev-marketplace.ts",
-    "test": "bun test"
+    "test": "bun test --parallel --max-concurrency=4"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",

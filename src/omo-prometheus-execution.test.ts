@@ -1789,7 +1789,8 @@ if (process.env[CHILD_ENV]) {
       "plan-mode-reentered",
       "propose-grammar",
     ]) {
-      test(name, async () => {
+      // Each scenario runs in its own process with a private HOME, so scenarios share no state.
+      test.concurrent(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "prometheus-execution-"));
         try {
           const child = Bun.spawn([process.execPath, THIS_FILE], {

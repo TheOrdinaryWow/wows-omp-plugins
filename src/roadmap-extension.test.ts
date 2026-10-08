@@ -2520,7 +2520,8 @@ if (process.env[CHILD_ENV]) {
   // A plain Bun child cannot import bun:test; this branch owns only the parent test runner.
   const { expect, test } = await import("bun:test");
   for (const [name, description] of Object.entries(CASES)) {
-    test(`real SDK roadmap: ${description}`, async () => {
+    // Each case runs in its own process with a private HOME and repository, so cases share no state.
+    test.concurrent(`real SDK roadmap: ${description}`, async () => {
       const home = await mkdtemp(join(tmpdir(), "roadmap-extension-"));
       try {
         const cwd = join(home, "repo");

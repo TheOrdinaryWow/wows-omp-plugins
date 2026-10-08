@@ -250,7 +250,9 @@ function diagnostics(report: ChildReport): string {
 
 async function registerTests(): Promise<void> {
   // The child fixture executes this file outside Bun's test runner, so only the parent branch may load bun:test.
-  const { describe, expect, test } = await import("bun:test");
+  const { describe, expect, setDefaultTimeout, test } = await import("bun:test");
+  // Every test boots a real host in a child process; the 5s default is too tight when the suite runs in parallel.
+  setDefaultTimeout(30_000);
 
   describe.serial("judge-dispatch through the host judge role", () => {
     test("a native judge that is not Jev routes task calls and journals usage", async () => {
