@@ -31,6 +31,7 @@ import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { findPlanSessions } from "./atlas-sessions.ts";
 import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
+import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
@@ -1062,6 +1063,16 @@ export default function prometheus(pi: ExtensionAPI): void {
     return true;
   };
 
+  /** Runs in the background so a failed title never affects Atlas. */
+  const retitleSession = (ctx: ExtensionContext, plan: AtlasPlan, content?: string): void => {
+    const live = mainSession(ctx);
+    if (!live) return;
+    void (async () =>
+      retitleForAtlas(live, { name: plan.name, content: content ?? (await fs.readFile(plan.planFilePath, "utf8")) }))().catch((error) =>
+      pi.logger.warn("prometheus could not retitle the Atlas session", { error: errorMessage(error) }),
+    );
+  };
+
   /** Binds the plan to the current session; `autoStart` then kicks off execution like native plan approval does. */
   const enterPlan = async (ctx: ExtensionContext, selector: string, autoStart: boolean): Promise<void> => {
     const live = mainSession(ctx);
@@ -1087,6 +1098,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       persist(ctx, record);
       await bindPlan(ctx, record, store, plan, true);
       await syncTools(false, true, true);
+      retitleSession(ctx, plan);
       let modelNotice = "";
       try {
         const model = await applyAtlasModel(live);
@@ -1183,6 +1195,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             "error",
           );
         } else if (!restored.ledgerError) {
+          retitleSession(ctx, target.plan);
           commandNotice(ctx, `Atlas resumed ${target.plan.name} in this session. Send a message to continue; /atlas exit leaves Atlas.`);
         }
         return undefined;
@@ -1474,6 +1487,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.atlasPlanId = plan.id;
       persist(ctx, record);
       await bindPlan(ctx, record, store, plan, false);
+      retitleSession(ctx, plan, content);
       notify(ctx, `${EXECUTION_START_NOTICE} Plan: ${plan.name} (${plan.id}).`);
     } catch (error) {
       if (record.activation === activation) {

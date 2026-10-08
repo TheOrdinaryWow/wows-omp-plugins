@@ -125,6 +125,8 @@ During execution an above-editor Atlas widget shows the plan bar, done/total and
 
 Atlas also maintains session todo phases from the validated ledger: tasks, corrections when present, and final gates. Existing non-Atlas phases remain in place. Atlas phases are restored on attach and after ledger changes; do not edit them manually. Each changed-row `atlas_ledger` result names a repeatable `todo` call to refresh the host HUD. Exiting Atlas leaves the todo list intact.
 
+Once Atlas has entered a plan, after native approval, `/atlas <plan>` or `start`, or a resume, it asks OMP's title generator to rename the session from the plan. The request uses your `TITLE_SYSTEM.md` override, or OMP's default title prompt, followed by Atlas rules asking for an execution title that starts with "Atlas". If no title comes back, the session is named `Atlas: <plan name>`. A name you set with `/rename` is never replaced, `PI_NO_TITLE` disables this, and exiting Atlas keeps the name.
+
 Session A can finish part of a plan and exit, and session B can pick it up with `/atlas <name>`, as long as both use the same host session directory and workspace. Exit takes effect immediately and does not cancel children or mark work complete. It does not block closing the host.
 
 While native child work is running, its session keeps ownership of the plan until that work reports a final result. Other sessions cannot write to the plan during that time. A plan can be recovered if its owning session has provably died. Recovery is refused when ownership is unclear or belongs to another host.
