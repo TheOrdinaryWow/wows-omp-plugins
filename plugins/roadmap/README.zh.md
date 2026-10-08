@@ -4,7 +4,7 @@
 
 Roadmap 工具管理构建轮次、阶段、结转 TODO 和架构决策，记录项目应交付的内容，以及每个阶段关闭时所依据的证据。实施计划单独存放。
 
-需要 OMP 18.3.5 或更高版本，以及 git 工作树。0.1.0 版本没有插件设置，也没有运行时依赖。
+需要 OMP 18.3.5 或更高版本，以及 git 工作树。插件没有设置，也没有运行时依赖。
 
 ## 安装
 
@@ -19,10 +19,10 @@ omp plugin install roadmap@wows-omp-plugins
 
 | 记录 | 用途 |
 | --- | --- |
-| 轮次（`R1`） | 一个构建周期，包含目标、约束、非目标，以及引用 ADR 的原则。最多只能有一个活跃轮次。关闭后，其目录会原地冻结。 |
-| 阶段（`S01`） | 包含目标、范围和可验证的完成标准。阶段从 `planned` 转为 `active`，再转为 `closed`，也可以被标记为 `dropped`。开始前，依赖阶段必须已关闭。 |
+| 轮次（`R1`） | 一个构建周期，包含目标、约束、非目标，以及引用 ADR 的原则。状态可以是 `planned`、`active`、`closed` 或 `dropped`。最多只能有一个活跃轮次；关闭或放弃后，其目录会原地冻结。 |
+| 阶段（`S01`） | 包含目标、范围和可验证的完成标准。阶段从 `planned` 转为 `active`，再转为 `closed`，也可以被标记为 `dropped`。依赖必须来自同一或更早轮次，并在开始前关闭。 |
 | 完成标准（`DC1`） | 说明必须通过的条件及验证方法。关闭阶段时，每一条当前标准都必须有通过证据。 |
-| TODO（`T001`） | 延后处理的工作，包含来源、严重程度（`high`、`normal`、`low`），以及活跃轮次中尚未关闭的目标阶段或触发条件。每个轮次有一个 TODO 文档。 |
+| TODO（`T001`） | 延后处理的工作，包含来源、严重程度（`high`、`normal`、`low`），以及活跃或计划轮次中尚未关闭的目标阶段或触发条件。每个轮次，包括计划轮次，都有一个 TODO 文档。 |
 | ADR（`ADR-0001`） | 采用 MADR 格式的决策，包含考虑过的方案、决策结果，以及可选的 Confirmation。ADR 的生命周期不受轮次限制。 |
 | 计划 | 根据阶段交接信息制定的实施步骤。计划不存放在 roadmap 目录中。 |
 
@@ -30,7 +30,9 @@ omp plugin install roadmap@wows-omp-plugins
 
 自由工作不会绑定会话。当主代理发现自由请求与尚未关闭的阶段重叠时，会调用 `roadmap_overlap`。你可以选择使用 roadmap、将请求记录为自由工作，或视为无关工作。同一会话中，针对该阶段保存的回答会被复用。选择自由工作只会在阶段的 Free-work log 中追加一行意图，不代表已经交付，也不表示满足了任何标准。后续规划仍须核实代码中已有的内容。
 
-有活跃轮次时，插件会在每轮对话读取当前检出的文档，并向主代理和子代理上下文注入有长度限制的状态信息。阶段列表最多显示 12 项，其余内容可通过 `roadmap_status` 查看。没有活跃轮次时，不会注入这些状态，自由工作照常进行。在已初始化的仓库中，ADR 工具和受管文件保护仍然可用。
+有活跃轮次时，插件会在每轮对话读取当前检出的文档，并向主代理和子代理上下文注入有长度限制的状态信息，其中也包含计划轮次的 ID、标题、目标日期和阶段数量摘要。阶段列表最多显示 12 项，其余内容可通过 `roadmap_status` 查看。没有活跃轮次时，不会注入这些状态，自由工作照常进行；`roadmap_status` 仍会列出计划轮次。在已初始化的仓库中，ADR 工具和受管文件保护仍然可用。
+
+轮次和阶段都可以设置可选的 `target` 目标日期，格式为 `YYYY-MM-DD`。状态界面会同时显示目标日期和实际开启或开始、关闭日期。只有尚未完成的 `planned` 或 `active` 条目在目标日期过去后才标记为逾期。日期不是必填项，也不会改变生命周期关卡。
 
 ## 首次初始化与日常使用
 
@@ -41,7 +43,21 @@ omp plugin install roadmap@wows-omp-plugins
 5. 使用 `amend` 记录活跃阶段的范围或标准变更，并说明原因。后续工作记入 TODO，决策记入 ADR。
 6. 提供证据和处置结果后关闭阶段；所有阶段都已关闭或放弃后，再关闭轮次。
 
-初始化和开启轮次都需要用户显式输入命令、主会话获得相应授权，并确认预览。确认后，插件会重新验证文件，拒绝过期预览。写入成功后，该授权即被消耗。取消或无法取得回答都不构成写入授权。没有 UI 时，每个对话框都有对应的命令形式，见[宿主模式](#宿主模式)。
+初始化、规划或修订轮次，以及开启轮次，都需要用户显式输入命令、主会话获得相应授权，并确认预览。确认后，插件会重新验证文件，拒绝过期预览。写入成功后，该授权即被消耗。取消或无法取得回答都不构成写入授权。没有 UI 时，每个对话框都有对应的命令形式，见[宿主模式](#宿主模式)。
+
+### 预先规划轮次与采用格式 2
+
+初始化从格式 1 开始。此版本能读取格式 1 和 2，不会仅因插件更新就升级仓库。只使用原有功能的仓库会保留格式 1 的元数据、受管注释和生成表格布局；`check --fix` 也不会迁移格式。
+
+运行 `/roadmap plan-round`，通过访谈规划未来轮次，有无活跃轮次均可。`roadmap_round_plan` 预览包含章程、可选目标日期和 TODO 文档。使用 `/roadmap plan-round R2`，可通过相同的访谈和确认流程修订已有计划轮次。调用 `roadmap_stage`，提供 `action: "add"` 和 `round: "R2"`，即可添加其阶段。这些阶段可以编辑、重新编号或放弃，但只能在所属轮次活跃后开始。
+
+计划轮次和目标日期要求仓库标记已通过确认升级到格式 2。运行 `/roadmap upgrade`，预览并确认标记和目录说明的更新；也可以在首次 `/roadmap plan-round` 预览中一起确认升级。两种方式都会警告：**roadmap 插件 0.2.3 及更早版本将无法读取该仓库**。没有 UI 时，请审阅预览后使用 `/roadmap confirm <token>`。代理工具绝不会升级标记，在用户确认前会拒绝格式 2 功能。
+
+升级标记不会批量转换整个目录树。已有文件仍保留格式 1，只有后续写入需要格式 2 独有字段时，才升级相应文件；冻结轮次和已关闭阶段绝不会重写。格式 2 仓库可以同时包含两种文件格式，每个文件的受管注释必须与自身格式一致。根标记决定允许使用哪些功能。
+
+活跃轮次关闭后，`/roadmap new-round` 会激活编号最小的计划轮次。你可以在预览中修订章程，并选择符合条件的结转 TODO 导入。只要还有计划轮次，就不能跳过它，也不能直接创建全新轮次。轮次 ID 按创建顺序分配，绝不重新编号或复用。
+
+使用 `/roadmap drop-round R2 <reason>`，确认放弃不再需要的计划轮次及其计划阶段。文件会保留为冻结历史，并记录放弃日期和原因。须先移动或解决指向其阶段的开放 TODO，并移除其他轮次阶段对它们的依赖。在格式 2 仓库中，可用 `/roadmap retarget R2 2026-12-01` 或 `/roadmap retarget S03 none`，确认设置或清除尚未关闭轮次或阶段的目标日期。
 
 ### 关闭阶段
 
@@ -55,11 +71,15 @@ omp plugin install roadmap@wows-omp-plugins
 
 ### 关闭轮次与结转
 
-`/roadmap close-round` 要求所有阶段都已关闭或放弃，并且文档检查没有错误。对话框会要求为每个开放 TODO 指定处置方式：提供引用并标记为 `resolved`；以 `wontfix` 记入 Known limitations；或标记为 `carried`，留待后续轮次考虑。关闭操作会原地冻结目录，不会移动目录。
+`/roadmap close-round` 要求所有阶段都已关闭或放弃，并且文档检查没有错误。指向计划轮次阶段的开放 TODO 会自动结转到相应轮次的 TODO 文档，保留相同 ID 和目标；目标条目记录 `carried_from`，冻结源条目标记为 `carried`，并引用目标轮次。这些条目不会出现在处置对话框中，也不能通过 `import_todos` 再次导入。
+
+同一个 ID 可以沿后续轮次继续结转，例如 `R1 → R2 → R3`。`check` 会逐段验证链路：只能有一个非 `carried` 条目，其余条目必须为 `carried`，引用下一轮次，并与下一条目的 `carried_from` 对应。其他重复 ID 都属于错误。
+
+对话框会要求为每个剩余开放 TODO 指定处置方式：提供引用并标记为 `resolved`；以 `wontfix` 记入 Known limitations；或标记为 `carried`，留待后续轮次考虑。关闭操作会原地冻结目录，不会移动目录。
 
 对话框只授权关闭打开前审阅过的轮次及其文件快照。从状态菜单关闭时，快照在菜单显示时取得，早于选择 Close round 的时刻。如果菜单或处置对话框尚未结束，该轮次已关闭、另一个轮次已开启，或轮次中的任何文件发生变化，关闭操作会因快照过期而被拒绝，不写入文件。请重新运行 `/roadmap close-round`，审阅当前状态。
 
-`/roadmap new-round` 通过访谈收集下一轮次的章程。生成的 `roadmap_round_open` 预览可以从冻结轮次中导入选定的结转 TODO ID。导入项获得新 ID，并保留来源；它们以触发条件开始，不继承旧的目标阶段。旧轮次保持不变。
+`/roadmap new-round` 通过访谈收集下一轮次章程，或激活编号最小的计划轮次。生成的 `roadmap_round_open` 预览可以从冻结轮次中导入选定的、基于触发条件的结转 TODO ID。导入项获得新 ID，并保留来源；它们以触发条件开始，不继承旧的目标阶段。旧轮次保持不变。同 ID 自动结转是原条目的延续，不是可再次导入的候选项。
 
 ## 命令
 
@@ -68,15 +88,19 @@ omp plugin install roadmap@wows-omp-plugins
 | 命令 | 行为 |
 | --- | --- |
 | `/init-project` | 检查初始化前提，授予初始化权限，并开始访谈。 |
-| `/roadmap` | 打开状态菜单，显示阶段、TODO 数量和有效操作。Close stage 会展示带证据关卡的 `roadmap_stage` 关闭工具指引，不会写入文件。 |
+| `/roadmap` | 打开状态菜单，显示活跃和计划轮次、目标与实际日期、逾期标记、阶段、TODO 数量和有效操作。Close stage 会展示带证据关卡的 `roadmap_stage` 关闭工具指引，不会写入文件。 |
 | `/roadmap stage <id>` | 显示完整阶段文档和规划交接信息，不会开始或绑定阶段。 |
 | `/roadmap check` | 检查文档一致性。 |
 | `/roadmap check --fix` | 重新生成符合条件的生成块，绝不修改人工编写的正文或冻结轮次。 |
-| `/roadmap new-round` | 要求没有活跃轮次且检查无错误，然后授予开启下一轮次的权限并开始访谈。 |
+| `/roadmap upgrade` | 预览并确认采用仓库格式 2，同时警告插件 0.2.3 及更早版本将无法读取。 |
+| `/roadmap plan-round [id]` | 要求仓库已初始化且检查无错误，然后授予计划轮次权限并开始访谈。提供 ID 可修订相应计划轮次。首次预览可同时包含格式 2 升级。 |
+| `/roadmap new-round` | 要求没有活跃轮次且检查无错误，然后授予权限并通过访谈激活编号最小的计划轮次；没有计划轮次时才创建新轮次。 |
+| `/roadmap drop-round <id> <reason>` | 确认放弃计划轮次及其计划阶段，保留冻结文件和 ID。有开放 TODO 指向其阶段，或其他轮次依赖其阶段时，拒绝操作。 |
+| `/roadmap retarget <round-or-stage> <YYYY-MM-DD\|none>` | 确认设置或清除尚未关闭轮次或阶段的目标日期。要求仓库格式为 2。 |
 | `/roadmap close-round` | 收集 TODO 处置结果，在所有阶段结束后冻结活跃轮次。 |
-| `/roadmap close-round <todo>=<disposition>[:<reference>] ...` | 在命令中直接回答处置对话框：`T001=resolved:abc1234`、`T002=wontfix:"out of scope"`、`T003=carried`。每个开放 TODO 都需要一项；`resolved` 必须带引用。含空格的文本用双引号括起。 |
+| `/roadmap close-round <todo>=<disposition>[:<reference>] ...` | 在命令中直接回答处置对话框：`T001=resolved:abc1234`、`T002=wontfix:"out of scope"`、`T003=carried`。每个未自动结转的开放 TODO 都需要一项；`resolved` 必须带引用。含空格的文本用双引号括起。 |
 | `/roadmap overlap <stage> roadmap\|free\|unrelated [intent]` | 为本会话回答重叠问题：`roadmap` 开始或加入并绑定该阶段；`free` 把意图记为自由工作（必须提供意图）；`unrelated` 不再就该阶段询问。该阶段已有的回答保持不变。 |
-| `/roadmap confirm <token>` | 写入 `roadmap_init` 或 `roadmap_round_open` 因无 UI 可确认而保留的预览。 |
+| `/roadmap confirm <token>` | 确认因无 UI 而保留的文件预览，包括初始化、轮次规划或开启、升级、放弃轮次和调整目标日期。 |
 
 ## 工具
 
@@ -84,30 +108,33 @@ omp plugin install roadmap@wows-omp-plugins
 
 | 工具 | 输入或操作 |
 | --- | --- |
-| `roadmap_status` | 不带参数时显示轮次、阶段，以及按目标或触发条件组织的开放 TODO；可选 `stage` 用于查看完整详情和交接信息。 |
-| `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`。 |
+| `roadmap_status` | 不带参数时显示活跃或计划轮次、目标日期、实际日期、逾期标记、阶段，以及按目标或触发条件组织的开放 TODO；可选 `stage` 用于查看完整详情和交接信息。 |
+| `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`；`add` 接受可选的 `round` 和 `target`，`edit`、`amend` 也接受 `target`。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
 | `roadmap_adr` | `create`、`revise`、`set_status`、`supersede`、`note`。 |
 | `roadmap_check` | 可选 `fix: true` 会重新生成符合条件的生成块。检查文档，不检查代码与文档是否偏离。 |
 | `roadmap_overlap` | 输入 `stage` 和 `intent`；阶段已绑定时，直接返回体系内工作状态及交接信息，不显示对话框，也不记录自由工作条目，无界面环境下亦如此。否则，主会话每个阶段只询问用户一次，之后复用回答。子代理不会发起询问。 |
 | `roadmap_init` | 输入 `project`、`round`、初始 `adrs` 和 `stages`；要求 `/init-project` 授权及已确认的预览。 |
-| `roadmap_round_open` | 输入 `round` 章程和 `import_todos` ID；要求 `/roadmap new-round` 授权及已确认的预览。 |
+| `roadmap_round_plan` | 输入 `round` 章程、用于修订计划轮次的可选 `id`，以及可选 `target`；要求 `/roadmap plan-round [id]` 授权及已确认的预览。 |
+| `roadmap_round_open` | 输入 `import_todos` ID，以及可选的 `round` 章程或 `activate` 轮次 ID；要求 `/roadmap new-round` 授权及已确认的预览。有计划轮次时，只能激活编号最小的一个。 |
 
 ### 阶段操作
 
 | 操作 | 规则 |
 | --- | --- |
-| `add` | 在活跃轮次中创建计划阶段。提供 `title`、`objective`、`scope_in`、`scope_out`，以及包含 `statement` 和 `verify` 的 `done_criteria` 条目；依赖和设计约束可选。 |
-| `edit` | 替换计划阶段中提供的字段。阶段活跃后请使用 `amend`。 |
-| `amend` | 向活跃阶段追加带日期的变更记录，必须提供 `reason`。`amendments` 可添加、修改或移除标准，也可添加或移除范围内外的条目。 |
-| `start` | 要求依赖已关闭且检查无错误，然后激活并绑定阶段，返回规划交接信息。同一操作用于加入已活跃阶段时，不会修改其文档。 |
+| `add` | 默认在活跃轮次中创建计划阶段，也可通过可选 `round` 选择活跃或计划轮次。提供 `title`、`objective`、`scope_in`、`scope_out`，以及包含 `statement` 和 `verify` 的 `done_criteria` 条目；`target`、依赖和设计约束可选。依赖只能来自同一或更早轮次。 |
+| `edit` | 替换计划阶段中提供的字段，包括可选 `target`。阶段活跃后请使用 `amend`。 |
+| `amend` | 向活跃阶段追加带日期的变更记录，必须提供 `reason`。`amendments` 可添加、修改或移除标准，也可添加或移除范围内外的条目；可选 `target` 用于记录目标日期变更。 |
+| `start` | 要求阶段属于活跃轮次、依赖已关闭且检查无错误，然后激活并绑定阶段，返回规划交接信息。同一操作用于加入已活跃阶段时，不会修改其文档。 |
 | `close` | 执行上述证据和 TODO/ADR 关卡检查，记录 Outcome 并冻结阶段。 |
 | `drop` | 放弃计划或活跃阶段，必须提供 `reason`。须先解决或移动所有指向它的开放 TODO。 |
 | `renumber` | 使用 `new_id` 为计划阶段重新编号，并更新可变引用。如果已关闭历史中包含必须修改的引用，则拒绝操作。 |
 
 ### TODO 和 ADR 操作
 
-TODO 的 `add` 要求 `title`、`source`、`severity`，以及 `target` 或 `trigger` 之一；`body` 可选。`update` 修改活跃轮次中开放条目的指定字段。`resolve` 要求 `reference`。`move` 替换目标或触发条件，若目标阶段已关闭则拒绝操作。
+TODO 的 `add` 要求 `title`、`source`、`severity`，以及 `target` 或 `trigger` 之一；`body` 可选。目标可以是活跃或计划轮次中任何尚未关闭的阶段。有活跃轮次时，新条目存入活跃轮次的 TODO 文档，即使目标位于计划轮次。没有活跃轮次时，新条目必须指向某个计划轮次的阶段，并存入该轮次的 TODO 文档。计划轮次文档中的条目只能指向本轮次阶段，或使用触发条件。
+
+`update` 修改活跃或计划轮次中开放条目的指定字段。`resolve` 要求 `reference`。`move` 替换目标或触发条件，若目标阶段已关闭或放弃则拒绝操作。条目从计划轮次文档移到另一轮次时，旧条目标记为 `moved`，并引用目标文档中新分配的 TODO ID；新条目保留所请求的目标，且以 `carried_from` 记录旧 ID 和来源轮次。即使当前有活跃轮次，移到另一计划轮次的条目也会直接存入该计划轮次文档。
 
 工具管理的正文仅支持一小部分 Markdown：普通段落、每项文本只有一行的平铺无序或有序列表，以及完整闭合的顶层围栏代码块。无序列表标记为 `-`、`+` 或 `*`；有序列表标记由一到九位数字后接 `.` 或 `)` 组成。标记后使用一个空格。不支持嵌套列表和缩进的列表续行。
 
@@ -175,23 +202,27 @@ ADR 的 `create` 要求 `title` 和 `sections`，其中须包含 `context`、非
 | --- | --- |
 | TUI | 使用上文所述的对话框。 |
 | RPC（`--mode rpc`、`rpc-ui`）与 ACP | 相同的对话框，以 `select`、`input`、`editor` 请求发给客户端。提示走宿主的 notify 帧；ACP 客户端可能只在日志中显示。 |
-| 无 UI（`--no-ui`、print、JSON、无 UI 的 SDK） | 没有对话框。提示和错误以显示在会话中的消息呈现。不带参数的 `/roadmap` 输出状态和命令用法。`roadmap_init` 与 `roadmap_round_open` 返回完整预览和一个令牌，但不写入；用户用 `/roadmap confirm <token>` 写入，其他任何回复都视为拒绝。令牌只对应所展示的这些文件，在会话重建（start、switch、branch、tree）或同类新预览替换它之前有效。`roadmap_overlap` 报告没有回答，并指出 `/roadmap overlap`。不带参数的 `/roadmap close-round` 只在没有开放 TODO 时关闭轮次；否则列出这些 TODO，并要求以参数给出处置。 |
+| 无 UI（`--no-ui`、print、JSON、无 UI 的 SDK） | 没有对话框。提示和错误以显示在会话中的消息呈现。不带参数的 `/roadmap` 输出状态和命令用法。初始化、轮次规划或开启、升级、放弃轮次和调整目标日期都返回预览与令牌，但不写入；用户以 `/roadmap confirm <token>` 确认，其他任何回复都视为拒绝。令牌只对应展示的文件，在会话重建（start、switch、branch、tree）或同类新预览替换它之前有效。`roadmap_overlap` 报告没有回答，并指出 `/roadmap overlap`。不带参数的 `/roadmap close-round` 只要求为未自动结转的开放 TODO 提供处置；仍有这类条目时会列出它们。 |
 
 ### 状态 sidecar
 
-主会话按共享插件状态格式写出 `roadmap.json`（见[根 README](../../README.zh.md)）。`state` 内容为版本 1 的 `roadmap/status`，根据磁盘上的文件生成；仓库没有已初始化的 roadmap 时为 `null`。
+主会话按共享插件状态格式写出 `roadmap.json`（见[根 README](../../README.zh.md)）。`state` 内容为版本 1 的 `roadmap/status`，根据磁盘上的文件生成。计划轮次和日期字段以增量方式添加，载荷版本仍为 1；仓库没有已初始化的 roadmap 时为 `null`。
 
 文件会在会话启动、切换、创建分支和树形导航时，每次 `roadmap_*` 工具调用和 `/roadmap` 命令之后，以及每轮代理开始时更新。子代理或外部编辑造成的变化也会包含在内。
 
 | 字段 | 内容 |
 | --- | --- |
 | `kind`、`version` | `"roadmap/status"`、`1` |
+| `format` | 仓库标记格式，`1` 或 `2`，不是 sidecar 载荷版本。 |
 | `repoRoot` | roadmap 所在 git 工作树的根目录。 |
 | `project` | 来自 `docs/roadmap/README.md` 的项目标题。 |
-| `activeRound` | 活跃轮次的 `{ id, title }`，或 `null`。 |
-| `stages` | 所有阶段，形如 `{ id, title, status, round }`；`status` 为 `planned`、`active`、`closed` 或 `dropped`。 |
+| `activeRound` | 活跃轮次的 `{ id, title, target, opened, overdue }`，或 `null`；日期字段为字符串或 `null`。 |
+| `plannedRounds` | 按 ID 排序的 `{ id, title, target, overdue, stageCount, openTodos }` 条目；`stageCount` 不含已放弃阶段，`openTodos` 统计存于该轮次 TODO 文档或指向其阶段的开放条目，包括存于活跃轮次文档的条目。 |
+| `stages` | 所有阶段，形如 `{ id, title, status, round, target, started, closed, overdue }`；`status` 为 `planned`、`active`、`closed` 或 `dropped`，日期字段为字符串或 `null`。 |
 | `openTodos` | `{ total, byStage, untargeted }`：所有轮次的开放 TODO 总数、按目标阶段 ID 的计数，以及以触发条件代替目标的数量。 |
 | `boundStage` | 本会话绑定且仍处于活跃状态的阶段 ID，或 `null`。 |
+
+目标日期是可选的 `YYYY-MM-DD`。只有计划或活跃条目的目标早于当天 UTC 日期时，`overdue` 才为 true。实际日期与目标日期分别记录；计划轮次尚未开启。
 
 ## 可选的 Prometheus 集成
 
@@ -211,7 +242,9 @@ ADR 的 `create` 要求 `title` 和 `sections`，其中须包含 `context`、非
 
 ## 已知限制
 
-- 0.1.0 不支持接管已有 roadmap 或 ADR 目录树。初始化要求全新的受管目录，以及不存在或为空的 ADR 目录。
+- 不支持接管已有 roadmap 或 ADR 目录树。初始化要求全新的受管目录，以及不存在或为空的 ADR 目录。
+- 计划轮次和目标日期在用户确认仓库格式 2 之前不可用。升级后，插件 0.2.3 及更早版本无法读取该仓库；升级不会批量转换已有文件。
+- 计划轮次不能跳过激活或重新编号，放弃的轮次 ID 不会复用。目标日期只提供状态信息，不是必填期限，也不会自动改变生命周期。
 - 重叠检测依赖主代理发现重叠并调用工具。它不是分类器，也不会自动将每个请求与每个阶段比较。
 - Bash 保护只能尽力检测，并存在前文列出的其他缺口。它不会将代理置于沙箱中。
 - 加入活跃阶段会提示其他会话可能在工作，但不会预留阶段，也不阻止并发实施。共享锁只串行化文档写入。
@@ -221,22 +254,24 @@ ADR 的 `create` 要求 `title` 和 `sections`，其中须包含 `context`、非
 - 没有 UI 时，代理不能自行确认预览或回答重叠问题。用户通过 `/roadmap confirm`、`/roadmap overlap` 以及 `/roadmap close-round` 参数作答。保留的预览只存在于内存中，进程退出即丢失。
 - Atlas 完成提醒存在前文所述的按生产方和按会话去重限制。
 
-以下格式说明复制自 `src/documents.ts` 中的 `HOW_THIS_DIRECTORY_WORKS`。初始化会将相同文本写入项目的 [docs/roadmap/README.md](../../docs/roadmap/README.md)，该文件同时作为初始化标记和生成索引。初始化前，该项目文件不存在。
+以下格式说明译自 `src/documents.ts` 中的 `HOW_THIS_DIRECTORY_WORKS_V2`。确认升级到格式 2 后，插件会将英文原文写入项目的 [docs/roadmap/README.md](../../docs/roadmap/README.md)，该文件同时作为初始化标记和生成索引。初始化仍写入格式 1 的说明，直到你采用格式 2。初始化前，该项目文件不存在。
 
 ## 此目录的工作方式
 
 此目录记录结构化构建轮次、各轮次的阶段和结转 TODO。docs/adr/ 中的 ADR 记录决策，其生命周期不受轮次限制。计划描述实施步骤，不存放在这里。
 
-根 README 是初始化标记和轮次索引。每个 NN-slug 轮次目录包含章程 README、TODO.md 和 stages/NN-slug.md。轮次使用 R1、R2 等编号；阶段使用 S01，TODO 使用 T001，ADR 使用 ADR-0001。阶段和 TODO 编号在所有轮次间全局递增，绝不复用。ADR 文件使用 NNNN-slug.md。slug 由小写 ASCII 字母、数字和连字符组成。
+根 README 是初始化标记和轮次索引。每个 NN-slug 轮次目录包含章程 README、TODO.md 和 stages/NN-slug.md。轮次按创建顺序使用 R1、R2 等编号，绝不重新编号；阶段使用 S01，TODO 使用 T001，ADR 使用 ADR-0001。阶段和 TODO 编号在所有轮次间全局递增，绝不复用。ADR 文件使用 NNNN-slug.md。slug 由小写 ASCII 字母、数字和连字符组成。
 
-每个受管文件都有 format: 1 的 front matter 和 managed-by 注释。此 README 还包含 roadmap: { format: 1 }。Front matter 和固定标题属于结构。工具管理的正文允许普通段落、平铺文本列表和已闭合的顶层围栏，以及普通标点、纯文本 URL、行内强调和同一行代码片段；不支持结构性 Markdown、Markdown 链接和原始 HTML 语法。阶段标题为 Objective、Scope（In 和 Out）、Done criteria、可选的 Design constraints 和 Risks、Amendments、Free-work log，以及可选的 Outcome。轮次章程包含 Goal、Constraints、Non-goals、Principles、Stages 和 Known limitations。TODO 分为 Open 和 Closed in this round。ADR 正文遵循随插件提供的 MADR 4.0 模板，以 Confirmation 记录验证，实施步骤留给计划。
+此 README 包含 roadmap: { format: 2 }，表示仓库格式；roadmap 插件 0.2.3 及更早版本无法读取格式 2 仓库。每个受管文件的 front matter 为 format: 1 或 format: 2，并有注明相同格式的 managed-by 注释。格式 1 文件会保留原有字节，直到写入需要格式 2 字段：目标日期，或计划、放弃轮次。Front matter 和固定标题属于结构。工具管理的正文允许普通段落、平铺文本列表和已闭合的顶层围栏，以及普通标点、纯文本 URL、行内强调和同一行代码片段；不支持结构性 Markdown、Markdown 链接和原始 HTML 语法。阶段标题为 Objective、Scope（In 和 Out）、Done criteria、可选的 Design constraints 和 Risks、Amendments、Free-work log，以及可选的 Outcome。轮次章程包含 Goal、Constraints、Non-goals、Principles、Stages 和 Known limitations；放弃的轮次还包含 Outcome。TODO 分为 Open 和 Closed in this round。ADR 正文遵循随插件提供的 MADR 4.0 模板，以 Confirmation 记录验证，实施步骤留给计划。
 
 代理通过 roadmap_* 工具修改受管文件。用户可以在编辑器中编辑正文；工具写入前，必须先修复格式错误的结构。生成块使用 `<!-- roadmap:generated:<name> -->` 和 `<!-- /roadmap:generated -->` 标记。编号、元数据、标题和生成索引由工具管理。
 
-轮次状态为 active 或 closed。阶段状态为 planned、active、closed 或 dropped。已关闭阶段不会重新打开；修正工作使用带 follows 的新阶段。阶段开始前，依赖必须已关闭。完成标准说明必须通过的条件和验证方法；关闭时记录证据、TODO 处置结果和 ADR 处置结果。开放 TODO 需要严重程度、来源，以及尚未关闭的目标阶段或触发条件。章程原则引用 ADR，而不是重复决策内容。已接受 ADR 通过状态转换、替代，以及带日期的仅追加备注进行变更。
+轮次状态为 planned、active、closed 或 dropped。计划轮次可预先起草章程、计划阶段和 TODO；只能激活编号最小的计划轮次，不再需要的计划轮次会与其计划阶段一起放弃。阶段状态为 planned、active、closed 或 dropped；只有活跃轮次的阶段能开始。阶段只能依赖同一或更早轮次中的阶段。已关闭阶段不会重新打开；修正工作使用带 follows 的新阶段。阶段开始前，依赖必须已关闭。完成标准说明必须通过的条件和验证方法；关闭时记录证据、TODO 处置结果和 ADR 处置结果。开放 TODO 需要严重程度、来源，以及活跃或计划轮次中尚未关闭的目标阶段或触发条件。计划轮次的 TODO.md 只能存放指向本轮次阶段的 TODO，或使用触发条件的 TODO。轮次关闭时，指向计划轮次阶段的开放 TODO 会以相同 ID 延续到该轮次的 TODO.md，并记录 Carried from；原条目标记为 carried，并指向该轮次。轮次和阶段可设置可选目标日期；状态界面将其与实际日期比较，并标记超过目标日期的未完成工作。章程原则引用 ADR，而不是重复决策内容。已接受 ADR 通过状态转换、替代，以及带日期的仅追加备注进行变更。
 
-已关闭阶段带有 closed_sha256；已关闭轮次带有 frozen_sha256，并作为只读历史保留。最多只能有一个活跃轮次。没有活跃轮次时，自由工作不受限制，也不会注入 roadmap 上下文；ADR 管理仍然可用。
+同 ID 结转可以连续跨越多个后续轮次：每个较早条目都结转到下一轮次，并有对应的 Carried from 元数据，只有一个条目不是 carried。这些延续条目不能通过 import_todos 再次导入。将 TODO 从计划轮次移到另一轮次时，会留下标记为 moved 的记录并引用新 ID；目标条目保留目标阶段，并通过 Carried from 记录原 ID 和轮次。
 
-写入使用一个仓库锁和逐文件原子替换。中断的多文件操作可能留下过期索引：运行 roadmap_check 或 /roadmap check，再使用 check --fix 重新生成生成块。Fix 绝不会修改人工编写的正文或已关闭轮次。其他损坏请通过 git 恢复。共享的 git common directory 只存储锁和带版本的 ID 计数器；每个分支都以当前检出的 Markdown 为事实来源。
+已关闭阶段带有 closed_sha256；已关闭和已放弃轮次带有 frozen_sha256，并作为只读历史保留。最多只能有一个活跃轮次。没有活跃轮次时，自由工作不受限制，也不会注入 roadmap 上下文；ADR 管理仍然可用。
+
+写入使用一个仓库锁和逐文件原子替换。中断的多文件操作可能留下过期索引：运行 roadmap_check 或 /roadmap check，再使用 check --fix 重新生成生成块。Fix 绝不会修改人工编写的正文、已关闭轮次或已放弃轮次。其他损坏请通过 git 恢复。共享的 git common directory 只存储锁和带版本的 ID 计数器；每个分支都以当前检出的 Markdown 为事实来源。
 
 Check 验证文档一致性。它无法判断代码是否实现了文档内容。关闭证据和边界检查有助于让二者保持一致。

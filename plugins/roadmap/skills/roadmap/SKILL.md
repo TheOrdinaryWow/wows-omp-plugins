@@ -1,25 +1,25 @@
 ---
 name: roadmap
-description: Use for roadmap, stage, ADR, TODO, or /init-project work to interview for a round, classify changes, review decisions, handle overlap, and close stages with evidence through the roadmap plugin.
+description: Use for roadmap, planned rounds, target dates, stage, ADR, TODO, or /init-project work to interview for a round, classify changes, review decisions, handle overlap, and close stages with evidence through the roadmap plugin.
 ---
 
 # Roadmap
 
 Use this skill for judgment. The plugin owns document formats, numbering, indexes, and lifecycle gates. Never write managed files under `docs/roadmap/` or `docs/adr/` directly, run scripts that write them, or bypass a blocked write. User edits in an editor are separate from agent writes.
 
-Read `roadmap_status` first. With `stage`, it returns the stage detail and planning handoff. Consult relevant accepted ADRs and their successors before planning changes. Treat documents as intent, not proof of what the code does.
+Read `roadmap_status` first. With `stage`, it returns the stage detail and planning handoff. The overview includes planned rounds, optional targets, actual dates and overdue unfinished work, even when no round is active. Consult relevant accepted ADRs and their successors before planning changes. Treat documents as intent, not proof of what the code does.
 
 Use the tool-owned body subset: plain paragraphs, flat bullet or ordered lists with single-line text items, and fully closed top-level backtick or tilde fences. Ordinary punctuation is allowed: `~20%`, `snake_case`, `quantity * unit price`, URLs with underscores or tildes, and comparisons such as `x < y` and `x > y`. A `<` immediately followed by an ASCII letter, `/`, `!` or `?` is refused; a `>` cannot begin a line. Inline emphasis delimiters are allowed and matched pairs may render as formatting. Same-line inline code spans are allowed only when equal-length backtick runs close on that line; never use multiline spans. Single-line fields such as scope items, criteria and verification methods follow these punctuation and inline rules but cannot contain lists or fences. Raw HTML, comments, Markdown links and reference definitions, square brackets, backslash escapes, headings, quotes, tables, thematic breaks, nested lists, indented code, tabs outside fences and ambiguous constructs are refused without changing managed bytes. Put literal Markdown or HTML examples inside a closed fence rather than retrying container tricks. Fences have zero to three leading spaces and at least three markers; the closer uses the same marker, is at least as long, and has no info string. Use a single ASCII language token for opener info. Separate a plain paragraph after a list with a blank line; lazy list continuations are refused. After a list or at the start of a TODO body, an indented fence needs an unindented plain paragraph before it; an unindented fence is already top-level.
 
 ## Where a change belongs
 
 - A scope or done-criterion change within an active stage belongs in `roadmap_stage` with `action: "amend"`. Record the delta and reason rather than rewriting its original commitment.
-- New planned work belongs in `roadmap_stage` with `action: "add"`. Use `action: "edit"` only while the stage is planned.
-- Deferred or carried-over work belongs in `roadmap_todo`. Use `add`, `update`, `resolve`, or `move`; give each open item a source, severity, and either an unclosed stage in the active round or a concrete trigger. Don't use a vague "later" target.
+- New planned work belongs in `roadmap_stage` with `action: "add"`. Its optional `round` selects an active or planned round; omitting it selects the active round. Use `action: "edit"` only while the stage is planned. Dependencies can reference only the same or earlier rounds.
+- Deferred or carried-over work belongs in `roadmap_todo`. Use `add`, `update`, `resolve`, or `move`; give each open item a source, severity, and either an unclosed stage in the active or a planned round, or a concrete trigger. Don't use a vague "later" target. New items go into the active round's TODO document. With no active round, a new item must target a planned round's stage and goes into that round's document. Planned-round documents can hold only TODOs for their own stages or TODOs with triggers.
 - A hard-to-reverse, cross-stage decision with real alternatives belongs in an ADR. A scope deviation isn't an ADR. Routine implementation choices and bug fixes aren't ADRs either.
 - A failing test or broken build needs a fix now, not a TODO that hides unfinished work.
 
-Use `roadmap_stage` with `action: "start"` to start a planned stage or join an active one. Read the returned handoff before planning implementation. Joining doesn't grant exclusive ownership; another session may be working on the same stage. Follow dependencies and don't bypass a refusal.
+Use `roadmap_stage` with `action: "start"` to start a planned stage or join an active one in the active round. Stages in planned rounds cannot start or bind. Read the returned handoff before planning implementation. Joining doesn't grant exclusive ownership; another session may be working on the same stage. Dependencies must be closed before starting. Don't bypass a refusal.
 
 ## Init interview and round charter
 
@@ -29,9 +29,25 @@ The user starts initialization with `/init-project`. Gather facts from the repos
 2. Define the round goal, constraints, non-goals, and principles. Principles cite ADR ids; they never restate the decisions.
 3. Identify decisions already made. Capture their context, genuine alternatives, rationale, and consequences as initial ADRs. Don't invent options or approval history.
 4. Break the round into stages. For each, record an objective, scope in and out, done criteria with a specific verification method, and dependencies. Separate prerequisites from work that merely follows another stage.
-5. Confirm the interview summary with the user. Submit the agreed project, charter, ADRs, and stages through `roadmap_init`; let the plugin show the rendered file preview and obtain confirmation before writing. Cancellation or no answer isn't approval. Without a UI, the tool returns the preview and a `/roadmap confirm <token>` command instead of writing: show both to the user, and never run or claim the confirmation yourself. The same applies to `roadmap_round_open`. When `roadmap_overlap` has no answer without a UI, ask the user and name `/roadmap overlap <stage> roadmap|free|unrelated [intent]`.
+5. Confirm the interview summary with the user. Submit the agreed project, charter, ADRs, and stages through `roadmap_init`; let the plugin show the rendered file preview and obtain confirmation before writing. Cancellation or no answer isn't approval. Without a UI, the tool returns the preview and a `/roadmap confirm <token>` command instead of writing: show both to the user, and never run or claim the confirmation yourself. The same applies to `roadmap_round_plan`, `roadmap_round_open`, and the upgrade, drop-round and retarget command previews. When `roadmap_overlap` has no answer without a UI, ask the user and name `/roadmap overlap <stage> roadmap|free|unrelated [intent]`.
 
-Rounds are sequential, with at most one active. Opening and closing them are user-command decisions, not autonomous agent actions. For later rounds, the user uses `/roadmap new-round`; discuss the new charter and which carried TODOs to import without changing the frozen prior round.
+Rounds use `planned`, `active`, `closed` or `dropped`, with at most one active. Planning, revising, opening, dropping and closing rounds are user-command decisions, not autonomous agent actions. Round IDs follow creation order, never change and are never reused. No separate milestone record exists.
+
+For future work, the user starts `/roadmap plan-round`, with or without an active round. Interview for the charter and optional target, then call `roadmap_round_plan` with `round` and optional `target`. To revise a planned round, the user runs `/roadmap plan-round R2`; include `id: "R2"` in the tool call. This flow needs an armed main session, a confirmed preview and unchanged files after confirmation. Add its stages separately through `roadmap_stage`, `action: "add"`, with `round: "R2"`; planned stages can be edited, renumbered or dropped before activation.
+
+For later rounds, the user uses `/roadmap new-round`. If planned rounds exist, `roadmap_round_open` must activate the lowest-numbered one; optional `activate` must name it. Its charter can be retained or replaced with optional `round`. Don't draft a new round or skip ahead while a planned round remains. With none planned, provide the new `round` charter. Discuss `import_todos` with the user: only eligible trigger-based carried items are import candidates, get fresh IDs and keep their origins. Same-ID automatic carry-over is not importable again. Frozen prior rounds stay untouched.
+
+The user can confirm `/roadmap drop-round <id> <reason>` for a planned round. Its planned stages become dropped, files remain frozen, and the drop date and reason are recorded. Move or resolve open TODOs targeting those stages and remove dependencies from other rounds before trying it. Never substitute deletion or renumbering.
+
+### Optional targets and lazy format upgrade
+
+Rounds and stages may have `target` dates in `YYYY-MM-DD` form. Don't invent or require dates. Overdue means a `planned` or `active` item's target is earlier than today's UTC date; completed or dropped items aren't overdue. A target doesn't replace actual opened, started or closed dates and doesn't bypass any close gate.
+
+Initialization writes format 1. Updating the plugin or running `check --fix` doesn't upgrade a repository. New features require repository format 2, confirmed by the user through `/roadmap upgrade` or the first `/roadmap plan-round` preview. Explain the warning that **roadmap plugin 0.2.3 and earlier can no longer read the repository**. Agent tools refuse new features in format 1 with upgrade guidance; never change the marker yourself.
+
+The upgrade changes the root marker and directory explanation, not every managed file. Existing files retain format 1 unless a later write needs a format-2-only field. Frozen/closed history isn't rewritten. A format-2 repository can contain both formats; each file's managed comment must match its own format.
+
+Use optional `target` on stage `add`, planned-stage `edit` or active-stage `amend`; an amendment still needs its reason. The user can also confirm `/roadmap retarget <round-or-stage> <YYYY-MM-DD|none>` for unclosed work in a format-2 repository. `none` clears the date. Without a UI, upgrade, drop and retarget require the user's `/roadmap confirm <token>` response like other held previews.
 
 ## ADR judgment and review
 
@@ -56,7 +72,11 @@ If a completion reminder supplies plan gate verdicts, treat them as evidence can
 
 For abandoned planned or active work, use `roadmap_stage` with `action: "drop"` and a reason after moving or resolving its targeted TODOs. Don't pretend it was delivered. Use `action: "renumber"` only for planned stages; don't evade refusals involving closed or frozen references.
 
-The user closes a round with `/roadmap close-round` only after every stage is closed or dropped. Each remaining open TODO needs a disposition: resolved with a reference, explicitly wontfix, or carried to a later round. Closure freezes the round directory in place.
+The user closes a round with `/roadmap close-round` only after every stage is closed or dropped and document checks pass. Open TODOs targeting planned-round stages are carried automatically into those rounds' TODO documents with the same IDs and targets. The destination records `carried_from`; the source becomes `carried` with a reference to that round. These items don't appear in the disposition dialog and cannot be imported again. The same ID can continue through later rounds, such as `R1 → R2 → R3`; check validates each link and allows only one non-carried occurrence.
+
+Each remaining open TODO needs a disposition: resolved with a reference, explicitly wontfix, or carried for later consideration. Trigger-based carried imports get fresh IDs through `roadmap_round_open`. Closure freezes the round directory in place. Without a UI, supply `/roadmap close-round <todo>=<disposition>[:<reference>] ...` only for the items needing manual dispositions; quote text with spaces.
+
+When moving an open item out of a planned round's TODO document to another round, the tool leaves the old item as `moved` referencing a fresh TODO ID in the destination document. The new item records the old ID and origin in `carried_from` and keeps the requested target. A move to another planned round goes directly to that round even if another round is active. Treat it as linked history, not an in-place retarget or another same-ID carry hop.
 
 ## Overlap and free work
 
@@ -75,3 +95,9 @@ An already-bound stage returns in-system with its handoff, without a dialog or f
 Use `roadmap_check` for document consistency, or `/roadmap check`. **Check cannot detect code/document drift.** Compare actual code and behavior at stage boundaries and during closure; a clean check doesn't prove delivery. Cross-clone id collisions are detected, not prevented.
 
 Writes are atomic per file, not per operation. An interrupted multi-file operation can leave intact individual files but stale indexes. Check reports the inconsistency. Use `roadmap_check` with `fix: true`, or `/roadmap check --fix`, to regenerate generated blocks and indexes; it doesn't repair arbitrary content or touch frozen rounds. Restore other damage with `git`, preserving unrelated work and user edits. Never bypass the tools to repair managed files.
+
+## Status surfaces
+
+Turn context stays bounded and is injected only while a round is active, with up to 12 stages and compact planned-round summaries. With no active round, consult `roadmap_status` rather than assuming no planned work exists. Only stages in the active round can bind to a session or participate in the existing Prometheus binding contract; that contract stays version 1.
+
+The output-only `roadmap/status` sidecar stays version 1. Additive fields include repository `format`, `plannedRounds` entries with ID, title, target, overdue, stage count and open TODO count, active-round target/opened/overdue, and stage target/started/closed/overdue. Read managed documents through the tools for decisions; don't edit the sidecar or treat it as an input store.
