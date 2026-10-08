@@ -226,12 +226,17 @@ export function createLedger(
   };
 }
 
-/** Rebind unfinished rows after the installed roster or spawn policy changes. */
+/**
+ * Rebind unfinished rows after the installed roster or spawn policy changes.
+ * When neither the requested agent nor its fallbacks are spawnable, a listed agent Atlas chose at start stays bound.
+ */
 export function refreshDispatchAgents(ledger: ExecutionLedger, availableAgents?: readonly string[]): boolean {
   let changed = false;
   for (const item of ledgerRows(ledger)) {
     if (item.status === "done") continue;
-    const dispatchAgent = resolveAgent(item.agent, availableAgents).dispatchAgent;
+    const resolved = resolveAgent(item.agent, availableAgents).dispatchAgent;
+    const chosen = resolved === undefined && item.dispatchAgent !== undefined && availableAgents?.includes(item.dispatchAgent);
+    const dispatchAgent = chosen ? item.dispatchAgent : resolved;
     if (item.dispatchAgent === dispatchAgent) continue;
     item.dispatchAgent = dispatchAgent;
     changed = true;
@@ -259,7 +264,8 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
   for (const item of ledgerRows(ledger)) {
     const dependsOn = item.dependsOn.join(", ") || "none";
     const dispatch = item.dispatchAgent ?? resolveAgent(item.agent, availableAgents).dispatchAgent;
-    const owner = dispatch === item.agent ? item.agent : `${item.agent} -> ${dispatch ?? "unavailable"}`;
+    const missing = item.status === "done" ? "unavailable" : "unavailable (choose with agent on start)";
+    const owner = dispatch === item.agent ? item.agent : `${item.agent} -> ${dispatch ?? missing}`;
     lines.push(
       `| ${item.id}. ${cell(item.title)} | ${item.status} | ${owner} | ${dependsOn} | ${cell(item.acceptance)} | ${cell(item.evidence ?? "—")} |`,
     );
@@ -425,14 +431,34 @@ export function addFixRow(
   return row;
 }
 
-export function startRow(ledger: ExecutionLedger, id: string): LedgerItem {
+/**
+ * Start a fresh attempt. `chosenAgent` is Atlas's pick for a row whose requested agent and fallbacks are all unspawnable;
+ * a row that still resolves keeps the approved plan's agent.
+ */
+export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: string, availableAgents?: readonly string[]): LedgerItem {
   const rows = ledgerRows(ledger);
   const row = rows.find((item) => item.id === id);
   if (!row) throw new Error(`Unknown ledger row ${id}`);
   if (row.status !== "open") throw new Error(`${id} is ${row.status}; reopen it before starting a fresh attempt`);
   const unfinished = row.dependsOn.filter((dependency) => rows.find((item) => item.id === dependency)?.status !== "done");
   if (unfinished.length) throw new Error(`${id} depends on unfinished rows: ${unfinished.join(", ")}`);
-  if (!row.dispatchAgent) throw new Error(`${id} has no available dispatch agent`);
+  const resolved = resolveAgent(row.agent, availableAgents).dispatchAgent;
+  if (chosenAgent !== undefined && chosenAgent !== row.dispatchAgent) {
+    if (resolved !== undefined) {
+      throw new Error(`${id} dispatches to ${resolved}; choose an agent only for a row whose requested agent is unavailable`);
+    }
+    if (!availableAgents?.includes(chosenAgent)) {
+      throw new Error(`${chosenAgent} is not a spawnable agent; choose one of: ${availableAgents?.join(", ") || "(none)"}`);
+    }
+    row.dispatchAgent = chosenAgent;
+  }
+  if (!row.dispatchAgent) {
+    throw new Error(
+      availableAgents?.length
+        ? `${id} requests ${row.agent}, which cannot be spawned; start it again with agent set to the best fit among: ${availableAgents.join(", ")}`
+        : `${id} has no available dispatch agent`,
+    );
+  }
   row.status = "in_progress";
   row.attempt = randomUUID();
   row.startedAt = Date.now();

@@ -245,7 +245,7 @@ Prometheus 根据会话中 `task` 工具实际列出的代理制定计划，该�
 | `sonic`、`scout`、`reviewer`、`security-reviewer` | `task` |
 | `task` | 无 |
 
-回退只更换代理。各代理的模型角色链记录在 [omo-toolkit README](../omo-toolkit/README.zh.md#代理) 中。如果某条链中没有任何代理能够启动，账本会显示 `unavailable`，Atlas 会报告阻塞原因。
+回退只更换代理。各代理的模型角色链记录在 [omo-toolkit README](../omo-toolkit/README.zh.md#代理) 中。如果某条链中没有任何代理能够启动（例如计划批准后，其中引用的用户自定义代理被删除），账本会显示 `unavailable`，Atlas 会在启动该行时从实时列表中选出最合适的代理（`atlas_ledger start` 并传入 `agent`）。该选择会一直绑定在这一行上，直到请求的代理或其回退代理重新可用；更换代理不需要重新批准计划。只有实时列表为空时，Atlas 才会报告阻塞原因。
 
 ## 执行账本
 

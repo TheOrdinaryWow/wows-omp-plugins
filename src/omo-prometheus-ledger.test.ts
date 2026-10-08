@@ -124,6 +124,30 @@ describe("Prometheus execution ledger", () => {
     expect(oldLedger.items[1]?.dispatchAgent).toBe("sonic");
   });
 
+  test("lets Atlas choose a listed agent when a removed agent has no spawnable fallback", () => {
+    const custom = plan.replace("Agent: deep-low", "Agent: custom-worker");
+    const ledger = createLedger("local://custom-plan.md", custom, ["task", "custom-worker"]);
+    const roster = ["task", "deep-low"];
+    expect(refreshDispatchAgents(ledger, roster)).toBe(true);
+    expect(ledger.items[0]?.dispatchAgent).toBeUndefined();
+    expect(renderLedgerSummary(ledger, roster)).toContain("custom-worker -> unavailable (choose with agent on start)");
+    expect(() => startRow(ledger, "T1", undefined, roster)).toThrow("task, deep-low");
+    expect(() => startRow(ledger, "T1", "custom-worker", roster)).toThrow("not a spawnable agent");
+    expect(ledger.items[0]?.status).toBe("open");
+
+    expect(startRow(ledger, "T1", "deep-low", roster).dispatchAgent).toBe("deep-low");
+    expect(refreshDispatchAgents(ledger, roster)).toBe(false);
+    reopenRow(ledger, "T1");
+    expect(startRow(ledger, "T1", "task", roster).dispatchAgent).toBe("task");
+    expect(refreshDispatchAgents(ledger, ["task", "custom-worker"])).toBe(true); // The requested agent is back.
+    expect(ledger.items[0]?.dispatchAgent).toBe("custom-worker");
+    expect(refreshDispatchAgents(ledger, ["deep-low"])).toBe(true); // Neither the requested nor the chosen agent remains.
+    expect(ledger.items[0]?.dispatchAgent).toBeUndefined();
+
+    if (ledger.items[0]) ledger.items[0].status = "done";
+    expect(() => startRow(ledger, "T2", "deep-low", ["task", "sonic", "deep-low"])).toThrow("dispatches to sonic");
+  });
+
   test("rejects multi-node dependency cycles before any item can dispatch", () => {
     expect(() => createLedger("local://cycle-plan.md", plan.replace("Depends on: none", "Depends on: T2"))).toThrow("cycle");
     expect(() => createLedger("local://cycle-plan.md", plan.replace("Depends on: none", "Depends on: T3"))).toThrow("cycle");

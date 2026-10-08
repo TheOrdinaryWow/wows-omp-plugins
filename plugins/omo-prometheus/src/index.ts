@@ -1621,7 +1621,12 @@ export default function prometheus(pi: ExtensionAPI): void {
       .describe("Required for done: exact id of the owned native child dispatched for this started attempt"),
     title: z.string().optional().describe("Required for fix: the correction the rejecting gate asked for"),
     acceptance: z.string().optional().describe("Required for fix: the observable check that proves the correction"),
-    agent: z.string().optional().describe("Optional for fix: agent that performs the correction; defaults to task"),
+    agent: z
+      .string()
+      .optional()
+      .describe(
+        "fix: agent that performs the correction (default task). start: the listed agent to dispatch when the row shows unavailable, i.e. neither its requested agent nor a fallback can be spawned; pick the most specific fit for the row's work",
+      ),
   });
   type LedgerParams = {
     action: "status" | "start" | "done" | "block" | "reopen" | "fix";
@@ -1828,7 +1833,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               const starts = ledgerRows(ledger).flatMap((row) => (row.startedAt === undefined ? [] : [row.startedAt]));
               compliance = { cwd: plan.cwd, baseline: ledger.gitBaseline, since: starts.length ? Math.min(...starts) : ledger.createdAt };
             }
-            startRow(ledger, item.id);
+            startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
           } else if (params.action === "done") {
             const childAgentId = params.childAgentId?.trim();

@@ -245,7 +245,7 @@ At dispatch, the requested agent is tried first, then its fallbacks in order, ch
 | `sonic`, `scout`, `reviewer`, `security-reviewer` | `task` |
 | `task` | none |
 
-Fallbacks change the agent only. Each agent's model-role chain is documented in the [omo-toolkit README](../omo-toolkit/README.md#agents). If nothing in a chain can be spawned, the ledger shows `unavailable` and Atlas reports a blocker.
+Fallbacks change the agent only. Each agent's model-role chain is documented in the [omo-toolkit README](../omo-toolkit/README.md#agents). If nothing in a chain can be spawned — for example, a user-defined agent named in the plan was removed after approval — the ledger shows `unavailable` and Atlas picks the best fit from the live list when it starts the row (`atlas_ledger start` with `agent`). The pick is kept for that row until the requested agent or a fallback becomes spawnable again, and changing it never requires re-approving the plan. Atlas reports a blocker only when the live list is empty.
 
 ## Execution ledger
 
