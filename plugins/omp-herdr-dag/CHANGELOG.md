@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.2...omp-herdr-dag@0.4.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** hide the evidence receipt path in the Atlas node footer ([43c4d07](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/43c4d0772a53fe11b261cc44bcc9db4ec5b9a093))
+
 ## [0.4.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.1...omp-herdr-dag@0.4.2) (2026-10-07)
 
 
