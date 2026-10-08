@@ -265,7 +265,8 @@ export function atlasRun(options: AtlasRunOptions): Run {
       state: states[row.status],
       band: bands[row.kind],
       bandName: names[row.kind],
-      detail: row.evidence,
+      // Completed rows prefix the summary with the absolute evidence receipt path, which is noise in a narrow pane.
+      detail: row.evidence?.replace(/^.*?[\\/]evidence[\\/][\w-]+\.md: /, ""),
       agent: row.dispatchAgent ?? row.agent,
       startedAt: row.startedAt ?? old?.startedAt,
       finishedAt: row.status === "done" ? (old?.finishedAt ?? row.updatedAt) : undefined,
