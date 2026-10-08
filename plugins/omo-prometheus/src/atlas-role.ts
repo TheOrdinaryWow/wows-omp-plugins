@@ -9,7 +9,7 @@ export function registerAtlasModelRole(settings: Settings): void {
   const tags = cfgModelTags.get(settings);
   if (Object.hasOwn(tags, ATLAS_MODEL_ROLE)) return;
   const runtimeTags = settings.getProvenance(cfgModelTags) === "runtime" ? tags : {};
-  cfgModelTags.override(settings, { ...runtimeTags, [ATLAS_MODEL_ROLE]: { name: "Atlas" } });
+  cfgModelTags.override(settings, { ...runtimeTags, [ATLAS_MODEL_ROLE]: { name: "ATLAS", color: "syntaxNumber" } });
 }
 
 /**
