@@ -1804,6 +1804,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
           const evidence = params.evidence?.trim();
           let schema: Record<string, unknown> | undefined;
+          let planBinding = "";
           if (params.action === "fix") {
             const fix = addFixRow(
               ledger,
@@ -1832,6 +1833,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               // Git runs after the ledger lock is released; an unrecorded baseline is dated by the earliest execution start.
               const starts = ledgerRows(ledger).flatMap((row) => (row.startedAt === undefined ? [] : [row.startedAt]));
               compliance = { cwd: plan.cwd, baseline: ledger.gitBaseline, since: starts.length ? Math.min(...starts) : ledger.createdAt };
+              planBinding = `\nF1 plan binding (copy literally; never inline the plan text): review_kind: compliance; absolute_plan_path: ${plan.planFilePath}`;
             }
             startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
@@ -1892,7 +1894,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             content: [
               {
                 type: "text" as const,
-                text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}${schema ? `\nGate task outputSchema (use schemaMode strict): ${JSON.stringify(schema)}` : ""}`,
+                text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}${schema ? `\nGate task outputSchema (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
               },
             ],
             details: { id: item.id, status: item.status, outputSchema: schema },

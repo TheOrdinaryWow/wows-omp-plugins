@@ -284,7 +284,7 @@ Once every T row is done, Atlas sends F1 to F4 together to four separate fresh v
 
 | Gate | Agent | Fallback | Checks |
 | --- | --- | --- | --- |
-| F1. Plan compliance review | `momus` (`review_kind: compliance`) | `reviewer` | executed changes match the approved plan, using the ledger summary and the Git evidence the plugin collects read-only when F1 starts (`git diff --stat`, `git log --oneline`, `git status --short` since the plan's baseline commit, or a plain "unavailable") |
+| F1. Plan compliance review | `momus` (`review_kind: compliance`) | `reviewer` | executed changes match the approved plan, reading the hash-verified `plan.md` whose path the plugin prints when F1 starts (no inline plan copy), with the ledger summary and the Git evidence the plugin collects read-only at that point (`git diff --stat`, `git log --oneline`, `git status --short` since the plan's baseline commit, or a plain "unavailable") |
 | F2. Code quality review | `deep-high` | `task` | maintainability, scope, test value, and evidence-backed blockers |
 | F3. Real-surface QA | `deep-low` | `task` | every scenario in the plan's Verification section run on the real surface with command and observed result |
 | F4. Success-criteria fidelity | `deep-high` | `task` | every named success criterion and adversarial case, tied to evidence |

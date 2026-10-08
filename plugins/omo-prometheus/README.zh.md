@@ -284,7 +284,7 @@ Atlas 停止时若仍有未完成行，插件会用包含账本摘要的隐藏 `
 
 | 关卡 | 代理 | 回退代理 | 检查内容 |
 | --- | --- | --- | --- |
-| F1. 计划合规审查 | `momus`（`review_kind: compliance`） | `reviewer` | 根据账本摘要和 F1 启动时插件以只读方式收集的 Git 证据（自计划基线提交以来的 `git diff --stat`、`git log --oneline`、`git status --short`，或明确说明“不可用”），检查实际变更是否符合已批准计划 |
+| F1. 计划合规审查 | `momus`（`review_kind: compliance`） | `reviewer` | 读取 F1 启动时插件给出路径、已校验哈希的 `plan.md`（不内联计划副本），结合账本摘要和此时插件以只读方式收集的 Git 证据（自计划基线提交以来的 `git diff --stat`、`git log --oneline`、`git status --short`，或明确说明“不可用”），检查实际变更是否符合已批准计划 |
 | F2. 代码质量审查 | `deep-high` | `task` | 可维护性、范围、测试价值及有证据支持的阻塞问题 |
 | F3. 真实界面 QA | `deep-low` | `task` | 在真实界面或环境上执行计划 Verification 章节中的每个场景，记录命令和实际观察结果 |
 | F4. 成功标准忠实性 | `deep-high` | `task` | 逐一核查每项明确列出的成功标准和对抗性场景，并关联证据 |

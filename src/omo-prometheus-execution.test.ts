@@ -1593,6 +1593,8 @@ async function scenario(name: string, root: string): Promise<void> {
     // The workspace is a plain temporary directory: F1 still starts, with a plain statement instead of a diff.
     assert.match(review.startText ?? "", /Git evidence unavailable: the plan workspace is not a Git work tree/);
     assert.doesNotMatch(review.startText ?? "", /\$ git diff --stat/);
+    // Atlas binds the compliance reviewer to the approved bundle file instead of an inline plan copy.
+    assert.ok(review.startText?.includes(`absolute_plan_path: ${planFile}`), review.startText ?? "missing start text");
     await writeFile(join(artifacts, "Bogus.md"), "PASS");
     refused(await done("F1", "Bogus"));
     for (const [child, options] of [
