@@ -9,6 +9,13 @@
 - Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.15.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.15.0...omo-prometheus@0.15.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** bind F1 to the approved plan file instead of an inline copy ([173285f](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/173285fd97c3d9924fe7cc41f80d3230c8e84302))
+
 ## [0.15.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.14.0...omo-prometheus@0.15.0) (2026-10-08)
 
 
