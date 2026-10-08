@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.2.3...roadmap@0.3.0) (2026-10-08)
+
+
+### Features
+
+* **roadmap:** plan rounds ahead with optional target dates in format 2 ([19faa99](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/19faa997cb9f41ceab6c4bbebf807a4f2fdfbc7a))
+
 ## [0.2.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.2.2...roadmap@0.2.3) (2026-10-07)
 
 
