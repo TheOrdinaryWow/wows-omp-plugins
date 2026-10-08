@@ -10,7 +10,7 @@
 omp plugin install omo-toolkit@wows-omp-plugins
 ```
 
-此插件不包含扩展代码。OMP 会从已安装的插件目录加载 `agents/`、`skills/` 和 `.mcp.json`。
+OMP 会从已安装的插件目录加载 `agents/`、`skills/` 和 `.mcp.json`。插件附带一个小扩展，把 `designer` 和 `writer` 两个模型角色列进 `/models`，方便直接在那里指派模型。
 
 ## 代理
 
@@ -27,7 +27,7 @@ omp plugin install omo-toolkit@wows-omp-plugins
 | `writing` | 文档、文章和技术写作 | `@writer`，然后是 `@task` | `low` |
 | `librarian` | 只读的开源研究，附 GitHub 永久链接和官方文档 | `@tiny`，然后是 `@smol` | `off` |
 
-模型角色来自你的 OMP `modelRoles` 配置，列表中的角色会按顺序尝试。`designer` 和 `writer` 是自定义角色；未配置为可用模型时，相应代理会使用 `@task`。
+模型角色来自你的 OMP `modelRoles` 配置，列表中的角色会按顺序尝试。插件会在 `/models` 中列出 `designer` 和 `writer`，但不为它们指派模型；在你指派之前，相应代理使用 `@task`。如果你在 `modelTags` 里为这两个角色配置过条目，以你的配置为准。
 
 `librarian` 使用 `@tiny`，在未设置 `tiny` 时回退到 `@smol`。它需要能够调用工具的聊天模型。如果 `tiny` 指向设备上的 `local/` 标题模型，请将 `librarian` 的模型覆盖为 `@smol`。
 

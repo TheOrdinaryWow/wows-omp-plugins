@@ -10,7 +10,7 @@ Category agents, a research agent, workflow skills, and two documentation MCP se
 omp plugin install omo-toolkit@wows-omp-plugins
 ```
 
-The plugin has no extension code. OMP picks up its `agents/`, `skills/`, and `.mcp.json` from the installed plugin directory.
+OMP picks up its `agents/`, `skills/`, and `.mcp.json` from the installed plugin directory. A small extension lists the `designer` and `writer` model roles in `/models` so you can assign them there.
 
 ## Agents
 
@@ -27,7 +27,7 @@ Category agents start from the same worker prompt as OMP's bundled `task` agent 
 | `writing` | Documentation, prose, and technical writing | `@writer`, then `@task` | `low` |
 | `librarian` | Read-only open-source research with GitHub permalinks and official docs | `@tiny`, then `@smol` | `off` |
 
-Model roles come from your OMP `modelRoles`, and a list is tried in order. `designer` and `writer` are custom roles; when they are not set to an available model, those agents use `@task`.
+Model roles come from your OMP `modelRoles`, and a list is tried in order. The plugin lists `designer` and `writer` in `/models` but assigns no model to them; until you assign one, those agents use `@task`. A `modelTags` entry you configured for either role takes precedence over the plugin's label.
 
 `librarian` uses `@tiny` and falls back to `@smol` when `tiny` is unset. It needs a chat model that can call tools. If `tiny` points at an on-device `local/` title model, override `librarian` to `@smol`.
 

@@ -2,9 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
+import { resolveConfiguredModelPatterns } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { getKnownRoleIds } from "@oh-my-pi/pi-coding-agent/config/model-roles";
+import { cfgCycleOrder, cfgModelTags } from "@oh-my-pi/pi-coding-agent/config/model-settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task/read-only-policy";
 import { parseFrontmatter } from "@oh-my-pi/pi-utils";
+
+import { registerToolkitModelRoles } from "../plugins/omo-toolkit/src/index.ts";
 
 const pluginRoot = join(import.meta.dir, "../plugins/omo-toolkit");
 const agentDir = join(pluginRoot, "agents");
@@ -54,5 +60,32 @@ describe("omo-toolkit skills", () => {
     expect(String(frontmatter.name).trim()).not.toBe("");
     expect(typeof frontmatter.description).toBe("string");
     expect(String(frontmatter.description).trim()).not.toBe("");
+  });
+});
+
+describe("omo-toolkit model roles", () => {
+  test("lists designer and writer without taking over user tags, other runtime tags, or the cycle", () => {
+    const settings = Settings.isolated({ modelRoles: { task: "anthropic/claude-sonnet-4-5" } });
+    cfgModelTags.set(settings, { writer: { name: "WRITER", color: "accent" } });
+    cfgModelTags.override(settings, { ...cfgModelTags.get(settings), atlas: { name: "ATLAS", color: "syntaxNumber" } });
+
+    registerToolkitModelRoles(settings);
+
+    expect(cfgModelTags.get(settings)).toEqual({
+      writer: { name: "WRITER", color: "accent" },
+      atlas: { name: "ATLAS", color: "syntaxNumber" },
+      designer: { name: "DESIGNER", color: "syntaxVariable" },
+    });
+    expect(getKnownRoleIds(settings)).toEqual(expect.arrayContaining(["designer", "writer", "atlas"]));
+    expect(cfgCycleOrder.get(settings)).toEqual(["smol", "default", "slow"]);
+  });
+
+  test("an unassigned registered role still falls through to the next selector", () => {
+    const settings = Settings.isolated({ modelRoles: { task: "anthropic/claude-sonnet-4-5" } });
+    registerToolkitModelRoles(settings);
+
+    expect(resolveConfiguredModelPatterns(["@designer", "@task"], settings)).toContain("anthropic/claude-sonnet-4-5");
+    settings.setModelRole("designer", "google/gemini-3-pro");
+    expect(resolveConfiguredModelPatterns(["@designer", "@task"], settings)[0]).toBe("google/gemini-3-pro");
   });
 });

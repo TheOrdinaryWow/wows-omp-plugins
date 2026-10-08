@@ -7,5 +7,10 @@
   "license": "SEE LICENSES IN LICENSE-MIT AND LICENSE-SUL-1.0",
   "imports": {
     "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
   }
 }
