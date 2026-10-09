@@ -30,6 +30,11 @@ interface Dependencies {
   timer?: SnapshotTimer;
 }
 
+const PANE_ACTIONS = [
+  { value: "open", description: "Open the DAG pane and clear a saved dismissal" },
+  { value: "close", description: "Close the DAG pane and keep it dismissed for this run" },
+  { value: "toggle", description: "Close the pane if open, otherwise open it (default)" },
+] as const;
 const THEME_KEYS = ["text", "muted", "dim", "accent", "success", "error", "warning", "border", "borderAccent", "borderMuted"] as const;
 const FALLBACK_THEME: ThemeColors = {
   text: "#e5e5e7",
@@ -228,7 +233,11 @@ class DagExtension {
       this.#pi.registerCommand("dag-pane", {
         description: "Open, close or toggle the Herdr DAG pane",
         getArgumentCompletions: (prefix) =>
-          ["open", "close", "toggle"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+          PANE_ACTIONS.filter(({ value }) => value.startsWith(prefix)).map(({ value, description }) => ({
+            value,
+            label: value,
+            description,
+          })),
         handler: (args, commandCtx) => this.run(() => this.command(args, commandCtx)),
       });
     }
