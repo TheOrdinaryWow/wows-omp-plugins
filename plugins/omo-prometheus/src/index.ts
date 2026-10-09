@@ -115,6 +115,14 @@ function parseReviewLevel(value: unknown): ReviewLevel {
   throw new Error(`invalid reviewLevel ${JSON.stringify(value)}`);
 }
 
+type DeliverySetting = "ask" | "direct" | "pr" | "ship";
+
+function parseDeliverySetting(value: unknown): DeliverySetting {
+  if (value === undefined) return "ask";
+  if (value === "ask" || value === "direct" || value === "pr" || value === "ship") return value;
+  throw new Error(`invalid delivery ${JSON.stringify(value)}`);
+}
+
 type Phase = "idle" | "planning" | "executing";
 
 interface Ownership {
@@ -171,6 +179,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
   const authorizedActivationCalls = new Map<string, string>();
   const reviewLevels = new Map<string, ReviewLevel>();
+  const deliverySettings = new Map<string, DeliverySetting>();
   const atlasWidgets = new Map<string, boolean>();
   const childEvidence = new ChildEvidence();
   const stores = new Map<string, AtlasStore>();
@@ -205,21 +214,31 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   });
 
-  const loadReviewLevel = async (ctx: ExtensionContext): Promise<void> => {
+  const loadPlanningSettings = async (ctx: ExtensionContext): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
     let herdrDagEnabled = true;
+    let settings: Record<string, unknown> = {};
     try {
-      const settings = await getPluginSettings(PACKAGE_NAME, ctx.cwd);
+      settings = await getPluginSettings(PACKAGE_NAME, ctx.cwd);
       herdrDagEnabled = settings.herdrDag !== false;
-      reviewLevels.set(sessionId, parseReviewLevel(settings.reviewLevel));
       atlasWidgets.set(sessionId, settings.atlasWidget !== false);
     } catch (error) {
-      reviewLevels.set(sessionId, "ask");
       atlasWidgets.set(sessionId, true);
-      pi.logger.warn("prometheus reviewLevel is invalid; using ask", { error: errorMessage(error) });
-    } finally {
-      if (mainSession(ctx)) herdrDag.configure(sessionId, herdrDagEnabled);
+      pi.logger.warn("prometheus settings could not be read; using defaults", { error: errorMessage(error) });
     }
+    try {
+      reviewLevels.set(sessionId, parseReviewLevel(settings.reviewLevel));
+    } catch (error) {
+      reviewLevels.set(sessionId, "ask");
+      pi.logger.warn("prometheus reviewLevel is invalid; using ask", { error: errorMessage(error) });
+    }
+    try {
+      deliverySettings.set(sessionId, parseDeliverySetting(settings.delivery));
+    } catch (error) {
+      deliverySettings.set(sessionId, "ask");
+      pi.logger.warn("prometheus delivery is invalid; using ask", { error: errorMessage(error) });
+    }
+    if (mainSession(ctx)) herdrDag.configure(sessionId, herdrDagEnabled);
   };
 
   const notify = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void => {
@@ -1418,9 +1437,12 @@ export default function prometheus(pi: ExtensionAPI): void {
       : '<available-agents status="unknown">The task tool\'s spawnable-agent list could not be parsed; use only known agents with documented fallbacks.</available-agents>';
     const guidance =
       "Choose the most specific listed specialist for each Agent: row; prefer installed specialist agents (including omo-toolkit) over task/sonic. Names not listed are allowed only when they have a known fallback. Pass this exact available-agents list (or unknown) into every Momus review binding.";
+    const sessionId = ctx.sessionManager.getSessionId();
     const reviewPolicy =
-      `<review-policy level="${reviewLevels.get(ctx.sessionManager.getSessionId()) ?? "ask"}">` +
-      "Apply this session's plan-review setting in section 7 of the planning skill.</review-policy>";
+      `<review-policy level="${reviewLevels.get(sessionId) ?? "ask"}">` +
+      "Apply this session's plan-review setting in section 7 of the planning skill.</review-policy>\n" +
+      `<delivery-policy mode="${deliverySettings.get(sessionId) ?? "ask"}">` +
+      "Apply this session's delivery setting from the Delivery rule in section 4 of the planning skill.</delivery-policy>";
     try {
       return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${reviewPolicy}\n\n${loadPromptAsset(SKILL_ASSET)}`;
     } catch (error) {
@@ -2562,7 +2584,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     registerRole(ctx);
-    await loadReviewLevel(ctx);
+    await loadPlanningSettings(ctx);
     await recoverSession(ctx);
     herdrDag.announce(ctx.sessionManager.getSessionId());
     await refreshAtlasCompletions(ctx);
@@ -2570,7 +2592,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("session_switch", async (event, ctx) => {
     registerRole(ctx);
-    await loadReviewLevel(ctx);
+    await loadPlanningSettings(ctx);
     await recoverSession(ctx, event.reason === "new", true);
     herdrDag.announce(ctx.sessionManager.getSessionId());
     await refreshAtlasCompletions(ctx);
@@ -2609,6 +2631,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     await statePublisher.flush();
     publishedStates.delete(sessionId);
     reviewLevels.delete(sessionId);
+    deliverySettings.delete(sessionId);
     patchMergeWarned.delete(sessionId);
     atlasWidgets.delete(sessionId);
     herdrDag.forget(sessionId);

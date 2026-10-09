@@ -24,6 +24,17 @@
         "default": "ask",
         "description": "Choose no plan review, the default review offer, routine Momus only, or Momus and Oracle on every plan"
       },
+      "delivery": {
+        "type": "enum",
+        "values": [
+          "ask",
+          "direct",
+          "pr",
+          "ship"
+        ],
+        "default": "ask",
+        "description": "Ask how each plan delivers its work when the repository has a remote, or always plan direct commits, a pull request, or a pull request merged after CI"
+      },
       "atlasWidget": {
         "type": "boolean",
         "default": true,
