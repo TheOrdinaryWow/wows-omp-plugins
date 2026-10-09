@@ -3,7 +3,7 @@ import { lstat, readdir } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { check } from "#src/check.ts";
-import { loadAll, loadRepo, type Repo, roundFiles, roundSha256 } from "#src/documents.ts";
+import { loadAll, loadRepo, type Model, type Repo, roundFiles, roundSha256 } from "#src/documents.ts";
 import { autoCarryTodos, closeRound, type PreparationReceipt, prepareRetarget, prepareRoundDrop, prepareUpgrade } from "#src/operations.ts";
 import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
 import {
@@ -26,7 +26,30 @@ const CLOSE_ROUND_USAGE =
   'Usage: /roadmap close-round [<todo>=resolved:<reference> | <todo>=wontfix[:<reason>] | <todo>=carried ...]; quote text with spaces, e.g. T03=wontfix:"out of scope".';
 const USAGE =
   "Usage: /roadmap [check [--fix] | upgrade | plan-round [<id>] | new-round | drop-round <id> <reason> | retarget <round-or-stage> <YYYY-MM-DD|none> | close-round [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | confirm <token>]";
-const OVERLAP_ANSWERS = ["roadmap", "free", "unrelated"];
+const OVERLAP_ANSWERS: readonly Completion[] = [
+  { value: "roadmap", description: "Track this work under the stage" },
+  { value: "free", description: "Log it as free work outside the roadmap" },
+  { value: "unrelated", description: "Treat it as unrelated to the stage" },
+];
+const ACTIONS: readonly Completion[] = [
+  { value: "check", description: "Check Roadmap documents for consistency" },
+  { value: "check --fix", description: "Check documents and regenerate eligible generated blocks" },
+  { value: "upgrade", description: "Preview upgrading the repository to the current document format" },
+  { value: "plan-round", description: "Interview for a new planned round" },
+  { value: "plan-round ", description: "Revise a planned round's charter" },
+  { value: "new-round", description: "Open the next round, activating the lowest planned round if any" },
+  { value: "drop-round ", description: "Drop a planned round with a reason" },
+  { value: "retarget ", description: "Set or clear a round or stage target date" },
+  { value: "close-round", description: "Close the active round and dispose its open TODOs" },
+  { value: "stage ", description: "Show a stage's document and planning handoff" },
+  { value: "overlap ", description: "Answer the overlap question for a stage" },
+  { value: "confirm ", description: "Apply a pending preview by its token" },
+];
+
+interface Completion {
+  value: string;
+  description: string;
+}
 
 /** Splits command arguments on whitespace; double quotes group text with spaces and are removed. */
 export function splitArgs(args: string): string[] {
@@ -64,21 +87,25 @@ export function registerCommands(
   uiFor: UiFactory,
   changed: (ctx: ExtensionContext) => void,
 ): RoadmapCommands {
-  let stageIds: string[] = [];
-  let plannedIds: string[] = [];
-  let roundIds: string[] = [];
+  let stages: Completion[] = [];
+  let plannedRounds: Completion[] = [];
+  let rounds: Completion[] = [];
+
+  function rememberStages(model: Model): void {
+    stages = model.stages.map((stage) => ({ value: stage.id, description: `${stage.title} (${stage.status})` }));
+  }
 
   async function refresh(ctx: ExtensionContext): Promise<void> {
-    stageIds = [];
-    plannedIds = [];
-    roundIds = [];
+    stages = [];
+    plannedRounds = [];
+    rounds = [];
     const repo = await loadRepo(ctx.cwd);
     if (repo) {
       const model = await loadAll(repo);
-      stageIds = model.stages.map((stage) => stage.id);
-      const rounds = [...model.rounds].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
-      plannedIds = rounds.filter((round) => round.status === "planned").map((round) => round.id);
-      roundIds = rounds.map((round) => round.id);
+      rememberStages(model);
+      const sorted = [...model.rounds].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+      rounds = sorted.map((round) => ({ value: round.id, description: `${round.title} (${round.status})` }));
+      plannedRounds = sorted.filter((round) => round.status === "planned").map((round) => ({ value: round.id, description: round.title }));
     }
   }
 
@@ -164,7 +191,7 @@ export function registerCommands(
       }
       const repo = await requireRepo(ctx);
       let model = await loadAll(repo);
-      stageIds = model.stages.map((stage) => stage.id);
+      rememberStages(model);
       let selectedStage = words[1];
       let reviewedRound: { id: string; sha256: string } | undefined;
       if (!action) {
@@ -301,31 +328,22 @@ export function registerCommands(
   pi.registerCommand("roadmap", {
     description: "View Roadmap status, plan/activate/drop rounds, retarget dates, upgrade formats, check documents or confirm a preview",
     getArgumentCompletions(prefix) {
+      const prefixed = (head: string, options: readonly Completion[], tail = "") =>
+        options.map(({ value, description }) => ({ value: `${head}${value}${tail}`, description }));
       const overlap = /^overlap (\S+) /.exec(prefix);
-      let options: string[];
-      if (overlap) options = OVERLAP_ANSWERS.map((answer) => `overlap ${overlap[1]} ${answer}`);
-      else if (prefix.startsWith("overlap ")) options = stageIds.map((id) => `overlap ${id} `);
-      else if (prefix.startsWith("stage ")) options = stageIds.map((id) => `stage ${id}`);
-      else if (prefix.startsWith("plan-round ")) options = plannedIds.map((id) => `plan-round ${id}`);
-      else if (prefix.startsWith("drop-round ")) options = plannedIds.map((id) => `drop-round ${id} `);
-      else if (/^retarget \S+ /.test(prefix)) options = [`${prefix.split(" ").slice(0, 2).join(" ")} none`];
-      else if (prefix.startsWith("retarget ")) options = [...roundIds, ...stageIds].map((id) => `retarget ${id} `);
-      else
-        options = [
-          "check",
-          "check --fix",
-          "upgrade",
-          "plan-round",
-          "plan-round ",
-          "new-round",
-          "drop-round ",
-          "retarget ",
-          "close-round",
-          "stage ",
-          "overlap ",
-          "confirm ",
-        ];
-      const matches = options.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
+      const retarget = /^retarget (\S+) /.exec(prefix);
+      let options: Completion[];
+      if (overlap) options = prefixed(`overlap ${overlap[1]} `, OVERLAP_ANSWERS);
+      else if (prefix.startsWith("overlap ")) options = prefixed("overlap ", stages, " ");
+      else if (prefix.startsWith("stage ")) options = prefixed("stage ", stages);
+      else if (prefix.startsWith("plan-round ")) options = prefixed("plan-round ", plannedRounds);
+      else if (prefix.startsWith("drop-round ")) options = prefixed("drop-round ", plannedRounds, " ");
+      else if (retarget) options = [{ value: `retarget ${retarget[1]} none`, description: "Clear the target date" }];
+      else if (prefix.startsWith("retarget ")) options = prefixed("retarget ", [...rounds, ...stages], " ");
+      else options = [...ACTIONS];
+      const matches = options
+        .filter(({ value }) => value.startsWith(prefix))
+        .map(({ value, description }) => ({ value, label: value, description }));
       return matches.length ? matches : null;
     },
     handler: roadmapCommand,

@@ -83,7 +83,7 @@ The dialog authorizes closing only the round and file snapshot reviewed before i
 
 ## Commands
 
-All commands below require the main session. Stage IDs have argument completions.
+All commands below require the main session. Subcommands, stage IDs and round IDs have argument completions with descriptions.
 
 | Command | Behavior |
 | --- | --- |
