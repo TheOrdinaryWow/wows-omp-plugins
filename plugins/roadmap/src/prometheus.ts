@@ -118,6 +118,16 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
       )
     )
       return;
+    let delivery: { mode: "pr" | "ship"; summary: string } | undefined;
+    if (payload.delivery !== undefined) {
+      if (
+        !object(payload.delivery) ||
+        (payload.delivery.mode !== "pr" && payload.delivery.mode !== "ship") ||
+        typeof payload.delivery.summary !== "string"
+      )
+        return;
+      delivery = { mode: payload.delivery.mode, summary: payload.delivery.summary.replace(/\s+/g, " ").slice(0, 180) };
+    }
     try {
       const repoRoot = discoverRepo(ctx.cwd)?.repoRoot;
       if (repoRoot !== payload.roadmapStage.repoRoot) return;
@@ -126,6 +136,7 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
         stage: payload.roadmapStage.id,
         planId: payload.planId,
         gates: payload.gates as Array<{ gateId: string; verdict: string; summary: string }>,
+        ...(delivery ? { delivery } : {}),
       });
     } catch (error) {
       pi.logger.warn("roadmap could not record Atlas completion", { error: String(error) });

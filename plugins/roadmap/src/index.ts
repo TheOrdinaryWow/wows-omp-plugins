@@ -124,6 +124,8 @@ export default function roadmap(pi: ExtensionAPI): void {
                   `- ${gate.gateId.replace(/\s+/g, " ").slice(0, 40)}: ${gate.verdict.replace(/\s+/g, " ").slice(0, 20)} — ${gate.summary.replace(/\s+/g, " ").slice(0, 180)}`,
               ),
           );
+          if (latest.delivery)
+            lines.push(`Delivery (${latest.delivery.mode}): ${latest.delivery.summary.replace(/\s+/g, " ").slice(0, 180)}`);
           if (latest.gates.length > 4 || pending.length > 1)
             lines.push("Additional pending-close evidence is retained in this session's Roadmap entries.");
         }

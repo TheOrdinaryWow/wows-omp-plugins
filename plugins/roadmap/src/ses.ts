@@ -19,6 +19,7 @@ export interface Binding {
 export interface PendingClose extends Binding {
   planId: string;
   gates: Array<{ gateId: string; verdict: string; summary: string }>;
+  delivery?: { mode: "pr" | "ship"; summary: string };
 }
 
 export type ArmedKind = "init" | "round" | "plan" | "upgrade" | "drop-round" | "retarget";
@@ -114,7 +115,17 @@ export class RoadmapSession {
           return;
         gates.push({ gateId: gate.gateId, verdict: gate.verdict, summary: gate.summary });
       }
-      state.pending.set(data.planId, { ...binding, planId: data.planId, gates });
+      let delivery: PendingClose["delivery"];
+      if (data.delivery !== undefined) {
+        if (
+          !object(data.delivery) ||
+          (data.delivery.mode !== "pr" && data.delivery.mode !== "ship") ||
+          typeof data.delivery.summary !== "string"
+        )
+          return;
+        delivery = { mode: data.delivery.mode, summary: data.delivery.summary.replace(/\s+/g, " ").slice(0, 180) };
+      }
+      state.pending.set(data.planId, { ...binding, planId: data.planId, gates, ...(delivery ? { delivery } : {}) });
     }
     if (type === "pending-close-cleared") {
       for (const [id, pending] of state.pending) if (pending.stage === data.stage) state.pending.delete(id);

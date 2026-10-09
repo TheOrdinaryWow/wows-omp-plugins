@@ -186,6 +186,9 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
       { ...completion, v: 2 },
       { ...completion, planId: "foreign", roadmapStage: { repoRoot: "/another-repository", id: "S01" } },
       { ...completion, planId: "malformed", gates: [{ gateId: "F1", verdict: "PASS", summary: null }] },
+      { ...completion, planId: "invalid-delivery-mode", delivery: { mode: "direct", summary: "Invalid" } },
+      { ...completion, planId: "invalid-delivery-summary", delivery: { mode: "pr", summary: null } },
+      { ...completion, planId: "invalid-delivery-object", delivery: "ship" },
     ])
       eventBus.emit("atlas:completed", event);
     assert.equal(pending().length, 1);
@@ -197,6 +200,29 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     assert.match(text, /completed for S01.*roadmap_stage close/);
     assert.match(text, /Gate results are evidence candidates/);
     for (const gate of completion.gates) assert(text.includes(`${gate.gateId}: ${gate.verdict} — ${gate.summary}`));
+    assert(!text.includes("Delivery ("));
+    const mode = reverse ? "ship" : "pr";
+    const deliverySummary = `Opened https://example.com/pull/42${reverse ? " and merged after CI passed" : ""}`;
+    const deliveryCompletion = {
+      ...completion,
+      planId: `${plan.id}-delivery`,
+      delivery: { mode, summary: `${deliverySummary}\n${"verified ".repeat(40)}` },
+    };
+    const storedDelivery = { mode, summary: deliveryCompletion.delivery.summary.replace(/\s+/g, " ").slice(0, 180) };
+    eventBus.emit("atlas:completed", deliveryCompletion);
+    assert.equal(pending().length, 2);
+    const deliveryEntry = pending()[1];
+    assert(deliveryEntry?.type === "custom");
+    assert(deliveryEntry.data && typeof deliveryEntry.data === "object" && "delivery" in deliveryEntry.data);
+    assert.deepEqual(deliveryEntry.data.delivery, storedDelivery);
+    await runner.emit({ type: "session_start" });
+    eventBus.emit("atlas:completed", deliveryCompletion);
+    assert.equal(pending().length, 2);
+    const deliveryInjection = await runner.emitBeforeAgentStart("Close the delivered stage", undefined, ["Host policy"]);
+    const deliveryText = deliveryInjection?.systemPrompt?.join("\n") ?? "";
+    assert(deliveryText.includes(`Delivery (${mode}): ${storedDelivery.summary}`));
+    assert(deliveryText.includes(`Plan ${deliveryCompletion.planId} completed for S01`));
+    for (const gate of completion.gates) assert(deliveryText.includes(`${gate.gateId}: ${gate.verdict} — ${gate.summary}`));
     const reminder = injection?.systemPrompt?.find((block) => block.includes("[Roadmap status]"));
     assert(reminder && reminder.split("\n").length <= 40);
     assert(reminder.length < 6000);
