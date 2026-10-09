@@ -8,6 +8,7 @@
 
 | 插件 | 说明 |
 | --- | --- |
+| [`adr`](plugins/adr/README.zh.md) | 以 MADR 格式记录架构决策，通过代理工具和 `/adr` 管理 |
 | [`audit-goal`](plugins/audit-goal/README.zh.md) | `/audit`：反复进行独立的审计与修复，每轮记入审计记录 |
 | [`judge-dispatch`](plugins/judge-dispatch/README.zh.md) | 由 OMP 的 judge 角色为 `task` 调用选择子代理类型、思考强度和模型 |
 | [`omo-prometheus`](plugins/omo-prometheus/README.zh.md) | OmO 的 Prometheus 规划与 Atlas 计划执行 |

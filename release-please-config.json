@@ -6,6 +6,13 @@
   "tag-separator": "@",
   "separate-pull-requests": false,
   "packages": {
+    "plugins/adr": {
+      "component": "adr",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='adr')].version" }
+      ]
+    },
     "plugins/audit-goal": {
       "component": "audit-goal",
       "extra-files": [

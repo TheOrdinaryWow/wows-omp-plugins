@@ -1,0 +1,16 @@
+{
+  "name": "wows-omp-plugin-adr",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Tool-managed MADR architecture decision records",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+MADR 4.0.0
+Upstream: https://github.com/adr/madr
+Commit: 2475fe1973f66a12aaf58a91d8fa7b42c0f5ea3d
+License: MIT OR CC0-1.0 (MIT | CC0-1.0)
+Template: https://raw.githubusercontent.com/adr/madr/2475fe1973f66a12aaf58a91d8fa7b42c0f5ea3d/template/adr-template.md
+Template SHA-256: 4903614bbae9aeb2aa811caeb9e156677ef1a993872af6ff8dcfb67b2266cae1

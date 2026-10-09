@@ -8,6 +8,7 @@ A personal marketplace of [omp](https://omp.sh) plugins. Several of them port wo
 
 | Plugin | Description |
 | --- | --- |
+| [`adr`](plugins/adr/README.md) | Architecture decision records in MADR format, managed through agent tools and `/adr` |
 | [`audit-goal`](plugins/audit-goal/README.md) | `/audit`: repeated independent audit and fix rounds, recorded in a ledger |
 | [`judge-dispatch`](plugins/judge-dispatch/README.md) | OMP's judge role picks the subagent type, thinking effort and model for `task` calls |
 | [`omo-prometheus`](plugins/omo-prometheus/README.md) | OmO's Prometheus planning and Atlas plan execution |

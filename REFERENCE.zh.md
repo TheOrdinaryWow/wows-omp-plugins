@@ -22,6 +22,7 @@ runtime dir 是 `$XDG_RUNTIME_DIR/wows-omp-plugins`；未设置 `XDG_RUNTIME_DIR
 
 | 插件 | 文件 | `state` 内容 |
 | --- | --- | --- |
+| `adr` | `adr.json` | [adr 参考文档](plugins/adr/REFERENCE.zh.md#状态快照) |
 | `audit-goal` | `audit-goal.json` | [audit-goal 参考文档](plugins/audit-goal/REFERENCE.zh.md#状态快照) |
 | `omo-prometheus` | `omo-prometheus.json` | [omo-prometheus 参考文档](plugins/omo-prometheus/REFERENCE.zh.md#状态快照) |
 | `omo-ultrawork` | `omo-ultrawork.json` | [omo-ultrawork 参考文档](plugins/omo-ultrawork/REFERENCE.zh.md#状态快照) |

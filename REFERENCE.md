@@ -22,6 +22,7 @@ The files are output only; the plugins never read them back.
 
 | Plugin | File | Payload |
 | --- | --- | --- |
+| `adr` | `adr.json` | [adr reference](plugins/adr/REFERENCE.md#state-snapshot) |
 | `audit-goal` | `audit-goal.json` | [audit-goal reference](plugins/audit-goal/REFERENCE.md#state-snapshot) |
 | `omo-prometheus` | `omo-prometheus.json` | [omo-prometheus reference](plugins/omo-prometheus/REFERENCE.md#state-snapshot) |
 | `omo-ultrawork` | `omo-ultrawork.json` | [omo-ultrawork reference](plugins/omo-ultrawork/REFERENCE.md#state-snapshot) |

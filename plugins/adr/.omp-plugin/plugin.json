@@ -1,0 +1,9 @@
+{
+  "name": "adr",
+  "version": "0.1.0",
+  "description": "Tool-managed MADR architecture decision records",
+  "author": {
+    "name": "TheOrdinaryWow"
+  },
+  "license": "MIT"
+}
