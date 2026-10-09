@@ -41,6 +41,7 @@ Repositories whose ADRs were written by the roadmap plugin 0.4.0 or earlier need
 - New decisions start as `proposed`; the agent creates an accepted one only when you explicitly agree.
 - A proposed ADR can be revised as a whole. An accepted one is never rewritten: it is deprecated, superseded by a new accepted ADR, or extended with a dated note under More Information.
 - Only the main session (you, or the main agent acting for you) accepts, rejects, deprecates or supersedes. Subagents can create proposed ADRs, revise them and add notes.
+- Only the main session can set, change or clear an existing ADR's stage link, at any status (including superseded). This changes metadata, not the decision body or status.
 
 ### Commands
 
@@ -64,7 +65,7 @@ All commands run in the main session and complete subcommands and ADR IDs.
 | Tool | Purpose |
 | --- | --- |
 | `adr_status` | List ADRs (optional `status` filter), or read one by `id` with its full text and supersession chain. |
-| `adr_manage` | `create`, `revise`, `set_status`, `supersede`, `note`. |
+| `adr_manage` | `create`, `revise`, `set_status`, `supersede`, `note`, `link`. `link` requires `id`; supply `stage` to set or change the link, or omit it to clear. |
 | `adr_check` | Consistency check; `fix: true` regenerates the index table. |
 
 In a repository without `docs/adr/` management, every tool refuses and tells the agent to ask you to run `/adr init`.
@@ -79,7 +80,7 @@ The plugin has no settings.
 
 ## Working with other plugins
 
-- **roadmap**: the roadmap plugin requires this plugin. It reads ADRs and links them to stages through this plugin's service contract, and its `/init-project` initializes `docs/adr/` when it is missing. Stage links on ADRs are accepted only while the roadmap plugin is loaded, and only for stages that exist.
+- **roadmap**: the roadmap plugin requires this plugin. It reads ADRs and links them to stages through this plugin's service contract, and its `/init-project` initializes `docs/adr/` when it is missing. Setting or changing a stage link requires the loaded roadmap plugin and an existing stage; clearing a link does not.
 - **omo-prometheus**: Atlas admits the `adr_*` tools during plan execution, alongside the roadmap tools.
 
 ## Without the terminal UI

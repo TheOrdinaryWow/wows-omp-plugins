@@ -35,8 +35,9 @@ When `skill://adr-skill` exists, read it and follow its triggers, repository sca
 - `set_status`: main agent only; `accepted`, `rejected` or `deprecated`. A superseded ADR keeps its status.
 - `supersede`: main agent only; replaces an accepted or deprecated ADR with a new accepted successor and links both ways. Get the user's explicit agreement first.
 - `note`: appends dated `text` under More Information. Subagents may add notes.
+- `link`: main agent only; required `id`, optional `stage`. Supply `stage` to set or change an existing ADR's stage link; omit it to clear. Allowed at every status, including superseded; the body, status and supersession links stay unchanged.
 
-Subagents cannot accept, reject, deprecate or supersede; a subagent that needs one of these returns the decision to the main agent. A `stage` link is accepted only by `create` and `supersede`, and only when the roadmap plugin is installed: it validates that the stage exists. Without it, omit `stage`.
+Subagents cannot accept, reject, deprecate, supersede or link an existing ADR; a subagent that needs one of these returns the decision to the main agent. A `stage` link is accepted only by `create`, `supersede` and `link`, and setting or changing one needs the loaded roadmap plugin to validate that the stage exists. Without it, omit `stage` when creating or superseding; clearing an existing link with `link` remains allowed.
 
 `/adr new` and `/adr supersede <id>` are the user asking you to interview them. Gather facts from the repository first, skip questions already answered, ask focused questions, show the draft, then write it with `adr_manage`.
 

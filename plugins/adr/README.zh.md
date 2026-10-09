@@ -41,6 +41,7 @@ omp plugin install adr@wows-omp-plugins
 - 新决策以 `proposed` 开始；只有在你明确同意时，代理才会直接创建已接受的决策。
 - 提议状态的 ADR 可以整体修订。已接受的 ADR 不会被改写：只能被弃用、被一个新的已接受 ADR 取代，或在 More Information 下追加带日期的备注。
 - 只有主会话（你，或代表你的主代理）可以接受、拒绝、弃用或取代决策。子代理可以创建提议状态的 ADR、修订它们并添加备注。
+- 只有主会话可以设置、更改或清除现有 ADR 的阶段关联，任何状态（包括已被取代）都允许。此操作只改变元数据，不改变决策正文或状态。
 
 ### 命令
 
@@ -64,7 +65,7 @@ omp plugin install adr@wows-omp-plugins
 | 工具 | 用途 |
 | --- | --- |
 | `adr_status` | 列出 ADR（可用 `status` 筛选），或按 `id` 读取单个 ADR 的全文和取代链。 |
-| `adr_manage` | `create`、`revise`、`set_status`、`supersede`、`note`。 |
+| `adr_manage` | `create`、`revise`、`set_status`、`supersede`、`note`、`link`。`link` 必须提供 `id`；提供 `stage` 即设置或更改关联，省略即清除。 |
 | `adr_check` | 一致性检查；`fix: true` 重新生成索引表。 |
 
 在没有启用 `docs/adr/` 管理的仓库中，所有工具都会拒绝，并告诉代理请你运行 `/adr init`。
@@ -79,7 +80,7 @@ roadmap 插件 0.4.0 或更早版本写入的 ADR（包括其 `docs/adr/README.m
 
 ## 与其他插件配合
 
-- **roadmap**：roadmap 插件依赖本插件。它通过本插件的服务契约读取 ADR、把 ADR 关联到阶段；其 `/init-project` 会在 `docs/adr/` 缺失时初始化它。只有在 roadmap 插件已加载时才接受 ADR 的阶段关联，且阶段必须存在。
+- **roadmap**：roadmap 插件依赖本插件。它通过本插件的服务契约读取 ADR、把 ADR 关联到阶段；其 `/init-project` 会在 `docs/adr/` 缺失时初始化它。设置或更改阶段关联需要已加载的 roadmap 插件，且阶段必须存在；清除关联不需要。
 - **omo-prometheus**：执行计划时，Atlas 会与路线图工具一同放行 `adr_*` 工具。
 
 ## 不使用终端界面时

@@ -8,6 +8,7 @@ import {
   createMany,
   initialize,
   link,
+  manage,
   note,
   Refusal,
   relinkStage,
@@ -142,6 +143,41 @@ test("stage links are refused without a resolver and validated with one", async 
   adrs = (await loadInitialized(root))?.adrs ?? [];
   expect(adrs.find((doc) => doc.id === "ADR-0003")?.stage).toBeUndefined();
   expect((await bytes(root))["0003-adopt-event-sourcing.md"]).not.toContain("stage:");
+});
+
+test("adr_manage links at every status without changing decision content and refuses unauthorized or invalid links", async () => {
+  const root = await repoFixture();
+  await initialize(root, "main");
+  await createMany(
+    root,
+    "main",
+    (["proposed", "accepted", "rejected", "deprecated"] as const).map((status) => ({ ...decision, title: status, status })),
+  );
+  await supersede(root, "main", "ADR-0002", decision);
+  const original = (await loadInitialized(root))?.adrs ?? [];
+  expect(new Set(original.map((doc) => doc.status)).size).toBe(5);
+  const before = await bytes(root);
+  await expect(manage(root, "main", { action: "link" })).rejects.toThrow("ADR id must be non-empty");
+  await expect(manage(root, "main", { action: "link", id: "ADR-0001", stage: "S01" })).rejects.toThrow(
+    "Stage links need the roadmap plugin",
+  );
+  await expect(manage(root, "main", { action: "link", id: "ADR-0001", stage: "S09" }, { resolver })).rejects.toThrow(
+    "Stage S09 cannot be linked: S09 does not exist.",
+  );
+  for (const stage of ["S01", undefined]) {
+    await expect(manage(root, "sub", { action: "link", id: "ADR-0001", stage }, { resolver })).rejects.toThrow("Only the main agent");
+    await expect(link(root, "sub", "ADR-0001", stage, { resolver })).rejects.toThrow("Only the main agent");
+  }
+  expect(await bytes(root)).toEqual(before);
+
+  for (const doc of original) {
+    await manage(root, "main", { action: "link", id: doc.id, stage: "S01" }, { resolver });
+    expect((await loadInitialized(root))?.adrs.find((record) => record.id === doc.id)).toEqual({ ...doc, stage: "S01" });
+    await manage(root, "main", { action: "link", id: doc.id, stage: "S02" }, { resolver });
+    expect((await loadInitialized(root))?.adrs.find((record) => record.id === doc.id)).toEqual({ ...doc, stage: "S02" });
+    await manage(root, "main", { action: "link", id: doc.id });
+    expect((await loadInitialized(root))?.adrs.find((record) => record.id === doc.id)).toEqual(doc);
+  }
 });
 
 test("allocation starts above the legacy roadmap counter, its own counter and the disk, and never writes the roadmap file", async () => {

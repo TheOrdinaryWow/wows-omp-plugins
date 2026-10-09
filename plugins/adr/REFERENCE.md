@@ -35,8 +35,9 @@ If `docs/adr/` is absent or empty, every tool refuses with "ADR management is no
 | `set_status` | `id`, `status` | Main agent only. `accepted`, `rejected` or `deprecated`; refused for a superseded ADR. |
 | `supersede` | `id` and the `create` fields | Main agent only. The ADR must be accepted or deprecated. Creates an accepted successor with `supersedes: [id]` and sets the old ADR to `superseded` with `superseded_by`. |
 | `note` | `id`, `text` | Appends `### YYYY-MM-DD` and the text under More Information, adding that section if missing. Any actor. |
+| `link` | Required `id`, optional `stage` | Main session only, at any ADR status, including superseded. Sets or changes the stage link; omitting `stage` clears it without needing a resolver. Leaves the body, status and supersession links unchanged. |
 
-`stage` is accepted only by `create` and `supersede`. It needs a stage resolver registered through the service contract (the roadmap plugin registers one); without it the call is refused with "Stage links need the roadmap plugin". With one, the resolver must accept the stage ID.
+`stage` is accepted only by `create`, `supersede` and `link`. Setting or changing a stage link needs a stage resolver registered through the service contract (the roadmap plugin registers one); without it the call is refused with "Stage links need the roadmap plugin". With one, the resolver must accept the stage ID. Clearing an existing link with `link` needs no resolver.
 
 If an existing ADR ends inside an unterminated fence, `note` refuses without changing it. Repair the file in your editor and retry.
 
@@ -213,7 +214,7 @@ interface AdrApiV1 {
 | `initialize` | Main only. Writes the marker into an absent or empty `docs/adr/`; refuses an unmanaged one; returns an empty result with a warning when already managed. |
 | `create` | `createMany` with one input. |
 | `createMany` | Creates ADRs in one locked batch with sequential IDs, in input order. Refuses an uninitialized directory unless `initialize: true` (main only), which also writes the marker into an absent or empty directory in the same batch. |
-| `link` | Sets or clears one ADR's stage link. Setting one asks the resolver. |
+| `link` | Main session only, at any ADR status. Sets or changes one ADR's stage link after resolver validation; `stage: undefined` clears it without a resolver. Leaves the body, status and supersession links unchanged. |
 | `relinkStage` | Rewrites every `stage: from` to `to`, for a stage renumbering. It needs a registered resolver but does not ask it about `to`, since the caller owns the rename. |
 | `registerStageResolver` | One resolver per session; the latest registration wins, and the returned function unregisters only its own resolver. |
 

@@ -35,8 +35,9 @@ Read decisions with adr_status (an id gives the full text); change them only thr
 | `set_status` | `id`、`status` | 仅限主代理。`accepted`、`rejected` 或 `deprecated`；已被取代的 ADR 会被拒绝。 |
 | `supersede` | `id` 及 `create` 的字段 | 仅限主代理。该 ADR 必须是已接受或已弃用。创建一个 `supersedes: [id]` 的已接受后继，并把旧 ADR 设为 `superseded`，写入 `superseded_by`。 |
 | `note` | `id`、`text` | 在 More Information 下追加 `### YYYY-MM-DD` 和文本，缺少该章节时自动添加。任何执行者都可以使用。 |
+| `link` | 必需 `id`，可选 `stage` | 仅限主会话，允许任何 ADR 状态，包括已被取代。设置或更改阶段关联；省略 `stage` 即清除，不需要解析器。正文、状态和取代关系不变。 |
 
-只有 `create` 和 `supersede` 接受 `stage`。它需要通过服务契约注册的阶段解析器（roadmap 插件会注册一个）；没有解析器时，调用会以 "Stage links need the roadmap plugin" 拒绝。有解析器时，解析器必须接受该阶段 ID。
+只有 `create`、`supersede` 和 `link` 接受 `stage`。设置或更改阶段关联需要通过服务契约注册的阶段解析器（roadmap 插件会注册一个）；没有解析器时，调用会以 "Stage links need the roadmap plugin" 拒绝。有解析器时，解析器必须接受该阶段 ID。用 `link` 清除现有关联不需要解析器。
 
 如果现有 ADR 结束于一个未闭合的代码围栏中，`note` 会拒绝且不做修改。请在编辑器中修复文件后重试。
 
@@ -213,7 +214,7 @@ interface AdrApiV1 {
 | `initialize` | 仅限主会话。向不存在或为空的 `docs/adr/` 写入标记；未管理的目录会被拒绝；已受管理时返回带警告的空结果。 |
 | `create` | 只有一个输入的 `createMany`。 |
 | `createMany` | 在一个加锁的批次中按输入顺序以连续 ID 创建 ADR。目录未初始化时拒绝，除非传入 `initialize: true`（仅限主会话），此时在同一批次中向不存在或为空的目录写入标记。 |
-| `link` | 设置或清除单个 ADR 的阶段关联。设置时会询问解析器。 |
+| `link` | 仅限主会话，允许任何 ADR 状态。经解析器校验后设置或更改单个 ADR 的阶段关联；`stage: undefined` 清除关联，不需要解析器。正文、状态和取代关系不变。 |
 | `relinkStage` | 把所有 `stage: from` 改写为 `to`，用于阶段重新编号。它需要已注册的解析器，但不会就 `to` 询问解析器，因为重命名由调用方负责。 |
 | `registerStageResolver` | 每个会话一个解析器；以最后一次注册为准，返回的函数只会注销它自己注册的解析器。 |
 

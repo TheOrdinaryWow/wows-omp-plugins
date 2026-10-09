@@ -443,7 +443,7 @@ export async function note(
   );
 }
 
-/** Sets or clears one ADR's stage link; setting one needs the registered resolver to accept the stage. */
+/** Main only, for any ADR status. Setting a stage link needs the registered resolver; clearing it does not. */
 export async function link(
   path: string,
   actor: AdrActor,
@@ -451,7 +451,7 @@ export async function link(
   stage: string | undefined,
   options: WriteOptions = {},
 ): Promise<WriteResult> {
-  assertActor(actor);
+  assertActor(actor, "Only the main agent can set, change or clear an ADR's stage link.");
   const root = adrRepo(path).repoRoot;
   if (stage !== undefined) await resolveStage(root, stage, options.resolver);
   return mutate(
@@ -498,7 +498,7 @@ export async function relinkStage(
 }
 
 export interface ManageInput {
-  action: "create" | "revise" | "set_status" | "supersede" | "note";
+  action: "create" | "revise" | "set_status" | "supersede" | "note" | "link";
   id?: string;
   title?: string;
   status?: "proposed" | "accepted" | "rejected" | "deprecated";
@@ -512,8 +512,8 @@ export interface ManageInput {
 
 /** The `adr_manage` tool: one action per call, with the tool's argument rules. */
 export async function manage(path: string, actor: AdrActor, input: ManageInput, options: WriteOptions = {}): Promise<WriteResult> {
-  if (input.stage !== undefined && input.action !== "create" && input.action !== "supersede")
-    throw new Refusal("stage applies only to create and supersede.");
+  if (input.stage !== undefined && input.action !== "create" && input.action !== "supersede" && input.action !== "link")
+    throw new Refusal("stage applies only to create, supersede and link.");
   const created = (): CreateInput => ({
     title: input.title as string,
     sections: input.sections as AdrSections,
@@ -539,7 +539,9 @@ export async function manage(path: string, actor: AdrActor, input: ManageInput, 
       return supersede(path, actor, required(input.id, "ADR id"), created(), options);
     case "note":
       return note(path, actor, required(input.id, "ADR id"), input.text, options);
+    case "link":
+      return link(path, actor, required(input.id, "ADR id"), input.stage, options);
     default:
-      throw new Refusal("Unknown ADR action; use create, revise, set_status, supersede or note.");
+      throw new Refusal("Unknown ADR action; use create, revise, set_status, supersede, note or link.");
   }
 }

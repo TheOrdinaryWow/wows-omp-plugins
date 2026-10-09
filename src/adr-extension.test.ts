@@ -181,6 +181,7 @@ const CASES: Record<string, string> = {
   "interception-legacy": "a legacy roadmap ADR index protects docs/adr and the tools read it",
   uninitialized: "an uninitialized repository injects nothing, allows docs/adr writes and refuses tools and unmanaged init",
   tools: "tools list, detail, manage and check ADRs, inject a bounded summary and publish the sidecar",
+  link: "adr_manage sets, changes and clears stage links with resolver validation and required ids",
   init: "/adr init writes only after a confirmed preview and is idempotent",
   headless: "without a UI, /adr init holds a token for /adr confirm and subcommands decide, note and hand off",
   menu: "the /adr menu accepts, notes, supersedes and starts new decisions",
@@ -252,12 +253,52 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert.match(loaded.records[0]?.body ?? "", /^## Context and Problem Statement\n/);
       unregister();
       await assert.rejects(api.link(root, "main", "ADR-0001", "S01"), /Stage links need the roadmap plugin/);
+      for (const stage of ["S01", undefined]) await assert.rejects(api.link(root, "sub", "ADR-0001", stage), /Only the main agent/);
+      await api.link(root, "main", "ADR-0001", undefined);
+      assert.equal((await api.load(root))?.records[0]?.stage, undefined);
       // The latest registration wins, and an older unregister cannot remove a newer resolver.
       const first = api.registerStageResolver(async () => "first");
       api.registerStageResolver(async () => undefined);
       first();
       await api.link(root, "main", "ADR-0001", "S05");
       await assert.rejects(api.load(join(dirname(root), "plugins")), /git work tree/);
+    } else if (name === "link") {
+      await initialize(root, "main");
+      await createMany(root, "main", [{ ...decision, status: "accepted" }]);
+      const reply = request(h, { v: 1, sessionId, requestId: "link" });
+      assert(reply);
+      const original = (await reply.api.load(root))?.records[0];
+      assert(original);
+      const missingId = await call(h, "adr_manage", { action: "link" });
+      assert(!missingId.ok);
+      assert.match(missingId.reason, /ADR id must be non-empty/);
+      const noResolver = await call(h, "adr_manage", { action: "link", id: original.id, stage: "S01" });
+      assert(!noResolver.ok);
+      assert.match(noResolver.reason, /Stage links need the roadmap plugin/);
+      const asked: string[] = [];
+      const unregister = reply.api.registerStageResolver(async (repoRoot, stage) => {
+        assert.equal(repoRoot, root);
+        asked.push(stage);
+        return stage === "S01" || stage === "S02" ? undefined : "unknown stage";
+      });
+      const unknown = await call(h, "adr_manage", { action: "link", id: original.id, stage: "S09" });
+      assert(!unknown.ok);
+      assert.match(unknown.reason, /Stage S09 cannot be linked: unknown stage/);
+      assert.deepEqual((await reply.api.load(root))?.records[0], original);
+      for (const stage of ["S01", "S02"]) {
+        const receipt = await call(h, "adr_manage", { action: "link", id: original.id, stage });
+        assert(receipt.ok, JSON.stringify(receipt));
+        assert.deepEqual(receipt.changedFiles, [original.path]);
+        assert.deepEqual((await reply.api.load(root))?.records[0], { ...original, stage });
+      }
+      assert.deepEqual(asked, ["S09", "S01", "S02"]);
+      unregister();
+      const cleared = await call(h, "adr_manage", { action: "link", id: original.id });
+      assert(cleared.ok, JSON.stringify(cleared));
+      assert.deepEqual((await reply.api.load(root))?.records[0], original);
+      const unchanged = await call(h, "adr_manage", { action: "link", id: original.id });
+      assert(unchanged.ok);
+      assert.deepEqual(unchanged.changedFiles, []);
     } else if (name === "interception") {
       await initialize(root, "main");
       await createMany(root, "main", [decision]);
@@ -498,6 +539,11 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(!decided.ok);
       assert.match(decided.reason, /Only the main agent/);
       assert(!(await call(h, "adr_manage", { action: "supersede", id: "ADR-0001", ...decision })).ok);
+      for (const stage of ["S01", undefined]) {
+        const linked = await call(h, "adr_manage", { action: "link", id: "ADR-0001", stage });
+        assert(!linked.ok);
+        assert.match(linked.reason, /Only the main agent/);
+      }
       assert((await call(h, "adr_manage", { action: "note", id: "ADR-0001", text: "Subagent finding." })).ok);
       await command(h, "accept ADR-0001");
       assert.match(h.ui.notifications.at(-1)?.message ?? "", /require the main session/);

@@ -195,7 +195,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
   });
   const statusParameters = z.object({ id: z.string().optional(), status: z.enum(STATUSES).optional() });
   const manageParameters = z.object({
-    action: z.enum(["create", "revise", "set_status", "supersede", "note"]),
+    action: z.enum(["create", "revise", "set_status", "supersede", "note", "link"]),
     id: z.string().optional(),
     title: z.string().optional(),
     status: z.enum(["proposed", "accepted", "rejected", "deprecated"]).optional(),
@@ -235,7 +235,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
     sourcePath: TOOL_SOURCE_PATH,
     label: "ADR manage",
     description:
-      "Create MADR decisions, revise proposed ADRs, set status, supersede or append a dated note. Subagents create only proposed ADRs and cannot set status or supersede.",
+      "Create MADR decisions, revise proposed ADRs, set status, supersede, append a dated note or link a stage. link requires id; stage sets or changes the link, omitted stage clears it, at any ADR status. Setting a stage needs the roadmap resolver. Subagents create only proposed ADRs and cannot set status, supersede or link.",
     parameters: manageParameters,
     approval: "write",
     async execute(_id, params: typeof manageParameters.infer, signal, _onUpdate, ctx) {
