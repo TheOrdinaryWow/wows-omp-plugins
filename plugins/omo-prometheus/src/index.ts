@@ -67,12 +67,14 @@ import {
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
   carriesAtlasAssignment,
+  DEFAULT_REVIEW_ROUND_LIMIT,
   EXECUTION_PREAMBLE,
   EXECUTION_START_NOTICE,
   executionBlockReason,
   executionToolSourceBlockReason,
   inlinesApprovedPlan,
   isApprovedPlanHandoff,
+  isPlanReviewDispatch,
   isPrometheusOptInConsent,
   isPrometheusOptInQuestion,
   nestedXdevToolCall,
@@ -84,6 +86,7 @@ import {
   parseAtlasCommand,
   parseAtlasSubcommand,
   parsePrometheusCommand,
+  parseReviewRoundLimit,
   planReferencesMatch,
   prometheusArtifactUrl,
   proposedPlanPathFromToolResult,
@@ -169,6 +172,20 @@ interface SessionRecord {
   /** In-memory: consecutive session_stop continuations without ledger progress. */
   stallCount: number;
   lastBlockedAt: number;
+  /** Plan-review rounds dispatched while planning the current plan, and rounds the user added at the limit. */
+  reviewRounds?: ReviewRounds;
+}
+
+interface ReviewRounds {
+  used: number;
+  extra: number;
+}
+
+function restoreReviewRounds(value: unknown): ReviewRounds | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { used, extra } = value as { used?: unknown; extra?: unknown };
+  const counts = [used, extra].map((n) => (typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : 0));
+  return { used: counts[0] ?? 0, extra: counts[1] ?? 0 };
 }
 
 function errorMessage(error: unknown): string {
@@ -179,6 +196,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
   const authorizedActivationCalls = new Map<string, string>();
   const reviewLevels = new Map<string, ReviewLevel>();
+  const reviewRoundLimits = new Map<string, number>();
   const deliverySettings = new Map<string, DeliverySetting>();
   const atlasWidgets = new Map<string, boolean>();
   const childEvidence = new ChildEvidence();
@@ -231,6 +249,12 @@ export default function prometheus(pi: ExtensionAPI): void {
     } catch (error) {
       reviewLevels.set(sessionId, "ask");
       pi.logger.warn("prometheus reviewLevel is invalid; using ask", { error: errorMessage(error) });
+    }
+    try {
+      reviewRoundLimits.set(sessionId, parseReviewRoundLimit(settings.reviewRoundLimit));
+    } catch (error) {
+      reviewRoundLimits.set(sessionId, DEFAULT_REVIEW_ROUND_LIMIT);
+      pi.logger.warn("prometheus reviewRoundLimit is invalid; using 5", { error: errorMessage(error) });
     }
     try {
       deliverySettings.set(sessionId, parseDeliverySetting(settings.delivery));
@@ -317,6 +341,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
         ledgerPath: record.ledgerPath,
+        reviewRounds: record.reviewRounds,
       });
     } catch (error) {
       pi.logger.warn("prometheus could not persist workflow state", { error: errorMessage(error) });
@@ -368,6 +393,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             suppressedForModeEntryId?: unknown;
             ledgerPath?: unknown;
             roadmapStage?: unknown;
+            reviewRounds?: unknown;
           }
         | undefined;
       if (data?.phase !== "idle" && data?.phase !== "planning" && data?.phase !== "executing") continue;
@@ -389,6 +415,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         proposalAwaitingApproval: false,
         approvalCompactionPending: false,
         ledgerPath: typeof data.ledgerPath === "string" && data.ledgerPath ? data.ledgerPath : undefined,
+        reviewRounds: restoreReviewRounds(data.reviewRounds),
         stallCount: 0,
         lastBlockedAt: 0,
         planningModeEntryId:
@@ -1393,9 +1420,42 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.ledgerPath = undefined;
       record.lastContinuationLedgerStamp = undefined;
       record.stallCount = 0;
+      record.reviewRounds = undefined;
     }
     persist(ctx, record);
     return true;
+  };
+
+  /**
+   * Count one plan-review round per review dispatch while planning. At the limit, ask the user to add rounds for
+   * this plan or stop; without a user to ask, stop. Returns a block reason, or undefined to let the round run.
+   */
+  const reviewRoundBlockReason = async (ctx: ExtensionContext, record: SessionRecord): Promise<string | undefined> => {
+    const configured = reviewRoundLimits.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_REVIEW_ROUND_LIMIT;
+    record.reviewRounds ??= { used: 0, extra: 0 };
+    const rounds = record.reviewRounds;
+    const stopGuidance =
+      "Do not dispatch more Momus or Oracle plan reviews for this plan. Propose it now as it stands with xd://propose, and list every outstanding eligible blocker from the latest round in the proposal summary so the user can weigh them at approval.";
+    while (configured > 0 && rounds.used >= configured + rounds.extra) {
+      const limit = configured + rounds.extra;
+      if (!ctx.hasUI) return `Plan review reached its limit of ${limit} rounds and no user is available to raise it. ${stopGuidance}`;
+      const raise = "Raise the limit for this plan";
+      const stop = "Stop reviewing and propose the plan with its open blockers";
+      const choice = await ctx.ui.select(`Plan review has used all ${limit} rounds allowed for this plan. Raise the limit, or stop here?`, [
+        raise,
+        stop,
+      ]);
+      if (choice === stop) return `The user stopped plan review at its limit of ${limit} rounds. ${stopGuidance}`;
+      if (choice !== raise) {
+        return "The user dismissed the review-round limit prompt. Do not dispatch another plan review now; ask the user whether to keep reviewing or to propose the plan as it stands.";
+      }
+      const answer = (await ctx.ui.input("Additional review rounds for this plan", String(configured)))?.trim();
+      if (answer && /^[1-9]\d*$/.test(answer) && Number.isSafeInteger(Number(answer))) rounds.extra += Number(answer);
+      else if (answer !== undefined) notify(ctx, `"${answer}" is not a positive whole number of rounds.`, "warning");
+    }
+    rounds.used += 1;
+    persist(ctx, record);
+    return undefined;
   };
 
   const toolProvenance = (toolName: string) => {
@@ -1438,9 +1498,11 @@ export default function prometheus(pi: ExtensionAPI): void {
     const guidance =
       "Choose the most specific listed specialist for each Agent: row; prefer installed specialist agents (including omo-toolkit) over task/sonic. Names not listed are allowed only when they have a known fallback. Pass this exact available-agents list (or unknown) into every Momus review binding.";
     const sessionId = ctx.sessionManager.getSessionId();
+    const roundLimit = reviewRoundLimits.get(sessionId) ?? DEFAULT_REVIEW_ROUND_LIMIT;
+    const roundLimitLabel = roundLimit === 0 ? "unlimited" : String(roundLimit + (records.get(sessionId)?.reviewRounds?.extra ?? 0));
     const reviewPolicy =
-      `<review-policy level="${reviewLevels.get(sessionId) ?? "ask"}">` +
-      "Apply this session's plan-review setting in section 7 of the planning skill.</review-policy>\n" +
+      `<review-policy level="${reviewLevels.get(sessionId) ?? "ask"}" round-limit="${roundLimitLabel}">` +
+      "Apply this session's plan-review setting in section 7 of the planning skill. The plugin counts and enforces the round limit.</review-policy>\n" +
       `<delivery-policy mode="${deliverySettings.get(sessionId) ?? "ask"}">` +
       "Apply this session's delivery setting from the Delivery rule in section 4 of the planning skill.</delivery-policy>";
     try {
@@ -2339,6 +2401,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (event.toolName === "task") {
       const taskSpawnDetail = taskSpawnBlockReason(record?.phase, event.input);
       if (taskSpawnDetail) return { block: true, reason: taskSpawnDetail };
+      if (record?.phase === "planning" && isPlanReviewDispatch(event.input)) {
+        const roundDetail = await reviewRoundBlockReason(ctx, record);
+        if (roundDetail) return { block: true, reason: roundDetail };
+      }
     }
     if (record?.phase !== "executing") return undefined;
 

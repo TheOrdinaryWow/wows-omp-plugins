@@ -88,7 +88,7 @@ Confirm the draft follows the review policy passed in the assignment from the pl
 - `standard`: routine Momus only, no offer; an explicit high-accuracy request still requires the pair.
 - `high-accuracy`: always the Momus+Oracle pair, with no offer or redundant standalone routine audit.
 
-Every plan-review round, routine or high accuracy, uses new reviewer children, applies the same blocker-eligibility rule, and stops at five rounds with a question to the user.
+Every plan-review round, routine or high accuracy, uses new reviewer children and applies the same blocker-eligibility rule; the plugin enforces the session's round limit and asks the user at it.
 
 Flag speculative abstractions, extra dependencies, adjacent cleanup no IS row needs, invented rollout systems, over-validation, documentation bloat, or other scope inflation. Provide the smallest correction that preserves the full ideal state; never recommend silently reducing it.
 

@@ -238,11 +238,11 @@ A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispat
 
 Everything else is a non-blocking note: an optional improvement, never a revision demand and never scope growth. Fix eligible blockers with the smallest edit that resolves them. **Any change to the plan invalidates every earlier verdict**: write the revision, then dispatch a fresh round with a new round identifier; never carry an approval across a revision. After round one, freeze the blocker ledger: later rounds verify accepted blockers, regressions introduced by the fixes, and genuinely new eligible findings only.
 
-**Rounds are capped at five**, routine and high accuracy alike. If the cap is reached without the required approvals, stop, report the outstanding blockers, and ask the user whether to continue, accept the plan as it stands, or adjust it.
+**The plugin enforces the round limit** given in `<review-policy round-limit="…">` (`unlimited` when the user turned it off), routine and high accuracy alike. Every `task` call that dispatches a `routine` or `high_accuracy` review is one round, including a round that returns `[INCONCLUSIVE]`; send both lanes of a high-accuracy pair in one call so they count once. Do not count rounds yourself. At the limit the plugin asks the user whether to raise the limit for this plan or stop. When it refuses a review dispatch because the user stopped or no user can be asked, dispatch no further plan review: propose the plan as it stands and list every outstanding eligible blocker in the proposal summary. When the user dismissed that question, ask them in chat instead.
 
 ### Routine audit
 
-When `ask` or `standard` selects the routine audit, send the bound plan to a new `momus` child with `review_kind: routine`. Fix its eligible blockers and dispatch a new round until it returns `[OKAY]` or the cap is reached. `[OKAY]` with notes counts as approval.
+When `ask` or `standard` selects the routine audit, send the bound plan to a new `momus` child with `review_kind: routine`. Fix its eligible blockers and dispatch a new round until it returns `[OKAY]` or the round limit stops review. `[OKAY]` with notes counts as approval.
 
 ### High-accuracy review
 

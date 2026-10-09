@@ -162,6 +162,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 | Setting | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `reviewLevel` | `off` \| `ask` \| `standard` \| `high-accuracy` | `ask` | Plan review before the proposal. |
+| `reviewRoundLimit` | whole number ≥ 0 | `5` | Most plan-review rounds per plan; `0` or empty (`""`) means unlimited. |
 | `delivery` | `ask` \| `direct` \| `pr` \| `ship` | `ask` | How finished work leaves the repository; see [Delivery](#delivery). |
 | `atlasWidget` | boolean | `true` | Show the progress widget above the editor while Atlas executes. |
 | `herdrDag` | boolean | `true` | Publish Atlas progress for the `omp-herdr-dag` viewer. |
@@ -172,6 +173,8 @@ Review levels:
 - `standard`: Momus reviews every plan; an explicit request still adds Oracle.
 - `high-accuracy`: Momus and Oracle always review.
 - `off`: no Momus or Oracle review, even on request. Metis still runs, and Atlas still runs the F1 compliance gate.
+
+The plugin counts review rounds itself: each dispatch of Momus, or of Momus and Oracle together, is one round, including one that could not read the plan. When a plan reaches `reviewRoundLimit`, you choose between adding rounds for that plan only and stopping; stopping makes Prometheus propose the plan as it stands, listing the blockers still open so you can weigh them at approval. Without an interactive user, review stops at the limit.
 
 User settings merge with project overrides. Settings are read at session start, so restart the session after changing them.
 

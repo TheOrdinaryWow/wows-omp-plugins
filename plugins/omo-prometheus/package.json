@@ -24,6 +24,12 @@
         "default": "ask",
         "description": "Choose no plan review, the default review offer, routine Momus only, or Momus and Oracle on every plan"
       },
+      "reviewRoundLimit": {
+        "type": "number",
+        "default": 5,
+        "min": 0,
+        "description": "Most plan-review rounds per plan before asking whether to raise the limit or propose the plan as it stands; 0 or empty means unlimited"
+      },
       "delivery": {
         "type": "enum",
         "values": [

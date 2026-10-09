@@ -197,6 +197,28 @@ export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: 
   return PLAN_GATED_SPAWN_REASON;
 }
 
+const PLAN_REVIEW_KIND = /\breview_kind\s*:\s*(?:routine|high_accuracy)\b/;
+
+/**
+ * Whether a native task call dispatches a pre-proposal plan review round: any task, or the shared context, carrying a
+ * `routine` or `high_accuracy` review binding. Keying on the binding rather than the agent also counts reviewer fallbacks.
+ */
+export function isPlanReviewDispatch(input: unknown): boolean {
+  const routes = parseTaskSpawns(input);
+  if (!routes?.length) return false;
+  const context = record(input)?.context;
+  return (typeof context === "string" && PLAN_REVIEW_KIND.test(context)) || routes.some((route) => PLAN_REVIEW_KIND.test(route.assignment));
+}
+
+export const DEFAULT_REVIEW_ROUND_LIMIT = 5;
+
+/** The `reviewRoundLimit` setting: absent means the default, 0 means unlimited. */
+export function parseReviewRoundLimit(value: unknown): number {
+  if (value === undefined) return DEFAULT_REVIEW_ROUND_LIMIT;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  throw new Error(`invalid reviewRoundLimit ${JSON.stringify(value)}`);
+}
+
 /** Whether any task in a native call carries an `atlas_assignment` binding line (in its body or the batch context). */
 export function carriesAtlasAssignment(input: unknown): boolean {
   const args = record(input);

@@ -109,6 +109,9 @@ async function scenario(name: string, root: string): Promise<void> {
   const menuRenders: string[] = [];
   let menuKey = "\x1b";
   const selections: Array<{ title: string; options: string[] }> = [];
+  let pickOption = (options: string[]): string | undefined => options[0];
+  const inputAnswers: Array<string | undefined> = [];
+  let interactive = true;
   const sent: Array<{ message: { customType?: string; content?: unknown }; options: unknown }> = [];
   const sessionFiles = new Map<string, { id: string; entries: unknown[] }>();
   const completions = new Map<string, (prefix: string) => Array<{ value: string; description?: string }> | null>();
@@ -180,7 +183,9 @@ async function scenario(name: string, root: string): Promise<void> {
   };
   const ctx = {
     cwd: root,
-    hasUI: true,
+    get hasUI() {
+      return interactive;
+    },
     mode: "tui",
     sessionManager,
     newSession: async () => await switchTo(`fresh-${sequence++}`, [], "new"),
@@ -202,8 +207,9 @@ async function scenario(name: string, root: string): Promise<void> {
       },
       select: async (title: string, options: string[]) => {
         selections.push({ title, options });
-        return options[0];
+        return pickOption(options);
       },
+      input: async () => inputAnswers.shift(),
       custom: async (
         factory: (
           tui: unknown,
@@ -337,6 +343,54 @@ async function scenario(name: string, root: string): Promise<void> {
     name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : name.startsWith("heavy-") ? heavyPlan : plan,
   );
   await commands.get("prometheus")?.("", ctx);
+  if (name === "review-round-limit") {
+    await mkdir(join(root, ".omp"), { recursive: true });
+    await writeFile(
+      join(root, ".omp", "plugin-overrides.json"),
+      JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { reviewRoundLimit: 2 } } }),
+    );
+    await hook("session_start");
+    const review = async (agent = "momus", kind = "review_kind: routine") =>
+      (await hook("tool_call", {
+        toolName: "task",
+        toolCallId: `review-${sequence++}`,
+        input: { agent, task: `${kind}\nabsolute_plan_path: ${sourcePlanFile}\nreview_round: r${sequence}` },
+      })) as { block?: boolean; reason?: string } | undefined;
+    assert.equal(await review(), undefined);
+    // An Oracle consultation is not a plan-review round.
+    assert.equal(await review("oracle", "Which migration order is safer?"), undefined);
+    assert.equal(await review("oracle", "review_kind: high_accuracy"), undefined);
+    assert.equal(selections.length, 0);
+    // At the limit the user adds rounds for this plan; an invalid count is rejected and asked again.
+    inputAnswers.push("zero", "1");
+    assert.equal(await review(), undefined);
+    assert.deepEqual(
+      selections.map((selection) => selection.title),
+      [2, 2].map((limit) => `Plan review has used all ${limit} rounds allowed for this plan. Raise the limit, or stop here?`),
+    );
+    assert.match(notices.at(-1) ?? "", /"zero" is not a positive whole number/);
+    // The count and the added round survive a restart; stopping refuses the dispatch and asks for a proposal.
+    await hook("session_shutdown");
+    install();
+    await hook("session_start");
+    pickOption = (options) => options[1];
+    const stopped = await review();
+    assert.equal(stopped?.block, true);
+    assert.match(stopped?.reason ?? "", /user stopped plan review at its limit of 3 rounds.*Propose it now as it stands/);
+    pickOption = () => undefined;
+    assert.match((await review())?.reason ?? "", /dismissed the review-round limit prompt/);
+    interactive = false;
+    assert.match((await review())?.reason ?? "", /limit of 3 rounds and no user is available/);
+    interactive = true;
+    // A new planning episode starts a fresh count.
+    await commands.get("prometheus")?.("", ctx);
+    await commands.get("prometheus")?.("", ctx);
+    pickOption = (options) => options[0];
+    const before = selections.length;
+    assert.equal(await review(), undefined);
+    assert.equal(selections.length, before);
+    return;
+  }
   if (name === "propose-grammar") {
     const propose = async (content: string) =>
       (await hook("tool_call", { toolName: "write", toolCallId: `propose-${sequence++}`, input: { path: "xd://propose", content } })) as
@@ -1945,6 +1999,7 @@ if (process.env[CHILD_ENV]) {
       "plan-mode-restored",
       "plan-mode-reentered",
       "propose-grammar",
+      "review-round-limit",
       "heavy-verify",
       "heavy-verify-fail",
       "research-children",

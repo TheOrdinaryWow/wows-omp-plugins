@@ -162,6 +162,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 | 设置 | 类型 | 默认值 | 作用 |
 | --- | --- | --- | --- |
 | `reviewLevel` | `off` \| `ask` \| `standard` \| `high-accuracy` | `ask` | 提案前的计划评审。 |
+| `reviewRoundLimit` | 不小于 0 的整数 | `5` | 每份计划最多的评审轮数；`0` 或留空（`""`）表示不设限。 |
 | `delivery` | `ask` \| `direct` \| `pr` \| `ship` | `ask` | 完成的工作如何离开仓库，见[交付](#交付)。 |
 | `atlasWidget` | boolean | `true` | Atlas 执行时在编辑器上方显示进度小组件。 |
 | `herdrDag` | boolean | `true` | 向 `omp-herdr-dag` 查看器发布 Atlas 进度。 |
@@ -172,6 +173,8 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 - `standard`：每份计划都由 Momus 评审；明确要求时仍会加上 Oracle。
 - `high-accuracy`：始终由 Momus 和 Oracle 一起评审。
 - `off`：不做 Momus 或 Oracle 评审，即使你要求也不做。Metis 仍会运行，Atlas 也仍会运行 F1 合规关口。
+
+评审轮数由插件自己统计：每派一次 Momus，或一起派 Momus 和 Oracle，算一轮，没能读到计划的那一轮也算。计划达到 `reviewRoundLimit` 时，你可以选择只为这份计划增加轮数，或者就此打住；打住后 Prometheus 会按计划当前的样子提交审批，并列出仍未解决的阻塞问题，供你在审批时权衡。没有可交互的用户时，评审在达到上限时停止。
 
 用户设置会与项目覆盖合并。设置在会话启动时读取，修改后请重启会话。
 
