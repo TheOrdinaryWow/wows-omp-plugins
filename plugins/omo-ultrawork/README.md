@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh.md)
 
-This plugin adapts oh-my-openagent's ultrawork keyword mode, dependency-ordered `mass-ulw`, adversarial `/hyperplan`, and saturation-based `/ulw-research` for OMP.
+[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO)'s ultrawork workflow, adapted for OMP. Typing `ulw` in a message switches the agent into outcome-first execution: it delivers the request end to end and backs each success criterion with evidence observed on the real surface. The plugin also adds `mass-ulw` for dependency-ordered fan-out, `/hyperplan` for adversarial planning, and `/ulw-research` for cited research reports.
 
 ## Install
 
@@ -10,65 +10,60 @@ This plugin adapts oh-my-openagent's ultrawork keyword mode, dependency-ordered 
 omp plugin install omo-ultrawork@wows-omp-plugins
 ```
 
-The plugin installs no runtime dependencies. `/ulw-research` needs `node` on PATH to build its report. Its helper scripts are dependency-free Node CLIs bundled under `assets/ulw-research/scripts/`, and the command passes their absolute path.
+Requires OMP 18.3.5 or newer. `/ulw-research` also needs `node` on `PATH` to build its report. Restart the session after installing.
 
-## Ultrawork mode
+## Quick start
 
-Typing `ulw` or `ultrawork` as a standalone word in a message injects the full hidden ultrawork directive ahead of your text, and the reply starts with `ULTRAWORK MODE ENABLED!`. Later triggers in the same session inject only a short reminder, since the directive is still in context. After compaction, the next trigger injects the full directive again.
+```text
+ulw fix the flaky upload test and make CI green
+/ulw                               # keep ultrawork on for every message
+/hyperplan migrate auth to OAuth   # debate a plan before writing it
+/ulw-research compare SQLite WAL and rollback journal for our workload
+```
 
-`/ultrawork` or `/ulw` turns on persistent mode. Every message then gets the reminder (or the full directive after compaction) without a keyword. Running either command again turns it off and queues a hidden exit notice. The directive arrives according to when you enable the mode:
+The first reply in ultrawork mode starts with `ULTRAWORK MODE ENABLED!`, and the footer shows `Ultrawork armed` or `Ultrawork mode`.
 
-- with arguments (`/ultrawork fix X`): the directive is queued and the arguments are sent as your next message;
-- without arguments while idle: the directive goes out with your next message;
-- mid-turn: the directive joins the running turn.
+## Usage
 
-The footer shows `Ultrawork mode` while persistent mode is on, or `Ultrawork armed` after a keyword trigger. It clears on exit or when you switch to a session that is not armed. Mode, arming, and reminder state are saved in the session and restored on resume, switching, branching, and tree navigation. Child sessions and extension-generated messages are ignored.
+### Ultrawork mode
 
-Keywords inside inline code, fenced blocks, injected directive or reminder blocks, and slash commands do not count. Pasting a complete `<ultrawork-mode>…</ultrawork-mode>` block arms the session without injecting it twice.
+Typing `ulw` or `ultrawork` as a standalone word injects the hidden ultrawork directive ahead of your message. Later triggers in the same session add only a short reminder, since the directive is still in context; after compaction the full directive comes back on the next trigger. Keywords inside inline code, fenced blocks and slash commands do not count.
 
-Typing `mass ulw`, `mass-ulw`, `ulw-mass`, `mulw`, or `meth` also injects a pointer to `skill://mass-ulw`; `mulw` and `meth` do not arm ultrawork on their own. While armed, the first `todo init` or `todo append` triggers one hidden reminder asking the agent to size independent work and explain its delegation choice. Compaction resets that reminder.
+`/ultrawork` or `/ulw` turns on persistent mode, so every message gets ultrawork without a keyword. Run either command again to turn it off. `/ultrawork <request>` turns the mode on and sends the request as your next message.
+
+The footer shows `Ultrawork mode` while persistent mode is on and `Ultrawork armed` after a keyword trigger. Mode and arming are saved in the session and restored on resume, switching, branching and tree navigation.
+
+OmO documents the original in [Ultrawork Mode](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/overview.md#ultrawork-mode-for-the-lazy).
 
 ### Do not combine with `orchestrate`
 
-OMP's built-in `orchestrate` magic keyword injects its own orchestration rules, which contradict ultrawork on commits, verification, and delegation. When a message contains a standalone `orchestrate` that OMP would act on (the keyword is enabled and the `task` tool is active), this plugin injects nothing for that message and shows a warning. Persistent mode stays on and resumes with the next message. `/ultrawork orchestrate …` and `/ulw orchestrate …` refuse to turn on persistent mode. If you use ultrawork regularly, disable the built-in keyword:
+OMP's built-in `orchestrate` keyword injects its own rules, which contradict ultrawork on commits, verification and delegation. When a message contains an `orchestrate` that OMP would act on, this plugin injects nothing for that message and shows a warning; persistent mode resumes with the next message. `/ultrawork orchestrate …` refuses to turn on persistent mode. If you use ultrawork regularly, disable the built-in keyword:
 
 ```bash
 omp config set magicKeywords.orchestrate false
 ```
 
-## mass-ulw
+### mass-ulw
 
-The model can invoke the `mass-ulw` skill to run a dependency graph of `{ id, prompt, agent, dependsOn?, label? }` nodes through `eval`. Before launching any child, the skill validates all ids, dependencies, cycles, and saved statuses. Each cell runs one batch of ready nodes, and the agent reads the returned reports before launching the next batch.
+`mass-ulw` is a skill for running a dependency graph of subagent tasks (`{ id, prompt, agent, dependsOn?, label? }`) through `eval`. It validates ids, dependencies and cycles before launching anything, runs one batch of ready nodes at a time, and reads their reports before the next batch. A final verification step checks the evidence, since a finished child is not yet accepted work. Status and reports survive a kernel reset.
 
-Status (`local://mass-ulw/<run-key>.json`) and reports (`local://mass-ulw/<run-key>/<id>.md`) survive a kernel reset, but a saved `running` handle cannot be reattached to `wait` and must be reconciled before more work is dispatched. `done` only means a child returned; a final verification frontier checks the evidence for acceptance. Retrying or amending some nodes leaves the other `done` reports intact.
+Typing `mass ulw`, `mass-ulw`, `ulw-mass`, `mulw` or `meth` points the agent at the skill; `mulw` and `meth` do not arm ultrawork on their own. For independent work without dependencies, one plain `task` batch is simpler.
 
-For independent work without dependencies, use one plain `task` batch instead. Read `skill://mass-ulw` and its planning reference before using it.
+OmO documents the original in [Dependency graphs: mass-ulw](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#dependency-graphs-mass-ulw).
 
-## Commands
+### /hyperplan
 
-`/hyperplan <request>` runs a three-round adversarial debate between five roles, then hands off to a separate planner. The skeptic uses `task`, the validator `task` with `effort: "hi"`, and the researcher, architect, and creative use `deep-low`, `ultrabrain`, and `artistry` when those agents are listed.
+`/hyperplan <request>` runs a three-round adversarial debate among five critics, each attacking the draft from one side: needless complexity and scope creep, integration gaps and edge cases, unverified assumptions, architectural flaws, and missed alternatives. A separate planner then turns the outcome into a plan. Its first line is `HYPERPLAN MODE ENABLED!`.
 
-Without `deep-low`, the debate runs with four roles. Missing `ultrabrain` or `artistry` fall back to `task`. The planner uses `ultrabrain`, or `task`. The first visible line is `HYPERPLAN MODE ENABLED!`.
+OmO documents the original in [Adversarial alternative: /hyperplan](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#adversarial-alternative-hyperplan).
 
-`/ulw-research <request>` builds a claim graph through expansion and counter-search, writes a cited synthesis, runs ordered QA gates, and checks the deliverable. Mechanical work goes to `sonic`, bounded judgment to `task`, and high-effort work to `task` with `effort: "hi"`. `scout` does local discovery, `librarian` (or `scout`) does source research, and `writing` (or `task`) proofreads; other category agents fall back to `task`.
+### /ulw-research
 
-Scratch files go to `<tmpdir>/ulw-research/` or the configured `researchScratchDir`, and the final output goes wherever you asked. The first visible line is `ULW-RESEARCH MODE ENABLED!`.
+`/ulw-research <request>` builds a claim graph through expansion and counter-search, writes a cited synthesis, runs ordered QA gates and checks the deliverable. Scratch files go to `<tmpdir>/ulw-research/` or `researchScratchDir`; the final report goes wherever you asked. Its first line is `ULW-RESEARCH MODE ENABLED!`.
 
-Both commands reject an empty request and run only in the main session. Their procedures are private prompt assets and are not registered as skills. Children and the model cannot find or invoke them through `skill://` or `/skill:`. `mass-ulw` is the only skill this plugin exposes.
+OmO documents the original under `ulw-research` in [Built-in Skill Sets](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/reference/features.md#built-in-skill-sets).
 
-Install `omo-toolkit` for the named category agents and `omo-prometheus` for the reviewed `/prometheus` planning option; without them, the fallbacks above keep every command working. `metis` is used only inside Prometheus planning, and `momus` outside planning only for explicit Atlas compliance checks.
-
-Work that needs a full review follows its governing plan. Independent compliance, code-quality, and real-surface QA reports may run in parallel; the final evidence-gate reviewer starts once those reports exist. Do not add a second review pipeline alongside an approved plan. Light work gets a scoped self-review and real-surface proof without parallel reviewers.
-
-## Host modes and client state
-
-The commands and keyword workflow work in TUI, RPC/rpc-ui, ACP, SDK, and headless/CI sessions. TUI shows the footer and notifications. RPC/rpc-ui uses status and notification frames; ACP notification visibility depends on the editor. With `hasUI: false`, usage errors, conflicts, and mode on/off feedback appear as visible custom text messages (`wows-omp-omo-ultrawork.command-status`). The workflow requires no terminal-only dialogs.
-
-All command forms are non-interactive: `/ultrawork` or `/ulw` toggles persistent mode, `/ultrawork <request>` enables it and submits the request when mode is off, and `/hyperplan <request>` / `/ulw-research <request>` require a nonempty request. Commands run only in the main session.
-
-The main session publishes `omo-ultrawork.json` using the shared plugin-state envelope. Its payload is `{ "kind": "omo-ultrawork/mode", "version": 1, "mode": boolean, "armed": boolean }`: `mode` is the persistent toggle and `armed` means the directive is already in session context. The payload is `null` when both are false.
-
-The file reports existing session state, including resume and branch navigation, and is output-only. Switching or shutting down does not clear an armed session's saved state. `mass-ulw` files and research scratch artifacts are separate from this mode payload.
+Both commands reject an empty request and run only in the main session.
 
 ## Settings
 
@@ -83,12 +78,32 @@ omp plugin config set wows-omp-plugin-omo-ultrawork researchScratchDir /tmp/my-r
 
 | Setting | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `keywordTrigger` | boolean | `true` | When false, typed keywords do not arm or inject ultrawork. The mass-ulw pointer and the commands still work. |
-| `keywords` | comma-separated string | `ulw,ultrawork` | Case-insensitive whole-word triggers, ignored inside quoted regions; an empty string disables keyword triggering. |
-| `researchScratchDir` | string | empty (`<tmpdir>/ulw-research`) | Root for research scratch files; relative paths resolve against the session's cwd. |
+| `keywordTrigger` | boolean | `true` | When false, typed keywords do not trigger ultrawork. The `mass-ulw` pointer and the commands still work. |
+| `keywords` | comma-separated string | `ulw,ultrawork` | Case-insensitive whole-word triggers. An empty string disables keyword triggering. |
+| `researchScratchDir` | string | empty (`<tmpdir>/ulw-research`) | Root for research scratch files. Relative paths resolve against the session's working directory. |
 
-Settings are read at `session_start` and on session switch; restart the session after changing them.
+Settings are read at session start and on session switch, so restart the session after changing them.
+
+## Working with other plugins
+
+- With `omo-toolkit` installed, `/hyperplan` and `/ulw-research` use its category agents (`deep-low`, `ultrabrain`, `artistry`, `librarian`, `writing`); without it they fall back to `task` and `scout`, and every command still works.
+- With `omo-prometheus` installed, ultrawork defers to an approved `/prometheus` plan instead of writing its own.
+
+## Without the terminal UI
+
+The keyword and all commands work in RPC, ACP editors, the SDK and headless runs; none of them needs a dialog. Without a UI, usage errors and mode changes appear as visible session messages.
+
+Client programs can read the mode from a state snapshot; see the [reference](REFERENCE.md#state-snapshot).
+
+## Known limitations
+
+- Keywords in messages generated by extensions, and in child sessions, are ignored.
+- The `/hyperplan` and `/ulw-research` procedures are private prompts, not skills, so neither you nor the model can open them through `skill://` or `/skill:`. `mass-ulw` is the only skill this plugin exposes.
+
+## Reference
+
+[REFERENCE.md](REFERENCE.md) covers keyword and delivery rules, the agents each command uses, `mass-ulw` persistence and the state snapshot.
 
 ## License
 
-Extension code and original packaging are MIT. Modified prompt assets and the vendored research scripts are SUL-1.0. See `NOTICE`, `LICENSE-MIT`, and `LICENSE-SUL-1.0`.
+Extension code and original packaging are MIT. Modified prompt assets and the vendored research scripts are SUL-1.0. See `NOTICE`, `LICENSE-MIT` and `LICENSE-SUL-1.0`.
