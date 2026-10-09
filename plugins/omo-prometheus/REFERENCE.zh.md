@@ -35,13 +35,14 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 其他工具一律屏蔽，包括 `bash`、`eval`、`edit`、`ast_edit`、文件写入、`security_scan` 以及 `checkpoint`/`rewind`（回退会让会话树分叉，脱离证明已完成行的回执）。其他扩展或 MCP 服务器注册的工具即使与原生工具同名也会被屏蔽，下表列出的除外。
 
-`atlas_git` 是 Atlas 会话唯一的 git 入口，背后没有 shell。Atlas 只在两种情况下用它提交：路线图步骤改动的文件，以及子代理完成后遗漏提交的工作。`commit` 需要给出具体文件和由 Atlas 撰写的提交信息，所以你在 `RULES.md` 里的提交约定同样适用。它只暂存并提交这些文件，拒绝目录和 pathspec 魔法写法，并且在任何绑定的子代理任务仍在运行时拒绝提交。查看类操作不会运行外部 diff 驱动、textconv 过滤器或分页器；提交钩子照常运行，钩子失败时这些文件保持暂存状态。该工具只在 Atlas 执行期间激活，并拒绝执行中的 Atlas 主会话以外的任何调用方。
+`atlas_git` 是 Atlas 会话唯一的 git 入口，背后没有 shell。Atlas 只在两种情况下用它提交：路线图或 ADR 步骤改动的文件，以及子代理完成后遗漏提交的工作。`commit` 需要给出具体文件和由 Atlas 撰写的提交信息，所以你在 `RULES.md` 里的提交约定同样适用。它只暂存并提交这些文件，拒绝目录和 pathspec 魔法写法，并且在任何绑定的子代理任务仍在运行时拒绝提交。查看类操作不会运行外部 diff 驱动、textconv 过滤器或分页器；提交钩子照常运行，钩子失败时这些文件保持暂存状态。该工具只在 Atlas 执行期间激活，并拒绝执行中的 Atlas 主会话以外的任何调用方。
 
 | 集成 | 放行的工具 |
 | --- | --- |
 | [Magic Context](https://github.com/cortexkit/magic-context) | `ctx_reduce`、`ctx_expand`、`ctx_search`、`ctx_memory`、`ctx_note`，仅限由扩展注册的；同名 MCP 工具仍被屏蔽 |
 | 包装 `todo` 的扩展，例如 [omp-herdr-dag](../omp-herdr-dag/README.zh.md) 支持依赖边的 `todo` | 由扩展重新注册的 `todo`；MCP 提供的 `todo` 仍被屏蔽 |
 | [roadmap](../roadmap/README.zh.md) | `roadmap_*`，可直接调用或以 `write xd://roadmap_*` 调用，仅限来自经路线图绑定握手验证过的扩展源路径（见[路线图契约](#路线图契约)） |
+| [adr](../adr/README.zh.md) | `adr_*`，可直接调用或以 `write xd://adr_*` 调用，仅限来自经 ADR 绑定握手验证过的扩展源路径（见[ADR 契约](#adr-契约)）；与 `roadmap` 无关 |
 
 ## 任务派发
 
@@ -190,3 +191,11 @@ F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）
 4. 在首次使绑定阶段的计划完成的那次执行记录写入之后，Prometheus 发送 `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, delivery?, at}`，附带经过验证的关口结论和摘要。只有所有行都完成，计划才算完成：`Delivery: pr` 或 `ship` 时，事件在 P1 行之后发送，并带上 `delivery: {mode, summary}`；`direct` 时事件在关口之后发送。批准时没有绑定阶段的计划，使用执行会话在那一刻绑定的阶段。路线图会记录一条待关闭提醒，阶段仍由会话自己关闭。
 
 完成事件只在每个生产者实例内去重，所以重启后重新打开并再次完成计划，可能会再次发送。路线图在每个接收会话内按 `planId` 对待关闭条目去重。
+
+## ADR 契约
+
+安装了 `adr` 时，Atlas 通过 ADR 自己的 `pi.events` 握手放行 ADR 工具，与 `roadmap` 和 `herdrDag` 无关：
+
+1. Atlas 调用 `adr_*` 工具（直接调用或以 `write xd://adr_*` 调用）时，Prometheus 发送 `adr:binding-request {v:1, sessionId, requestId}`，只接受 `v: 1`、会话与请求都匹配、且带绝对路径 `toolSourcePath` 的同步 `adr:binding` 回复。确认过的回复在本会话内缓存，会话关闭时丢弃；没有回复时，下一次调用会重新请求。
+2. Prometheus 只使用 `toolSourcePath`。回复中的 `api` 对象供 `roadmap` 使用，Prometheus 从不读取或调用它。
+3. 只有当 `adr_*` 工具的扩展源路径与 ADR 的 `toolSourcePath` 一致时，Atlas 才会放行；拒绝信息会说明是缺少握手（请检查 adr 插件是否已安装并启用），还是工具来自其他来源。每类工具只通过自己的握手验证：路线图绑定不会放行 `adr_*` 工具，ADR 绑定也不会放行 `roadmap_*` 工具。

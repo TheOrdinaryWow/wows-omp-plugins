@@ -13,6 +13,7 @@ import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 
+import { AdrContract } from "./adr-contract.ts";
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
 import { runAtlasGit } from "./atlas-git.ts";
@@ -94,7 +95,9 @@ import {
   proposedPlanPathFromToolResult,
   proposedPlanUrl,
   researchSpawnBlockReason,
+  type TrustedToolSources,
   taskSpawnBlockReason,
+  trustedToolFamily,
 } from "./workflow.ts";
 
 const ACTIVATE_TOOL = "prometheus_activate";
@@ -212,6 +215,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const liveModels = new Map<string, AtlasLive>();
   const herdrDag = new HerdrDagContract(pi.events);
   const roadmap = new RoadmapContract(pi.events);
+  const adr = new AdrContract(pi.events);
   const WIDGET_KEY = "atlas";
   let stateWarned = false;
   const statePublisher = new PluginStatePublisher("omo-prometheus", (error) => {
@@ -1473,11 +1477,11 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const provenanceBlockReason = (toolName: string, roadmapToolSourcePath?: string): string | undefined => {
+  const provenanceBlockReason = (toolName: string, trusted?: TrustedToolSources): string | undefined => {
     const provenance = toolProvenance(toolName);
     const trustedPrometheusTool =
       PLUGIN_OWNED_TOOLS[toolName] === true && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
-    return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool, roadmapToolSourcePath, provenance?.path);
+    return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool, trusted, provenance?.path);
   };
 
   /** Refuses a Prometheus proposal Atlas could not execute, before the native approval overlay opens. */
@@ -2467,13 +2471,15 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (record?.phase !== "executing") return undefined;
 
     const nested = event.toolName === "write" ? nestedXdevToolCall(event.input) : undefined;
-    const roadmapToolSourcePath =
-      event.toolName.startsWith("roadmap_") || nested?.toolName.startsWith("roadmap_")
-        ? roadmap.binding(ctx.sessionManager.getSessionId())?.toolSourcePath
-        : undefined;
-    let detail = executionBlockReason(event.toolName, event.input, roadmapToolSourcePath);
-    if (!detail) detail = provenanceBlockReason(event.toolName, roadmapToolSourcePath);
-    if (!detail && nested) detail = provenanceBlockReason(nested.toolName, roadmapToolSourcePath);
+    // Only the families actually called ask their plugin for a handshake; each family is trusted only through its own binding.
+    const trusted: TrustedToolSources = {};
+    for (const family of [trustedToolFamily(event.toolName), nested && trustedToolFamily(nested.toolName)]) {
+      if (family === "roadmap") trusted.roadmap = roadmap.binding(ctx.sessionManager.getSessionId())?.toolSourcePath;
+      else if (family === "adr") trusted.adr = adr.binding(ctx.sessionManager.getSessionId())?.toolSourcePath;
+    }
+    let detail = executionBlockReason(event.toolName, event.input, trusted);
+    if (!detail) detail = provenanceBlockReason(event.toolName, trusted);
+    if (!detail && nested) detail = provenanceBlockReason(nested.toolName, trusted);
     // Native xdev task dispatch is intercepted again at its inner task boundary.
     if (!detail && event.toolName === "task" && !carriesAtlasAssignment(event.input)) {
       // Unbound read-only research needs no ledger row, yet still requires a valid ledger: a paused plan dispatches nothing.
@@ -2761,6 +2767,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     atlasWidgets.delete(sessionId);
     herdrDag.forget(sessionId);
     roadmap.forget(sessionId);
+    adr.forget(sessionId);
     authorizedActivationCalls.clear();
   });
 }

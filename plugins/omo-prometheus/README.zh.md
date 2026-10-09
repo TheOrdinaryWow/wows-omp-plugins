@@ -80,7 +80,7 @@ Atlas 用执行记录跟踪计划。只有拿到子代理真实最终结果作�
 
 Atlas 停下时若还有未完成的任务，会被推动继续。如果执行记录或计划文件缺失、损坏，或者与批准的计划不一致，Atlas 会暂停，等你恢复这些文件，或者用 `/atlas exit` 退出后重新批准修改过的计划。
 
-Atlas 会把计划同步到待办列表，并把会话重命名为以“Atlas”开头的标题，除非你自己起过名字。它遵循宿主的 `task.isolation` 设置，只有一个例外：`merge: patch` 时，执行期间会把合并方式切到 `branch`，让子代理的提交保留下来，退出时恢复你的设置。子代理自己提交工作；Atlas 只通过受限的 `atlas_git` 工具提交路线图文档，以及子代理完成后漏提交的工作。
+Atlas 会把计划同步到待办列表，并把会话重命名为以“Atlas”开头的标题，除非你自己起过名字。它遵循宿主的 `task.isolation` 设置，只有一个例外：`merge: patch` 时，执行期间会把合并方式切到 `branch`，让子代理的提交保留下来，退出时恢复你的设置。子代理自己提交工作；Atlas 只通过受限的 `atlas_git` 工具提交路线图和 ADR 文档，以及子代理完成后漏提交的工作。
 
 工作区不是 Git 仓库时，谁都不会使用或创建 Git：计划写 `Commit: none`，交付方式为 `direct`，子代理会被告知不提交、不运行 `git init`，不要求隔离，F1 在没有 Git 历史的情况下检查计划。需要提交的话，请在规划前自己运行 `git init`。
 
@@ -186,6 +186,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 - `judge-dispatch`：计划执行期间不改派任何调用，也从不改派 `metis`、`momus` 或 `oracle`。
 - `omp-herdr-dag`：以实时依赖图显示 Atlas 的任务、发现任务、修正、关口和交付。
 - `roadmap`：在绑定了路线图阶段时提出的计划会记住该阶段。Atlas 可以使用路线图工具；计划完成后（`pr` 和 `ship` 计划在交付之后），会话会收到提醒，用关口证据关闭该阶段。阶段不会被自动关闭。
+- `adr`：Atlas 可以使用 ADR 工具，与是否安装 `roadmap` 无关。ADR 的接受、拒绝和取代由 Atlas 通过 `adr_manage` 完成，子代理无权决定；阶段还有提议中的 ADR 时无法关闭，需要先处理这些 ADR。
 - [Magic Context](https://github.com/cortexkit/magic-context)：它的 `ctx_*` 工具在 Atlas 中保持可用。
 
 ## 不使用终端界面时
@@ -207,7 +208,7 @@ Prometheus 规划需要 Plan Mode 的交互式批准，所以只能在 TUI、RPC
 
 ## 参考
 
-[REFERENCE.zh.md](REFERENCE.zh.md) 介绍 Atlas 工具守卫、计划包与执行记录、计划匹配、所有权、状态快照，以及与 `omp-herdr-dag` 和 `roadmap` 的事件契约。
+[REFERENCE.zh.md](REFERENCE.zh.md) 介绍 Atlas 工具守卫、计划包与执行记录、计划匹配、所有权、状态快照，以及与 `omp-herdr-dag`、`roadmap` 和 `adr` 的事件契约。
 
 ## 许可证
 

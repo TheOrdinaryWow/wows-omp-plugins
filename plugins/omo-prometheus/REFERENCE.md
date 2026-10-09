@@ -35,13 +35,14 @@ The guard admits only tools that observe the session or change host-owned state;
 
 Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file writes, `security_scan` and `checkpoint`/`rewind` (rewinding would branch the session tree away from the receipts that prove completed rows). Tools registered by other extensions or MCP servers are blocked even when they share a native tool's name, unless listed below.
 
-`atlas_git` is the Atlas session's only git surface; there is no shell behind it. Atlas commits with it in two cases: files a roadmap step changed, and finished work a child left uncommitted. `commit` takes the exact files and a message Atlas writes, so your `RULES.md` commit conventions apply. It stages and commits only those files, refuses directories and pathspec magic, and refuses while any bound child task is still running. Inspection never runs external diff drivers, textconv filters or pagers; commit hooks run as usual, and a failing hook leaves the files staged. The tool is active only while Atlas executes, and refuses any caller other than the executing Atlas main session.
+`atlas_git` is the Atlas session's only git surface; there is no shell behind it. Atlas commits with it in two cases: files a roadmap or ADR step changed, and finished work a child left uncommitted. `commit` takes the exact files and a message Atlas writes, so your `RULES.md` commit conventions apply. It stages and commits only those files, refuses directories and pathspec magic, and refuses while any bound child task is still running. Inspection never runs external diff drivers, textconv filters or pagers; commit hooks run as usual, and a failing hook leaves the files staged. The tool is active only while Atlas executes, and refuses any caller other than the executing Atlas main session.
 
 | Integration | Admitted tools |
 | --- | --- |
 | [Magic Context](https://github.com/cortexkit/magic-context) | `ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, `ctx_note`, only when registered by an extension; same-named MCP tools stay blocked |
 | Extension wrappers of `todo`, such as [omp-herdr-dag](../omp-herdr-dag/README.md)'s edge-aware `todo` | `todo`, when an extension re-registers it; an MCP `todo` stays blocked |
 | [roadmap](../roadmap/README.md) | `roadmap_*`, called directly or as `write xd://roadmap_*`, only from the extension source path verified by the roadmap binding handshake (see [Roadmap contract](#roadmap-contract)) |
+| [adr](../adr/README.md) | `adr_*`, called directly or as `write xd://adr_*`, only from the extension source path verified by the ADR binding handshake (see [ADR contract](#adr-contract)); independent of `roadmap` |
 
 ## Task dispatch
 
@@ -190,3 +191,11 @@ With `roadmap` installed, Prometheus uses a `pi.events` contract independent of 
 4. After the ledger write that first completes a stage-bound plan, Prometheus emits `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, delivery?, at}` with verified gate verdicts and summaries. A plan is complete only when every row is done: with `Delivery: pr` or `ship` the event follows P1 and carries `delivery: {mode, summary}`; with `direct` it follows the gates. A plan approved without a stage uses the stage bound in the executing session at that moment. Roadmap records a pending-close reminder; the session still closes the stage itself.
 
 Completion events are deduplicated per producer instance only, so a restart followed by reopening and recompleting a plan can emit again. Roadmap deduplicates pending-close entries by `planId` per receiving session.
+
+## ADR contract
+
+With `adr` installed, Atlas admits the ADR tools through their own `pi.events` handshake, independent of `roadmap` and `herdrDag`:
+
+1. When Atlas calls an `adr_*` tool, directly or as `write xd://adr_*`, Prometheus emits `adr:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `adr:binding` reply with `v: 1`, the same session and request, and an absolute `toolSourcePath`. A confirmed answer is cached for the session and forgotten at shutdown; a missing one is asked again on the next call.
+2. Prometheus uses only `toolSourcePath`. The reply's `api` object serves `roadmap` and is never read or called by Prometheus.
+3. Atlas admits `adr_*` tools only from the extension source path equal to the ADR `toolSourcePath`; a refusal says whether the handshake is missing (check that the adr plugin is installed and enabled) or the tool comes from another source. Each family is verified only through its own handshake: the roadmap binding never admits an `adr_*` tool, and the ADR binding never admits a `roadmap_*` tool.

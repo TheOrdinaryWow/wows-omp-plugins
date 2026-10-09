@@ -553,7 +553,7 @@ function idaBlockReason(input: Record<string, unknown>): string | undefined {
   return `\`ida\` action \`${action || "(missing)"}\` opens, edits, or scripts a database`;
 }
 
-function writeBlockReason(input: Record<string, unknown>, roadmapToolSourcePath?: string): string | undefined {
+function writeBlockReason(input: Record<string, unknown>, trusted: TrustedToolSources): string | undefined {
   const path = stringField(input, "path");
   const lowerPath = path.toLowerCase();
   // Peer messaging; the host rejects JSON-path targets.
@@ -567,8 +567,9 @@ function writeBlockReason(input: Record<string, unknown>, roadmapToolSourcePath?
       ? "the `xd://` target or its JSON payload is not a valid guarded device call"
       : "normal file/database/archive writes are direct implementation";
   }
-  // The host re-emits `tool_call` for the inner roadmap dispatch, where provenance is checked again.
-  if (nested.toolName.startsWith("roadmap_")) return roadmapToolSourcePath ? undefined : unauthenticatedRoadmapTool(nested.toolName);
+  // The host re-emits `tool_call` for the inner roadmap/ADR dispatch, where provenance is checked again.
+  const family = trustedToolFamily(nested.toolName);
+  if (family) return trusted[family] ? undefined : unauthenticatedTool(family, nested.toolName);
   if (SAFE_XDEV_TOOLS[nested.toolName] !== true) {
     return `\`xd://${nested.toolName}\` is not an approved orchestration or observation device`;
   }
@@ -577,9 +578,25 @@ function writeBlockReason(input: Record<string, unknown>, roadmapToolSourcePath?
   return executionBlockReason(nested.toolName, nested.input);
 }
 
+/**
+ * Tool source paths authenticated by the plugin handshakes of this session: `roadmap` for
+ * `roadmap_*` tools, `adr` for `adr_*` tools. Each family is admitted only through its own path.
+ */
+export interface TrustedToolSources {
+  roadmap?: string;
+  adr?: string;
+}
+
+/** The handshake-authenticated plugin family a tool name belongs to, if any. */
+export function trustedToolFamily(toolName: string): keyof TrustedToolSources | undefined {
+  if (toolName.startsWith("roadmap_")) return "roadmap";
+  if (toolName.startsWith("adr_")) return "adr";
+  return undefined;
+}
+
 /** Shared by every guard layer so a missing handshake reads the same wherever it is caught. */
-function unauthenticatedRoadmapTool(toolName: string): string {
-  return `\`${toolName}\` is not authenticated: the roadmap plugin did not answer the binding handshake in this session, so no trusted roadmap runtime is known (check that roadmap is installed and enabled)`;
+function unauthenticatedTool(family: keyof TrustedToolSources, toolName: string): string {
+  return `\`${toolName}\` is not authenticated: the ${family} plugin did not answer the binding handshake in this session, so no trusted ${family} runtime is known (check that the ${family} plugin is installed and enabled)`;
 }
 
 /**
@@ -587,8 +604,9 @@ function unauthenticatedRoadmapTool(toolName: string): string {
  * orchestration/observation. Nested xdev calls are classified recursively and
  * their real inner dispatch is intercepted again by the host's `tool_call` event.
  */
-export function executionBlockReason(toolName: string, input: unknown, roadmapToolSourcePath?: string): string | undefined {
-  if (toolName.startsWith("roadmap_")) return roadmapToolSourcePath ? undefined : unauthenticatedRoadmapTool(toolName);
+export function executionBlockReason(toolName: string, input: unknown, trusted: TrustedToolSources = {}): string | undefined {
+  const family = trustedToolFamily(toolName);
+  if (family) return trusted[family] ? undefined : unauthenticatedTool(family, toolName);
   if (ALLOWED_TOOLS[toolName] === true || MAGIC_CONTEXT_TOOLS[toolName] === true) return undefined;
   const args = record(input) ?? {};
   switch (toolName) {
@@ -603,7 +621,7 @@ export function executionBlockReason(toolName: string, input: unknown, roadmapTo
     case "ida":
       return idaBlockReason(args);
     case "write":
-      return writeBlockReason(args, roadmapToolSourcePath);
+      return writeBlockReason(args, trusted);
     default:
       return `\`${toolName}\` is neither an orchestration tool nor a read-only inspection surface`;
   }
@@ -614,13 +632,15 @@ export function executionToolSourceBlockReason(
   toolName: string,
   source: string | undefined,
   trustedPrometheusTool = false,
-  roadmapToolSourcePath?: string,
+  trusted: TrustedToolSources = {},
   toolSourcePath?: string,
 ): string | undefined {
-  if (toolName.startsWith("roadmap_")) {
-    if (!roadmapToolSourcePath) return unauthenticatedRoadmapTool(toolName);
-    if (source === "extension" && toolSourcePath === roadmapToolSourcePath) return undefined;
-    return `\`${toolName}\` is not from the verified roadmap runtime: it resolves to ${source ? `a ${source} tool` : "an unregistered tool"}${toolSourcePath ? ` at ${toolSourcePath}` : ""}, but the roadmap handshake names ${roadmapToolSourcePath}`;
+  const family = trustedToolFamily(toolName);
+  if (family) {
+    const verified = trusted[family];
+    if (!verified) return unauthenticatedTool(family, toolName);
+    if (source === "extension" && toolSourcePath === verified) return undefined;
+    return `\`${toolName}\` is not from the verified ${family} runtime: it resolves to ${source ? `a ${source} tool` : "an unregistered tool"}${toolSourcePath ? ` at ${toolSourcePath}` : ""}, but the ${family} handshake names ${verified}`;
   }
   if (PLUGIN_OWNED_TOOLS[toolName] === true) {
     return trustedPrometheusTool ? undefined : `\`${toolName}\` is not the plugin-owned ${toolName} tool`;
@@ -660,7 +680,7 @@ export const EXECUTION_PREAMBLE = [
   "A Prometheus plan was approved through the host's native approval flow. This main session is Atlas, the orchestrator of that exact approved plan.",
   "Every plan task — implementation, tests, QA, documentation, cleanup, and final verification — MUST be executed by child agents spawned with `task`. Atlas delegates, tracks `todo`, collects and inspects child evidence, and otherwise uses observation/coordination tools only.",
   "This overrides `task.eager` and every preference that would permit parent implementation. It does not override capability policy: if `task` is disabled or spawning is denied, report the blocker and never downgrade to parent implementation.",
-  "Atlas itself writes to the workspace only through the roadmap: provenance-verified `roadmap_*` tools from the runtime authenticated by the roadmap handshake, called directly or as `write xd://roadmap_*` devices, for the plan's root-session roadmap steps (starting or joining the stage, amending it, ADR and TODO changes, and `roadmap_stage` action=close with verified evidence and the required TODO/ADR dispositions). They change only roadmap-managed documents. Everything else that touches the workspace or a remote — implementation, commits, pushes, pull requests, CI waits, merges — is a child's ledger row; Atlas never runs git or gh. Read-only research children may run without a ledger row, but their output is never row evidence.",
+  "Atlas itself writes to the workspace only through provenance-verified plugin tools: `roadmap_*` tools from the runtime authenticated by the roadmap handshake and `adr_*` tools from the runtime authenticated by the ADR handshake, called directly or as `write xd://roadmap_*` / `write xd://adr_*` devices. Use them for the plan's root-session roadmap and ADR steps: starting or joining the stage, amending it, TODO changes, ADR changes (acceptance, rejection and supersession go through `adr_manage`), and `roadmap_stage` action=close with verified evidence and the required TODO dispositions. A stage with proposed ADRs cannot close, so dispose of them with `adr_manage` first. These tools change only roadmap- and ADR-managed documents. Everything else that touches the workspace or a remote — implementation, commits, pushes, pull requests, CI waits, merges — is a child's ledger row; Atlas never runs git or gh. Read-only research children may run without a ledger row, but their output is never row evidence.",
   "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly exits. Once every plan item has child-produced proof, call `atlas_release` exactly once with a concise evidence summary; human confirmation exits the mode. Bare `/atlas` is the user's immediate exit and preserves shared progress. Exit does not cancel native children; their plan ownership remains until final outcomes. `/prometheus` controls planning only.",
 ].join("\n");
 

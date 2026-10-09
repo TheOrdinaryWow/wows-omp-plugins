@@ -80,7 +80,7 @@ Atlas tracks the plan in a ledger. A task is done only with proof from its child
 
 Atlas is nudged to continue unfinished work. If the ledger or plan files are missing, damaged or no longer match the approved plan, Atlas pauses until you restore them, or exit with `/atlas exit` and get a changed plan approved.
 
-Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. It follows the host's `task.isolation` settings, except that with `merge: patch` it switches merges to `branch` while it executes so each child's commits survive, and restores your setting on exit. Children commit their own work; Atlas commits only roadmap documents and work a finished child left uncommitted, through its guarded `atlas_git` tool.
+Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. It follows the host's `task.isolation` settings, except that with `merge: patch` it switches merges to `branch` while it executes so each child's commits survive, and restores your setting on exit. Children commit their own work; Atlas commits only roadmap and ADR documents and work a finished child left uncommitted, through its guarded `atlas_git` tool.
 
 In a workspace that is not a Git repository, nobody uses or creates Git: plans say `Commit: none`, delivery is `direct`, children are told not to commit or run `git init`, isolation is not required, and F1 checks the plan without Git history. Run `git init` yourself before planning if you want commits.
 
@@ -186,6 +186,7 @@ User settings merge with project overrides. Settings are read at session start, 
 - `judge-dispatch`: does not reroute anything while a plan executes, and never reroutes `metis`, `momus` or `oracle`.
 - `omp-herdr-dag`: shows Atlas tasks, discovered tasks, fixes, gates and delivery as a live dependency graph.
 - `roadmap`: a plan proposed while a roadmap stage is bound remembers that stage. Atlas may use the roadmap tools, and when the plan completes (after delivery, for `pr` and `ship`) the session is reminded to close the stage with the gate evidence. It never closes the stage itself.
+- `adr`: Atlas may use the ADR tools, with or without `roadmap`. ADR acceptance, rejection and supersession are Atlas's own `adr_manage` steps, never a child's; a stage with proposed ADRs cannot close until they are disposed of.
 - [Magic Context](https://github.com/cortexkit/magic-context): its `ctx_*` tools stay available to Atlas.
 
 ## Without the terminal UI
@@ -207,7 +208,7 @@ Client programs can read planning and execution state from a state snapshot; see
 
 ## Reference
 
-[REFERENCE.md](REFERENCE.md) covers the Atlas tool guard, plan bundle and ledger, plan matching, ownership, the state snapshot, and the event contracts with `omp-herdr-dag` and `roadmap`.
+[REFERENCE.md](REFERENCE.md) covers the Atlas tool guard, plan bundle and ledger, plan matching, ownership, the state snapshot, and the event contracts with `omp-herdr-dag`, `roadmap` and `adr`.
 
 ## License
 
