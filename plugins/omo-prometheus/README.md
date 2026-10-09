@@ -77,7 +77,7 @@ Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execu
 
 ```text
 /atlas                          # while inactive: open Atlas Dispatch, the interactive plan menu
-/atlas <plan-name-or-id>        # while inactive: enter a plan in this session and start executing (name/ID completion available)
+/atlas <plan-name-or-id>        # while inactive: enter a plan in this session and start executing (subcommand and plan name/ID completion available)
 /atlas start <plan-name-or-id>  # same as above
 /atlas list                     # while inactive: list approved plans with their status
 /atlas show <plan-name-or-id>   # while inactive: show a plan's rows, acceptance and evidence

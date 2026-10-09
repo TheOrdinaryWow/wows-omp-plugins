@@ -10,7 +10,6 @@ import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
@@ -56,6 +55,8 @@ import { prometheusState } from "./prometheus-state.ts";
 import { type AtlasCompleted, isRoadmapStage, RoadmapContract, type RoadmapStage } from "./roadmap-contract.ts";
 import {
   ATLAS_USAGE,
+  type AtlasCompletionPlan,
+  atlasArgumentCompletions,
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
   EXECUTION_PREAMBLE,
@@ -177,7 +178,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   /** Last serialized sidecar state per session; an unpublished session counts as `null`. */
   const publishedStates = new Map<string, string>();
-  let atlasCompletions: AutocompleteItem[] = [];
+  let atlasPlans: AtlasCompletionPlan[] = [];
   let planReferences = new AtlasPlanReferences();
   const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
   let settlementTimer: NodeJS.Timeout | undefined;
@@ -491,19 +492,11 @@ export default function prometheus(pi: ExtensionAPI): void {
   const refreshAtlasCompletions = async (ctx: ExtensionContext): Promise<void> => {
     try {
       const cwd = await fs.realpath(ctx.cwd);
-      atlasCompletions = (await storeFor(ctx).details(cwd))
-        .filter((detail) => detail.unfinished)
-        .map(({ plan }) => ({ value: plan.name, label: plan.name, description: plan.id }));
+      atlasPlans = (await storeFor(ctx).details(cwd)).map(({ plan, unfinished }) => ({ id: plan.id, name: plan.name, unfinished }));
     } catch (error) {
-      atlasCompletions = [];
+      atlasPlans = [];
       pi.logger.warn("Atlas plan completions are unavailable", { error: errorMessage(error) });
     }
-  };
-
-  const atlasArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-    const needle = prefix.toLowerCase();
-    const matches = atlasCompletions.filter((item) => item.value.toLowerCase().startsWith(needle) || item.description?.startsWith(needle));
-    return matches.length ? matches : null;
   };
 
   const observeNativeJobs = (sessionId: string, live: AgentSession, parentAgentId: string): void => {
@@ -1604,7 +1597,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.registerCommand("atlas", {
     description: "Open Atlas Dispatch, enter an approved plan, or view the running plan; /atlas exit leaves Atlas",
-    getArgumentCompletions: atlasArgumentCompletions,
+    getArgumentCompletions: (prefix) => atlasArgumentCompletions(prefix, atlasPlans),
     handler: atlasCommand,
   });
 
