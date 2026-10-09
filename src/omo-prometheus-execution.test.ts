@@ -112,6 +112,7 @@ async function scenario(name: string, root: string): Promise<void> {
   let pickOption = (options: string[]): string | undefined => options[0];
   const inputAnswers: Array<string | undefined> = [];
   let interactive = true;
+  let agentKind: "main" | "sub" = "main";
   const sent: Array<{ message: { customType?: string; content?: unknown }; options: unknown }> = [];
   const sessionFiles = new Map<string, { id: string; entries: unknown[] }>();
   const completions = new Map<string, (prefix: string) => Array<{ value: string; description?: string }> | null>();
@@ -187,6 +188,12 @@ async function scenario(name: string, root: string): Promise<void> {
       return interactive;
     },
     mode: "tui",
+    agent: {
+      get kind() {
+        return agentKind;
+      },
+      id: "Main",
+    },
     sessionManager,
     newSession: async () => await switchTo(`fresh-${sequence++}`, [], "new"),
     switchSession: async (file: string) => {
@@ -1750,6 +1757,42 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match(mixed?.reason ?? "", /their own task call/);
     return;
   }
+  if (name === "atlas-git") {
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(["git", ...args], { cwd: root });
+      assert.equal(result.exitCode, 0, result.stderr.toString());
+      return result.stdout.toString();
+    };
+    git("init", "-q");
+    git("config", "user.email", "atlas@example.test");
+    git("config", "user.name", "Atlas");
+    git("config", "commit.gpgsign", "false");
+    git("commit", "-q", "--allow-empty", "-m", "chore: baseline");
+    const gitTool = (params: Record<string, unknown>) => call(params, "atlas_git");
+    await writeFile(join(root, "adr-0001.md"), "# ADR\n");
+    await writeFile(join(root, "stray.md"), "unrelated\n");
+    await mkdir(join(root, "docs"), { recursive: true });
+    await writeFile(join(root, "docs", "note.md"), "note\n");
+    // A commit names its files: directories, pathspec magic and a missing message never widen or guess one.
+    refused(await gitTool({ action: "commit", paths: ["docs"], message: "docs: add a note" }));
+    refused(await gitTool({ action: "commit", paths: ["*.md"], message: "docs: add everything" }));
+    refused(await gitTool({ action: "commit", paths: ["adr-0001.md"] }));
+    ok(await gitTool({ action: "commit", paths: ["adr-0001.md"], message: "docs: record the first ADR" }));
+    assert.equal(git("log", "-1", "--format=%s").trim(), "docs: record the first ADR");
+    assert.equal(git("show", "--name-only", "--format=", "HEAD").trim(), "adr-0001.md");
+    assert.match(git("status", "--short", "--", "stray.md"), /\?\? stray\.md/);
+    // Revisions cannot smuggle options such as --output, which would write files.
+    refused(await gitTool({ action: "show", revision: "--output=leak.txt" }));
+    ok(await gitTool({ action: "diff", revision: "HEAD~1..HEAD", stat: true }));
+    // While a bound child runs, inspection works and commits wait.
+    await prepare("T1");
+    ok(await gitTool({ action: "status" }));
+    refused(await gitTool({ action: "commit", paths: ["stray.md"], message: "docs: add stray notes" }));
+    // Only the Atlas main session may use it.
+    agentKind = "sub";
+    refused(await gitTool({ action: "status" }));
+    return;
+  }
   if (name === "isolation-required") {
     // Host modules load only inside the isolated child process, after HOME is private.
     const { cfgTaskIsolationEnabled, cfgTaskIsolationMerge } = await import("@oh-my-pi/pi-coding-agent/task/settings");
@@ -2008,6 +2051,7 @@ if (process.env[CHILD_ENV]) {
       "heavy-verify-fail",
       "research-children",
       "isolation-required",
+      "atlas-git",
       "discover",
     ]) {
       // Each scenario runs in its own process with a private HOME, so scenarios share no state.

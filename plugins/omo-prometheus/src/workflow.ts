@@ -364,14 +364,15 @@ export function inlinesApprovedPlan(handoff: string, planFilePath: string, conte
 }
 
 /** Plugin-owned tools that are trusted only when registered by this runtime file. */
-export const PLUGIN_OWNED_TOOLS: Record<string, true> = { atlas_release: true, atlas_ledger: true };
+export const PLUGIN_OWNED_TOOLS: Record<string, true> = { atlas_release: true, atlas_ledger: true, atlas_git: true };
 
 /**
  * Parent-session orchestration and observation surfaces retained by Atlas. The memory, skill, goal,
  * and context tools only touch host-owned state (memory backends, managed skills, the session
  * journal), never the workspace. `new_context` rolls over through ordinary compaction, which Atlas
  * already survives. `checkpoint`/`rewind` stay out: rewind branches the session tree away from the
- * task receipts that prove completed ledger rows.
+ * task receipts that prove completed ledger rows. `atlas_git` is the only workspace writer here: it commits named
+ * files and refuses while bound children run.
  */
 const ALLOWED_TOOLS: Record<string, true> = {
   ask: true,
@@ -381,6 +382,7 @@ const ALLOWED_TOOLS: Record<string, true> = {
   grep: true,
   atlas_release: true,
   atlas_ledger: true,
+  atlas_git: true,
   task: true,
   think: true,
   todo: true,

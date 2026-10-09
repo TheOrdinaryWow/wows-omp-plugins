@@ -18,11 +18,12 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 
 ## Atlas tool guard
 
-The guard admits only tools that observe the session or change host-owned state; none writes to the workspace. It enables nothing: a tool missing from your session stays unavailable.
+The guard admits only tools that observe the session or change host-owned state; apart from `atlas_git commit`, none writes to the workspace. It enables nothing: a tool missing from your session stays unavailable.
 
 | Tool | Allowed in the Atlas parent |
 | --- | --- |
 | `task`, `wait`, `todo`, `ask`, `think`, `web_search`, `atlas_ledger`, `atlas_release` | always |
+| `atlas_git` | always: `status`, `diff`, `log`, `show`, and `commit` of named files (see below) |
 | `read`, `find`, `glob`, `grep`, `ast_grep` | always; `read` refuses `ssh://` |
 | `lsp` | read-only actions, and `code_actions` without `apply` |
 | `github` | `repo_view`, `file_read`, `search_*`, `run_watch` |
@@ -34,6 +35,8 @@ The guard admits only tools that observe the session or change host-owned state;
 | `hub` | observing ops and `send` to agents, never process input |
 
 Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file writes, `security_scan` and `checkpoint`/`rewind` (rewinding would branch the session tree away from the receipts that prove completed rows). Tools registered by other extensions or MCP servers are blocked even when they share a native tool's name, unless listed below.
+
+`atlas_git` is the Atlas session's only git surface; there is no shell behind it. Atlas commits with it in two cases: files a roadmap step changed, and finished work a child left uncommitted. `commit` takes the exact files and a message Atlas writes, so your `RULES.md` commit conventions apply. It stages and commits only those files, refuses directories and pathspec magic, and refuses while any bound child task is still running. Inspection never runs external diff drivers, textconv filters or pagers; commit hooks run as usual, and a failing hook leaves the files staged. The tool is active only while Atlas executes, and refuses any caller other than the executing Atlas main session.
 
 | Integration | Admitted tools |
 | --- | --- |

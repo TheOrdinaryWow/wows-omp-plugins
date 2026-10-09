@@ -18,11 +18,12 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 ## Atlas 工具守卫
 
-守卫只放行观察会话或修改宿主自有状态的工具，这些工具都不会写入工作区。它不会启用任何工具：会话中本来没有的工具，仍然不可用。
+守卫只放行观察会话或修改宿主自有状态的工具；除 `atlas_git commit` 外，这些工具都不会写入工作区。它不会启用任何工具：会话中本来没有的工具，仍然不可用。
 
 | 工具 | 在 Atlas 父会话中允许 |
 | --- | --- |
 | `task`、`wait`、`todo`、`ask`、`think`、`web_search`、`atlas_ledger`、`atlas_release` | 始终 |
+| `atlas_git` | 始终：`status`、`diff`、`log`、`show`，以及按文件名 `commit`（见下文） |
 | `read`、`find`、`glob`、`grep`、`ast_grep` | 始终；`read` 拒绝 `ssh://` |
 | `lsp` | 只读操作，以及不带 `apply` 的 `code_actions` |
 | `github` | `repo_view`、`file_read`、`search_*`、`run_watch` |
@@ -34,6 +35,8 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 | `hub` | 观察类操作和发给代理的 `send`，不允许向进程输入 |
 
 其他工具一律屏蔽，包括 `bash`、`eval`、`edit`、`ast_edit`、文件写入、`security_scan` 以及 `checkpoint`/`rewind`（回退会让会话树分叉，脱离证明已完成行的回执）。其他扩展或 MCP 服务器注册的工具即使与原生工具同名也会被屏蔽，下表列出的除外。
+
+`atlas_git` 是 Atlas 会话唯一的 git 入口，背后没有 shell。Atlas 只在两种情况下用它提交：路线图步骤改动的文件，以及子代理完成后遗漏提交的工作。`commit` 需要给出具体文件和由 Atlas 撰写的提交信息，所以你在 `RULES.md` 里的提交约定同样适用。它只暂存并提交这些文件，拒绝目录和 pathspec 魔法写法，并且在任何绑定的子代理任务仍在运行时拒绝提交。查看类操作不会运行外部 diff 驱动、textconv 过滤器或分页器；提交钩子照常运行，钩子失败时这些文件保持暂存状态。该工具只在 Atlas 执行期间激活，并拒绝执行中的 Atlas 主会话以外的任何调用方。
 
 | 集成 | 放行的工具 |
 | --- | --- |

@@ -15,6 +15,7 @@ import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-age
 
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
+import { runAtlasGit } from "./atlas-git.ts";
 import { AtlasLive } from "./atlas-live.ts";
 import {
   type AtlasFilter,
@@ -99,6 +100,7 @@ import {
 const ACTIVATE_TOOL = "prometheus_activate";
 const RELEASE_TOOL = "atlas_release";
 const LEDGER_TOOL = "atlas_ledger";
+const GIT_TOOL = "atlas_git";
 const STATE_ENTRY = "wows-omp-omo-prometheus.state";
 const ATLAS_START_TYPE = "wows-omp-omo-prometheus.atlas-start";
 const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
@@ -433,8 +435,13 @@ export default function prometheus(pi: ExtensionAPI): void {
       else desired.delete(ACTIVATE_TOOL);
       if (wantRelease) desired.add(RELEASE_TOOL);
       else desired.delete(RELEASE_TOOL);
-      if (wantLedger) desired.add(LEDGER_TOOL);
-      else desired.delete(LEDGER_TOOL);
+      if (wantLedger) {
+        desired.add(LEDGER_TOOL);
+        desired.add(GIT_TOOL);
+      } else {
+        desired.delete(LEDGER_TOOL);
+        desired.delete(GIT_TOOL);
+      }
       if (desired.size === active.length && active.every((name) => desired.has(name))) return;
       await pi.setActiveTools([...desired]);
     } catch (error) {
@@ -2131,6 +2138,51 @@ export default function prometheus(pi: ExtensionAPI): void {
           `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid shared approved ledger; /atlas exit remains the user exit.`,
         );
       }
+    },
+  });
+
+  const gitParameters = z.object({
+    action: z
+      .enum(["status", "diff", "log", "show", "commit"])
+      .describe("status, diff, log and show inspect the repository; commit commits exactly the named files"),
+    revision: z.string().optional().describe("diff: revision or A..B range; log: revision range; show: the revision"),
+    paths: z.array(z.string()).optional().describe("diff/log: limit to these paths; commit: every file to commit, by name"),
+    staged: z.boolean().optional().describe("diff: staged changes instead of unstaged ones"),
+    stat: z.boolean().optional().describe("diff/show: a diffstat instead of the patch"),
+    count: z.number().int().optional().describe("log: number of commits, 1-200, default 20"),
+    message: z.string().optional().describe("commit: the commit message, following the project's and user's commit rules"),
+  });
+
+  pi.registerTool({
+    name: GIT_TOOL,
+    sourcePath: RUNTIME_SOURCE_PATH,
+    label: "Atlas Git",
+    description:
+      "Git for the Atlas main session only; there is no shell. status, diff, log and show inspect the repository. commit stages and commits exactly the files named in paths (no directories, no globs) with your message; it is refused while any bound child task is still running. Commit roadmap documents you changed, and finished child work a child left uncommitted. Hooks run; a failed hook leaves the files staged.",
+    parameters: gitParameters,
+    defaultInactive: true,
+    loadMode: "essential",
+    approval: (args: unknown) =>
+      args && typeof args === "object" && "action" in args && args.action === "commit"
+        ? { tier: "write", reason: "commits files" }
+        : "read",
+    execute: async (_toolCallId, params: typeof gitParameters.infer, signal, _onUpdate, ctx) => {
+      const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
+      const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+      const live = mainSession(ctx);
+      if (ctx.agent.kind !== "main" || !live || record?.phase !== "executing") {
+        return fail(`${GIT_TOOL} belongs to the Atlas main session while it executes a plan.`);
+      }
+      const ownership = record.ownership;
+      if (!ownership || !(await readLedger(ctx, record))) return fail(pauseMessage(record));
+      if (params.action === "commit") {
+        observeNativeJobs(ownership.sessionId, ownership.live, ownership.parentAgentId);
+        if (childEvidence.hasPending(ownership.sessionId, ownership.ledgerId)) {
+          return fail("Commit refused: a bound child task is still running and may be writing these files. Commit after it finishes.");
+        }
+      }
+      const result = await runAtlasGit(ctx.cwd, params, signal);
+      return { content: [{ type: "text" as const, text: result.text }], isError: !result.ok, details: {} };
     },
   });
 
