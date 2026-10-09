@@ -36,8 +36,8 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         # Types and tests are skipped when they would re-test code main's CI already covers:
-        # the release PR and its merge only bump versions and changelogs, and README,
-        # CHANGELOG and AGENTS.md files are read by no test.
+        # the release PR and its merge only bump versions and changelogs, and README, REFERENCE,
+        # CHANGELOG, CONTRIBUTING and AGENTS.md files are read by no test.
         run: |
           tests=true
           if [ -n "$RELEASE_PR_REF" ]; then
@@ -45,7 +45,7 @@ jobs:
           elif [ "$GITHUB_EVENT_NAME" = push ] && [[ "$COMMIT_MESSAGE" == "chore: release main"* ]]; then
             tests=false
           elif git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            if ! git diff --name-only "$BASE...$HEAD" | grep -qvE '(^|/)(README(\.[A-Za-z-]+)?|CHANGELOG|AGENTS)\.md$'; then
+            if ! git diff --name-only "$BASE...$HEAD" | grep -qvE '(^|/)((README|REFERENCE)(\.[A-Za-z-]+)?|CHANGELOG|CONTRIBUTING|AGENTS)\.md$'; then
               tests=false
             fi
           fi

@@ -22,6 +22,7 @@ and the directory layout are the only coupling between them.
 .omp-plugin/marketplace.json   the catalog — source of truth for what ships
 plugins/<name>/                one plugin, copied verbatim to the user's machine
 src/                           repo tooling and tests; never shipped to users
+REFERENCE*.md                  plugin-state snapshot envelope shared by plugins
 ```
 
 ## Commands
@@ -42,9 +43,9 @@ src/                           repo tooling and tests; never shipped to users
   `bun.lock` and against 18.3.5, the oldest host the plugins support. Raise
   that matrix entry only together with the documented floor. Types and tests
   are skipped for the release PR, for its `chore: release main` merge, and for
-  changes that touch only `README*.md`, `CHANGELOG.md`, or `AGENTS.md`, since no
-  test reads those files. If a test starts reading one, narrow the filter in
-  the `scope` job.
+  changes that touch only `README*.md`, `REFERENCE*.md`, `CHANGELOG.md`,
+  `CONTRIBUTING.md`, or `AGENTS.md`, since no test reads those files. If a
+  test starts reading one, narrow the filter in the `scope` job.
 - `.github/workflows/release.yml` runs release-please on `main`. Versions come
   from Conventional Commits scoped by path: a `feat`/`fix` touching
   `plugins/<name>/` bumps that plugin only. The release PR updates the plugin's
@@ -99,9 +100,13 @@ name segment — `#src/*`, not `#/*`.
    `commands/*.md`, `agents/*.md`, `hooks/pre|post/`, `tools/`, `.mcp.json`.
 4. Declare a TypeScript extension entry in `package.json` under `omp.extensions`.
    Content-only plugins omit `omp.extensions`.
-5. Write `plugins/<name>/README.md`. It owns that plugin's install steps,
-   settings, and behavior; the root README only indexes plugins and links to it.
-   The file ships with the plugin, so write it for the installing user.
+5. Write `plugins/<name>/README.md` and `README.zh.md` for the installing user,
+   following the shared outline (what it does, install, quick start, usage,
+   settings, working with other plugins, without the terminal UI, known
+   limitations, reference, license). Put schemas, event contracts, storage formats and
+   other maintainer or client-author detail in `plugins/<name>/REFERENCE.md`
+   (and `.zh.md`), linked from the README. English is the source; the Chinese
+   file mirrors its sections. Both ship with the plugin.
 6. Add the entry to [.omp-plugin/marketplace.json](file:///./.omp-plugin/marketplace.json)
    with `"source": "./<name>"` — `metadata.pluginRoot` already prepends `./plugins`.
 7. Add a row to the root README plugin table pointing at the new plugin README.

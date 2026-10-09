@@ -2,74 +2,53 @@
 
 [English](README.md) | 简体中文
 
-一个个人维护的 [omp](https://omp.sh) 插件市场。
+一个个人维护的 [omp](https://omp.sh) 插件市场。其中几个插件移植自 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)（OmO）的工作流。
 
-需要 OMP 18.3.5 或更高版本。
+## 插件
 
-## 用法
+| 插件 | 说明 |
+| --- | --- |
+| [`audit-goal`](plugins/audit-goal/README.zh.md) | `/audit`：反复进行独立的审计与修复，每轮记入账本 |
+| [`judge-dispatch`](plugins/judge-dispatch/README.zh.md) | 由 OMP 的 judge 角色为 `task` 调用选择子代理类型、思考强度和模型 |
+| [`omo-prometheus`](plugins/omo-prometheus/README.zh.md) | OmO 的 Prometheus 规划与 Atlas 计划执行 |
+| [`omo-toolkit`](plugins/omo-toolkit/README.zh.md) | OmO 的分类与调研代理、工作流技能和文档类 MCP 服务器 |
+| [`omo-ultrawork`](plugins/omo-ultrawork/README.zh.md) | OmO 的 Ultrawork 模式、`mass-ulw`、`/hyperplan` 和 `/ulw-research` |
+| [`omp-herdr-dag`](plugins/omp-herdr-dag/README.zh.md) | 在 Herdr 侧边窗格中实时展示待办、计划、Atlas 和子代理的关系图 |
+| [`roadmap`](plugins/roadmap/README.zh.md) | 通过代理工具管理项目的轮次、阶段、TODO 和 MADR 决策 |
+
+每个插件都可以单独安装。
+
+## 安装
+
+需要 OMP 18.3.5 或更高版本。先添加一次插件市场，之后按名字安装插件：
 
 ```bash
 omp plugin marketplace add TheOrdinaryWow/wows-omp-plugins
-omp plugin discover wows-omp-plugins
-omp plugin install <name>@wows-omp-plugins
+omp plugin install omo-prometheus@wows-omp-plugins
 ```
 
-在会话中，可以改用 `/marketplace add`、`/marketplace discover` 和 `/marketplace install`。
+在 OMP 会话里，可以用 `/marketplace add`、`/marketplace discover` 和 `/marketplace install` 完成同样的操作。`omp plugin discover wows-omp-plugins` 会列出全部插件。
 
-插件默认安装到当前用户；传入 `--scope project` 可安装到项目。安装后运行 `/reload-plugins` 加载新的技能和斜杠命令。新的工具、钩子和扩展要重启会话才生效。
+插件默认安装到当前用户。加上 `--scope project` 则只安装到当前项目。
 
-更新：
+安装后运行 `/reload-plugins` 可以加载新的技能和斜杠命令。新的工具、钩子和扩展要重启会话才会生效。
+
+## 更新
 
 ```bash
 omp plugin marketplace update wows-omp-plugins
 omp plugin upgrade <name>@wows-omp-plugins
 ```
 
-## 插件
+## 不使用终端界面时
 
-| 插件 | 说明 | 文档 |
-| --- | --- | --- |
-| `audit-goal` | `/audit`：反复进行独立审计与修复，并记录轮次账本 | [README](plugins/audit-goal/README.zh.md) |
-| `judge-dispatch` | 让 OMP 的 judge 角色为 `task` 调用选择子代理类型、思考强度和模型 | [README](plugins/judge-dispatch/README.zh.md) |
-| `omp-herdr-dag` | 在 Herdr 侧边窗格中实时展示待办、计划、Atlas DAG 和子代理视图 | [README](plugins/omp-herdr-dag/README.zh.md) |
-| `omo-prometheus` | 移植到 OMP 的 oh-my-openagent Prometheus 规划与 Atlas 执行 | [README](plugins/omo-prometheus/README.zh.md) |
-| `omo-ultrawork` | Ultrawork 模式、mass-ulw、`/hyperplan` 和 `/ulw-research` | [README](plugins/omo-ultrawork/README.zh.md) |
-| `omo-toolkit` | 分类与研究代理、技能以及文档类 MCP 服务器 | [README](plugins/omo-toolkit/README.zh.md) |
-| `roadmap` | 由工具管理的项目轮次、阶段、TODO 和 MADR 架构决策 | [README](plugins/roadmap/README.zh.md) |
+这些插件也能在 `omp --mode rpc`、`rpc-ui`、ACP 编辑器、SDK 和 headless 模式下运行。终端专用的界面会改用普通对话框，所有交互操作也都有对应的命令写法。各插件 README 里都有一小节专门说明。
 
-## 无终端 UI 的客户端
+带工作流状态的插件还会把状态发布成 JSON 快照，详见 [REFERENCE.zh.md](REFERENCE.zh.md)。
 
-这些插件也可以在 `omp --mode rpc`、`rpc-ui`、ACP 编辑器、SDK 和 headless 环境中运行。终端专用视图会改用普通对话框，交互操作也都有对应的命令。各插件 README 说明了具体处理方式。
+## 参与开发
 
-有工作流状态的插件会将状态写成 JSON 快照，供客户端程序读取，路径为 `<runtime dir>/plugin-state/<session id>/<plugin>.json`。runtime dir 是 `$XDG_RUNTIME_DIR/wows-omp-plugins`；未设置 `XDG_RUNTIME_DIR` 时为 `<os tmpdir>/wows-omp-plugins-<uid>`。该目录仅当前用户可访问，位于项目和宿主会话存储之外，因此快照在重启后不保留。每次状态变化时原子替换文件。所有快照使用同一个外层结构：
-
-```json
-{ "schema": "wows-omp-plugins/plugin-state", "version": 1, "plugin": "audit-goal", "sessionId": "…", "seq": 12, "updatedAt": "…", "state": { "kind": "audit-goal/audit", "version": 1 } }
-```
-
-会话 id 从 RPC `get_state` 的 `sessionId` 获取；内存会话（`--no-session`）同样会发布。`state` 为 `null` 表示插件在该会话中没有活动的工作流。`state` 的具体内容见各插件 README。
-
-## 仓库结构
-
-```
-.omp-plugin/marketplace.json   catalog listing every published plugin
-plugins/<name>/                one directory per plugin, with its own README
-src/                           repo tooling and tests
-```
-
-安装时只复制插件自己的目录，因此每个插件都能独立运行，没有运行时依赖。
-
-## 开发
-
-```bash
-bun install
-
-bun run check          # Biome lint + format check
-bun run check-types    # tsc
-bun run check-catalog  # catalog vs. plugins/ drift check
-```
-
-[AGENTS.md](AGENTS.md) 说明插件编写规则、安装限制和本地测试方法。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可证
 
