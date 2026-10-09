@@ -48,6 +48,8 @@ The viewer consumes the `pi.events` contract published by `omo-prometheus`; the 
 
 `atlas:snapshot` stays at `v: 1`. Row kinds are `task`, `discovered`, `fix`, `gate`, `delivery`, laid out in that order as Tasks, Discovered, Fixes, Final gates, Delivery. Discovered rows draw a fix-style edge from their `origin` to the discovered row; fix rows retain their edge toward the originating gate. These provenance edges do not imply a scheduling dependency. Optional `tier: "light" | "heavy"` appears as a LIGHT/HEAVY badge; optional `verification: { status: "pending" | "running" | "passed" | "failed" }` appears as `verify: <status>` in the node and selection details. Snapshots without either field remain accepted and show no extra metadata.
 
+Timeline kinds also include `discovered`, `implemented`, `verify_started`, `verify_passed` and `verify_failed`. The consumer does not interpret timeline events as node state or scheduling authority; unknown kinds have no effect on graph behavior. Verification children use the row's current `attempt` and are identified by its verification status.
+
 ## Todo edges
 
 The wrapper preserves native mutations, details, hooks, approval, batch failure and rendering. A native operation error records no edges. Removing or changing tasks prunes their edges, and `init` starts a fresh generation.

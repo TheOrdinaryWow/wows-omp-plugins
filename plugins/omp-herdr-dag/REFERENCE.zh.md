@@ -48,6 +48,8 @@ Herdr 0.9.3 无法在同一个标签页内移动窗格，所以方向改变时�
 
 `atlas:snapshot` 保持 `v: 1`。行类型依次为 `task`、`discovered`、`fix`、`gate`、`delivery`，对应 Tasks、Discovered、Fixes、Final gates、Delivery 横带。新发现行使用修正边样式，从 `origin` 指向新发现行；修正行仍指向其来源关口。这些来源边不代表调度依赖。可选的 `tier: "light" | "heavy"` 显示为 LIGHT/HEAVY 徽标；可选的 `verification: { status: "pending" | "running" | "passed" | "failed" }` 在节点和选中详情中显示为 `verify: <status>`。仍接受不含这些字段的快照，不显示额外元数据。
 
+时间线类型还包括 `discovered`、`implemented`、`verify_started`、`verify_passed` 和 `verify_failed`。消费者不会把时间线事件解释为节点状态或调度依据；未知类型不影响图行为。验证子代理使用行的当前 `attempt`，由该行的验证状态标识。
+
 ## 待办依赖边
 
 包装会保留原生的修改、详情、钩子、批准、批量失败和渲染行为。原生操作出错时不记录依赖边。删除或修改任务会清理相关的边，`init` 会开始新的一代。

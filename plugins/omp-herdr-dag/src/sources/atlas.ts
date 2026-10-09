@@ -24,7 +24,21 @@ export interface AtlasHello {
 export interface AtlasEvent {
   version: 1;
   at: number;
-  kind: "attached" | "released" | "started" | "done" | "reopened" | "blocked" | "fix_added" | "gate_passed" | "gate_failed";
+  kind:
+    | "attached"
+    | "released"
+    | "started"
+    | "done"
+    | "reopened"
+    | "blocked"
+    | "fix_added"
+    | "gate_passed"
+    | "gate_failed"
+    | "discovered"
+    | "implemented"
+    | "verify_started"
+    | "verify_passed"
+    | "verify_failed";
   row?: string;
   attempt?: string;
   sessionId: string;

@@ -213,6 +213,13 @@ test("Atlas v1 discovered, HEAVY verification and delivery rows retain bands and
   const frame: AtlasSnapshot = {
     ...snapshot,
     total: 5,
+    timeline: (["discovered", "implemented", "verify_started", "verify_passed", "verify_failed"] as const).map((kind) => ({
+      version: 1,
+      kind,
+      sessionId: "session",
+      at: 10,
+      row: "T1",
+    })),
     rows: [
       { ...task, tier: "heavy", verification: { status: "running" } },
       { id: "D1", title: "Found defect", kind: "discovered", status: "open", agent: "worker", dependsOn: [], origin: "T1", updatedAt: 10 },
@@ -223,6 +230,10 @@ test("Atlas v1 discovered, HEAVY verification and delivery rows retain bands and
   };
   try {
     events.emit("atlas:snapshot", frame);
+    events.emit("atlas:snapshot", {
+      ...frame,
+      timeline: [...frame.timeline, { version: 1, kind: "future-event", at: 10, sessionId: "session" }],
+    });
     const run = source.run;
     expect(run).toBeDefined();
     if (!run) throw new Error("Expected Atlas run");
