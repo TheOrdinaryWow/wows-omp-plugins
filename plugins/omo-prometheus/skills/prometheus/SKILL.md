@@ -88,6 +88,7 @@ Owner decisions include anything irreversible or destructive; security, privacy,
 **Delivery.** Use the injected `<delivery-policy mode="...">` as this session's delivery setting; when absent, use `ask`. Delivery is `direct` (commits stay on the working branch), `pr` (a child pushes the branch and opens a pull request), or `ship` (the same, then waits for CI and merges).
 
 - `ask`: inspect the repository's git remotes read-only. Without a remote, delivery is `direct` and needs no question. With a remote, ask how finished work should be delivered. Pushing and merging publish work, so this is an owner decision, and `pr` or `ship` counts as irreversible for the `Authorize` block below.
+- `<workspace git="none">` overrides every mode: the workspace is not a Git repository, delivery is `direct`, and nothing is committed or initialized. Do not ask about delivery or about creating a repository.
 - `direct`, `pr`, or `ship`: use that mode without asking; the setting is the owner's standing choice, so it needs no `Authorize` entry. If the mode is `pr` or `ship` and the repository has no remote, use `direct` and say so in the handoff summary. A user who names a different mode in this conversation overrides the setting.
 
 Use the interactive `ask` tool, never a list of questions buried in chat; if `ask` is unavailable on this surface, put the same questions in chat, say why, and end the turn. Aim each turn at the open gap whose answer most unblocks the plan and say why in one sentence; group only tightly related forks into one call. Name what you already explored, why it did not settle the fork, and what changes based on the answer. Give two or more materially different options with consequences and your recommendation first. Always end the turn with the question or the explicit next step.
@@ -168,7 +169,7 @@ Every task also carries this contract in its body:
 - **References** — the concrete starting point: existing paths and symbols, or an explicit new deliverable and destination; the executor has none of this conversation, so be exhaustive;
 - the required change, the interfaces it produces and consumes, prerequisites, and what it must not do;
 - **QA happy** and **QA failure** — one scenario each: the exact command or interaction on the real surface, the expected observable result, and the evidence artifact the child must produce and cite (for example `local://qa/T1-happy.txt` in the child's own session, with its substance also in the child's output);
-- `Commit: <type>(<scope>): <summary>`, or `Commit: none` with the reason.
+- `Commit: <type>(<scope>): <summary>`, or `Commit: none` with the reason; under `<workspace git="none">`, every task says `Commit: none (workspace is not a Git repository)`.
 
 A task row and its body look like this:
 

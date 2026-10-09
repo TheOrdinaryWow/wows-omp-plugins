@@ -1793,10 +1793,11 @@ async function scenario(name: string, root: string): Promise<void> {
     refused(await gitTool({ action: "status" }));
     return;
   }
-  if (name === "isolation-required") {
+  if (name === "isolation-required" || name === "non-git-workspace") {
     // Host modules load only inside the isolated child process, after HOME is private.
     const { cfgTaskIsolationEnabled, cfgTaskIsolationMerge } = await import("@oh-my-pi/pi-coding-agent/task/settings");
     cfgTaskIsolationEnabled.override(settings, true);
+    if (name === "isolation-required") assert.equal(Bun.spawnSync(["git", "init", "-q"], { cwd: root }).exitCode, 0);
     const dispatch = async (id: string, extra: Record<string, unknown> = {}) => {
       ok(await call({ action: "start", id }));
       const item = await row(id);
@@ -1807,6 +1808,18 @@ async function scenario(name: string, root: string): Promise<void> {
         input: { agent: item.dispatchAgent, task, solutionSpace: "Scoped", ...extra },
       })) as { block?: boolean; reason?: string } | undefined;
     };
+    if (name === "non-git-workspace") {
+      // Host isolation needs Git, so outside a work tree nothing demands it and Git settings stay untouched.
+      assert.equal(await dispatch("T1"), undefined);
+      assert.equal(cfgTaskIsolationMerge.get(settings), "patch");
+      const prompt = (await hook("before_agent_start", { prompt: "Continue", systemPrompt: [] })) as { systemPrompt?: string[] };
+      assert.match(prompt.systemPrompt?.join("\n") ?? "", /<workspace git="none">.*never run `git init`/);
+      const git = await call({ action: "status" }, "atlas_git");
+      assert.equal(git.isError, true);
+      assert.match(git.content[0]?.text ?? "", /not a Git repository, and Atlas never uses or creates one/);
+      await assert.rejects(readFile(join(root, ".git", "HEAD")), { code: "ENOENT" });
+      return;
+    }
     assert.match((await dispatch("T1"))?.reason ?? "", /T1 is implementation work and must dispatch with isolated: true/);
     assert.equal(cfgTaskIsolationMerge.get(settings), "patch");
     ok(await call({ action: "reopen", id: "T1" }));
@@ -2051,6 +2064,7 @@ if (process.env[CHILD_ENV]) {
       "heavy-verify-fail",
       "research-children",
       "isolation-required",
+      "non-git-workspace",
       "atlas-git",
       "discover",
     ]) {

@@ -50,7 +50,7 @@ Check the existing references tasks materially rely on. Verify paths, symbols, a
 
 ### 3. Executability and dependency integrity
 
-Each actionable task needs a concrete starting point, an exact deliverable, the interfaces and contracts it touches, prerequisites, non-goals, and observable acceptance evidence. Dependencies must be satisfiable and concurrent file ownership must not collide. The plan must state that Atlas delegates all implementation, tests, QA, documentation, cleanup, git work, and final verification, and that execution children perform their assigned slices directly instead of inheriting Atlas-only orchestration rules.
+Each actionable task needs a concrete starting point, an exact deliverable, the interfaces and contracts it touches, prerequisites, non-goals, and observable acceptance evidence. Dependencies must be satisfiable and concurrent file ownership must not collide. The plan must state that Atlas delegates all implementation, tests, QA, documentation, cleanup, git work, and final verification, and that execution children perform their assigned slices directly instead of inheriting Atlas-only orchestration rules. A plan for a workspace that is not a Git repository correctly has no git work: `Commit: none (workspace is not a Git repository)` on every task and `Delivery: direct` are valid, and any task that runs git or `git init` there is a blocker.
 
 Do not demand arbitrary task splitting, a minimum number of tasks or children, implementation minutiae a competent worker derives from the code, or a different architecture because you prefer it.
 

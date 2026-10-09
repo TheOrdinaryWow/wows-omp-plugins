@@ -70,6 +70,15 @@ export async function gitHead(cwd: string): Promise<string | undefined> {
   return run.ok && GIT_SHA.test(sha) ? sha : undefined;
 }
 
+/**
+ * Whether `cwd` is inside a Git work tree. A missing Git binary, a timeout or a bare repository count as no work
+ * tree: the workflow then never uses or creates Git there.
+ */
+export async function isGitWorkTree(cwd: string): Promise<boolean> {
+  const run = await runGit(cwd, ["rev-parse", "--is-inside-work-tree"], 3_000);
+  return run.ok && run.stdout.trim() === "true";
+}
+
 function section(command: string, run: GitRun): string {
   if (!run.ok) return `$ ${command}\n(unavailable: ${run.error ?? "unknown error"})`;
   let lines = run.stdout.replace(/\n$/, "").split("\n");

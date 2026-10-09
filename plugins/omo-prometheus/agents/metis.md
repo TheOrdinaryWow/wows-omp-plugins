@@ -68,7 +68,7 @@ Check that the proposed work specifies:
 - ownership boundaries that avoid concurrent edits to the same file;
 - complete migration of affected callers and deletion of obsolete paths for a clean cutover;
 - the root Atlas delegation rule, with child assignments explicitly exempt from Atlas-only orchestration so workers execute rather than recursively delegate;
-- a working-slice commit policy, with no broken commits, and a `Commit:` line per task;
+- a working-slice commit policy, with no broken commits, and a `Commit:` line per task; when the workspace is not a Git repository, every task instead says `Commit: none (workspace is not a Git repository)`, delivery is `direct`, and no task runs git or `git init`;
 - a `Tier:` on every task, with `HEAVY` wherever the task touches authentication, security, migrations, concurrency, persistence formats, public API, or carries data-loss risk, and `LIGHT` otherwise;
 - a delivery mode that matches the user's answer (`direct`, `pr`, or `ship`), with delivery work left to the runtime's delivery row rather than written as a task;
 - independent final verification delegated to children rather than performed by Atlas.

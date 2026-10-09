@@ -80,7 +80,9 @@ Atlas tracks the plan in a ledger. A task is done only with proof from its child
 
 Atlas is nudged to continue unfinished work. If the ledger or plan files are missing, damaged or no longer match the approved plan, Atlas pauses until you restore them, or exit with `/atlas exit` and get a changed plan approved.
 
-Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. It follows the host's `task.isolation` settings (with `merge: patch`, child commits are squashed into one patch) and never changes them.
+Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. It follows the host's `task.isolation` settings, except that with `merge: patch` it switches merges to `branch` while it executes so each child's commits survive, and restores your setting on exit. Children commit their own work; Atlas commits only roadmap documents and work a finished child left uncommitted, through its guarded `atlas_git` tool.
+
+In a workspace that is not a Git repository, nobody uses or creates Git: plans say `Commit: none`, delivery is `direct`, children are told not to commit or run `git init`, isolation is not required, and F1 checks the plan without Git history. Run `git init` yourself before planning if you want commits.
 
 ### Final gates
 
@@ -97,7 +99,7 @@ Each gate returns a structured `PASS`, `FAIL` or `INCONCLUSIVE`; only `PASS` cou
 
 ### Delivery
 
-`delivery` sets how finished work leaves the repository: `direct` keeps commits on the working branch, `pr` has a child push the branch and open a pull request after the gates, and `ship` also waits for CI and merges. With `ask` (the default), Prometheus asks when the repository has a remote; a fixed value is used without asking, `pr` or `ship` without a remote becomes `direct`, and you can override it in conversation. The plan's `Delivery:` line governs execution, and Atlas itself never runs git.
+`delivery` sets how finished work leaves the repository: `direct` keeps commits on the working branch, `pr` has a child push the branch and open a pull request after the gates, and `ship` also waits for CI and merges. With `ask` (the default), Prometheus asks when the repository has a remote; a fixed value is used without asking, `pr` or `ship` without a remote becomes `direct`, and you can override it in conversation. The plan's `Delivery:` line governs execution, and pushes and merges are always done by a child.
 
 ### The `/atlas` command
 

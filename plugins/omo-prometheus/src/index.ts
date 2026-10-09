@@ -37,7 +37,7 @@ import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema, parseVerifyOutput, verifyOutputSchema } from "./evidence.ts";
-import { collectComplianceEvidence } from "./git-evidence.ts";
+import { collectComplianceEvidence, isGitWorkTree } from "./git-evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
 import { forceBranchMerge, restoreIsolationMerge } from "./isolation-merge.ts";
 import {
@@ -112,6 +112,10 @@ const PLAN_MODE_DISABLED =
 const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_PLAN_REFERENCE = "local://PLAN.md";
 const PACKAGE_NAME = "wows-omp-plugin-omo-prometheus";
+const NON_GIT_PLANNING =
+  '<workspace git="none">This workspace is not a Git repository, and this workflow never uses or creates one. Plan without Git: write `Delivery: direct`, give every task `Commit: none (workspace is not a Git repository)`, assign no git, commit or `git init` work, and prove each task by its observed behavior rather than a diff. If the user wants Git, they initialize it themselves before planning.</workspace>';
+const NON_GIT_EXECUTION =
+  '<workspace git="none">This workspace is not a Git repository, and this workflow never uses or creates one. In every assignment, replace the commit rule with: do not run git, do not commit, and never run `git init`; list changed files in the done-claim instead. Do not call `atlas_git`. Isolation is not required here, and F1 receives no Git evidence.</workspace>';
 
 type ReviewLevel = "off" | "ask" | "standard" | "high-accuracy";
 
@@ -1511,7 +1515,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       `<review-policy level="${reviewLevels.get(sessionId) ?? "ask"}" round-limit="${roundLimitLabel}">` +
       "Apply this session's plan-review setting in section 7 of the planning skill. The plugin counts and enforces the round limit.</review-policy>\n" +
       `<delivery-policy mode="${deliverySettings.get(sessionId) ?? "ask"}">` +
-      "Apply this session's delivery setting from the Delivery rule in section 4 of the planning skill.</delivery-policy>";
+      "Apply this session's delivery setting from the Delivery rule in section 4 of the planning skill.</delivery-policy>" +
+      ((await isGitWorkTree(ctx.cwd)) ? "" : `\n${NON_GIT_PLANNING}`);
     try {
       return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${reviewPolicy}\n\n${loadPromptAsset(SKILL_ASSET)}`;
     } catch (error) {
@@ -1534,7 +1539,8 @@ export default function prometheus(pi: ExtensionAPI): void {
     const ledgerBlock = ledger
       ? `\n\n<execution-ledger path="${record.ledgerPath}">\n${ledgerSummary(ledger)}\n</execution-ledger>`
       : `\n\n<execution-ledger status="paused">${pauseMessage(record)}</execution-ledger>`;
-    const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}`;
+    const workspace = (await isGitWorkTree(ctx.cwd)) ? "" : `\n\n${NON_GIT_EXECUTION}`;
+    const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}${workspace}`;
     try {
       return `${header}\n\n${loadPromptAsset(ATLAS_ASSET)}`;
     } catch (error) {
@@ -2175,6 +2181,11 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       const ownership = record.ownership;
       if (!ownership || !(await readLedger(ctx, record))) return fail(pauseMessage(record));
+      if (!(await isGitWorkTree(ctx.cwd))) {
+        return fail(
+          "This workspace is not a Git repository, and Atlas never uses or creates one here. Nothing to inspect or commit; skip Git steps.",
+        );
+      }
       if (params.action === "commit") {
         observeNativeJobs(ownership.sessionId, ownership.live, ownership.parentAgentId);
         if (childEvidence.hasPending(ownership.sessionId, ownership.ledgerId)) {
@@ -2481,7 +2492,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
     } else if (!detail && event.toolName === "task") {
       const originSessionId = ctx.sessionManager.getSessionId();
-      const isolationRequired = cfgTaskIsolationEnabled.get(live.settings);
+      // Host isolation copies and merges through Git, so outside a work tree an isolated spawn always fails.
+      const isolationRequired = cfgTaskIsolationEnabled.get(live.settings) && (await isGitWorkTree(ctx.cwd));
       let remembered = false;
       try {
         if (!evidenceSubscription) throw new Error("native child lifecycle evidence is unavailable on this host");
