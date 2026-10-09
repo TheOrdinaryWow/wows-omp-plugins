@@ -215,11 +215,12 @@ Re-evaluate explicit user requests on later turns before proposing; if `ask` or 
 Every reviewer dispatch, routine or high accuracy, must bind the reviewer to the exact current artifact. In an isolated child, `local://` resolves to that child's own directory, so a `local://` reference is never a valid handoff. Pass literally:
 
 - `absolute_plan_path` — the canonical absolute host path of the plan, copied from the result of your own `write` or `read` of `local://<slug>-plan.md`;
-- `plan_content` — the complete current plan text;
 - `review_round` — a fresh identifier;
 - `review_kind` — `routine` or `high_accuracy`;
 - `available_agents` — the exact names in the planning context's `<available-agents>` block, or `unknown` when that block reports an unparseable list. Pass this on every Momus review, including re-reviews, so the reviewer can validate user-defined names against the same roster; do not substitute the child's own task-tool list.
 - the frozen blocker ledger, from round two onward.
+
+Never inline the plan text. The host reformats Markdown in task assignments (it trims trailing spaces, drops repeated blank lines, and compacts table rows), so no inline copy, fenced or not, reliably matches the file; the reviewer reads the file itself and treats it as the only authority. The path binds the content only while the file stays put: write every revision before dispatching a round, and never write the plan while a round is in flight. A write after dispatch invalidates that round.
 
 A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispatch a fresh round. Never accept a review of a different, older, or autosaved artifact, and never tell a reviewer to go find the plan.
 
@@ -235,7 +236,7 @@ A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispat
 - a concrete security, data-loss, compatibility, external-provider, or release-contract conflict;
 - a violation of the task and gate grammar, including a missing or wrong `Tier:`.
 
-Everything else is a non-blocking note: an optional improvement, never a revision demand and never scope growth. Fix eligible blockers with the smallest edit that resolves them. **Any change to the plan invalidates every earlier verdict**: dispatch a fresh round with the new content and a new round identifier; never carry an approval across a revision. After round one, freeze the blocker ledger: later rounds verify accepted blockers, regressions introduced by the fixes, and genuinely new eligible findings only.
+Everything else is a non-blocking note: an optional improvement, never a revision demand and never scope growth. Fix eligible blockers with the smallest edit that resolves them. **Any change to the plan invalidates every earlier verdict**: write the revision, then dispatch a fresh round with a new round identifier; never carry an approval across a revision. After round one, freeze the blocker ledger: later rounds verify accepted blockers, regressions introduced by the fixes, and genuinely new eligible findings only.
 
 **Rounds are capped at five**, routine and high accuracy alike. If the cap is reached without the required approvals, stop, report the outstanding blockers, and ask the user whether to continue, accept the plan as it stands, or adjust it.
 
@@ -249,7 +250,7 @@ For `ask`, high accuracy is automatic for nontrivial UNCLEAR work and requires t
 
 One high-accuracy round is **one new `momus` review and one new independent `oracle` review of the same complete current plan**, dispatched together as an isolated pair with identical bindings. Both must return `[OKAY]` for the round to pass; `[OKAY]` with notes counts as approval. This is a real second opinion, not self-scrutiny: never substitute your own re-reading, a routine verdict, a stale round, or a single reviewer for the pair.
 
-Report "high-accuracy review completed" only when both lanes approved the same final plan content.
+Report "high-accuracy review completed" only when both lanes approved the same final plan: the pair was dispatched after your last write to the plan file, and you have not written it since.
 
 ## 8. Native approval and handoff
 

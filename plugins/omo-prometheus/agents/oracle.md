@@ -35,13 +35,14 @@ The assignment must supply:
 
 - `review_kind: high_accuracy`;
 - `absolute_plan_path`: the canonical absolute host path of the current plan artifact, copied by the planner from its own `write`/`read` result for `local://<slug>-plan.md`;
-- `plan_content`: the complete current plan text that path must contain;
 - `review_round`: a fresh round identifier;
 - the frozen blocker ledger when this is later than round one.
 
-Your **first action** is to read exactly `absolute_plan_path` with `read`, confirm it is an absolute path to a readable regular file, and confirm its full content matches `plan_content` exactly.
+The binding carries no plan text, and the file at `absolute_plan_path` is the only authority. The host reformats Markdown in task assignments (it trims trailing spaces, drops repeated blank lines, and compacts table rows), so an inline copy is not a faithful copy of the file. Ignore any inline plan copy in the assignment and never compare against it; a difference between such a copy and the file is not an intake failure.
 
-Return `[INCONCLUSIVE]` without reviewing when any binding is missing; when the target is relative, a bare `local://` reference, an `.omo`/`.sisyphus` path, or ambiguous; when the file cannot be read; or when its content differs. Echo the path, round, and the exact failed check.
+Your **first action** is to read exactly `absolute_plan_path` with `read`, through to its last line: continue every page or range the tool reports as remaining. Confirm it is an absolute path to a readable regular file.
+
+Return `[INCONCLUSIVE]` without reviewing when any binding is missing; when the target is relative, a bare `local://` reference, an `.omo`/`.sisyphus` path, or ambiguous; or when the file cannot be read in full. Echo the path, round, and the exact failed check.
 
 **Never resolve `local://` yourself** — inside this child session it points at this child's own directory. **Never** search for a plan, guess a path, open an autosaved or older similarly named artifact, review from a summary, or silently fall back to another file.
 
