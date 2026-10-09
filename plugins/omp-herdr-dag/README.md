@@ -169,6 +169,7 @@ The pane only runs in an interactive TUI session inside Herdr. RPC, ACP, SDK and
 
 - Herdr only; no other terminal multiplexer and no Windows.
 - Subagents of subagents appear as status-only cards marked `activity unavailable`, without live tools, output or usage.
+- Upgrading the plugin removes the installed copy the running OMP loaded, so a DAG pane cannot open again until you restart OMP. The plugin says so instead of opening a broken pane; a pane that is already open keeps working.
 - Metrics and transcripts depend on what OMP reports.
 - If OMP crashes between creating the pane and recording it, an orphan pane may remain. The plugin warns but never closes panes it does not own; close it by hand.
 - The plugin's local files can contain task descriptions, tool arguments, output fragments, error messages and local paths. Treat them like session data.

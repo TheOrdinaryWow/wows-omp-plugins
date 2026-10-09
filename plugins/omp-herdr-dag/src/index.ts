@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -290,16 +291,23 @@ class DagExtension {
       this.#snapshot = snapshot;
       const env = this.#deps.env ?? process.env;
       const socketPath = herdrSocketPath(env.HERDR_PANE_ID as string, process.pid);
-      const viewerCommand = (paneId: string) =>
-        buildViewerCommand({
+      const viewer = fileURLToPath(new URL("../viewer/main.ts", import.meta.url));
+      const viewerCommand = (paneId: string) => {
+        // Upgrading or removing the plugin deletes this install's directory under the running process.
+        if (!existsSync(viewer))
+          throw new Error(
+            "the viewer of this omp-herdr-dag install is gone; the plugin was upgraded or removed. Restart OMP to show the DAG",
+          );
+        return buildViewerCommand({
           runtime: resolveViewerRuntime(this.#settings.viewerRuntime) ?? runtime,
-          viewer: fileURLToPath(new URL("../viewer/main.ts", import.meta.url)),
+          viewer,
           socket: socketPath,
           snapshot: this.#paths.snapshot,
           state: this.#paths.state,
           pane: paneId,
           finish: this.#settings.finishBehavior,
         });
+      };
       if (!this.#pane) {
         const exec: HerdrExec = async (args, options) => {
           const controller = new AbortController();
