@@ -99,6 +99,7 @@ omp plugin config set wows-omp-plugin-omo-ultrawork researchScratchDir /tmp/my-r
 
 - 扩展生成的消息和子会话中的关键词会被忽略。
 - `/hyperplan` 和 `/ulw-research` 的流程是私有提示词，不是技能，所以你和模型都无法通过 `skill://` 或 `/skill:` 打开它们。`mass-ulw` 是本插件唯一公开的技能。
+- 升级插件会删除正在运行的会话所加载的那份安装副本，所以在重启 OMP 之前，`/ulw-research` 会提示其脚本已不存在。其他提示词在插件加载时就已读入，不受影响。
 
 ## 参考
 

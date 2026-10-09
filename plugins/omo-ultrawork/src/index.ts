@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -236,7 +237,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
     if (state.mode || keyword) {
       if (!state.armed || state.rearmPending) {
         try {
-          content = `<ultrawork-mode>\n${await loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
+          content = `<ultrawork-mode>\n${loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
         } catch (error) {
           commandNotice(ctx, `Ultrawork directive could not be loaded (${errorMessage(error)}); input ignored.`, "error");
           return undefined;
@@ -314,7 +315,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
       }
 
       try {
-        const content = `<ultrawork-mode>\n${await loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
+        const content = `<ultrawork-mode>\n${loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
         state.mode = true;
         state.armed = true;
         state.rearmPending = false;
@@ -347,7 +348,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
         return;
       }
       try {
-        const body = await loadPromptAsset(HYPERPLAN_ASSET);
+        const body = loadPromptAsset(HYPERPLAN_ASSET);
         pi.sendUserMessage(`<hyperplan-request>\n${request}\n</hyperplan-request>\n\n${body}`);
       } catch (error) {
         commandNotice(ctx, `Hyperplan procedure could not be loaded (${errorMessage(error)}).`, "error");
@@ -368,8 +369,16 @@ export default function ultrawork(pi: ExtensionAPI): void {
         return;
       }
       try {
-        const body = await loadPromptAsset(RESEARCH_ASSET);
+        const body = loadPromptAsset(RESEARCH_ASSET);
         const dir = fileURLToPath(new URL("../assets/ulw-research", import.meta.url));
+        if (!existsSync(dir)) {
+          commandNotice(
+            ctx,
+            "The research scripts of this omo-ultrawork install are gone; the plugin was upgraded or removed while this session ran. Restart OMP to use /ulw-research.",
+            "error",
+          );
+          return;
+        }
         const configured = await settingsFor(ctx);
         const scratchRoot = configured.researchScratchDir.trim()
           ? path.resolve(ctx.cwd, configured.researchScratchDir)
