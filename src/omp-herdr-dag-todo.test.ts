@@ -268,7 +268,7 @@ if (process.env[CHILD_ENV]) {
 
     test("Atlas mirrors are hidden only while bound, including an all-mirror list", () => {
       const source = new TodoSource({ sessionId: "session", now: () => 1_000 });
-      const mirrored = ["Atlas tasks", "Atlas fixes", "Atlas final gates"].map(
+      const mirrored = ["Atlas tasks", "Atlas discovered", "Atlas fixes", "Atlas final gates", "Atlas delivery"].map(
         (name): TodoPhase => ({ name, tasks: [{ content: name, status: "pending" }] }),
       );
       source.observeResult(
@@ -277,13 +277,13 @@ if (process.env[CHILD_ENV]) {
       source.setAtlasBound(true);
       expect(source.current?.nodes.map((node) => node.label)).toEqual(["A", "B", "Keep"]);
       source.setAtlasBound(false);
-      expect(source.current?.nodes).toHaveLength(6);
+      expect(source.current?.nodes).toHaveLength(8);
       source.observeResult(resultEvent("init", mirrored));
       source.setAtlasBound(true);
       expect(source.current).toBeUndefined();
       source.setAtlasBound(false);
       expect(source.current?.source).toBe("todo");
-      expect(source.current?.nodes).toHaveLength(3);
+      expect(source.current?.nodes).toHaveLength(5);
     });
 
     test("hidden all-Atlas lists leave approval armed and release as blue todos", () => {
@@ -300,7 +300,7 @@ if (process.env[CHILD_ENV]) {
           details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
         });
         plan.beforeAgentStart(handoff, "local://approved.md");
-        const mirrored = ["Atlas tasks", "Atlas fixes", "Atlas final gates"].map(
+        const mirrored = ["Atlas tasks", "Atlas discovered", "Atlas fixes", "Atlas final gates", "Atlas delivery"].map(
           (name): TodoPhase => ({ name, tasks: [{ content: name, status: "pending" }] }),
         );
         if (writer === "poll") {
@@ -312,7 +312,7 @@ if (process.env[CHILD_ENV]) {
         expect(plan.state.runId).toBeUndefined();
         source.setAtlasBound(false);
         expect(source.current?.source).toBe("todo");
-        expect(source.current?.nodes).toHaveLength(3);
+        expect(source.current?.nodes).toHaveLength(5);
         expect(plan.state.runId).toBeUndefined();
         source.observeResult(resultEvent());
         expect(source.current?.source).toBe("plan");

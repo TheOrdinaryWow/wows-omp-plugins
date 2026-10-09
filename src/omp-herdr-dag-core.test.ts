@@ -137,7 +137,7 @@ describe("DAG model", () => {
     const run = atlasRun({ plan: { id: "p", name: "Plan" }, rows, at: 20 });
     expect(run.source).toBe("atlas");
     expect(run.id).toBe("atlas:p");
-    expect(run.nodes.find((node) => node.id === "atlas:F1")?.band).toBe(2);
+    expect(run.nodes.find((node) => node.id === "atlas:F1")?.band).toBe(3);
     expect(run.edges).toContainEqual({ from: "atlas:T1", to: "atlas:F1", kind: "depends" });
     expect(run.edges).toContainEqual({ from: "atlas:X1", to: "atlas:F1", kind: "fix" });
     expect(run.nodes.find((node) => node.id === "atlas:T1")?.taskIds).toEqual(["child"]);

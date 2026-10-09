@@ -31,6 +31,8 @@
           "band": 0,
           "bandName": "Tasks",
           "agent": "deep-low",
+          "tier": "heavy",
+          "verification": { "status": "passed" },
           "startedAt": 1791100120000,
           "finishedAt": 1791101200000,
           "taskIds": []
@@ -66,10 +68,21 @@
           "taskIds": []
         },
         {
+          "id": "atlas:D1",
+          "label": "D1. Repair discovered reconnect race",
+          "state": "running",
+          "band": 1,
+          "bandName": "Discovered",
+          "agent": "deep-low",
+          "tier": "heavy",
+          "verification": { "status": "pending" },
+          "taskIds": []
+        },
+        {
           "id": "atlas:X1",
           "label": "X1. Fix pane ratio inversion",
           "state": "running",
-          "band": 1,
+          "band": 2,
           "bandName": "Fixes",
           "agent": "deep-low",
           "startedAt": 1791101320000,
@@ -79,7 +92,7 @@
           "id": "atlas:F1",
           "label": "F1. Plan compliance review",
           "state": "done",
-          "band": 2,
+          "band": 3,
           "bandName": "Final gates",
           "detail": "PASS: all rows map to plan tasks",
           "agent": "reviewer",
@@ -90,7 +103,7 @@
           "id": "atlas:F2",
           "label": "F2. Code quality review",
           "state": "blocked",
-          "band": 2,
+          "band": 3,
           "bandName": "Final gates",
           "detail": "FAIL: ratio is inverted for bottom splits",
           "agent": "reviewer",
@@ -100,9 +113,18 @@
           "id": "atlas:F3",
           "label": "F3. Real-surface QA",
           "state": "pending",
-          "band": 2,
+          "band": 3,
           "bandName": "Final gates",
           "agent": "reviewer",
+          "taskIds": []
+        },
+        {
+          "id": "atlas:P1",
+          "label": "P1. Push and open pull request",
+          "state": "pending",
+          "band": 4,
+          "bandName": "Delivery",
+          "agent": "deep-low",
           "taskIds": []
         }
       ],
@@ -112,6 +134,14 @@
         { "from": "atlas:T2", "to": "atlas:T4", "kind": "depends" },
         { "from": "atlas:T3", "to": "atlas:T5", "kind": "depends" },
         { "from": "atlas:T4", "to": "atlas:T5", "kind": "depends" },
+        { "from": "atlas:T4", "to": "atlas:D1", "kind": "fix" },
+        { "from": "atlas:D1", "to": "atlas:F1", "kind": "depends" },
+        { "from": "atlas:D1", "to": "atlas:F2", "kind": "depends" },
+        { "from": "atlas:D1", "to": "atlas:F3", "kind": "depends" },
+        { "from": "atlas:F1", "to": "atlas:P1", "kind": "depends" },
+        { "from": "atlas:F2", "to": "atlas:P1", "kind": "depends" },
+        { "from": "atlas:F3", "to": "atlas:P1", "kind": "depends" },
+        { "from": "atlas:X1", "to": "atlas:P1", "kind": "depends" },
         { "from": "atlas:X1", "to": "atlas:F2", "kind": "fix" },
         { "from": "atlas:T5", "to": "atlas:F1", "kind": "depends" },
         { "from": "atlas:T5", "to": "atlas:F2", "kind": "depends" },
@@ -119,7 +149,7 @@
       ],
       "createdAt": 1791100000000,
       "updatedAt": 1791101200000,
-      "stats": { "done": 4, "total": 9, "elapsedMs": 1800000, "tokens": 129500, "costUsd": 0.923 }
+      "stats": { "done": 4, "total": 11, "elapsedMs": 1800000, "tokens": 129500, "costUsd": 0.923 }
     }
   ],
   "tasks": [

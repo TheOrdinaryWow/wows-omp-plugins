@@ -291,6 +291,30 @@ describe("omp-herdr-dag viewer rendering", () => {
     }
   });
 
+  test("Atlas tier badges and verification states render in boxes and selected-node metadata", async () => {
+    const base = await fixture("atlas");
+    const run = base.runs[0];
+    if (!run) throw new Error("Expected Atlas fixture run");
+    const node = run.nodes.find((node) => node.id === "atlas:T2");
+    if (!node) throw new Error("Expected HEAVY fixture node");
+    for (const status of ["pending", "running", "passed", "failed"] as const) {
+      const snapshot: Snapshot = { ...base, runs: [{ ...run, nodes: [{ ...node, verification: { status } }], edges: [] }] };
+      for (const cols of [24, 50, 100]) {
+        const ui = createUi();
+        ui.selected.set(run.id, node.id);
+        const lines = frame(snapshot, { cols, rows: 40, ui });
+        const text = strip(lines.join("\n"));
+        expect(text).toContain("[HEAVY]");
+        expect(text).toContain(`verify: ${status}`);
+        for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(cols);
+      }
+    }
+    const legacy: Snapshot = { ...base, runs: [{ ...run, nodes: [{ ...node, tier: undefined, verification: undefined }], edges: [] }] };
+    const text = strip(frame(legacy).join("\n"));
+    expect(text).not.toContain("[HEAVY]");
+    expect(text).not.toContain("verify:");
+  });
+
   test("each state has its own icon in its state color", async () => {
     const base = await fixture("todo-only");
     const states: NodeState[] = ["pending", "running", "done", "failed", "blocked", "abandoned"];

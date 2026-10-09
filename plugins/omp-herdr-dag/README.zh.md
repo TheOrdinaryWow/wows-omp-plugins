@@ -53,7 +53,7 @@ omp plugin install omp-herdr-dag@wows-omp-plugins
 | --- | --- | --- |
 | 原生待办 | 蓝色 `#4f8cff` | 待办阶段构成横带。阶段之间的虚线分隔表示顺序，不表示依赖。 |
 | 计划执行 | 紫色 `#a371f7` | 你批准原生计划后出现的第一份新待办列表。 |
-| Atlas | 绿色 `#3fb950` | `omo-prometheus` 的任务、修正和最终关口，带有真实的依赖边。 |
+| Atlas | 绿色 `#3fb950` | `omo-prometheus` 的任务、新发现工作、修正、最终关口和交付，带有真实的依赖边。 |
 
 节点状态的颜色跟随 OMP 主题：
 
@@ -159,7 +159,7 @@ omp plugin config wows-omp-plugin-omp-herdr-dag
 
 ## 与其他插件配合
 
-当本插件的 `atlasIntegration` 和 Prometheus 的 `herdrDag` 设置都开启时（默认如此），`omo-prometheus` 的 Atlas 计划会以绿色运行显示。显示 Atlas 计划期间，Atlas 镜像的待办阶段（`Atlas tasks`、`Atlas fixes`、`Atlas final gates`）不会出现在蓝色待办视图中，以免同一份工作显示两次。
+当本插件的 `atlasIntegration` 和 Prometheus 的 `herdrDag` 设置都开启时（默认如此），`omo-prometheus` 的 Atlas 计划会以绿色运行显示。横带依次为 Tasks、Discovered、Fixes、Final gates、Delivery。行中提供分级和验证信息时，会显示 LIGHT/HEAVY 徽标及验证状态。显示 Atlas 计划期间，Atlas 镜像的待办阶段（`Atlas tasks`、`Atlas discovered`、`Atlas fixes`、`Atlas final gates`、`Atlas delivery`）不会出现在蓝色待办视图中，以免同一份工作显示两次。
 
 ## 不使用终端界面时
 

@@ -46,6 +46,8 @@ When settings change: `displayTiming` applies at the next evaluation without clo
 
 The viewer consumes the `pi.events` contract published by `omo-prometheus`; the [omo-prometheus reference](../omo-prometheus/REFERENCE.md#herdr-dag-contract) defines the events. Without an enabled producer, the viewer reports Atlas integration as unavailable, and native todos and Tasks keep working.
 
+`atlas:snapshot` stays at `v: 1`. Row kinds are `task`, `discovered`, `fix`, `gate`, `delivery`, laid out in that order as Tasks, Discovered, Fixes, Final gates, Delivery. Discovered rows draw a fix-style edge from their `origin` to the discovered row; fix rows retain their edge toward the originating gate. These provenance edges do not imply a scheduling dependency. Optional `tier: "light" | "heavy"` appears as a LIGHT/HEAVY badge; optional `verification: { status: "pending" | "running" | "passed" | "failed" }` appears as `verify: <status>` in the node and selection details. Snapshots without either field remain accepted and show no extra metadata.
+
 ## Todo edges
 
 The wrapper preserves native mutations, details, hooks, approval, batch failure and rendering. A native operation error records no edges. Removing or changing tasks prunes their edges, and `init` starts a fresh generation.
@@ -58,7 +60,7 @@ Durable files live under `ctx.sessionManager.getSessionDir()/herdr-dag/<sessionI
 | --- | --- |
 | `snapshot.json` | `version`, session ID/name, generation, connection flag, timestamp, runs, task cards, theme palette, three source colors, Atlas availability, and optional `layoutAlign` (absent in older snapshots, which render centered). |
 | Run objects | ID, source, title, generation, nodes, edges, creation/update/finish timestamps, and done/total/elapsed/token/cost stats. |
-| Node objects | ID, label, state, band/name, detail, start/finish timestamps, agent, linked task IDs and stalled flag. Edges contain `from`, `to` and `kind`. |
+| Node objects | ID, label, state, band/name, detail, start/finish timestamps, agent, linked task IDs, stalled flag, and optional tier and verification state. Edges contain `from`, `to` and `kind`. |
 | Task cards | ID, parent task/node IDs, agent, status, optional stalled flag, description, current tool/arguments, recent output, completed/current activation totals (tokens, cost, duration), activation count, model, retry attempt/limit/error, transcript path, start/finish timestamps, detached flag, depth and activity-availability flag. |
 | Theme palette | Text, muted, dim, accent, success, error, warning, border, accented/muted border and optional background colors. |
 | `pane.json` | `version`, splitting/open phase, pane/tab IDs when known, host pane ID, orientation, position, launch timestamp, optional launching socket path and dismissal flag. |

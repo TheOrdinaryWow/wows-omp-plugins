@@ -53,7 +53,7 @@ Each run is colored by its source:
 | --- | --- | --- |
 | Native todo | Blue `#4f8cff` | Todo phases form bands. Dashed separators between phases mean order, not dependency. |
 | Plan execution | Purple `#a371f7` | The first new todo list after you approve a native plan. |
-| Atlas | Green `#3fb950` | `omo-prometheus` tasks, fixes and final gates, with their real dependency edges. |
+| Atlas | Green `#3fb950` | `omo-prometheus` tasks, discovered work, fixes, final gates and delivery, with their real dependency edges. |
 
 Node state follows your OMP theme:
 
@@ -159,7 +159,7 @@ Settings are read for the session's working directory on startup, session switch
 
 ## Working with other plugins
 
-`omo-prometheus` Atlas plans appear as green runs when both this plugin's `atlasIntegration` and Prometheus's `herdrDag` setting are on (the default). While an Atlas plan is shown, the todo phases Atlas mirrors (`Atlas tasks`, `Atlas fixes`, `Atlas final gates`) are hidden from the blue todo view to avoid showing the same work twice.
+`omo-prometheus` Atlas plans appear as green runs when both this plugin's `atlasIntegration` and Prometheus's `herdrDag` setting are on (the default). Bands are ordered Tasks, Discovered, Fixes, Final gates, Delivery. Rows show their LIGHT/HEAVY tier badge and verification state when supplied. While an Atlas plan is shown, the todo phases Atlas mirrors (`Atlas tasks`, `Atlas discovered`, `Atlas fixes`, `Atlas final gates`, `Atlas delivery`) are hidden from the blue todo view to avoid showing the same work twice.
 
 ## Without the terminal UI
 

@@ -6,7 +6,13 @@ import { type Run, type TodoDependency, type TodoPhase, todoRun, validateTodoEdg
 import { PLAN_EXECUTION_ENTRY, type PlanExecutionTracker } from "./plan-execution.ts";
 
 export const TODO_EDGES_ENTRY = "omp-herdr-dag:todo-edges";
-const ATLAS_MIRROR_PHASES: Record<string, true> = { "Atlas tasks": true, "Atlas fixes": true, "Atlas final gates": true };
+const ATLAS_MIRROR_PHASES: Record<string, true> = {
+  "Atlas tasks": true,
+  "Atlas discovered": true,
+  "Atlas fixes": true,
+  "Atlas final gates": true,
+  "Atlas delivery": true,
+};
 
 export interface TodoEdgesEntry {
   v: 1;

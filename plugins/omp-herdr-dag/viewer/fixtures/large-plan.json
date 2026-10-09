@@ -113,7 +113,7 @@
           "id": "atlas:F1",
           "label": "F1. Plan compliance audit against every acceptance criterion",
           "state": "pending",
-          "band": 2,
+          "band": 3,
           "bandName": "Final gates",
           "agent": "oracle",
           "taskIds": []
@@ -122,7 +122,7 @@
           "id": "atlas:F2",
           "label": "F2. Code quality review of the layout and renderer changes",
           "state": "pending",
-          "band": 2,
+          "band": 3,
           "bandName": "Final gates",
           "agent": "unspecified-high",
           "taskIds": []
@@ -131,7 +131,7 @@
           "id": "atlas:F3",
           "label": "F3. Real manual QA in a Herdr pane at several sizes",
           "state": "pending",
-          "band": 2,
+          "band": 3,
           "bandName": "Final gates",
           "agent": "unspecified-high",
           "taskIds": []
@@ -140,7 +140,7 @@
           "id": "atlas:F4",
           "label": "F4. Scope fidelity check: nothing missing, nothing extra",
           "state": "pending",
-          "band": 2,
+          "band": 3,
           "bandName": "Final gates",
           "agent": "deep",
           "taskIds": []

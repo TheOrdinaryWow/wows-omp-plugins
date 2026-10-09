@@ -46,6 +46,8 @@ Herdr 0.9.3 无法在同一个标签页内移动窗格，所以方向改变时�
 
 查看器消费 `omo-prometheus` 发布的 `pi.events` 契约，事件定义见 [omo-prometheus 参考文档](../omo-prometheus/REFERENCE.zh.md#herdr-dag-契约)。没有启用的生产者时，查看器会报告 Atlas 集成不可用，原生待办和任务视图照常工作。
 
+`atlas:snapshot` 保持 `v: 1`。行类型依次为 `task`、`discovered`、`fix`、`gate`、`delivery`，对应 Tasks、Discovered、Fixes、Final gates、Delivery 横带。新发现行使用修正边样式，从 `origin` 指向新发现行；修正行仍指向其来源关口。这些来源边不代表调度依赖。可选的 `tier: "light" | "heavy"` 显示为 LIGHT/HEAVY 徽标；可选的 `verification: { status: "pending" | "running" | "passed" | "failed" }` 在节点和选中详情中显示为 `verify: <status>`。仍接受不含这些字段的快照，不显示额外元数据。
+
 ## 待办依赖边
 
 包装会保留原生的修改、详情、钩子、批准、批量失败和渲染行为。原生操作出错时不记录依赖边。删除或修改任务会清理相关的边，`init` 会开始新的一代。
@@ -58,7 +60,7 @@ Herdr 0.9.3 无法在同一个标签页内移动窗格，所以方向改变时�
 | --- | --- |
 | `snapshot.json` | `version`、会话 ID/名称、代、连接标志、时间戳、运行、任务卡片、主题配色、三种来源颜色、Atlas 可用性，以及可选的 `layoutAlign`（旧快照中没有，按居中渲染）。 |
 | 运行对象 | ID、来源、标题、代、节点、边、创建/更新/结束时间戳，以及完成数/总数/已用时间/token/费用统计。 |
-| 节点对象 | ID、标签、状态、横带/名称、详情、开始/结束时间戳、代理、关联的任务 ID 和停滞标志。边包含 `from`、`to` 和 `kind`。 |
+| 节点对象 | ID、标签、状态、横带/名称、详情、开始/结束时间戳、代理、关联的任务 ID、停滞标志，以及可选的分级和验证状态。边包含 `from`、`to` 和 `kind`。 |
 | 任务卡片 | ID、父任务/节点 ID、代理、状态、可选的停滞标志、描述、当前工具/参数、最近输出、已完成/当前激活的合计（token、费用、时长）、激活次数、模型、重试次数/上限/错误、对话记录路径、开始/结束时间戳、分离标志、深度和活动可用性标志。 |
 | 主题配色 | 文本、muted、dim、accent、success、error、warning、边框、强调/弱化边框，以及可选的背景色。 |
 | `pane.json` | `version`、拆分/打开阶段、已知时的窗格/标签页 ID、宿主窗格 ID、方向、位置、启动时间戳、可选的启动 socket 路径和关闭标志。 |

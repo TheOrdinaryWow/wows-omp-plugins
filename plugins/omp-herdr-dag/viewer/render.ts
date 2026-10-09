@@ -581,6 +581,12 @@ function nodeContent(node: DagNode, options: DagOptions, inner: number, layoutBa
   label.forEach((text, index) => {
     lines.push([index === 0 ? stateIcon(node, ctx) : { text: " " }, { text: ` ${text}`, style: labelStyle }]);
   });
+  if (node.tier) lines.push([{ text: `[${clean(node.tier).toUpperCase()}]`, style: fg(ctx.pal, "muted", { bold: true }) }]);
+  if (node.verification) {
+    const status = clean(node.verification.status);
+    for (const text of wrap(`verify: ${status}`, inner))
+      lines.push([{ text, style: fg(ctx.pal, status === "passed" ? "success" : status === "failed" ? "error" : "muted") }]);
+  }
   const linked = nodeTasks(node, options.tasks);
   const running = linked.find((task) => task.status === "running");
   const agent = clean(node.agent) || clean(linked[0]?.agent);
@@ -1164,6 +1170,8 @@ function dagFooter(run: Run, node: DagNode | undefined, layout: RunLayout, input
     ];
     const agent = clean(node.agent);
     if (agent) meta.push(agent);
+    if (node.tier) meta.push(clean(node.tier).toUpperCase());
+    if (node.verification) meta.push(`verify: ${clean(node.verification.status)}`);
     if (layout.criticalPath.includes(node.id) && input.viewState.criticalPath) meta.push("critical path");
     lines.push([{ text: meta.filter(Boolean).join(GLYPHS.separator), style: fg(ctx.pal, "muted") }]);
     // Every direct dependency, including the ones the reduced graph leaves to a longer path; "T4. Title" shows as T4.

@@ -14,6 +14,8 @@ export interface DagNode {
   agent?: string;
   taskIds: string[];
   stalled?: boolean;
+  tier?: AtlasRow["tier"];
+  verification?: AtlasRow["verification"];
 }
 export interface DagEdge {
   from: string;
@@ -113,7 +115,7 @@ export interface AtlasRow {
   id: string;
   title: string;
   status: "open" | "in_progress" | "done" | "blocked";
-  kind: "task" | "fix" | "gate";
+  kind: "task" | "discovered" | "fix" | "gate" | "delivery";
   agent: string;
   dispatchAgent?: string;
   dependsOn: string[];
@@ -123,6 +125,8 @@ export interface AtlasRow {
   childAgentId?: string;
   updatedAt: number;
   origin?: string;
+  tier?: "light" | "heavy";
+  verification?: { status: "pending" | "running" | "passed" | "failed" };
 }
 export interface AtlasRunOptions {
   plan: { id: string; name: string };
@@ -254,8 +258,8 @@ export function atlasRun(options: AtlasRunOptions): Run {
   const previous = options.previous?.id === `atlas:${options.plan.id}` ? options.previous : undefined;
   const oldNodes = new Map(previous?.nodes.map((node) => [node.id, node]));
   const states = { open: "pending", in_progress: "running", done: "done", blocked: "blocked" } as const;
-  const bands = { task: 0, fix: 1, gate: 2 };
-  const names = { task: "Tasks", fix: "Fixes", gate: "Final gates" };
+  const bands = { task: 0, discovered: 1, fix: 2, gate: 3, delivery: 4 };
+  const names = { task: "Tasks", discovered: "Discovered", fix: "Fixes", gate: "Final gates", delivery: "Delivery" };
   const nodes = options.rows.map((row): DagNode => {
     const id = `atlas:${row.id}`;
     const old = oldNodes.get(id);
@@ -268,6 +272,8 @@ export function atlasRun(options: AtlasRunOptions): Run {
       // Completed rows prefix the summary with the absolute evidence receipt path, which is noise in a narrow pane.
       detail: row.evidence?.replace(/^.*?[\\/]evidence[\\/][\w-]+\.md: /, ""),
       agent: row.dispatchAgent ?? row.agent,
+      tier: row.tier,
+      verification: row.verification,
       startedAt: row.startedAt ?? old?.startedAt,
       finishedAt: row.status === "done" ? (old?.finishedAt ?? row.updatedAt) : undefined,
       taskIds: [...new Set([...(old?.taskIds ?? []), ...(row.childAgentId ? [row.childAgentId] : [])])],
@@ -278,6 +284,9 @@ export function atlasRun(options: AtlasRunOptions): Run {
     ...row.dependsOn.filter((id) => ids.has(id)).map((id): DagEdge => ({ from: `atlas:${id}`, to: `atlas:${row.id}`, kind: "depends" })),
     ...(row.kind === "fix" && row.origin && ids.has(row.origin)
       ? [{ from: `atlas:${row.id}`, to: `atlas:${row.origin}`, kind: "fix" as const }]
+      : []),
+    ...(row.kind === "discovered" && row.origin && ids.has(row.origin)
+      ? [{ from: `atlas:${row.origin}`, to: `atlas:${row.id}`, kind: "fix" as const }]
       : []),
   ]);
   const run: Run = {

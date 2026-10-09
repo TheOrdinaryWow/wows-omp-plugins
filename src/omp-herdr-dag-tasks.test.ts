@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { layoutRun } from "../plugins/omp-herdr-dag/src/layout.ts";
 import { taskTotals } from "../plugins/omp-herdr-dag/src/model.ts";
 import { type AtlasSnapshot, AtlasSource } from "../plugins/omp-herdr-dag/src/sources/atlas.ts";
 import { type RegistryRef, type SourceEvents, TaskSource } from "../plugins/omp-herdr-dag/src/sources/tasks.ts";
@@ -199,6 +200,55 @@ test("Atlas activation, synchronous correlation, filtering, snapshots, hello cle
     expect(source.state).toEqual({ available: true, bound: false });
     source.activate();
     expect(source.run?.id).toBe("atlas:p");
+  } finally {
+    source.dispose();
+  }
+});
+
+test("Atlas v1 discovered, HEAVY verification and delivery rows retain bands and origin edges", () => {
+  const events = new Events();
+  const source = new AtlasSource({ events, sessionId: "session" });
+  const task = snapshot.rows[0];
+  if (!task) throw new Error("Expected fixture task");
+  const frame: AtlasSnapshot = {
+    ...snapshot,
+    total: 5,
+    rows: [
+      { ...task, tier: "heavy", verification: { status: "running" } },
+      { id: "D1", title: "Found defect", kind: "discovered", status: "open", agent: "worker", dependsOn: [], origin: "T1", updatedAt: 10 },
+      { id: "X1", title: "Fix gate", kind: "fix", status: "open", agent: "worker", dependsOn: [], origin: "F1", updatedAt: 10 },
+      { id: "F1", title: "Gate", kind: "gate", status: "open", agent: "reviewer", dependsOn: ["T1", "D1", "X1"], updatedAt: 10 },
+      { id: "P1", title: "Ship", kind: "delivery", status: "open", agent: "worker", dependsOn: ["F1", "X1"], updatedAt: 10 },
+    ],
+  };
+  try {
+    events.emit("atlas:snapshot", frame);
+    const run = source.run;
+    expect(run).toBeDefined();
+    if (!run) throw new Error("Expected Atlas run");
+    expect(run.nodes.map((node) => [node.band, node.bandName])).toEqual([
+      [0, "Tasks"],
+      [1, "Discovered"],
+      [2, "Fixes"],
+      [3, "Final gates"],
+      [4, "Delivery"],
+    ]);
+    expect(run.nodes[0]?.tier).toBe("heavy");
+    expect(run.nodes[0]?.verification).toEqual({ status: "running" });
+    expect(run.edges).toContainEqual({ from: "atlas:T1", to: "atlas:D1", kind: "fix" });
+    expect(run.edges).toContainEqual({ from: "atlas:X1", to: "atlas:F1", kind: "fix" });
+    expect(run.edges).toContainEqual({ from: "atlas:D1", to: "atlas:F1", kind: "depends" });
+    expect(run.edges).toContainEqual({ from: "atlas:F1", to: "atlas:P1", kind: "depends" });
+    expect(layoutRun(run, { width: 100, foldCompleted: false }).layers.map((layer) => layer.bandName)).toEqual([
+      "Tasks",
+      "Discovered",
+      "Fixes",
+      "Final gates",
+      "Delivery",
+    ]);
+    events.emit("atlas:snapshot", snapshot);
+    expect(source.run?.nodes[0]?.tier).toBeUndefined();
+    expect(source.run?.nodes[0]?.verification).toBeUndefined();
   } finally {
     source.dispose();
   }
