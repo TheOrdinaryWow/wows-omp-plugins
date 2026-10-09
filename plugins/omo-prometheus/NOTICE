@@ -4,12 +4,13 @@ This plugin is a modified OMP port of planning and execution prompt material fro
 
 Current upstream source used for this port:
 - Project: https://github.com/code-yeongyu/oh-my-openagent
-- Pinned revision: fe427efeed97e95f009dc6ca7fb17a3ac857f79f
-- Planning sources: `packages/shared-skills/skills/ulw-plan/SKILL.md` and its `references/full-workflow.md`, `references/intent-clear.md`, and `references/intent-unclear.md`
-- Plan task and final-gate grammar: `packages/shared-skills/skills/ulw-plan/scripts/plan-templates.mjs`
-- Specialist sources: `packages/omo-opencode/src/agents/metis.ts`, `packages/omo-opencode/src/agents/momus.ts`, and `packages/omo-opencode/src/agents/oracle.ts`
-- Execution source, including the final verification wave: `packages/prompts-core/prompts/atlas/default.md`
+- Pinned revision: ac9fcb6f4223cf105a80b93e965cbc6274e53100 (branch `dev`, 2026-10-09)
+- Planning sources: `packages/omo-senpi/skills/ulw-plan/**` and `packages/shared-skills/skills/ulw-plan/**`, including their `references/` workflows and the plan task and final-gate templates
+- Execution source, including per-task verification, discovered work, delivery, and the final verification wave: `packages/shared-skills/skills/ulw-execute/SKILL.md`
+- Specialist and gate sources: `packages/senpi-task/src/agents/builtin/plan-consultant.ts`, `plan-reviewer.ts`, `gate-reviewer.ts`, `qa-executor.ts`, and `code-reviewer.ts`
 - Consulted for the execution ledger and continuation design (Boulder equivalent; no upstream code is copied into `src/ledger.ts`): `packages/boulder-state/src/plan-checklist.ts`
+
+Earlier releases of this port tracked revision fe427efeed97e95f009dc6ca7fb17a3ac857f79f, where the execution prompt came from `packages/prompts-core/prompts/atlas/default.md` and the specialists from `packages/omo-opencode/src/agents/{metis,momus,oracle}.ts`.
 
 The modified/derived prompt assets in `agents/*.md`, `assets/*.md`, and `skills/prometheus/**` are licensed under the Sustainable Use License 1.0; the complete terms are included in `LICENSE-SUL-1.0`. Those terms permit internal business use as well as personal or noncommercial use, and permit free-of-charge distribution for noncommercial purposes. They do not categorically prohibit all business use.
 

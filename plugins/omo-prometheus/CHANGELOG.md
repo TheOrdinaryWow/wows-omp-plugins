@@ -2,11 +2,21 @@
 
 ## Unreleased
 
+### Features
+
+- Plans name a `Tier: LIGHT | HEAVY` per task and an optional plan-level `Delivery: direct | pr | ship` line. LIGHT rows finish on their own child's evidence; a HEAVY row finishes only after a distinct fresh verifier child returns a structured `PASS` through the new `atlas_ledger verify` action, and a `FAIL` reopens it with the verifier's summary for the next attempt.
+- `atlas_ledger discover` records in-scope defects found mid-execution as `D` rows that every gate waits for (refused once a gate has started), and out-of-scope findings as deferred entries for the final report.
+- `Delivery: pr` and `ship` add a `P1` row after every gate and fix row; a child pushes and opens the pull request (and for `ship` waits for CI and merges). `atlas:completed` follows P1 and carries an optional `delivery` summary.
+- Atlas may spawn read-only research children without a ledger row; read-only capability comes from each agent's live definition, and their output never counts as evidence.
+- Under host `task.isolation.enabled`, every T, D, X and P1 dispatch must pass `isolated: true`; with `task.isolation.merge: patch` Atlas warns once per session that child commits are squashed. The plugin never changes isolation settings.
+- The Atlas prompt follows upstream ulw-execute: structured done-claims judged against a checklist (existing tests first, reproduction before a fix, no tests-only or `--dry-run` evidence, tier-scaled adversarial classes, cleanup receipts), a blast-radius rule for discovered work, a stop after three materially different failed attempts, and read-only gates with an F2 severity scale, artifact-backed F3 passes, and an F4 that approves unless a success criterion or ideal-state row is cited as failed. Gate reruns get the prior rejection and the diff since; two failed reruns of one gate ask the user.
+- Ledger version 5 and checkpoint version 2 upgrade earlier bundles on load: rows become LIGHT, discoveries and deferred findings start empty, and delivery is derived from the approved plan, so in-flight plans resume without fresh approval. Herdr DAG rows gain `discovered` and `delivery` kinds with `tier` and `verification`, the todo mirror adds `Atlas discovered` and `Atlas delivery` phases, and the state sidecar adds tier, verification, discoveries, the deferred count, and the delivery mode.
+
 ### Fixed
 
 - Bind execution to the exact approved plan, retain acceptance criteria, reject dependency cycles, and pause on unavailable or invalid ledgers instead of falling back to unguarded execution.
-- Authenticate completion with native owned-child results and persistent receipts; require distinct fresh structured gate verifiers, with F4 following F1–F3.
-- Invalidate stale downstream work and verification on reopen, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
+- Authenticate completion with native owned-child results and persistent receipts; require distinct fresh structured gate verifiers, with F1–F4 running together and a rejecting gate rerunning alone after its fix rows.
+- Reopen and block affect only the named row, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
 ## [0.17.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.17.0...omo-prometheus@0.17.1) (2026-10-09)

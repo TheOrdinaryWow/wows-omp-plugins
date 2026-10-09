@@ -30,7 +30,7 @@ omp plugin install omo-prometheus@wows-omp-plugins
 1. Prometheus 进入 Plan Mode，先咨询 Metis，然后向你提问。一直回答，直到它提出计划。
 2. 审阅提案，并通过 OMP 正常的批准对话框批准。两个批准选项都会交给 Atlas 执行。
 3. Atlas 会自行开始执行。编辑器上方的小组件显示进度；`/atlas` 打开完整视图。
-4. 所有任务和四个最终关口都通过后，计划即完成。随时可以用 `/atlas exit` 退出 Atlas。
+4. 所有任务、四个最终关口，以及计划通过拉取请求交付时的交付任务都通过后，计划即完成。随时可以用 `/atlas exit` 退出 Atlas。
 
 ## 用法
 
@@ -48,17 +48,19 @@ omp plugin install omo-prometheus@wows-omp-plugins
 
 ### 计划格式
 
-每份计划都以两个机器可读的章节结尾。任务是从 `T1` 开始编号的复选框行，每行带有 `Agent:`、`Depends on:` 和 `Acceptance:`：
+每份计划都以两个机器可读的章节结尾。任务是从 `T1` 开始编号的复选框行，每行带有 `Agent:`、`Depends on:`、`Tier:` 和 `Acceptance:`：
 
 ```markdown
 ## Tasks
 - [ ] T1. Add the parser
   - Agent: task
   - Depends on: none
+  - Tier: LIGHT
   - Acceptance: the new unit test passes and the CLI prints the parsed value
 - [ ] T2. Update the command help text for the new flag
   - Agent: sonic
   - Depends on: T1
+  - Tier: LIGHT
   - Acceptance: CLI help lists the new flag
 
 ## Final gates
@@ -76,26 +78,36 @@ Prometheus 会为每个任务分配会话 `task` 工具中最专门的代理，�
 
 Atlas 用账本跟踪计划。只有拿到子代理真实最终结果作为证明，任务才会被标记为完成；在计划文件里勾选复选框不算数。任务按依赖顺序执行；依赖关系中有环的计划会在执行前被拒绝。
 
+每个任务都有一个 tier。LIGHT 任务在它自己的子代理证据显示验收检查通过时完成。HEAVY 任务（认证、安全、迁移、并发、持久化格式、公共 API、数据丢失风险）只有在另一个全新的子代理独立验证之后才算完成；验证失败时，任务会带着验证者的发现重新执行。
+
+每个子代理都要提交结构化的完成声明：运行过的命令及结果、每项验收检查背后的产物、探查过的失败情形，以及清理情况。Atlas 在标记完成前会核对这份声明。子代理在改动影响范围内发现的缺陷会在最终关口之前成为新的发现任务（`D1`、`D2`……）；范围外的缺陷会记入最终报告。为了诊断失败，Atlas 还可以派生只读的调研子代理，它们的输出永远不算作证明。
+
 如果 Atlas 停下时还有未完成的任务，插件会推动它继续，你每发一条消息最多推动八次。连续两次推动都没有进展时，循环停止并通知你。
 
 如果账本或计划文件缺失、损坏，或者与批准的计划不一致，Atlas 会暂停，等你处理：恢复这些文件，或者用 `/atlas exit` 退出后重新批准修改过的计划。
 
-执行期间，Atlas 会让会话的待办列表与计划保持同步（任务、修正和最终关口），并把会话重命名为以“Atlas”开头的标题，除非你自己起过名字。
+执行期间，Atlas 会让会话的待办列表与计划保持同步（任务、发现任务、修正、最终关口和交付），并把会话重命名为以“Atlas”开头的标题，除非你自己起过名字。
+
+如果 OMP 的 `task.isolation.enabled` 设置已开启，Atlas 会以隔离方式运行每个实现子代理；当 `task.isolation.merge` 为 `patch` 时，它会提示一次：每个子代理的提交会被压成一个补丁。Atlas 从不修改这些设置。
 
 原版说明见 OmO 文档：[Execution: /ulw-execute](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#execution-ulw-execute)。在该版本中，Atlas 执行对应的是 `/ulw-execute`。
 
 ### 最终关口
 
-所有任务完成后，Atlas 会并行运行四个验证关口，每个都在一个没参与过这份计划的全新子代理上执行：
+所有任务完成后，Atlas 会并行运行四个验证关口，每个都在一个没参与过这份计划的全新子代理上执行。关口子代理只报告，从不修复它们发现的问题。
 
 | 关口 | 代理 | 检查内容 |
 | --- | --- | --- |
 | F1. Plan compliance review | `momus`（回退 `reviewer`） | 根据计划、账本和计划期间的 Git 历史，检查改动是否符合批准的计划 |
-| F2. Code quality review | `deep-high`（回退 `task`） | 可维护性、范围、测试价值，以及有证据支撑的阻塞问题 |
-| F3. Real-surface QA | `deep-low`（回退 `task`） | 实际运行计划 Verification 章节中的每个场景 |
-| F4. Success-criteria fidelity | `deep-high`（回退 `task`） | 每条列明的成功标准和对抗性用例，都要对应到证据 |
+| F2. Code quality review | `deep-high`（回退 `task`） | 正确性、范围、可维护性、测试价值和回归风险；任何 CRITICAL 或 HIGH 发现都会判为失败 |
+| F3. Real-surface QA | `deep-low`（回退 `task`） | 实际运行每个验证场景，每个通过都有产物支撑 |
+| F4. Success-criteria fidelity | `deep-high`（回退 `task`） | 对照每条成功标准和理想状态行检查结果；除非能证明其中某条未达成，否则通过 |
 
-每个关口返回结构化的 `PASS`、`FAIL` 或 `INCONCLUSIVE`；只有结构化的 `PASS` 才算通过。关口失败时，Atlas 会添加修正行（`X1`、`X2`……），像普通任务一样执行，然后只重跑这个关口。已完成的任务和已通过的关口保持不变。
+每个关口返回结构化的 `PASS`、`FAIL` 或 `INCONCLUSIVE`；只有结构化的 `PASS` 才算通过。关口失败时，Atlas 会添加修正行（`X1`、`X2`……），像普通任务一样执行，然后带着上次的否决理由和此后的改动只重跑这个关口。已完成的任务和已通过的关口保持不变。如果同一关口的两次重跑也都失败，Atlas 会询问你如何处理。
+
+### 交付
+
+仓库有远程仓库时，Prometheus 会询问完成的工作如何交付，计划会记录 `Delivery: direct`、`pr` 或 `ship`。选择 `pr` 时，交付任务在关口之后运行，由子代理推送分支并创建拉取请求；选择 `ship` 时，它还会等待 CI 并合并。Atlas 自己从不运行 git。选择 `direct`（默认）时，提交留在当前工作分支上。
 
 ### `/atlas` 命令
 
@@ -176,8 +188,8 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 
 - `omo-toolkit`：计划优先使用它的分类代理，F2、F3、F4 三个关口运行在 `deep-high` 和 `deep-low` 上。
 - `judge-dispatch`：计划执行期间不改派任何调用，也从不改派 `metis`、`momus` 或 `oracle`。
-- `omp-herdr-dag`：以实时依赖图显示 Atlas 的任务、修正和关口。
-- `roadmap`：在绑定了路线图阶段时提出的计划会记住该阶段。Atlas 执行期间可以使用路线图工具；计划完成后，会话会收到提醒，用关口证据关闭该阶段。阶段不会被自动关闭。
+- `omp-herdr-dag`：以实时依赖图显示 Atlas 的任务、发现任务、修正、关口和交付，并显示每个任务的 tier 和验证状态。
+- `roadmap`：在绑定了路线图阶段时提出的计划会记住该阶段。Atlas 执行期间可以使用路线图工具；计划完成后（`pr` 和 `ship` 计划在交付之后），会话会收到提醒，用关口证据关闭该阶段。阶段不会被自动关闭。
 - [Magic Context](https://github.com/cortexkit/magic-context)：它的 `ctx_*` 工具在 Atlas 中保持可用。
 
 ## 不使用终端界面时
