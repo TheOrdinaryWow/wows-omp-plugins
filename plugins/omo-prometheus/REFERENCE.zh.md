@@ -14,11 +14,11 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 账本只读取已批准计划中的以下部分；其他标题和文字都是写给人和代理看的说明。
 
-- `## Tasks`：从 `T1` 开始编号的 `- [ ] T<n>. <title>` 行，每行带缩进的 `Agent:`、`Depends on:`、`Acceptance:`，以及可选的 `Tier: LIGHT | HEAVY`（不区分大小写）。缺少 tier 即为 LIGHT，所以引入 tier 之前批准的计划行为不变；Prometheus 会为每个新计划写出这一字段。其他 tier 值或重复字段都是解析错误。
+- `## Tasks`：从 `T1` 开始编号的 `- [ ] T<n>. <title>` 行，每行带缩进的 `Agent:`、`Depends on:`、`Acceptance:`，以及可选的 `Tier: LIGHT | HEAVY`（不区分大小写）。缺少 tier 即为 LIGHT，旧计划行为不变；Prometheus 为每个新计划写出这一字段。其他取值或重复字段都是解析错误。
 - `## Final gates`：恰好 F1–F4，标题固定。
 - `Delivery: direct | pr | ship`：在第 0 列的一行普通文本，位于代码块、列表、`## Tasks` 和 `## Final gates` 之外。最多一行；重复、未知取值，或者出现在上述章节里的 `Delivery:` 行都是解析错误。没有这一行即为 `direct`。
 
-计划只写 T 行和 F 行。D、X 和 P1 行由 Atlas 在运行时追加。
+计划只写 T 行和 F 行，D、X 和 P1 行由 Atlas 在运行时追加。`delivery` 设置（`ask | direct | pr | ship`，默认 `ask`）以 `<delivery-policy mode=...>` 的形式注入规划者；执行以已批准计划中的 `Delivery:` 行为准。
 
 ## Atlas 工具守卫
 
@@ -50,9 +50,9 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 Atlas 父会话的每次 `task` 调用，要么是绑定调用，要么是调研调用：
 
 - **绑定调用**的每个任务恰好带一行 `atlas_assignment`。`{"rows": {...}}` 绑定已开始的 T、D、X、F 或 P1 尝试；`{"verify": {"T3": "…"}}` 绑定一个 HEAVY 行的验证尝试。每个关口和每个验证者都需要单独的子代理，并使用 `atlas_ledger` 给出的 `outputSchema` 和 `schemaMode: "strict"`。实现已记录的行会拒绝再次派发实现。
-- **调研调用**不带任何 `atlas_assignment` 行。其中每个任务指定的代理必须在当前 `task` 列表中，且其定义把工具限制在 `read`、`find`、`grep`、`glob`、`ast_grep` 和 `web_search`（外加宿主自动添加的 `yield`）；没有 `tools` 列表的代理可以使用所有工具，因此会被拒绝。调研任务不能附带额外的 `tools`，`metis` 和 `momus` 仍只在规划阶段可用，调研同样需要有效的账本。调研子代理没有账本行，它的输出永远不能完成任何一行。在同一次调用里混合绑定任务和调研任务会被拒绝。
+- **调研调用**不带 `atlas_assignment` 行。每个任务指定的代理必须在当前 `task` 列表中，且其定义把工具限制在 `read`、`find`、`grep`、`glob`、`ast_grep` 和 `web_search`（外加宿主自动添加的 `yield`）；没有 `tools` 列表的代理可以使用所有工具，会被拒绝。调研任务不能附带额外的 `tools`，`metis` 和 `momus` 仍只在规划阶段可用，调研同样需要有效的账本。调研子代理没有账本行，输出也不能完成任何一行。在同一次调用里混用绑定任务和调研任务会被拒绝。
 
-隔离只跟随宿主设置，插件从不修改这些设置。`task.isolation.enabled` 开启时，每次派发 T、D、X 和 P1 都必须传入 `isolated: true`；关口、验证者和调研子代理不受此约束。隔离开启且 `task.isolation.merge` 为 `patch` 时，会话中第一次隔离派发会提示一次：子代理的提交会被压成一个补丁。
+隔离跟随宿主设置，插件从不修改。`task.isolation.enabled` 开启时，每次派发 T、D、X 和 P1 都必须传入 `isolated: true`；关口、验证者和调研子代理可以隔离，也可以不隔离。`task.isolation.merge` 为 `patch` 时，会话中第一次隔离派发会提示一次：子代理的提交会被压成一个补丁。
 
 ## 代理回退
 
@@ -68,7 +68,7 @@ Prometheus 根据会话 `task` 工具在应用派生策略和禁用设置后列�
 | `sonic`、`scout`、`reviewer`、`security-reviewer` | `task` |
 | `task` | 无 |
 
-回退只改变代理；各代理的模型角色链见 [omo-toolkit README](../omo-toolkit/README.zh.md#代理)。如果整条链都无法派生，账本会显示 `unavailable`，Atlas 在开始该行时从当前列表中挑选最合适的代理（`atlas_ledger start` 带上 `agent`）。这个选择对该行一直有效，直到请求的代理或某个回退重新可用。只有当前列表为空时，Atlas 才会报告阻塞。验证者默认使用 `deep-high`（回退为 `task`）；`atlas_ledger verify` 带上 `agent` 可以改选列表中除 `metis` 和 `momus` 以外的代理。
+回退只改变代理；各代理的模型角色链见 [omo-toolkit README](../omo-toolkit/README.zh.md#代理)。如果整条链都无法派生，账本会显示 `unavailable`，Atlas 在开始该行时从当前列表中挑选最合适的代理（`atlas_ledger start` 带上 `agent`）。该选择对这一行一直有效，直到请求的代理或某个回退重新可用。只有当前列表为空时，Atlas 才会报告阻塞。验证者默认使用 `deep-high`（回退为 `task`）；`atlas_ledger verify` 带上 `agent` 可以改选列表中除 `metis` 和 `momus` 以外的代理。
 
 ## 计划包
 
@@ -113,17 +113,17 @@ Atlas 通过 `atlas_ledger` 驱动账本：
 
 只有子代理真实最终结果提供的证明才能把一行标记为完成，所以失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执，并且需要你明确确认。
 
-子代理的输出会被复制到 `evidence/` 并按摘要重新校验，因此即使删除原会话，已验证的进度也不会丢失。`atlas_ledger status` 会显示这些输出的位置。只保存子代理自己的输出，不复制它链接的文件；未通过的验证者输出不会归档。如果某行的证明丢失或被改动，该行会重新打开；旧的会话分支也无法回滚共享进度。恢复时，实现已记录的 HEAVY 行保留其实现，只丢弃尚未完成的验证者绑定。
+子代理的输出会被复制到 `evidence/` 并按摘要重新校验，因此删除原会话后，已验证的进度仍然保留；`atlas_ledger status` 会显示这些输出的位置。只保存子代理自己的输出，不含它链接的文件，未通过的验证者输出也不归档。某行的证明丢失或被改动时，该行会重新打开，旧的会话分支也无法回滚共享进度。恢复时，实现已记录的 HEAVY 行保留其实现，只丢弃尚未完成的验证者绑定。
 
 继续执行的消息是一条隐藏的 `<atlas-continuation>`，其中包含账本摘要。你发送的任何消息都会重置推动计数。
 
-旧版本写入的账本会在加载时升级，并保留已验证的进度。旧账本升级到版本 5 后各行均为 LIGHT，发现行和范围外发现为空，交付方式取自已批准计划中的 `Delivery:` 行，没有则为 `direct`；旧计划中不符合新语法的 `Delivery:` 文字按直接交付处理。版本 1 的检查点也以同样方式升级到版本 2。版本 4 之前的账本没有记录 Git 基线，所以 F1 会以最早记录的行开始时间推定基线，并注明这一点。把账本存放在会话内的旧版本计划不会迁移，恢复时会暂停并要求重新批准。旧的 `prometheus_ledger` 和 `prometheus_release` 工具已改名为 `atlas_ledger` 和 `atlas_release`，不保留别名。
+旧版本写入的账本会在加载时升级，并保留已验证的进度。版本 5 之前的账本，各行均为 LIGHT，发现行和范围外发现为空，交付方式取自已批准计划中的 `Delivery:` 行，没有则为 `direct`（旧计划中不符合新语法的 `Delivery:` 文字同样按直接交付处理）。版本 1 的检查点也以同样方式升级到版本 2。版本 4 之前的账本没有记录 Git 基线，所以 F1 以最早记录的行开始时间推定基线，并注明这一点。把账本存放在会话内的旧版本计划不会迁移，恢复时会暂停并要求重新批准。`prometheus_ledger` 和 `prometheus_release` 已改名为 `atlas_ledger` 和 `atlas_release`，不保留别名。
 
-`timeline.jsonl` 记录挂载与释放、行开始、完成、阻塞与重新打开、发现行和修正行、HEAVY 行记录的实现、验证者的开始与结论，以及关口结论。它只用于展示：时间线缺失或损坏都不会让批准、所有权、回执或进度失效。旧版本的计划包在追加真实事件之前，会显示从账本推导出的历史；推导出的事件不会写回文件。崩溃导致截断的最后一行，以及未知的未来事件类型或版本都会被忽略。
+`timeline.jsonl` 记录挂载与释放、行开始、完成、阻塞与重新打开、发现行和修正行、HEAVY 行记录的实现、验证者的开始与结论，以及关口结论。它只用于展示：时间线缺失或损坏都不影响批准、所有权、回执或进度。旧版本的计划包在追加真实事件之前，显示从账本推导出的历史，推导出的事件从不写回。崩溃导致截断的最后一行，以及未知的未来事件类型或版本都会被忽略。
 
 ## 最终关口的输入
 
-F1 读取经哈希校验的 `plan.md`（插件会在 F1 开始时打印其路径，不内联计划副本）、账本摘要，以及此时以只读方式收集的 Git 证据：从计划基线提交以来的 `git diff --stat`、`git log --oneline` 和 `git status --short`，无法获取时写明“unavailable”。`momus` 以 `review_kind: compliance` 运行 F1。只有格式匹配的结构化 `PASS` 才算通过，文字里写着“通过”不算。关口子代理只报告、从不修复；F2 有任何 CRITICAL 或 HIGH 发现即为 FAIL，F3 的每个 `PASS` 都要有非空的产物，F4 除非能指出某条失败的成功标准或理想状态行，否则批准。
+F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径，不内联计划副本）、账本摘要，以及此时以只读方式收集的 Git 证据：从计划基线提交以来的 `git diff --stat`、`git log --oneline` 和 `git status --short`，无法获取时写明“unavailable”。`momus` 以 `review_kind: compliance` 运行 F1。只有格式匹配的结构化 `PASS` 才算通过，文字里写着“通过”不算。关口子代理只报告、从不修复；F2 有任何 CRITICAL 或 HIGH 发现即为 FAIL，F3 的每个 `PASS` 都要有非空的产物，F4 除非能指出某条失败的成功标准或理想状态行，否则批准。
 
 ## 所有权
 
@@ -133,10 +133,10 @@ F1 读取经哈希校验的 `plan.md`（插件会在 F1 开始时打印其路径
 
 ## 会话集成
 
-- 待办镜像：Atlas 根据校验过的账本按行的顺序维护会话的待办阶段：`Atlas tasks`、存在时的 `Atlas discovered` 和 `Atlas fixes`、`Atlas final gates`，以及计划需要交付时的 `Atlas delivery`。其他阶段保持不变；新出现的 Atlas 阶段放在已列出的下一个 Atlas 阶段之前。挂载时和账本变化后，Atlas 阶段会被还原，请不要手动编辑。每个改动了行的 `atlas_ledger` 结果都会给出一个可重复执行的 `todo` 调用，用于刷新宿主 HUD。退出时保留待办列表。
+- 待办镜像：Atlas 根据校验过的账本，按行的顺序维护会话的待办阶段：`Atlas tasks`、存在时的 `Atlas discovered` 和 `Atlas fixes`、`Atlas final gates`，以及计划需要交付时的 `Atlas delivery`。其他阶段保持不变；新出现的 Atlas 阶段放在已列出的下一个 Atlas 阶段之前。挂载时和账本变化后，Atlas 阶段会被还原，请不要手动编辑。每个改动了行的 `atlas_ledger` 结果都会给出一个可重复执行的 `todo` 调用，用于刷新宿主 HUD。退出时保留待办列表。
 - 会话标题：Atlas 进入计划后，会请 OMP 的标题生成器生成一个以“Atlas”开头的标题，使用你的 `TITLE_SYSTEM.md` 覆盖或 OMP 默认提示词。没有生成结果时，会话命名为 `Atlas: <plan name>`。用 `/rename` 设置的名称永远不会被替换，`PI_NO_TITLE` 会关闭这一功能，退出时保留名称。
 - 模型角色：Prometheus 提案等待批准时，`atlas` 会被临时加到 `cycleOrder` 最前面，使批准滑块在 `smol`、`default` 和 `slow` 之外也提供它。在下一次输入或代理回合，或规划结束时，恢复原来的 `cycleOrder`。普通 Plan Mode 的批准永远不会出现 `atlas`，没有可用模型的角色也不会出现。如果指定的 `atlas` 模型无法解析，Atlas 仍会启动，并说明保持了当前模型。
-- 检视视图：实时视图在进度变化时保持选中项和滚动位置。标题栏显示正在运行的子代理和已用时间；进行中的行显示已用时间；行详情显示 tier、验证状态和摘要，以及 D 行和 X 行的来源；宿主提供进度时，Live 区域显示子代理身份、模型和思考级别、工具及参数、意图、用量、费用、重试和最近活动。HEAVY 行接受验证期间，其实时子代理就是验证者。Space 显示已归档的子代理输出。旧计划包中推导出的时间线事件会被标注出来。
+- 检视视图：实时视图在进度变化时保持选中项和滚动位置。标题栏显示正在运行的子代理和已用时间；进行中的行显示已用时间；行详情显示 tier、验证状态和摘要，以及 D 行和 X 行的来源。宿主提供进度时，Live 区域显示子代理身份、模型和思考级别、工具及参数、意图、用量、费用、重试和最近活动；HEAVY 行接受验证期间，其实时子代理就是验证者。Space 显示已归档的子代理输出。旧计划包中推导出的时间线事件会被标注出来。
 - 没有 UI 时，裸 `/atlas` 打印计划列表，或打印正在运行的计划及其各行。进入计划失败时，会话保持暂停，直到运行 `/atlas exit`；Atlas 永远不会退化为仅靠提示词的执行。命令输出以 `wows-omp-omo-prometheus.command-status` 消息送达。
 - 在 RPC 中，Atlas 激活时裸 `/atlas` 显示一个摘要，提供 Keep running、View details 和 Exit。View details 打开一个只读 `editor` 对话框，显示计划文本。小组件文本行最多每秒发送两次。`prometheus_activate` 和 `atlas_release` 的确认使用普通的 `select`/`confirm` 对话框。
 
@@ -179,7 +179,7 @@ F1 读取经哈希校验的 `plan.md`（插件会在 F1 开始时打印其路径
 | `atlas:snapshot` | 紧跟在每个带绑定计划的 hello 之后，以及每次实时更新时发送：计划标识、账本状态和总数、带依赖与来源信息的各行、每行的子代理进度、最近 50 条时间线事件。 |
 | `atlas:released` | 解除绑定，`reason` 为 `"exit"`、`"session-switch"` 或 `"shutdown"`，随后发送一个不带计划的 hello。 |
 
-快照中每一行的 `kind` 由 id 推导：`task`（T）、`discovered`（D）、`fix`（X）、`gate`（F）或 `delivery`（P）。`origin` 对 X 行指否决的关口，对 D 行指发现它的行。各行可能带 `tier` 和 `verification: {status}`；验证者的摘要不会发布。HEAVY 行的验证者运行期间，该行的 `attempt` 是验证尝试，因此实时子代理进度仍能与之匹配。本版本新增的时间线类型有 `discovered`、`implemented`、`verify_started`、`verify_passed` 和 `verify_failed`。
+快照中每一行的 `kind` 由 id 推导：`task`（T）、`discovered`（D）、`fix`（X）、`gate`（F）或 `delivery`（P）。`origin` 对 X 行指否决的关口，对 D 行指发现它的行。各行可能带 `tier` 和 `verification: {status}`；验证者的摘要不会发布。HEAVY 行的验证者运行期间，该行的 `attempt` 是验证尝试，因此实时子代理进度仍能与之匹配。时间线还包含 `discovered`、`implemented`、`verify_started`、`verify_passed` 和 `verify_failed`。
 
 启动顺序无关紧要。不支持的版本和未知会话会被忽略。某行完成后，最后已知的子代理进度仍然可见，开始新的尝试时清除。释放只表示计划不再显示在视图中；执行可能尚未完成，子代理也可能仍在运行。`herdrDag: false` 时不发送任何事件，包括 hello 回复；账本、待办镜像、所有权和界面行为不变。生产者不依赖查看器。
 
@@ -190,6 +190,6 @@ F1 读取经哈希校验的 `plan.md`（插件会在 F1 开始时打印其路径
 1. 提出计划时，发送 `roadmap:binding-request {v:1, sessionId, requestId}`，只接受与该会话和请求匹配的同步 `roadmap:binding` 回复，其中包含 `repoRoot`、`toolSourcePath` 以及可选的已绑定活动阶段。
 2. 新的计划包写入版本 2 的批准文件，带可选的 `roadmapStage: {repoRoot, id}`。版本 1 的批准仍可恢复，不会改写其内容，也不要求重新批准。查看 `approval.json` 中的 `roadmapStage`，可以知道提出计划时是否绑定了阶段。
 3. 只有当 `roadmap_*` 工具的扩展源路径与 `toolSourcePath` 完全一致时，Atlas 才会放行。守卫在第一次调用路线图工具时请求绑定，路线图尚未应答时会再次请求；拒绝信息会说明是缺少握手，还是工具来自其他来源。在此范围内，Atlas 可以执行计划需要的所有路线图操作：开始或加入阶段、修订阶段、更改 ADR 和 TODO，以及关闭阶段。
-4. 在首次使绑定阶段的计划完成的那次账本写入之后，Prometheus 发送 `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, delivery?, at}`，附带经过验证的关口结论和摘要。只有所有行都完成，计划才算完成：`Delivery: pr` 或 `ship` 时，事件在 P1 行之后发送，并带上 `delivery: {mode, summary}`，其中摘要是 Atlas 检查过的 P1 证据；`direct` 时事件在关口之后发送，不带 `delivery`。批准时没有绑定阶段的计划，使用执行会话在那一刻绑定的阶段。路线图会为下一回合记录一条待关闭提醒；会话仍需把证据对应到阶段标准，并调用正常的阶段关闭工具。
+4. 在首次使绑定阶段的计划完成的那次账本写入之后，Prometheus 发送 `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, delivery?, at}`，附带经过验证的关口结论和摘要。只有所有行都完成，计划才算完成：`Delivery: pr` 或 `ship` 时，事件在 P1 行之后发送，并带上 `delivery: {mode, summary}`（摘要是 Atlas 检查过的 P1 证据）；`direct` 时事件在关口之后发送，不带 `delivery`。批准时没有绑定阶段的计划，使用执行会话在那一刻绑定的阶段。路线图会为下一回合记录一条待关闭提醒；会话仍需把证据对应到阶段标准，并调用正常的阶段关闭工具。
 
 完成事件只在每个生产者实例内去重。生产者重启后重新打开并再次完成计划，可能会再次发送。路线图在接收会话内按 `planId` 对待关闭条目去重；其他会话可能收到各自的提醒。
