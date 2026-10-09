@@ -1,4 +1,5 @@
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
@@ -24,6 +25,12 @@ import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src
 import type { OverlapAnswer } from "#src/ui.ts";
 
 export type ToolReceipt = Receipt & { answer?: OverlapAnswer; diagnostics?: Diagnostics[]; changedFiles?: string[] };
+
+/**
+ * The Atlas guard admits roadmap tools only from this path, so every tool declares it explicitly: the host
+ * otherwise records the unresolved node_modules symlink, while `import.meta.url` is the cached copy's realpath.
+ */
+export const TOOL_SOURCE_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 
 export function toolResult(receipt: ToolReceipt) {
   const text = receipt.ok
@@ -409,6 +416,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
 
   pi.registerTool({
     name: "roadmap_status",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap status",
     description: "Read rounds, stages and open TODOs. Supply a stage id for its full document and planning handoff.",
     parameters: statusParameters,
@@ -419,6 +427,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_stage",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap stage",
     description:
       "Manage stage lifecycle. Start or join returns the planning handoff and binds this session. Close requires passing evidence for every done criterion and TODO/ADR dispositions.",
@@ -440,6 +449,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_todo",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap TODO",
     description:
       "Add, update, resolve or move carry-over TODOs with a source, severity and an unclosed target stage or trigger. Fix broken tests/builds before proceeding.",
@@ -451,6 +461,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_adr",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap ADR",
     description:
       "Create MADR decisions, revise proposed ADRs, change status, supersede or append a dated note. Subagents can only create proposed ADRs and cannot decide statuses or supersede.",
@@ -462,6 +473,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_check",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap check",
     description:
       "Check document consistency. fix regenerates eligible generated blocks without changing frozen rounds. Does not compare documents with code.",
@@ -473,6 +485,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_overlap",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap overlap",
     description:
       "Ask the user once per stage/session whether overlapping work should use the roadmap, be logged as free work, or be treated as unrelated. Subagents do not prompt.",
@@ -504,6 +517,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_init",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Initialize Roadmap",
     description:
       "Write the interviewed project, first-round charter, initial ADRs and stages after an exact user-confirmed preview. Only available to the main session armed by /init-project.",
@@ -535,6 +549,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_round_open",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Open Roadmap round",
     description:
       "Open the next round from its charter and carried TODO ids after a confirmed preview. Only available to the main session armed by /roadmap new-round.",
@@ -562,6 +577,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   });
   pi.registerTool({
     name: "roadmap_round_plan",
+    sourcePath: TOOL_SOURCE_PATH,
     label: "Plan Roadmap round",
     description:
       "Draft or revise a planned round charter and optional target after a user-confirmed preview. Only available to the main session armed by /roadmap plan-round. The first planned round upgrades format 1 with a warning in the same preview.",

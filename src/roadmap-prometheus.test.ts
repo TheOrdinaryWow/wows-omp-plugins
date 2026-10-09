@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AtlasStore } from "../plugins/omo-prometheus/src/atlas-store.ts";
@@ -13,6 +13,7 @@ import type { ToolReceipt } from "../plugins/roadmap/src/tools.ts";
 const CHILD = "ROADMAP_PROMETHEUS_SDK";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const ROADMAP_ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
+const ROADMAP_DIR = fileURLToPath(new URL("../plugins/roadmap", import.meta.url));
 const PROMETHEUS_ENTRY = fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url));
 const draft: InitInput = {
   project: { name: "Contract fixture", description: "A verified roadmap event fixture" },
@@ -63,6 +64,11 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     join(root, ".omp/plugin-overrides.json"),
     JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { herdrDag: false, atlasWidget: false } } }),
   );
+  // Marketplace installs load a plugin through a node_modules symlink into the plugin cache.
+  const linkedRoadmap = join(dirname(root), "plugins/node_modules/wows-omp-plugin-roadmap");
+  await mkdir(dirname(linkedRoadmap), { recursive: true });
+  await symlink(ROADMAP_DIR, linkedRoadmap);
+  const roadmapEntry = join(linkedRoadmap, "src/index.ts");
   const sessionManager = SessionManager.create(root, join(root, "sessions"));
   const { session, extensionsResult, eventBus } = await createAgentSession({
     cwd: root,
@@ -70,7 +76,7 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     sessionManager,
     settings: Settings.isolated({ "tools.approvalMode": "yolo", "autolearn.enabled": false }),
     toolNames: ["read", "write", "task"],
-    additionalExtensionPaths: reverse ? [ROADMAP_ENTRY, PROMETHEUS_ENTRY] : [PROMETHEUS_ENTRY, ROADMAP_ENTRY],
+    additionalExtensionPaths: reverse ? [roadmapEntry, PROMETHEUS_ENTRY] : [PROMETHEUS_ENTRY, roadmapEntry],
     disableExtensionDiscovery: true,
     enableMCP: false,
     enableLsp: false,

@@ -1,14 +1,12 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { parseRoadmapIndex, parseStage } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import type { RoadmapSession } from "#src/ses.ts";
-
-const TOOL_SOURCE_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
+import { TOOL_SOURCE_PATH } from "#src/tools.ts";
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

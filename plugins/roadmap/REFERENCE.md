@@ -147,7 +147,7 @@ The file is rewritten at session start, switch, branch and tree, after every `ro
 The events are defined in the [omo-prometheus reference](../omo-prometheus/REFERENCE.md#roadmap-contract). On the roadmap side:
 
 - Roadmap answers `roadmap:binding-request` synchronously with the session, request, repository, trusted tool source and optional bound active stage. It still answers, without a stage, when the bound stage document cannot be read. No answer means roadmap is absent.
-- Atlas admits only `roadmap_*` tools whose provenance is an extension with the handshake's source path; a same-named tool from another extension or MCP server is not admitted.
+- Atlas admits only `roadmap_*` tools whose provenance is an extension with the handshake's source path; a same-named tool from another extension or MCP server is not admitted. Every roadmap tool declares that path, the realpath of the loaded `src/index.ts`, as its own source, so installs reached through a symlink (the marketplace layout) still match.
 - On `atlas:completed`, roadmap stores a pending-close entry for the executing session and adds a reminder on its next turn while the stage is active. The session receives `Plan <id> completed for <stage>` with gate evidence candidates. A plan with neither a proposal-time nor an executing-session binding is not attached to any stage.
 - Pending-close entries are deduplicated by `planId` within the receiving session.
 
