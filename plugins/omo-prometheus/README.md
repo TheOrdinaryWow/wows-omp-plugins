@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh.md)
 
-[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO)'s Prometheus planning and Atlas execution, ported to OMP. Prometheus interviews you until it can write a plan worth approving. After approval, Atlas executes that plan by delegating every task to subagents, records verified evidence for each one, and runs four independent verification gates before it calls the plan done. Progress is shared across sessions, so one session can pick up where another stopped.
+[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO)'s Prometheus planning and Atlas execution, ported to OMP. Prometheus interviews you until it can write a plan worth approving. After approval, Atlas executes that plan by delegating every task to subagents, records verified evidence for each one, and runs four independent verification gates before it calls the plan done.
 
 The plugin builds on OMP's native Plan Mode and approval flow and adds:
 
@@ -70,29 +70,21 @@ Every plan ends with two machine-readable sections. Tasks are checkbox rows numb
 - [ ] F4. Success-criteria fidelity
 ```
 
-Prometheus assigns each task the most specific agent your session's `task` tool offers, preferring `omo-toolkit` agents over generic `task` or `sonic`. If an agent is missing at execution time, Atlas tries its fallbacks (most fall back to `task`) and otherwise picks the best fit from the live list, without asking you to re-approve the plan.
+Prometheus assigns each task the most specific agent your `task` tool offers, preferring `omo-toolkit` agents. If one is missing at execution time, Atlas tries its fallbacks, then the best fit from the live list, without asking you to re-approve.
 
 ### Execution
 
-After approval the main session becomes Atlas. Atlas does not edit files itself: the plugin blocks implementation tools (`bash`, `eval`, `edit`, file writes and so on) in the parent session, so every task goes to a child agent through `task`. Read-only tools, `task`, `todo`, `ask` and similar coordination tools remain available.
+After approval the main session becomes Atlas. Atlas does not edit files itself: the plugin blocks implementation tools (`bash`, `eval`, `edit`, file writes and so on) in the parent session, so every task goes to a child agent through `task`.
 
-Atlas tracks the plan in a ledger. A task is marked done only with proof from the child's actual final result; ticking a box in the plan file does not count. Tasks run in dependency order, and a plan with a dependency cycle is rejected before anything runs.
+Atlas tracks the plan in a ledger. A task is done only with proof from its child's actual final result, never from a ticked box in the plan file. Tasks run in dependency order, and a dependency cycle is rejected before anything runs. A HEAVY task (security, migrations, public API, data-loss risk and similar) also needs a second, fresh child to verify it. A defect a child finds inside the change's reach becomes a discovered task (`D1`, `D2`, …) before the final gates; one outside it goes into the final report. See the [reference](REFERENCE.md#ledger) for the contracts.
 
-Each task has a tier. A LIGHT task is done when its own child's evidence shows its acceptance check passing. A HEAVY task (security, migrations, public API, data-loss risk and similar) is done only after a second, fresh child verifies it independently; a failed verification sends the task back with the verifier's findings.
+Atlas is nudged to continue unfinished work. If the ledger or plan files are missing, damaged or no longer match the approved plan, Atlas pauses until you restore them, or exit with `/atlas exit` and get a changed plan approved.
 
-Every child reports a structured done-claim (commands run, the artifacts behind each acceptance check, failure cases probed, cleanup), and Atlas checks it before marking anything done. A defect inside the change's reach becomes a discovered task (`D1`, `D2`, …) before the final gates; one outside it goes into the final report. Read-only research children can help diagnose a failure, but their output never counts as proof. See the [reference](REFERENCE.md) for the contracts.
-
-When Atlas stops with unfinished tasks, the plugin nudges it to continue, up to eight times per message from you. Two nudges in a row without progress stop the loop and notify you.
-
-If the ledger or plan files are missing, damaged or no longer match the approved plan, Atlas pauses until you fix it: restore the files, or exit with `/atlas exit` and get a changed plan approved.
-
-While executing, Atlas keeps your todo list in sync with the plan and renames the session to an "Atlas …" title unless you named it yourself.
-
-Atlas follows the host's `task.isolation.enabled`: when it is on, every implementation child runs isolated. With `task.isolation.merge: patch`, Atlas warns once that each child's commits are squashed into one patch. Atlas never changes these settings.
+Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. It follows the host's `task.isolation` settings (with `merge: patch`, child commits are squashed into one patch) and never changes them.
 
 ### Final gates
 
-Once every task is done, Atlas runs four verification gates in parallel, each on a fresh child that did no earlier work on the plan. Gate children only report; they never fix what they find.
+Once every task is done, Atlas runs four gates in parallel, each on a fresh child that only reports and never fixes.
 
 | Gate | Agent | Checks |
 | --- | --- | --- |
@@ -101,11 +93,11 @@ Once every task is done, Atlas runs four verification gates in parallel, each on
 | F3. Real-surface QA | `deep-low` (fallback `task`) | every verification scenario run for real, each pass backed by an artifact |
 | F4. Success-criteria fidelity | `deep-high` (fallback `task`) | the result against each success criterion and ideal-state row; it passes unless one is shown to fail |
 
-Each gate returns a structured `PASS`, `FAIL` or `INCONCLUSIVE`; only `PASS` counts. When a gate fails, Atlas adds correction rows (`X1`, `X2`, …), runs them like tasks, and reruns only that gate. Finished tasks and passed gates stay done. After two failed reruns of the same gate, Atlas asks you how to proceed.
+Each gate returns a structured `PASS`, `FAIL` or `INCONCLUSIVE`; only `PASS` counts. A failed gate adds correction rows (`X1`, `X2`, …) and reruns only that gate. After two failed reruns, Atlas asks you how to proceed.
 
 ### Delivery
 
-The `delivery` setting decides how finished work leaves the repository. `direct` keeps commits on the working branch. `pr` has a child push the branch and open a pull request after the gates, and `ship` also waits for CI and merges. With `ask` (the default), Prometheus asks when the repository has a remote. A fixed value is used without asking, and `pr` or `ship` without a remote falls back to `direct`. You can override the setting in the conversation. The approved plan records the result as a `Delivery:` line, and execution follows the plan, not the setting. Atlas itself never runs git.
+`delivery` sets how finished work leaves the repository: `direct` keeps commits on the working branch, `pr` has a child push the branch and open a pull request after the gates, and `ship` also waits for CI and merges. With `ask` (the default), Prometheus asks when the repository has a remote; a fixed value is used without asking, `pr` or `ship` without a remote becomes `direct`, and you can override it in conversation. The plan's `Delivery:` line governs execution, and Atlas itself never runs git.
 
 ### The `/atlas` command
 
@@ -121,7 +113,7 @@ The `delivery` setting decides how finished work leaves the repository. `direct`
 /atlas exit                     # leave Atlas (asks first if the plan is unfinished)
 ```
 
-Everything except bare `/atlas` and `exit` works only while Atlas is inactive. To switch plans, exit first. A plan matches by its display label, its original name, or either one without the `-plan` suffix; use the full ID when names collide. A plan whose name starts with a subcommand word is still reachable by ID or through `/atlas start`.
+Everything except bare `/atlas` and `exit` works only while Atlas is inactive; to switch plans, exit first. Plans match by name or ID (see [plan matching](REFERENCE.md#plan-matching)).
 
 Atlas Dispatch lists unfinished plans in the current workspace; Tab shows all plans, including finished, invalid and other-workspace ones, for viewing only.
 
@@ -141,9 +133,9 @@ While Atlas is active, bare `/atlas` opens a live, read-only view with each row'
 
 ### Continuing in another session
 
-Plans and their evidence live outside any one session, in your OMP session directory. Session A can finish part of a plan and exit, and session B can continue it with `/atlas <name>`, as long as both use the same session directory and workspace. Shift+R or `/atlas resume` instead switches back to a session that already ran the plan; it comes back in Atlas mode and waits for your next message.
+Plans and their evidence live in your OMP session directory, outside any one session. Session A can stop partway and session B continue with `/atlas <name>`, as long as both share the session directory and workspace. Shift+R or `/atlas resume` returns to a session that already ran the plan, in Atlas mode, and waits for your next message.
 
-A plan runs in one session at a time. Exiting releases it immediately but does not cancel running children or mark work complete. While a child is still running, its session keeps the plan until the child reports a final result.
+A plan runs in one session at a time. Exiting releases it but neither cancels running children nor marks work complete; a session with a running child keeps the plan until the child reports.
 
 Updating the plugin keeps existing plans runnable without re-approval.
 
@@ -156,7 +148,7 @@ modelRoles:
   atlas: anthropic/claude-sonnet-5
 ```
 
-While a Prometheus proposal waits for approval, the approval slider also offers `atlas`; it starts on `default`, so move it to `atlas` to execute with that role. `/atlas <plan>` switches to the `atlas` role when it is assigned and keeps the current model otherwise. The role is not part of the Ctrl+P cycle.
+While a proposal waits for approval, the approval slider also offers `atlas`; move it off `default` to execute with that role. `/atlas <plan>` applies the role when it is assigned. It is not in the Ctrl+P cycle.
 
 ## Settings
 
@@ -206,14 +198,11 @@ Client programs can read planning and execution state from a state snapshot; see
 ## Known limitations
 
 - Atlas needs file-backed sessions on a local filesystem that supports hard links, atomic rename and file and directory sync. In-memory or remote-only session storage makes it refuse to run. Sessions with different session directories cannot see each other's plans.
-- Some OMP versions give no reliable signal that a child has fully finished. Then the plan stays owned by its session until that OMP process exits; start a new session after closing it.
 - Plans run with versions before the shared ledger cannot be resumed; get them approved again.
-- `checkpoint` and `rewind` are blocked in the Atlas parent, because rewinding would detach the session from the proof of completed tasks.
-- Tools from other extensions and MCP servers are blocked in the Atlas parent unless the reference lists them.
 
 ## Reference
 
-[REFERENCE.md](REFERENCE.md) covers the Atlas tool guard, the plan bundle and ledger, ownership, the state snapshot, and the event contracts with `omp-herdr-dag` and `roadmap`.
+[REFERENCE.md](REFERENCE.md) covers the Atlas tool guard, plan bundle and ledger, plan matching, ownership, the state snapshot, and the event contracts with `omp-herdr-dag` and `roadmap`.
 
 ## License
 
