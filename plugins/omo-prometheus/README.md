@@ -30,7 +30,7 @@ If you used the older `prometheus` plugin, uninstall it first with `omp plugin u
 1. Prometheus enters Plan Mode, consults Metis and asks its questions. Answer them until it proposes a plan.
 2. Review the proposal and approve it through OMP's normal approval dialog. Either approval choice hands off to Atlas.
 3. Atlas starts executing on its own. The widget above the editor shows progress; `/atlas` opens the full view.
-4. When all tasks, the four final gates and, if the plan delivers through a pull request, the delivery task pass, the plan is complete. `/atlas exit` leaves Atlas at any time.
+4. When all tasks, the four final gates and any delivery task pass, the plan is complete. `/atlas exit` leaves Atlas at any time.
 
 ## Usage
 
@@ -44,7 +44,7 @@ The plan is written as a `local://` session artifact and submitted through OMP's
 
 `reviewLevel` (see [Settings](#settings)) controls whether Momus, or Momus and Oracle together, review the plan before it is proposed.
 
-OmO documents the original in [Planning: the Ultrawork Planner](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#planning-the-ultrawork-planner); in the revision this plugin is based on, Prometheus is called the Ultrawork Planner and runs as `/ulw-plan`.
+OmO documents the original as the [Ultrawork Planner](https://github.com/code-yeongyu/oh-my-openagent/blob/ac9fcb6f4223cf105a80b93e965cbc6274e53100/docs/guide/orchestration.md#planning-the-ultrawork-planner) (`/ulw-plan`) and [`/ulw-execute`](https://github.com/code-yeongyu/oh-my-openagent/blob/ac9fcb6f4223cf105a80b93e965cbc6274e53100/docs/guide/orchestration.md#execution-ulw-execute). This plugin keeps the `/prometheus` and `/atlas` commands and tracks those kernels; `NOTICE` records the pinned revision.
 
 ### Plan format
 
@@ -78,19 +78,17 @@ After approval the main session becomes Atlas. Atlas does not edit files itself:
 
 Atlas tracks the plan in a ledger. A task is marked done only with proof from the child's actual final result; ticking a box in the plan file does not count. Tasks run in dependency order, and a plan with a dependency cycle is rejected before anything runs.
 
-Each task has a tier. A LIGHT task is done when its own child's evidence shows its acceptance check passing. A HEAVY task (authentication, security, migrations, concurrency, persistence formats, public API, data-loss risk) is done only after a second, fresh child independently verifies it; a failed verification sends the task back for another attempt with the verifier's findings.
+Each task has a tier. A LIGHT task is done when its own child's evidence shows its acceptance check passing. A HEAVY task (security, migrations, public API, data-loss risk and similar) is done only after a second, fresh child verifies it independently; a failed verification sends the task back with the verifier's findings.
 
-Every child reports a structured done-claim: the commands it ran with their results, the artifacts behind each acceptance check, the failure cases it probed, and its cleanup. Atlas checks that claim before it marks anything done. A defect a child finds inside the change's reach becomes a new discovered task (`D1`, `D2`, …) before the final gates; one outside it is noted for the final report. To diagnose a failure, Atlas may also spawn read-only research children, whose output never counts as proof.
+Every child reports a structured done-claim (commands run, the artifacts behind each acceptance check, failure cases probed, cleanup), and Atlas checks it before marking anything done. A defect inside the change's reach becomes a discovered task (`D1`, `D2`, …) before the final gates; one outside it goes into the final report. Read-only research children can help diagnose a failure, but their output never counts as proof. See the [reference](REFERENCE.md) for the contracts.
 
 When Atlas stops with unfinished tasks, the plugin nudges it to continue, up to eight times per message from you. Two nudges in a row without progress stop the loop and notify you.
 
 If the ledger or plan files are missing, damaged or no longer match the approved plan, Atlas pauses until you fix it: restore the files, or exit with `/atlas exit` and get a changed plan approved.
 
-While executing, Atlas keeps your session's todo list in sync with the plan (tasks, discovered tasks, corrections, final gates and delivery) and renames the session to an "Atlas …" title unless you named it yourself.
+While executing, Atlas keeps your todo list in sync with the plan and renames the session to an "Atlas …" title unless you named it yourself.
 
-If OMP's `task.isolation.enabled` setting is on, Atlas runs every implementation child isolated; with `task.isolation.merge: patch` it warns once that each child's commits are squashed into one patch. Atlas never changes these settings.
-
-OmO documents the original in [Execution: /ulw-execute](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#execution-ulw-execute), its name for Atlas execution in that revision.
+Atlas follows the host's `task.isolation.enabled`: when it is on, every implementation child runs isolated. With `task.isolation.merge: patch`, Atlas warns once that each child's commits are squashed into one patch. Atlas never changes these settings.
 
 ### Final gates
 
@@ -103,11 +101,11 @@ Once every task is done, Atlas runs four verification gates in parallel, each on
 | F3. Real-surface QA | `deep-low` (fallback `task`) | every verification scenario run for real, each pass backed by an artifact |
 | F4. Success-criteria fidelity | `deep-high` (fallback `task`) | the result against each success criterion and ideal-state row; it passes unless one is shown to fail |
 
-Each gate returns a structured `PASS`, `FAIL` or `INCONCLUSIVE`; only a structured `PASS` counts. When a gate fails, Atlas adds correction rows (`X1`, `X2`, …), runs them like tasks, and reruns only that gate with the earlier rejection and the changes since. Completed tasks and gates that already passed stay done. If two reruns of the same gate also fail, Atlas asks you how to proceed.
+Each gate returns a structured `PASS`, `FAIL` or `INCONCLUSIVE`; only `PASS` counts. When a gate fails, Atlas adds correction rows (`X1`, `X2`, …), runs them like tasks, and reruns only that gate. Finished tasks and passed gates stay done. After two failed reruns of the same gate, Atlas asks you how to proceed.
 
 ### Delivery
 
-When the repository has a remote, Prometheus asks how finished work should leave it, and the plan records `Delivery: direct`, `pr` or `ship`. With `pr`, a delivery task runs after the gates and a child pushes the branch and opens a pull request; with `ship`, it also waits for CI and merges. Atlas itself never runs git. With `direct` (the default), commits stay on the working branch.
+The `delivery` setting decides how finished work leaves the repository. `direct` keeps commits on the working branch. `pr` has a child push the branch and open a pull request after the gates, and `ship` also waits for CI and merges. With `ask` (the default), Prometheus asks when the repository has a remote. A fixed value is used without asking, and `pr` or `ship` without a remote falls back to `direct`. You can override the setting in the conversation. The approved plan records the result as a `Delivery:` line, and execution follows the plan, not the setting. Atlas itself never runs git.
 
 ### The `/atlas` command
 
@@ -172,6 +170,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 | Setting | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `reviewLevel` | `off` \| `ask` \| `standard` \| `high-accuracy` | `ask` | Plan review before the proposal. |
+| `delivery` | `ask` \| `direct` \| `pr` \| `ship` | `ask` | How finished work leaves the repository; see [Delivery](#delivery). |
 | `atlasWidget` | boolean | `true` | Show the progress widget above the editor while Atlas executes. |
 | `herdrDag` | boolean | `true` | Publish Atlas progress for the `omp-herdr-dag` viewer. |
 
@@ -188,8 +187,8 @@ User settings merge with project overrides. Settings are read at session start, 
 
 - `omo-toolkit`: plans prefer its category agents, and gates F2, F3 and F4 run on `deep-high` and `deep-low`.
 - `judge-dispatch`: does not reroute anything while a plan executes, and never reroutes `metis`, `momus` or `oracle`.
-- `omp-herdr-dag`: shows Atlas tasks, discovered tasks, fixes, gates and delivery as a live dependency graph, with each task's tier and verification state.
-- `roadmap`: a plan proposed while a roadmap stage is bound remembers that stage. Atlas may use the roadmap tools during execution, and when the plan completes (after delivery, for `pr` and `ship` plans) the session is reminded to close the stage with the gate evidence. The stage is never closed automatically.
+- `omp-herdr-dag`: shows Atlas tasks, discovered tasks, fixes, gates and delivery as a live dependency graph.
+- `roadmap`: a plan proposed while a roadmap stage is bound remembers that stage. Atlas may use the roadmap tools, and when the plan completes (after delivery, for `pr` and `ship`) the session is reminded to close the stage with the gate evidence. It never closes the stage itself.
 - [Magic Context](https://github.com/cortexkit/magic-context): its `ctx_*` tools stay available to Atlas.
 
 ## Without the terminal UI
