@@ -350,7 +350,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
       return;
     }
     try {
-      if ((await readHostSetting(session.settings, "goal.enabled")) === false) {
+      if (readHostSetting(session.settings, "goal.enabled") === false) {
         commandNotice(ctx, "Goal mode is disabled. Enable it in settings (goal.enabled).", "warning");
         return;
       }
@@ -375,7 +375,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
 
     let hostConcurrency: unknown;
     try {
-      hostConcurrency = await readHostSetting(session.settings, "task.maxConcurrency");
+      hostConcurrency = readHostSetting(session.settings, "task.maxConcurrency");
     } catch (error) {
       pi.logger.warn("audit-goal could not read task.maxConcurrency", { error: errorMessage(error) });
     }

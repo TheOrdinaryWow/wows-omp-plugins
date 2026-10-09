@@ -265,7 +265,7 @@ async function registerTests(): Promise<void> {
 
         expect(report.requests.map((request) => request.authorization)).toEqual([`Bearer ${HOST_KEY}`]);
         expect(report.sessions[0]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "scout" } }]);
-        expect(report.sessions[0]?.usage).toHaveLength(1);
+        expect(report.sessions[0]?.usage).toEqual([expect.objectContaining({ purpose: "judge-dispatch" })]);
         expect(report.sessions[0]?.notifications).toEqual([{ message: "judge-dispatch  task → scout (0.99)", level: "info" }]);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
       });

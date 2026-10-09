@@ -1436,7 +1436,7 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert(armedLeaf);
           h.session.sessionManager.branch(rootLeaf);
           if (event === "session_tree") await h.runner.emit({ type: event, oldLeafId: armedLeaf, newLeafId: rootLeaf });
-          else await h.runner.emit({ type: event, previousSessionFile: undefined });
+          else await h.runner.emit({ type: event, reason: "branch", previousSessionFile: undefined });
           const fresh = await h.runner.emitToolCall({ type: "tool_call", toolName, toolCallId: crypto.randomUUID(), input });
           assert.equal(fresh?.block, true, "the rebuilt branch must be unarmed for new calls");
           assert.match(fresh.reason ?? "", /unarmed/);
@@ -1449,7 +1449,7 @@ async function acceptance(name: string, root: string): Promise<void> {
       }
       await arm();
       const generationOnly = await confirmedPreviewBehindLock(h, repo, toolName, input, async () => {
-        await h.runner.emit({ type: "session_branch", previousSessionFile: undefined });
+        await h.runner.emit({ type: "session_branch", reason: "fork", previousSessionFile: undefined });
         assert.equal(
           await h.runner.emitToolCall({ type: "tool_call", toolName, toolCallId: crypto.randomUUID(), input }),
           undefined,
@@ -1700,7 +1700,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             const leaf = h.session.sessionManager.appendCustomEntry("roadmap-regression", { type });
             if (type === "session_start") await h.runner.emit({ type });
             if (type === "session_switch") await h.runner.emit({ type, reason: "resume", previousSessionFile: undefined });
-            if (type === "session_branch") await h.runner.emit({ type, previousSessionFile: undefined });
+            if (type === "session_branch") await h.runner.emit({ type, reason: "fork", previousSessionFile: undefined });
             if (type === "session_tree") await h.runner.emit({ type, oldLeafId: leaf, newLeafId: leaf });
             const fresh = holdOverlap(h);
             const next = call(h, "roadmap_overlap", { stage: "S01", intent: `Current ${type}` });
@@ -1849,7 +1849,7 @@ async function acceptance(name: string, root: string): Promise<void> {
                 assert.equal(settled, false, "the answered overlap must still be waiting for the repository lock");
                 assert.deepEqual((await loadAll(repo)).files, before);
                 const leaf = h.session.sessionManager.appendCustomEntry("roadmap-regression", { type, answer });
-                if (type === "session_branch") await h.runner.emit({ type, previousSessionFile: undefined });
+                if (type === "session_branch") await h.runner.emit({ type, reason: "fork", previousSessionFile: undefined });
                 else await h.runner.emit({ type, oldLeafId: leaf, newLeafId: leaf });
               } finally {
                 release.resolve();
@@ -2237,7 +2237,7 @@ async function acceptance(name: string, root: string): Promise<void> {
         const unchanged = await loadAll(repo);
         assert.deepEqual([unchanged.index.format, unchanged.rounds.length], [1, 1]);
         const locked = await confirmedPreviewBehindLock(h, repo, "roadmap_round_plan", { round: growth }, async () => {
-          await h.runner.emit({ type: "session_branch", previousSessionFile: undefined });
+          await h.runner.emit({ type: "session_branch", reason: "fork", previousSessionFile: undefined });
         });
         assert(!locked.receipt.ok, JSON.stringify(locked.receipt));
         assert.match(locked.receipt.reason, /changed|stale/i);
@@ -2473,7 +2473,7 @@ async function acceptance(name: string, root: string): Promise<void> {
           });
           if (type === "session_start") await h.runner.emit({ type });
           if (type === "session_switch") await h.runner.emit({ type, reason: "resume", previousSessionFile: undefined });
-          if (type === "session_branch") await h.runner.emit({ type, previousSessionFile: undefined });
+          if (type === "session_branch") await h.runner.emit({ type, reason: "fork", previousSessionFile: undefined });
           if (type === "session_tree") await h.runner.emit({ type, oldLeafId: earlier, newLeafId: latest });
           assert.equal((await call(h, "roadmap_overlap", { stage: "S01", intent: "Read restored answer" })).answer, "unrelated");
           h.session.sessionManager.branch(earlier);

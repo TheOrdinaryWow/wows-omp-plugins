@@ -40,7 +40,7 @@ REFERENCE*.md                  plugin-state snapshot envelope shared by plugins
 
 - `.github/workflows/ci.yml` runs lint, the catalog check, type check, and tests
   on every push and PR. Types and tests run twice: against the omp version in
-  `bun.lock` and against 18.3.5, the oldest host the plugins support. Raise
+  `bun.lock` and against 18.5.1, the oldest host the plugins support. Raise
   that matrix entry only together with the documented floor. Types and tests
   are skipped for the release PR, for its `chore: release main` merge, and for
   changes that touch only `README*.md`, `REFERENCE*.md`, `CHANGELOG.md`,
@@ -148,11 +148,12 @@ It derives its legal agent set from the live `task` tool description and reads
 its settings on every call from `ctx.cwd` (never `process.cwd()`), because plugin
 settings are project-scoped and several sessions can share one process.
 
-Its runtime floor is omp 18.3.5, matching the locked dev dependency. The SDK
-harness uses `CreateAgentSessionOptions.cacheWarming`, introduced in 18.3.5,
-to prevent background provider requests during isolated tests. Before relying
-on a new host API, type-check a throwaway copy against 18.3.5
-(`bun add -d @oh-my-pi/pi-coding-agent@18.3.5`). If the floor lacks an API,
+Its runtime floor, like every plugin's, is omp 18.5.1; the locked dev dependency
+tracks a newer release, so CI covers both ends. The SDK harness uses
+`CreateAgentSessionOptions.cacheWarming`, introduced in 18.3.5, to prevent
+background provider requests during isolated tests. Before relying on a new host
+API, type-check a throwaway copy against the floor
+(`bun add -d @oh-my-pi/pi-coding-agent@18.5.1`). If the floor lacks an API,
 raise the CI matrix entry and documented requirements instead of adding a shim.
 
 Judging goes through OMP's `judge` role (`resolveJudge`); the plugin keeps no
@@ -215,7 +216,8 @@ unreleased edits as if they were released.
 `.omp/dev-marketplace/`, registers or refreshes `wows-omp-plugins-dev`, and
 force-reinstalls the plugins at project scope. Rerun it after every edit and
 restart the session. `bun run dev:plugins --remove` uninstalls them and drops the
-dev marketplace. Facts behind this design, verified on omp 18.3.5:
+dev marketplace. Facts behind this design, verified on omp 18.3.5 (the host
+code behind them is unchanged through 18.5.1):
 
 - omp rejects plugin sources that resolve outside the marketplace root, so the
   dev marketplace must be a real copy; a symlink to `plugins/` fails to install.

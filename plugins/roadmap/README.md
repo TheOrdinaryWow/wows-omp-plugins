@@ -12,7 +12,7 @@ Keeps a project roadmap in your repository as Markdown, maintained by the agent 
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-Requires OMP 18.3.5 or newer and a git work tree. Start a new session after installing. The plugin ships the `roadmap` skill and a pinned MADR 4.0 template.
+Requires OMP 18.5.1 or newer and a git work tree. Start a new session after installing. The plugin ships the `roadmap` skill and a pinned MADR 4.0 template.
 
 ## Quick start
 

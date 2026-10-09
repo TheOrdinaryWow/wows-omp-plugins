@@ -50,7 +50,7 @@ describe("ultrawork keyword detection", () => {
 describe("orchestrate conflict detection", () => {
   const settings =
     (overrides: Record<string, boolean> = {}) =>
-    async (id: string) =>
+    (id: string) =>
       overrides[id] ?? true;
 
   test("agrees with the host's magic-keyword matcher", () => {
@@ -79,9 +79,9 @@ describe("orchestrate conflict detection", () => {
     }
   });
 
-  test("requires the host to recognize orchestrate in the message", async () => {
-    expect(await triggersOrchestrate("ulw orchestrate the migration", ["task"], settings())).toBe(true);
-    expect(await triggersOrchestrate("ulw `orchestrate` it", ["task"], settings())).toBe(false);
+  test("requires the host to recognize orchestrate in the message", () => {
+    expect(triggersOrchestrate("ulw orchestrate the migration", ["task"], settings())).toBe(true);
+    expect(triggersOrchestrate("ulw `orchestrate` it", ["task"], settings())).toBe(false);
   });
 
   test("ignores orchestrate when the host keyword is disabled or task is inactive", async () => {

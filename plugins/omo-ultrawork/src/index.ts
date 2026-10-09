@@ -177,9 +177,9 @@ export default function ultrawork(pi: ExtensionAPI): void {
     rehydrate(ctx);
   };
 
-  const orchestrateConflict = async (session: AgentSession, text: string): Promise<boolean> => {
+  const orchestrateConflict = (session: AgentSession, text: string): boolean => {
     try {
-      return await triggersOrchestrate(text, session.getEnabledToolNames(), (id) => readHostSetting(session.settings, id));
+      return triggersOrchestrate(text, session.getEnabledToolNames(), (id) => readHostSetting(session.settings, id));
     } catch (error) {
       pi.logger.warn("ultrawork could not read the orchestrate keyword settings; assuming the host default", {
         error: errorMessage(error),

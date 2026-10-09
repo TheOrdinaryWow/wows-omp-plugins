@@ -12,7 +12,7 @@
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-需要 OMP 18.3.5 或更高版本，并在 git 工作树中使用。安装后开启新会话。插件附带 `roadmap` 技能和一份固定版本的 MADR 4.0 模板。
+需要 OMP 18.5.1 或更高版本，并在 git 工作树中使用。安装后开启新会话。插件附带 `roadmap` 技能和一份固定版本的 MADR 4.0 模板。
 
 ## 快速上手
 

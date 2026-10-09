@@ -196,8 +196,8 @@ async function discoverCandidates(ctx: ExtensionContext, settings: Settings, leg
   const agents = deduplicateAgents([...discovery.agents, ...(currentSession?.getSessionAgents() ?? [])]);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
   const blockedAgent = process.env.PI_BLOCKED_AGENT?.trim();
-  const modelOverrides = (await readHostSetting(settings, "task.agentModelOverrides")) as Record<string, string | string[] | undefined>;
-  const fallbackChains = (await readHostSetting(settings, "retry.fallbackChains")) as Record<string, unknown>;
+  const modelOverrides = readHostSetting(settings, "task.agentModelOverrides") as Record<string, string | string[] | undefined>;
+  const fallbackChains = readHostSetting(settings, "retry.fallbackChains") as Record<string, unknown>;
   const activeModelPattern = ctx.model ? formatModelStringWithRouting(ctx.model) : undefined;
 
   return legalNames
@@ -249,7 +249,8 @@ function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
     settings,
     registry: ctx.modelRegistry,
     sessionId: ctx.sessionManager.getSessionId(),
-    onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>, "judge-dispatch"),
+    purpose: "judge-dispatch",
+    onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>),
   });
 }
 
@@ -473,7 +474,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
       const config = await effectivePluginSettings(ctx.cwd);
       indicator = config.indicator;
       const settings = scopedSettings(ctx);
-      const deadlineMs = routingDeadlineMs(await readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
+      const deadlineMs = routingDeadlineMs(readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
       if (deadlineMs === undefined) {
         if (indicator) showRoutingStatus(pi, ctx, "kept the requested agent: extensionHandlers.toolCallTimeoutMs leaves no time to judge");
         return undefined;
