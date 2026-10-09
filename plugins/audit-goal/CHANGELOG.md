@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.1...audit-goal@0.3.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **audit-goal:** read prompt assets at load so plugin upgrades don't break running sessions ([e034f80](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e034f8036bf8cc74909f72f973f70cef8c4c89b3))
+
 ## [0.3.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.0...audit-goal@0.3.1) (2026-10-07)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.4...omp-herdr-dag@0.4.5) (2026-10-09)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** ask for a restart instead of launching a viewer an upgrade removed ([eeb5995](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/eeb5995ffdc9305ec063342d6e7fee96c00b3745))
+
 ## [0.4.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.3...omp-herdr-dag@0.4.4) (2026-10-09)
 
 
