@@ -117,7 +117,7 @@ The plugin has no settings.
 
 ## Working with other plugins
 
-With `omo-prometheus`, a plan proposed while a stage is bound remembers that stage. During execution Atlas may use the roadmap tools, and when the plan completes the session is reminded to close the stage, mapping the final gate results to the stage's criteria. PR/ship plans complete only after delivery; their delivery mode and summary are saved with the reminder and shown when preparing the stage close. Older completions without delivery metadata still work. The stage never closes automatically. `roadmap_status` with the stage ID shows whether it is active; the Atlas bundle's `approval.json` shows whether a plan recorded a stage.
+With `omo-prometheus`, a plan proposed while a stage is bound remembers that stage. During execution Atlas may use the roadmap tools, and when the plan completes the session is reminded to close the stage, mapping the final gate results to the stage's criteria. PR and ship plans complete only after delivery, and the close reminder shows their delivery mode and summary. Older completions without delivery metadata still work. The stage never closes automatically. `roadmap_status` with the stage ID shows whether it is active; the Atlas bundle's `approval.json` shows whether a plan recorded a stage.
 
 ## Without the terminal UI
 
