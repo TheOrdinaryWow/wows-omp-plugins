@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.3.1...roadmap@0.3.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **roadmap:** declare tool source path so Atlas accepts symlinked installs ([28c5bd3](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/28c5bd312172be69bf7c1e66ee616bc28d3399bc))
+
 ## [0.3.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.3.0...roadmap@0.3.1) (2026-10-09)
 
 
