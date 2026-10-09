@@ -1324,7 +1324,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return false;
     }
     try {
-      await loadRequiredPromptAssets();
+      loadRequiredPromptAssets();
     } catch (error) {
       const detail = errorMessage(error);
       pi.logger.warn("prometheus refused activation without prompt assets", { error: detail });
@@ -1404,7 +1404,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       `<review-policy level="${reviewLevels.get(ctx.sessionManager.getSessionId()) ?? "ask"}">` +
       "Apply this session's plan-review setting in section 7 of the planning skill.</review-policy>";
     try {
-      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${reviewPolicy}\n\n${await loadPromptAsset(SKILL_ASSET)}`;
+      return `${PLANNING_PREAMBLE}\n\n${agentBlock}\n${guidance}\n\n${reviewPolicy}\n\n${loadPromptAsset(SKILL_ASSET)}`;
     } catch (error) {
       const detail = errorMessage(error);
       pi.logger.warn("prometheus planning asset became unavailable", { error: detail });
@@ -1427,7 +1427,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       : `\n\n<execution-ledger status="paused">${pauseMessage(record)}</execution-ledger>`;
     const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}`;
     try {
-      return `${header}\n\n${await loadPromptAsset(ATLAS_ASSET)}`;
+      return `${header}\n\n${loadPromptAsset(ATLAS_ASSET)}`;
     } catch (error) {
       const detail = errorMessage(error);
       pi.logger.warn("prometheus Atlas asset became unavailable", { error: detail });
