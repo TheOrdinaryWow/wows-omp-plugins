@@ -88,7 +88,7 @@ export interface AuditState {
   rounds: RoundRecord[];
   capPending: boolean;
   conclusion: AuditConclusion | null;
-  /** Tools this plugin activated for the loop and must deactivate when it ends. */
+  /** Tools this plugin activated for the loop; kept after the audit ends until the session holds no goal that could restore them. */
   addedTools: string[];
 }
 

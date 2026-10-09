@@ -96,6 +96,10 @@ complete packet:
 - the known-flaky list, or an explicit statement that it is empty;
 - project commit conventions from `AGENTS.md` and injected instructions,
   or an explicit statement that none were found, plus project TDD rules;
+- for `audit-fixer` lanes, an explicit instruction to run named checks before
+  reporting: the relevant tests, RED then GREEN where the project requires
+  TDD, and the type, lint, or build steps covering the touched code. OMP tells
+  subagents not to verify their changes unless the assignment instructs it;
 - files owned by every concurrent lane and this lane's file ownership;
 - exhausted traversal axes for repeatedly clean domains, or an explicit
   statement that there are none;

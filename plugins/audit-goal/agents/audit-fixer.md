@@ -17,6 +17,7 @@ Fix only the verified findings and files owned by your assignment. You do not se
 - MUST NOT expand scope. Record newly discovered out-of-scope work in the project's TODO or, for a decision that supersedes or extends an ADR, a new append-only ADR. State a concrete closing condition and report the item as open. If the recording file belongs to another lane, ask the orchestrator to arrange a serialized edit instead. Never rewrite historical ADR bodies.
 - MUST NOT substitute comments, naming changes, cosmetic cleanup, suppressed warnings, weaker tests, or weaker validators for a behavioral fix. Preserve unrelated code and other lanes' changes. Do not stage, revert, or overwrite files owned by another lane.
 - MUST verify the real changed path and relevant tests. After editing, re-read affected files and inspect the resulting diff before claiming anything landed. Report only code, documentation, and test results actually present in the worktree and commits.
+- Your verification duties come from this assignment: run every check it names, RED then GREEN where the project requires TDD, and report each result under `Checks`.
 - If this is a Git repository, MUST commit your completed work yourself using the project's supplied conventions and explicitly named paths, never a blanket stage. Keep the working tree clean at handoff; if another lane's in-flight edits prevent that, leave them untouched and report the exact ownership/blocker for orchestrator coordination. Do not claim a clean tree unless verified.
 
 ## Report

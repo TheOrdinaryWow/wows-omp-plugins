@@ -5,7 +5,7 @@ English | [简体中文](REFERENCE.zh.md)
 ## How the loop runs
 
 - When the audit starts, and again after every compaction, the plugin injects the audit protocol and the round ledger as a hidden message.
-- It enables the `goal` and `audit_round` tools for the loop and disables the ones it enabled once the goal completes or is dropped.
+- It enables the `goal` and `audit_round` tools for the loop and disables the ones it enabled once the goal completes or is dropped. It checks again before every turn, so a host that restores an older tool list (RPC goal handling does when a goal ends) cannot bring them back after the audit.
 - The model cannot complete the goal through `goal({op:"complete"})`, including through a nested device call, until `audit_round` has recorded a valid conclusion.
 - `audit-auditor` and `audit-fixer` are dispatched with blocking calls, so the main agent waits for each batch. The plugin refuses them outside a running `/audit`, from subagents, and through `eval` `agent()`.
 - The plugin rejects any `task` call that would exceed the effective lane limit.

@@ -91,13 +91,29 @@ type Tool = {
 
 function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise<string | undefined>) {
   const id = `audit-outcomes-${++serial}`;
-  const branch: Array<{ type: "custom"; customType: string; data: unknown }> = [
-    { type: "custom", customType: ENTRY, data: structuredClone(seed) },
-  ];
+  const branch: Array<{ type: "custom"; customType: string; data: unknown }> =
+    seed === undefined ? [] : [{ type: "custom", customType: ENTRY, data: structuredClone(seed) }];
   let activeTools: string[] = [];
   const sessionManager = { getSessionId: () => id, getBranch: () => branch };
   const goal = { id: "g1", objective: "Audit loop (/audit): checkout restart path", status: "active" };
-  const session = { sessionManager, getGoalModeState: () => ({ goal }) } as unknown as AgentSession;
+  let goalHeld = true;
+  let goalStartTools: string[] | undefined;
+  const session = {
+    sessionManager,
+    settings: {},
+    getGoalModeState: () => (goalHeld ? { goal } : undefined),
+    getPlanModeState: () => undefined,
+    getVibeModeState: () => undefined,
+    goalRuntime: {
+      // What the RPC goal controller snapshots, and later restores, when a goal it did not create starts.
+      createGoal: async ({ objective }: { objective: string }) => {
+        goalStartTools = [...activeTools];
+        Object.assign(goal, { objective, status: "active" });
+        goalHeld = true;
+        return { goal: { ...goal } };
+      },
+    },
+  } as unknown as AgentSession;
   AgentRegistry.global().register({ id, displayName: id, kind: "main", session });
   registrations.push(id);
   const hooks = new Map<string, Hook>();
@@ -125,6 +141,8 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
       branch.push({ type: "custom", customType, data: structuredClone(data) });
     },
     getActiveTools: () => activeTools,
+    exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+    sendUserMessage: () => {},
     setActiveTools: async (names: string[]) => {
       activeTools = names;
     },
@@ -169,6 +187,13 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
       >,
     sessionId: id,
     active: () => activeTools,
+    setActive: (names: string[]) => {
+      activeTools = names;
+    },
+    goalStartTools: () => goalStartTools,
+    clearGoal: () => {
+      goalHeld = false;
+    },
     failNextPersist: () => {
       failNextPersist = true;
     },
@@ -385,5 +410,38 @@ describe("registered audit_round and goal hooks", () => {
     const runtime = harness(initial(), null);
     await runtime.command("   ");
     expect(runtime.messages).toEqual([expect.objectContaining({ content: "Usage: /audit <audit-target>", display: true })]);
+  });
+
+  test("/audit starts its goal before enabling the loop tools, so the host's goal-start snapshot excludes them", async () => {
+    const runtime = harness(undefined);
+    runtime.clearGoal();
+    await runtime.command("checkout restart path");
+    expect(runtime.goalStartTools()).toEqual([]);
+    expect(runtime.active()).toEqual(["goal", "audit_round"]);
+    expect(runtime.latest()).toMatchObject({ status: "active", goalId: "g1", addedTools: ["goal", "audit_round"] });
+  });
+
+  test("before each turn the loop tools are restored while the audit runs and removed again after a host restores them", async () => {
+    const runtime = harness(initial());
+    await runtime.hook("session_start", {});
+    // RPC goal handling snapshots the tools while the audit runs (on reattach) and restores that snapshot once the goal ends.
+    const snapshot = [...runtime.active()];
+    expect(snapshot).toEqual(["goal", "audit_round"]);
+    // RPC resume re-enables its pre-goal tools plus `goal`, which drops `audit_round`.
+    runtime.setActive(["goal"]);
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual(["goal", "audit_round"]);
+    runtime.goal.status = "complete";
+    await runtime.hook("goal_updated", { goal: runtime.goal });
+    expect(runtime.active()).toEqual([]);
+    runtime.clearGoal();
+    runtime.setActive(snapshot);
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual([]);
+    expect(runtime.latest()).toMatchObject({ status: "ended", addedTools: [] });
+    // A `goal` tool the host enables on its own, as the TUI goal interview does, stays.
+    runtime.setActive(["goal"]);
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual(["goal"]);
   });
 });

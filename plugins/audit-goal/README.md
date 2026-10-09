@@ -80,7 +80,13 @@ omp plugin config set wows-omp-plugin-audit-goal maxRounds 5
 
 ## Without the terminal UI
 
-`/audit <target>` works the same in RPC, ACP editors, the SDK and headless runs.
+`/audit <target>` starts the same audit in RPC, ACP editors, the SDK and headless runs. What differs is who starts each next turn:
+
+- The TUI continues the loop unattended by default.
+- RPC continues it only when OMP's `goal.continuationModes` setting includes `"rpc"`, for example `["interactive", "rpc"]`. The default is `["interactive"]`, which leaves RPC to the client.
+- In ACP, the SDK and print mode, the client drives every turn.
+
+Other differences:
 
 - RPC shows the round status line; ACP ignores it.
 - At a round limit, RPC and ACP clients get the add/remove/stop choice as a select dialog. Without a UI, the audit records a noninteractive stop.

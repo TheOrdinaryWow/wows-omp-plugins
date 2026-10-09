@@ -80,7 +80,13 @@ omp plugin config set wows-omp-plugin-audit-goal maxRounds 5
 
 ## 不使用终端界面时
 
-`/audit <target>` 在 RPC、ACP 编辑器、SDK 和 headless 模式下的用法完全相同。
+`/audit <target>` 在 RPC、ACP 编辑器、SDK 和 headless 模式下启动的是同一个审计，区别在于由谁发起下一轮：
+
+- TUI 默认会无人值守地继续循环。
+- RPC 只有在 OMP 的 `goal.continuationModes` 设置包含 `"rpc"` 时才会自动继续，例如 `["interactive", "rpc"]`。默认值是 `["interactive"]`，此时由客户端发起每一轮。
+- 在 ACP、SDK 和 print 模式下，每一轮都由客户端发起。
+
+其他差异：
 
 - RPC 会显示轮次状态行，ACP 会忽略它。
 - 到达轮数上限时，RPC 和 ACP 客户端会以选择对话框的形式询问增加、取消上限还是停止。没有 UI 时，审计会记录一次非交互式停止。
