@@ -1,5 +1,4 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -17,6 +16,7 @@ import {
   createConclusion,
   effectiveLaneLimit,
   extensionChoices,
+  INTENSITIES,
   isAuditAgent,
   laneLabel,
   limitLabel,
@@ -47,21 +47,35 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const assetBodies = new Map<string, string>();
-async function loadAsset(relativePath: string): Promise<string> {
-  const cached = assetBodies.get(relativePath);
-  if (cached !== undefined) return cached;
-  const body = (await readFile(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8")).trim();
-  if (!body) throw new Error(`prompt asset ${relativePath} is empty`);
-  assetBodies.set(relativePath, body);
-  return body;
+type Asset = { body: string } | { error: Error };
+
+function readAsset(relativePath: string): Asset {
+  try {
+    const body = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8").trim();
+    return body ? { body } : { error: new Error(`prompt asset ${relativePath} is empty`) };
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
 }
 
-async function buildProtocol(state: AuditState): Promise<string> {
-  const [template, intensityRules] = await Promise.all([
-    loadAsset("../assets/protocol.md"),
-    loadAsset(`../assets/intensity/${state.intensity}.md`),
-  ]);
+// Read at load: upgrading the plugin deletes this install's cache directory under running sessions.
+const ASSETS: Record<string, Asset | undefined> = Object.fromEntries(
+  ["../assets/protocol.md", ...INTENSITIES.map((intensity) => `../assets/intensity/${intensity}.md`)].map((relativePath) => [
+    relativePath,
+    readAsset(relativePath),
+  ]),
+);
+
+function loadAsset(relativePath: string): string {
+  const asset = ASSETS[relativePath];
+  if (!asset) throw new Error(`unknown prompt asset ${relativePath}`);
+  if ("error" in asset) throw asset.error;
+  return asset.body;
+}
+
+function buildProtocol(state: AuditState): string {
+  const template = loadAsset("../assets/protocol.md");
+  const intensityRules = loadAsset(`../assets/intensity/${state.intensity}.md`);
   return renderTemplate(template, {
     target: state.target,
     intensity: state.intensity,
@@ -293,7 +307,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
 
   const sendProtocol = async (ctx: ExtensionContext, state: AuditState, withLedger: boolean): Promise<boolean> => {
     try {
-      const protocol = await buildProtocol(state);
+      const protocol = buildProtocol(state);
       const ledger = withLedger ? `\n\n<audit-ledger>\n${ledgerSummary(state)}\n</audit-ledger>` : "";
       pi.sendMessage(
         {
@@ -389,7 +403,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
       addedTools: [],
     };
     try {
-      await buildProtocol(state);
+      buildProtocol(state);
     } catch (error) {
       commandNotice(ctx, `Audit protocol could not be loaded (${errorMessage(error)}).`, "error");
       return;
