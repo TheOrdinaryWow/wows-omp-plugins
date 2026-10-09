@@ -56,6 +56,8 @@ With `judgeEffort` on, the judge rates how open-ended the assignment is (`routin
 
 With `selectModel` on, the plugin picks each child's model from the agent's model pool: its `task.agentModelOverrides` entry or frontmatter `model` list, plus the fallback chains of the roles named there. The first entry is the primary model. Models without credentials, a score or a price are never chosen.
 
+A `task` call that sets `model` keeps it; agent and effort routing still apply.
+
 `modelBudget` sets how far below the primary the choice may go. Stronger models and the primary itself are always eligible.
 
 | Budget | Routine | Standard | Demanding |

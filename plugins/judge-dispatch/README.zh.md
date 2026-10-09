@@ -56,6 +56,8 @@ judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · effort med �
 
 开启 `selectModel` 后，插件从代理的模型池中为每个子代理挑选模型。模型池包括该代理的 `task.agentModelOverrides` 条目或 frontmatter 中的 `model` 列表，以及其中所列角色的回退链。第一项是主模型。没有凭据、评分或价格的模型永远不会被选中。
 
+`task` 调用显式设置的 `model` 会保持不变；代理类型和思考强度仍可路由。
+
 `modelBudget` 决定最多可以比主模型低多少。比主模型强的模型以及主模型本身始终可选。
 
 | 预算 | Routine | Standard | Demanding |

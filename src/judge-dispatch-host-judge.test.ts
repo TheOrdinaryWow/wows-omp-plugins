@@ -18,6 +18,7 @@ interface SessionSpec {
   description?: string;
   inputs?: Record<string, unknown>[];
   branch?: unknown[];
+  spawns?: Record<string, unknown>[];
 }
 
 interface ChildScenario {
@@ -25,6 +26,7 @@ interface ChildScenario {
   response: "success" | "unauthorized" | "network-error";
   agentChoice?: string;
   hostKey?: string;
+  modelPool?: string[];
 }
 
 interface RecordedRequest {
@@ -42,6 +44,7 @@ interface SessionReport {
   working: unknown[];
   /** Custom message types that remain after the plugin's `context` hook, given a legacy route record plus one ordinary message. */
   modelView: unknown[];
+  spawnResults: unknown[];
 }
 
 interface ChildReport {
@@ -99,6 +102,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
   try {
     if (scenario.hostKey === undefined) delete process.env.TYPESAFE_API_KEY;
     else process.env.TYPESAFE_API_KEY = scenario.hostKey;
+    if (scenario.modelPool) process.env.OPENAI_API_KEY = "fixture-openai-key";
 
     const agentDir = process.env.PI_CODING_AGENT_DIR as string;
     await mkdir(agentDir, { recursive: true });
@@ -106,17 +110,27 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
 
     // The child runs outside the test runner with its own HOME, so host modules load only after isolation is in place.
     const { ModelRegistry } = await import("@oh-my-pi/pi-coding-agent/config/model-registry");
-    const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+    const { Settings, withActiveSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
     const { discoverAuthStorage } = await import("@oh-my-pi/pi-coding-agent/sdk");
+    const { cfgTaskAgentModelOverrides } = await import("@oh-my-pi/pi-coding-agent/task/settings");
     // This runtime-selected absolute URL keeps the child fixture on the same plugin source as the parent checkout.
     const { default: registerJudgeDispatch } = await import(PLUGIN_URL);
 
     const sessionReports: SessionReport[] = [];
     for (const [sessionIndex, session] of scenario.sessions.entries()) {
       const settings = await Settings.loadIsolated({ cwd: session.project, agentDir });
+      if (scenario.modelPool) cfgTaskAgentModelOverrides.override(settings, { task: scenario.modelPool, scout: scenario.modelPool });
       const registry = new ModelRegistry(await discoverAuthStorage(agentDir), join(agentDir, "models.yml"), { settings });
       const handlers = new Map<string, TestHandler[]>();
-      const report: SessionReport = { results: [], warnings: [], notifications: [], usage: [], working: [], modelView: [] };
+      const report: SessionReport = {
+        results: [],
+        warnings: [],
+        notifications: [],
+        usage: [],
+        working: [],
+        modelView: [],
+        spawnResults: [],
+      };
 
       const api = {
         logger: {
@@ -155,7 +169,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       const onlyHandler = (event: string): TestHandler => {
         const registered = handlers.get(event) ?? [];
         if (registered.length !== 1) throw new Error(`expected one ${event} handler, received ${registered.length}`);
-        return registered[0] as TestHandler;
+        return (payload, ctx) => withActiveSettings(settings, () => (registered[0] as TestHandler)(payload, ctx));
       };
 
       registerJudgeDispatch(api);
@@ -172,6 +186,11 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
             },
             context,
           ),
+        );
+      }
+      for (const spawn of session.spawns ?? []) {
+        report.spawnResults.push(
+          await onlyHandler("before_subagent_spawn")({ type: "before_subagent_spawn", invocationKind: "task", ...spawn }, context),
         );
       }
       const filtered = (await onlyHandler("context")(
@@ -325,6 +344,72 @@ async function registerTests(): Promise<void> {
         expect(report.sessions[1]?.results).toEqual([
           { input: { task: "Implement the requested repository change", agent: "scout", effort: "hi" } },
         ]);
+      });
+    });
+
+    test("pinned models keep their selectors and names while agent and effort routing still apply", async () => {
+      const modelPool = ["openai/gpt-5", "openai/gpt-5-mini"];
+      const flat = { task: "Inspect the boundary", agent: "task", model: modelPool[0] };
+      const batch = {
+        context: "shared",
+        tasks: [{ ...flat, name: "Pinned", model: modelPool }, flat],
+      };
+      const invalidBatch = { ...batch, model: modelPool[0] };
+      const spawn = { spawnKey: "parent.Pinned", agent: "scout", patterns: [modelPool[0]] };
+      await withProjects([{ selectModel: true, modelBudget: "minimum", judgeEffort: true }], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: project as string, calls: 3, inputs: [flat, batch, invalidBatch], spawns: [spawn] },
+            { project: project as string, calls: 1, inputs: [{ task: flat.task, agent: "task", name: "Pinned" }], spawns: [spawn] },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          modelPool,
+        });
+        expect(report.sessions[0]?.results).toEqual([
+          { input: { ...flat, agent: "scout", effort: "hi" } },
+          { input: { ...batch, tasks: batch.tasks.map((item) => ({ ...item, agent: "scout", effort: "hi" })) } },
+          null,
+        ]);
+        expect(report.sessions[0]?.spawnResults).toEqual([null]);
+        expect(report.sessions[0]?.notifications).toEqual([
+          { message: "judge-dispatch  task → scout (0.99) · effort default → hi (0.99) · model pinned by call", level: "info" },
+          {
+            message:
+              "judge-dispatch  #1 task → scout (0.99) · effort default → hi (0.99) · model pinned by call ; #2 task → scout (0.99) · effort default → hi (0.99) · model pinned by call",
+            level: "info",
+          },
+        ]);
+        expect(report.requests.map((request) => Object.keys(JSON.parse(request.body).questions))).toEqual([
+          ["agent", "difficulty"],
+          ["agent", "difficulty"],
+          ["agent", "difficulty"],
+          ["agent", "difficulty", "model"],
+        ]);
+        expect(report.sessions[1]?.spawnResults, diagnostics(report)).toEqual([
+          expect.objectContaining({ model: [modelPool[1], modelPool[0]] }),
+        ]);
+      });
+    });
+
+    test("a pinned item cannot consume another pending model switch with the same name", async () => {
+      const modelPool = ["openai/gpt-5", "openai/gpt-5-mini"];
+      const task = { task: "Inspect the boundary", agent: "task", name: "Shared" };
+      await withProjects([{ selectModel: true, modelBudget: "minimum" }], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project: project as string,
+              calls: 1,
+              inputs: [{ context: "shared", tasks: [task, { ...task, model: modelPool[0] }] }],
+              spawns: [{ spawnKey: "parent.Shared", agent: "scout", patterns: [modelPool[0]] }],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          modelPool,
+        });
+        expect(report.sessions[0]?.spawnResults).toEqual([null]);
       });
     });
 

@@ -294,7 +294,7 @@ async function judgeRoute(
   const candidates = config.routeAgent ? routable : routable.filter((candidate) => candidate.name === spawnAgent);
   if (candidates.length === 0) return "no alternatives";
   const routesAgent = config.routeAgent && candidates.length >= 2;
-  const modelOptions = config.selectModel ? modelCriteria(candidates) : {};
+  const modelOptions = config.selectModel && !route.modelPinned ? modelCriteria(candidates) : {};
   const judgesModel = Object.keys(modelOptions).length >= 2;
   const judgesDifficulty = config.judgeEffort || judgesModel;
   if (!routesAgent && !judgesDifficulty) return "no alternatives";
@@ -388,6 +388,7 @@ function routeChoice(
   candidates: readonly RoutingCandidate[],
   pending: PendingSpawnRoutes,
 ): RouteChoice | undefined {
+  if (route.modelPinned && route.name) pending.add(route.name, null);
   if (typeof judged === "string") return undefined;
   const choice: RouteChoice = {
     ...(judged.agent ? { agent: judged.agent, agentConfidence: judged.agentConfidence } : {}),
@@ -395,7 +396,7 @@ function routeChoice(
       ? { effort: DIFFICULTY_EFFORT[judged.difficulty], effortConfidence: judged.difficultyConfidence }
       : {}),
   };
-  if (!config.selectModel) return choice;
+  if (!config.selectModel || route.modelPinned) return choice;
 
   const agent = judged.agent ?? route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
   const pool = candidates.find((candidate) => candidate.name === agent)?.model.pool ?? [];

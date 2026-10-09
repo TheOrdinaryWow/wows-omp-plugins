@@ -31,6 +31,7 @@ describe("task input routing", () => {
         index: null,
         assignment: "Review the authentication boundary",
         requestedAgent: "task",
+        modelPinned: false,
       },
     ]);
     expect(rewriteTaskRoutes(input, routes, [{ agent: "security-reviewer" }])).toEqual({
@@ -86,6 +87,30 @@ describe("task input routing", () => {
     });
     expect(input.tasks[0]?.agent).toBe("task");
     expect(input.tasks[2]).not.toHaveProperty("effort");
+  });
+
+  test("records only own model keys as pins and preserves them through agent and effort routing", () => {
+    for (const model of ["@default", ["@slow", "openai/gpt-5"], undefined]) {
+      const item = { agent: "task", task: "Inspect the boundary", model };
+      for (const input of [item, { context: "shared", tasks: [item] }]) {
+        const routes = parseTaskInput(input);
+        if (!routes) throw new Error("expected valid pinned task input");
+        expect(routes[0]?.modelPinned).toBe(true);
+        const rewritten = rewriteTaskRoutes(input, routes, [{ agent: "scout", effort: "hi" }]);
+        expect(rewritten).toEqual(
+          "tasks" in input ? { ...input, tasks: [{ ...item, agent: "scout", effort: "hi" }] } : { ...item, agent: "scout", effort: "hi" },
+        );
+      }
+    }
+    const inherited = Object.assign(Object.create({ model: "@slow" }), { task: "Inspect the boundary" });
+    expect(parseTaskInput(inherited)?.[0]?.modelPinned).toBe(false);
+    expect(parseTaskInput({ context: "shared", tasks: [inherited] })?.[0]?.modelPinned).toBe(false);
+  });
+
+  test("leaves batch-level model keys untouched for the host to reject", () => {
+    for (const model of ["@default", ["@slow"], undefined]) {
+      expect(parseTaskInput({ context: "shared", tasks: [{ task: "Inspect the boundary" }], model })).toBeUndefined();
+    }
   });
 
   test("leaves malformed task shapes unparsed", () => {

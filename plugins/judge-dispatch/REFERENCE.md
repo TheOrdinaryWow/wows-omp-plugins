@@ -43,6 +43,8 @@ OMP's `before_subagent_spawn` event carries no assignment, so the plugin links t
 
 A rewrite changes only `agent` when `routeAgent` is on, `effort` when `judgeEffort` is on, and `name` when a model switch needs one.
 
+A `task` call that sets `model` keeps it: the plugin skips model judging and selection, injects no name, and reports the model as pinned by the call.
+
 ## Timeouts and failure
 
 Routing gives up after eight seconds and always finishes at least one second before the session's tool-call handler timeout. If no time is left, it skips routing. Requests, credentials and usage journaling go through OMP's `judge` role; the plugin stores no keys and does not touch the process environment.
