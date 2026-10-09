@@ -2,7 +2,9 @@
 
 [English](README.md) | 简体中文
 
-插件使用 OMP 的 `judge` 模型角色，为 `task` 调用选择子代理。`routeAgent` 默认开启，允许替换父代理请求的代理类型；`selectModel` 开启后，从该代理配置的全部模型中选择子代理模型；`judgeEffort` 开启后，设置思考强度。OMP 会验证每次子代理启动。
+> 智能模型路由：由判断模型为 OMP 派生的每个子代理挑选合适的代理类型、思考强度和模型。
+
+让 OMP 的 `judge` 模型角色决定 `task` 调用如何派生子代理。默认情况下，它可以替换父代理请求的代理类型；还可以选择性地为每个子代理设置思考强度，并从该代理配置的所有模型中挑选一个。每次派生仍由 OMP 校验，judge 拿不准的地方一律保持原样。
 
 ## 安装
 
@@ -10,131 +12,13 @@
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-需要 OMP 18.3.5 或更高版本。安装后请重启会话，让扩展完成注册。它使用 OMP 内置的评判功能，没有自己的凭据，详见[启用 judge 角色](#启用-judge-角色)。
+需要 OMP 18.3.5 或更高版本，并且 `judge` 角色背后是原生判断模型（见[快速上手](#快速上手)）。安装后重启会话。
 
-## 路由范围
+## 快速上手
 
-开启 `routeAgent` 后，插件会改写普通 `task` 调用中的 `agent` 字段，单项和批量调用都适用。通过 `eval.agent()` 或 `workpool()` 启动的子代理不会参与路由，因为 OMP 的 `before_subagent_spawn` 钩子只能更改子代理的模型，不能更改其代理类型。关闭 `routeAgent` 后，请求的代理始终保持不变，评判模型只回答思考强度和模型问题。
+插件既不保存凭据，也不维护自己的模型列表；它调用的是 OMP `judge` 角色解析到的那个模型。该模型必须是原生判断模型，即 OMP 通过判断 API（如 TypeSafe 或 OpenRouter decisions）提供的模型，因为 `minimumConfidence` 依赖这些 API 返回的校准置信度。TypeSafe 的 Jev 只是其中之一，OMP 的 `judge` 角色支持的其他判断模型同样适用。
 
-候选代理来自当前 `task` 工具描述中的代理列表，OMP 已根据启动策略和禁用状态过滤该列表。如果列表缺失、无法读取或为空，插件不会进行评判。`task` 工具会重新验证插件写入的任何代理名称。
-
-以下调用保持原样，包括思考强度和模型：
-
-- 请求 `audit-*`、`metis`、`momus` 或 `oracle` 的调用；普通请求也绝不会被路由到这些工作流角色；
-- 请求的代理不在插件读取到的列表中，因为其访问权限未知；
-- `omo-prometheus` 计划执行期间的所有 `task` 调用，因为已批准的计划决定了代理和思考强度的选择。工作流回到空闲或规划状态后，路由会恢复。
-
-插件依据 OMP 的代理工具元数据判断权限，只读代理只能被另一只读代理替换。
-
-## 宿主模式
-
-在 TUI、RPC/rpc-ui、ACP、SDK 和无界面/CI 环境中，路由与模型选择都不依赖界面。TUI 显示工作与状态提示；RPC 客户端接收宿主支持的通知帧，ACP 可能只记录通知日志。`hasUI: false` 时不显示路由提示。插件没有交互式对话框，也没有需要改成参数形式的斜杠命令。
-
-插件不保留会话中的路由历史或工作流状态，也不写出插件状态旁路文件。它只暂存有限数量的模型选择结果，供子代理启动时使用一次。当前路由状态不会保存或发送给模型。旧版会话记录仍会渲染并从上下文中滤除，以保持兼容。
-
-## 设置
-
-`omp plugin config` 使用的包名：`wows-omp-plugin-judge-dispatch`。
-
-```bash
-omp plugin config list wows-omp-plugin-judge-dispatch
-omp plugin config set wows-omp-plugin-judge-dispatch routeAgent false
-omp plugin config set wows-omp-plugin-judge-dispatch selectModel true
-omp plugin config set wows-omp-plugin-judge-dispatch modelBudget minimum
-omp plugin config set wows-omp-plugin-judge-dispatch modelPick weighted
-omp plugin config set wows-omp-plugin-judge-dispatch providerWeights "openai=2,anthropic=1"
-```
-
-| 设置 | 类型 | 默认值 | 作用 |
-| --- | --- | --- | --- |
-| `routeAgent` | 布尔值 | `true` | 允许评判模型替换请求的代理类型。 |
-| `selectModel` | 布尔值 | `false` | 从代理的模型池中为每次启动选择模型，详见[模型选择](#模型选择)。 |
-| `modelBudget` | `minimum` \| `balanced` \| `max` | `balanced` | `selectModel` 可以使用模型池中的哪些模型，以代理的主模型为基准。 |
-| `modelPick` | `best` \| `weighted` | `best` | `selectModel` 在可用模型中如何选择：取评判最契合的模型，或按偏向便宜模型的权重随机抽取。 |
-| `providerWeights` | 文本 | 空 | 提供商偏好，格式为 `provider=weight`，用逗号或换行分隔。权重必须大于 0；未列出的提供商权重为 1。 |
-| `judgeEffort` | 布尔值 | `false` | 同时让评判模型设置每次 `task` 调用的思考强度，详见[思考强度](#思考强度)。 |
-| `minimumConfidence` | 0 到 1 之间的数字 | `0.70` | 替换请求的代理类型或思考强度、采用评判出的难度所需的最低置信度。 |
-| `includeSharedContext` | 布尔值 | `true` | 将任务调用的共享 `context` 一并发送给路由评判请求。 |
-| `indicator` | 布尔值 | `true` | 显示路由活动，详见[界面显示](#界面显示)。无论是否显示，路由行为都相同。 |
-
-用户设置会与项目覆盖配置合并。插件在每次 `task` 调用时读取这些设置，因此更改后无需重启即可生效。设置值无效时（例如 `providerWeights` 中有格式错误的条目），插件会保持所有调用原样并记录警告。
-
-0.6 之前的版本只有 `modelBudget`，并带有 `off` 取值。已保存的 `modelBudget: off` 仍会被读取为 `selectModel: false`；已保存的其他预算值会开启 `selectModel`，除非显式设置了 `selectModel`。
-
-## 界面显示
-
-评判过程中，工作提示显示为 `judge-dispatch: routing N tasks…`。评判完成、失败或超时后，会恢复默认提示。
-
-每次参与路由的 `task` 调用随后都会立即显示一行暗色状态提示，与 Ctrl+O 显示的提示类型相同，例如：
-
-```text
-judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · effort med → hi (0.92) · model openai/gpt-6.1 → anthropic/claude-opus (fit 0.71)
-```
-
-每一项都会显示评判置信度，无论代理被替换还是保留。如果没有可用的评判结果而保留原代理，则会显示原因：`judge unavailable`、`judge failed`、`timed out`、`no alternatives`、`no confident choice` 或 `workflow-owned or unknown agent`。关闭 `routeAgent` 时，该项只显示代理名称。开启 `selectModel` 时，`model` 部分会显示主模型和替换它的模型，或主模型保留的原因。如果调用因路由失败、超时或宿主未留出评判时间而完全未进行评判，仍会显示以 `kept the requested agent:` 开头的状态行。Prometheus 执行已批准计划期间的调用不会参与路由，也不会显示任何提示。
-
-你可以看到状态行，但 OMP 不会将它发送给模型或保存在会话中，因此在 `/resume` 后不会再次出现。OMP 会将连续到达的状态行合并为一行，所以同一轮中的多次 `task` 调用可能只留下最后一行可见。OMP 也会在子代理解析出的模型旁标注模型切换。
-
-将 `indicator` 设为 `false` 可同时隐藏工作提示和状态行。
-
-## 思考强度
-
-开启 `judgeEffort` 后，评判模型会判断任务的开放程度，将其分类为 `routine`、`standard` 或 `demanding`。插件据此将 `task` 调用的 `effort` 设置为 `lo`、`med` 或 `hi`。OMP 会将其映射到子代理模型支持的最低、中间或最高思考级别，并受 `task.maxEffort` 上限约束。最终级别始终是该模型支持的级别。
-
-难度判断的置信度达到 `minimumConfidence` 时，插件会替换父代理指定的思考强度。置信度较低时则保持原值。即使只有一种代理类型符合条件，评判模型也会判断难度。无论 `task.enableEffort` 是否向父代理显示该字段，OMP 都会应用思考强度。[路由范围](#路由范围)中的排除规则也适用于思考强度。
-
-## 模型选择
-
-开启 `selectModel` 后，插件会从待启动代理的模型池中为子代理选择模型，选出的模型可以与主模型不同。
-
-### 模型池
-
-模型池按顺序展平该代理可以使用的所有模型：
-
-1. 代理的模型选择器：其 `task.agentModelOverrides` 配置项，否则为 frontmatter 中的 `model` 列表，`@smol` 等角色别名展开为该角色的模型；
-2. 这些选择器中每个角色别名对应的 `retry.fallbackChains` 配置项；
-3. 只有一个选择器时，OMP 本身会给子代理的回退链（该角色的链，或 `default`）。
-
-解析到同一 `provider/id` 的条目只计一次，保留最先出现的条目及其思考级别后缀。OMP 的模型注册表负责解析，价格来自 models.dev，智能评分来自 OMP 的实时模型目录。注册表会将自定义提供商和代理提供商的 ID 匹配到已评分的目录条目，因此插件不维护自己的模型数据。
-
-没有凭据的模型会被移除，没有评分或价格的模型不会被选中。如果主模型没有评分，子代理会保留原配置模型。
-
-### 哪些模型可用
-
-`modelBudget` 以主模型（模型池第一项）为基准决定哪些模型可用。基准由你的配置决定：可以是最强的模型、较便宜的次选，也可以是一个"够用"的模型，回退链中同时包含更强和更弱的模型。预算只设下限，比主模型更强的模型和主模型本身始终可用。
-
-| 预算 | Routine | Standard | Demanding |
-| --- | --- | --- | --- |
-| `max` | 不低于主模型评分 | 同左 | 同左 |
-| `balanced` | 不低于主模型评分的 80% | 不低于 90% | 不低于主模型评分 |
-| `minimum` | 模型池中任意模型 | 任意 | 任意 |
-
-难度来自设置[思考强度](#思考强度)的同一次评判，与 `judgeEffort` 是否开启无关。难度判断的置信度低于 `minimumConfidence` 时按 demanding 处理，预算不会凭低置信度的难度判断降低要求。
-
-### 如何选出一个
-
-评判模型还会收到模型池中的模型及其评分和价格，并返回每个模型与任务的契合度。
-
-- `best`（默认）选择契合度 × 提供商权重最高的可用模型。因此低预算只扩大可选范围，不会强制选更便宜的模型：评判模型仍可能选择最强的模型。评判模型没有给出模型答案时，保留主模型。
-- `weighted` 按契合度 × 提供商权重 × 便宜度加权，随机抽取一个可用模型。便宜度按价格对可用模型排名，价格相同时能力较弱的排在前面，名次 `r`（0 为最便宜）的权重为 $1/(1+r)^k$：
-
-| 预算 | Routine `k` | Standard `k` | Demanding `k` |
-| --- | --- | --- | --- |
-| `max` | 0 | 0 | 0 |
-| `balanced` | 1 | 0.5 | 0 |
-| `minimum` | 2 | 1 | 0.5 |
-
-`k = 0` 时不考虑价格。多次调用后，`weighted` 会把任务分散到整个模型池，预算越低越偏向便宜的模型。
-
-价格按输入与输出价格 3:1 的比例取加权平均值。`providerWeights` 会把模型的权重乘以其提供商的值：`openai=2` 表示同等条件下 OpenAI 模型被选中的权重是两倍，但不会让不可用的模型变为可用。
-
-选中的模型会移到本次启动的选择器列表首位，模型池中的其余模型依次作为重试链。OMP 会在解析后的模型旁显示路由注释。
-
-OMP 的 `before_subagent_spawn` 事件不携带任务内容，因此插件通过任务项的 `name` 将决策与子代理启动关联起来。如果父代理没有提供名称，插件会写入一个名称（`<agent>-<8 hex>`）。如果两个待处理调用使用同一名称，或宿主在启动时解析出不同的主模型，子代理会保留原配置模型。通过 `eval.agent()` 和 `workpool()` 启动的子代理会保留各自的模型，[路由范围](#路由范围)中的排除规则也适用于此处。
-
-## 启用 judge 角色
-
-路由使用 OMP 的 `judge` 模型角色。最简单的配置方式是提供 TypeSafe 凭据：
+最快的配置方式是使用 TypeSafe 凭据，这样 `judge` 角色默认解析到 Jev（`providers.judgmentProvider: auto`）：
 
 ```bash
 omp            # then run: /login typesafe
@@ -142,12 +26,108 @@ omp            # then run: /login typesafe
 export TYPESAFE_API_KEY="your-typesafe-api-key"
 ```
 
-有 TypeSafe 凭据时，`judge` 角色默认解析为 Jev（`providers.judgmentProvider: auto`）。OMP 负责提供凭据、基础 URL、模型、请求头和用量统计。
+要使用其他判断模型，在 OMP 配置中把它指定给 `judge` 角色即可。如果该角色解析到的是聊天模型或本地模型，或者缺少凭据，插件会保留所有请求的代理，并在每个会话中警告一次。
 
-只有当该角色中第一个可用模型是通过 TypeSafe 或 OpenRouter decisions 等评判 API 提供服务的原生评判模型时，插件才会进行路由。`minimumConfidence` 依赖这些 API 返回的校准置信度。如果该角色解析为聊天模型或本地设备模型，或者没有凭据，插件不会调用它，而是保留请求的代理，并在每个会话中警告一次。
+配置生效后，每个被路由的 `task` 调用会打印一行暗色状态：
 
-## 隐私与失败处理
+```text
+judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · effort med → hi (0.92) · model openai/gpt-6.1 → anthropic/claude-opus (fit 0.71)
+```
 
-评判请求包含任务内容、可选的共享上下文、原请求中的代理、候选代理的简短说明及其模型池，开启 `selectModel` 时还包含模型池中每个模型的评分和价格。对话内容和系统提示词绝不会发送。请求、凭据和用量日志都通过 OMP 的 `judge` 角色处理；插件不存储密钥，也不修改进程环境。
+## 用法
 
-只有当评判模型返回合法选项且置信度达到或超过配置值时，代理或思考强度才会改变。其他情况，包括没有原生评判模型、发现候选项失败、置信度过低、返回非法选项、凭据被拒绝或网络错误，都会保留原路由和模型，不会阻塞任何调用。路由会在八秒后放弃，并且总会比会话的工具调用处理器超时至少提前一秒结束；如果已经没有时间，便跳过路由。改写只会在开启 `routeAgent` 时修改 `agent`，在开启 `judgeEffort` 时修改 `effort`，以及在切换模型需要名称时修改 `name`。模型在评判 `task` 调用时选定，在子代理启动时应用；该阶段出现任何失败，都会保留原配置模型。
+### 代理路由
+
+`routeAgent` 开启时（默认），插件可能改写普通 `task` 调用（单个或批量）的 `agent` 字段。候选代理来自实时 `task` 工具描述中的代理列表，OMP 已经按派生策略和禁用设置过滤过。只读代理只会被替换成另一个只读代理。
+
+以下调用保持原样，思考强度和模型也不变：
+
+- 请求 `audit-*`、`metis`、`momus` 或 `oracle` 的调用；普通请求也不会被改派到这些工作流角色；
+- 请求了插件在列表中找不到的代理，因为无法确定它的权限级别；
+- `omo-prometheus` 计划执行期间的所有 `task` 调用，因为这些选择由已批准的计划决定。
+
+通过 `eval.agent()` 或 `workpool()` 启动的子代理永远不会被路由。
+
+### 思考强度
+
+开启 `judgeEffort` 后，judge 会评估任务的开放程度（`routine`、`standard` 或 `demanding`），插件据此把 `effort` 设为 `lo`、`med` 或 `hi`。OMP 再把它映射为子代理模型支持的最低、中间或最高思考级别，并受 `task.maxEffort` 限制。置信度低于 `minimumConfidence` 时，保留父代理设置的强度。
+
+### 模型选择
+
+开启 `selectModel` 后，插件从代理的模型池中为每个子代理挑选模型。模型池包括该代理的 `task.agentModelOverrides` 条目或 frontmatter 中的 `model` 列表，以及其中所列角色的回退链。第一项是主模型。没有凭据、评分或价格的模型永远不会被选中。
+
+`modelBudget` 决定最多可以比主模型低多少。比主模型强的模型以及主模型本身始终可选。
+
+| 预算 | Routine | Standard | Demanding |
+| --- | --- | --- | --- |
+| `max` | 不低于主模型评分 | 同左 | 同左 |
+| `balanced` | 不低于主模型评分的 80% | 不低于 90% | 不低于主模型评分 |
+| `minimum` | 模型池中任意模型 | 任意 | 任意 |
+
+难度评估的置信度低于 `minimumConfidence` 时按 demanding 处理，所以预算不会因为猜测而降级。
+
+`modelPick` 决定在可选模型中怎么挑。`best` 取适配度 × 提供商权重最高的模型，所以低预算只是放宽了选择范围，并不强制选更便宜的模型。`weighted` 随机抽取一个，预算越低越偏向便宜的模型，多次调用后工作会分散到整个模型池。`providerWeights` 例如 `openai=2` 会按比例提高该提供商模型的胜出概率，但不会让不符合条件的模型变得可选。
+
+选中的模型会排到这次派生的选择器最前面，模型池的其余部分成为它的重试链。
+
+### 你会看到什么
+
+judge 运行期间，工作提示显示 `judge-dispatch: routing N tasks…`。之后每个被路由的调用会打印上面那样的状态行，每一项都带有 judge 的置信度。没有得到可用判断而保留原样的项会注明原因：`judge unavailable`、`judge failed`、`timed out`、`no alternatives`、`no confident choice` 或 `workflow-owned or unknown agent`。完全没能判断的调用会打印一行以 `kept the requested agent:` 开头的状态。
+
+状态行只给你看：OMP 既不会把它发给模型，也不会保存它，所以 `/resume` 后不会再出现。把 `indicator` 设为 `false` 可以同时隐藏状态行和工作提示。
+
+### judge 能看到什么
+
+一次判断请求包含任务内容、可选的共享上下文、原本请求的代理、候选代理的简短描述及其模型池；开启 `selectModel` 时还包括每个池中模型的评分和价格。对话内容和系统提示词永远不会发送。
+
+### 判断失败时
+
+只要没有得到置信度不低于 `minimumConfidence` 的合法选择，就保留原来的代理、思考强度和模型，也不会阻塞任何调用。这包括没有 judge、置信度不足、凭据被拒绝和网络错误等情况。路由最多等待八秒。
+
+## 设置
+
+`omp plugin config` 使用的包名：`wows-omp-plugin-judge-dispatch`。
+
+```bash
+omp plugin config list wows-omp-plugin-judge-dispatch
+omp plugin config set wows-omp-plugin-judge-dispatch selectModel true
+omp plugin config set wows-omp-plugin-judge-dispatch modelBudget minimum
+omp plugin config set wows-omp-plugin-judge-dispatch providerWeights "openai=2,anthropic=1"
+```
+
+| 设置 | 类型 | 默认值 | 作用 |
+| --- | --- | --- | --- |
+| `routeAgent` | boolean | `true` | 允许 judge 替换请求的代理类型。 |
+| `selectModel` | boolean | `false` | 从代理的模型池中为每次派生挑选模型。 |
+| `modelBudget` | `minimum` \| `balanced` \| `max` | `balanced` | 相对于主模型，`selectModel` 可以使用哪些池中模型。 |
+| `modelPick` | `best` \| `weighted` | `best` | 取 judge 认为最合适的模型，或按偏向便宜模型的权重随机抽取。 |
+| `providerWeights` | 文本 | 空 | `provider=weight` 键值对，用逗号或换行分隔。权重必须大于 0；未列出的提供商权重为 1。 |
+| `judgeEffort` | boolean | `false` | 允许 judge 设置每次 `task` 调用的思考强度。 |
+| `minimumConfidence` | 0 到 1 之间的数字 | `0.70` | 替换代理或思考强度、或采信难度评估所需的置信度。 |
+| `includeSharedContext` | boolean | `true` | 随请求一起发送 `task` 调用的共享 `context`。 |
+| `indicator` | boolean | `true` | 显示工作提示和状态行。不影响路由本身。 |
+
+用户设置会与项目覆盖合并。插件在每次 `task` 调用时读取设置，所以修改后无需重启。任何无效值（例如格式错误的 `providerWeights` 条目）都会让插件原样保留所有调用并记录警告。
+
+## 与其他插件配合
+
+- `audit-goal`：它的保留代理 `audit-*` 永远不会被路由。
+- `omo-prometheus`：`metis`、`momus` 和 `oracle` 永远不会被路由；已批准计划执行期间也不进行任何路由。Prometheus 回到空闲或规划状态后恢复路由。
+
+## 不使用终端界面时
+
+在 RPC、ACP 编辑器、SDK 和 headless 模式下，路由和模型选择的行为相同。RPC 客户端会以通知帧的形式收到状态；ACP 编辑器可能只把它们写进日志。没有 UI 时不显示指示信息。插件没有对话框，也没有命令。
+
+## 已知限制
+
+- `eval.agent()` 和 `workpool()` 的子代理不会被路由，因为 OMP 的 `before_subagent_spawn` 钩子只能更改子代理的模型，不能更改代理类型。
+- OMP 会把连续的状态行折叠成一行，所以同一轮中的多个 `task` 调用可能只看得到最后一行。
+- 模型选择依赖 OMP 模型注册表提供的评分和价格；主模型没有评分时，保留原先配置的模型。
+
+## 参考
+
+[REFERENCE.zh.md](REFERENCE.zh.md) 介绍模型池的构建方式、`weighted` 公式、判断结果如何作用到派生、超时，以及与旧版设置的兼容。
+
+## 许可证
+
+MIT。
