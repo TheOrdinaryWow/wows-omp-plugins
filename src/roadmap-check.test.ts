@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 
+import { renderAdr } from "../plugins/adr/src/documents.ts";
+import type { AdrRecord } from "../plugins/roadmap/src/adr.ts";
 import { check } from "../plugins/roadmap/src/check.ts";
 import {
   generatedContent,
   loadAll,
   type Model,
-  renderAdr,
   renderRound,
   renderStage,
   replaceGenerated,
@@ -18,12 +19,18 @@ import {
 } from "../plugins/roadmap/src/documents.ts";
 import { atomicWrite, stage } from "../plugins/roadmap/src/operations.ts";
 import { checkReceipt } from "../plugins/roadmap/src/tools.ts";
-import { adrFixture, cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
+import { adrFixture, adrRecord, cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
 
 afterEach(cleanupFixtures);
 
 async function rules(model: Model): Promise<string[]> {
   return (await check(model)).map((diagnostic) => diagnostic.rule);
+}
+
+/** The ADR records the fixture model carries, as the adr service reported them. */
+function records(model: Model): AdrRecord[] {
+  if (!model.adrs) throw new Error("The fixture model carries ADRs.");
+  return model.adrs.records;
 }
 
 test("a consistent disk fixture passes all design-section-10 rules", async () => {
@@ -50,12 +57,11 @@ describe("structure and supported format", () => {
 });
 
 describe("ids and references", () => {
-  test("duplicate ids fail in rounds, stages, TODOs and ADRs; unique ids pass", async () => {
-    for (const kind of ["rounds", "stages", "todos", "adrs"] as const) {
+  test("duplicate ids fail in rounds, stages and TODOs; unique ids pass", async () => {
+    for (const kind of ["rounds", "stages", "todos"] as const) {
       const model = modelFixture();
       if (kind === "rounds") model.rounds.push({ ...(model.rounds[0] as (typeof model.rounds)[number]), path: "other-round.md" });
       else if (kind === "stages") model.stages.push({ ...(model.stages[0] as (typeof model.stages)[number]), path: "other-stage.md" });
-      else if (kind === "adrs") model.adrs.push({ ...(model.adrs[0] as (typeof model.adrs)[number]), path: "other-adr.md" });
       else model.todos[0]?.items.push({ ...(model.todos[0].items[0] as (typeof model.todos)[number]["items"][number]) });
       const diagnostics = await check(model);
       expect(diagnostics.find((item) => item.rule === "duplicate-id")?.message).toContain("Duplicate");
@@ -63,23 +69,33 @@ describe("ids and references", () => {
     }
   });
 
-  for (const reference of ["depends_on", "follows", "todo-target", "supersedes", "superseded_by"] as const) {
+  for (const reference of ["depends_on", "follows", "todo-target", "adr-stage"] as const) {
     test(`dangling ${reference} fails and an existing reference passes`, async () => {
       const model = modelFixture();
       const stage = model.stages[0] as (typeof model.stages)[number];
-      const adr = model.adrs[0] as (typeof model.adrs)[number];
       if (reference === "depends_on") stage.depends_on = ["S99"];
       else if (reference === "follows") stage.follows = "S99";
       else if (reference === "todo-target")
         (model.todos[0]?.items[0] as NonNullable<(typeof model.todos)[0]>["items"][number]).target = "S99";
-      else if (reference === "supersedes") adr.supersedes = ["ADR-0099"];
-      else adr.superseded_by = "ADR-0099";
+      else (records(model)[0] as AdrRecord).stage = "S99";
       expect(await rules(model)).toContain("dangling-reference");
       model.stages.push(stageFixture({ id: "S99", title: "Successor stage", path: "stage99.md" }));
-      model.adrs.push(adrFixture({ id: "ADR-0099", path: "adr99.md" }));
       expect(await rules(model)).not.toContain("dangling-reference");
     });
   }
+
+  test("ADR-internal references are left to adr_check; unreadable ADRs only warn", async () => {
+    const model = modelFixture();
+    // The in-memory fixture has no stored index, so its generated-block diagnostics are the baseline.
+    const baseline = await rules(model);
+    (records(model)[0] as AdrRecord).supersedes = ["ADR-0099"];
+    records(model).push(adrRecord(adrFixture({ path: "docs/adr/0001-copy.md" })));
+    expect(await rules(model)).toEqual(baseline);
+    model.adrs = { managed: true, records: records(model), parseErrors: [{ path: "docs/adr/0002-broken.md", message: "Broken." }] };
+    expect(await rules(model)).toEqual(["adr-unreadable", ...baseline]);
+    model.adrs = { managed: false, records: [], parseErrors: [], error: "Malformed ADR marker." };
+    expect((await check(model)).find((item) => item.rule === "adr-unreadable")?.severity).toBe("warning");
+  });
 
   test("dependency cycles, including a self-cycle, fail; a DAG passes", async () => {
     const model = modelFixture();
@@ -260,8 +276,8 @@ describe("ADR warnings", () => {
       (model.rounds[0] as (typeof model.rounds)[number]).principles = "";
       (model.stages[0] as (typeof model.stages)[number]).design_constraints = "";
       (model.todos[0]?.items[0] as NonNullable<(typeof model.todos)[0]>["items"][number]).body = "";
-      (model.adrs[0] as (typeof model.adrs)[number]).superseded_by = "ADR-0002";
-      model.adrs.push(adrFixture({ id: "ADR-0002", supersedes: ["ADR-0001"], path: "adr2.md" }));
+      (records(model)[0] as AdrRecord).superseded_by = "ADR-0002";
+      records(model).push(adrRecord(adrFixture({ id: "ADR-0002", supersedes: ["ADR-0001"], path: "adr2.md" })));
       if (surface === "principles") (model.rounds[0] as (typeof model.rounds)[number]).principles = "See ADR-0001.";
       else if (surface === "stage") (model.stages[0] as (typeof model.stages)[number]).design_constraints = "See ADR-0001.";
       else if (surface === "trigger") {
@@ -273,14 +289,14 @@ describe("ADR warnings", () => {
       const warning = (await check(model)).find((item) => item.rule === "superseded-adr");
       expect(warning?.severity).toBe("warning");
       expect(warning?.message).toContain("successor ADR-0002");
-      (model.adrs[0] as (typeof model.adrs)[number]).superseded_by = null;
+      delete (records(model)[0] as AdrRecord).superseded_by;
       expect(await rules(model)).not.toContain("superseded-adr");
     });
   }
 
   test("closed and dropped stages and closed TODOs do not warn about historical ADR citations", async () => {
     const model = modelFixture();
-    (model.adrs[0] as (typeof model.adrs)[number]).superseded_by = "ADR-0002";
+    (records(model)[0] as AdrRecord).superseded_by = "ADR-0002";
     (model.rounds[0] as (typeof model.rounds)[number]).principles = "";
     (model.stages[0] as (typeof model.stages)[number]).status = "dropped";
     const item = model.todos[0]?.items[0];
@@ -293,29 +309,29 @@ describe("ADR warnings", () => {
 
   test("proposed ADRs without an active origin stage warn; active origins and non-proposed records pass", async () => {
     const model = modelFixture();
-    const adr = model.adrs[0] as (typeof model.adrs)[number];
+    const adr = records(model)[0] as AdrRecord;
     adr.status = "proposed";
     expect(await rules(model)).toContain("proposed-adr");
-    adr.stage = null;
+    delete adr.stage;
     expect(await rules(model)).toContain("proposed-adr");
     adr.stage = "S01";
     (model.stages[0] as (typeof model.stages)[number]).status = "active";
     expect(await rules(model)).not.toContain("proposed-adr");
     adr.status = "accepted";
-    adr.stage = null;
+    delete adr.stage;
     expect(await rules(model)).not.toContain("proposed-adr");
   });
 });
 
 describe("generated blocks and fix scope", () => {
-  test.each([0, 1, 2, 3])("fix records only its %i renames after unrelated authored edits", async (count) => {
+  test.each([0, 1, 2])("fix records only its %i renames after unrelated authored edits", async (count) => {
     const { repo, model } = await diskFixture();
     const loaded = await loadAll(repo);
     const current = model.stages[0];
     if (!current) throw new Error("Missing stage fixture");
     await writeFile(current.path, renderStage({ ...current, objective: "An unrelated authored edit." }));
-    const paths = [model.index.path, model.rounds[0]?.path as string, model.adrIndex?.path as string];
-    const names = ["status", "stages", "adrs"];
+    const paths = [model.index.path, model.rounds[0]?.path as string];
+    const names = ["status", "stages"];
     for (const [index, path] of paths.slice(0, count).entries()) {
       await writeFile(path, replaceGenerated(await readFile(path, "utf8"), names[index] as string, "Stale table"));
     }
@@ -344,13 +360,13 @@ describe("generated blocks and fix scope", () => {
     expect(await check(loaded, { fix: true })).toEqual([]);
   });
 
-  test.each(["temporary", "committed", "penultimate", "final"] as const)(
+  test.each(["temporary", "penultimate", "final"] as const)(
     "fix cancellation after a %s write retains committed paths",
     async (boundary) => {
       const { repo, model } = await diskFixture();
-      const paths = [model.index.path, model.rounds[0]?.path as string, model.adrIndex?.path as string];
-      const names = ["status", "stages", "adrs"];
-      const committedCount = ["temporary", "committed", "penultimate", "final"].indexOf(boundary);
+      const paths = [model.index.path, model.rounds[0]?.path as string];
+      const names = ["status", "stages"];
+      const committedCount = ["temporary", "penultimate", "final"].indexOf(boundary);
       const triggerPath = paths[Math.max(0, committedCount - 1)] as string;
       const original = new Map<string, string>();
       for (const [index, path] of paths.entries()) {
@@ -385,10 +401,10 @@ describe("generated blocks and fix scope", () => {
     },
   );
 
-  test.each([0, 1, 2, 3])("cancelled check fixes report all %i committed files and a retry path", async (committedCount) => {
+  test.each([0, 1, 2])("cancelled check fixes report all %i committed files and a retry path", async (committedCount) => {
     const { repo, model } = await diskFixture();
-    const paths = [model.index.path, model.rounds[0]?.path as string, model.adrIndex?.path as string];
-    const names = ["status", "stages", "adrs"];
+    const paths = [model.index.path, model.rounds[0]?.path as string];
+    const names = ["status", "stages"];
     const original = new Map<string, string>();
     for (const [index, path] of paths.entries()) {
       const stale = replaceGenerated(await readFile(path, "utf8"), names[index] as string, "Stale table");
@@ -474,8 +490,7 @@ describe("generated blocks and fix scope", () => {
     const { repo, model } = await diskFixture();
     const index = model.index.path;
     const round = model.rounds[0]?.path as string;
-    const adr = model.adrIndex?.path as string;
-    const blockNames: Record<string, string[]> = { [index]: ["rounds", "status"], [round]: ["stages"], [adr]: ["adrs"] };
+    const blockNames: Record<string, string[]> = { [index]: ["rounds", "status"], [round]: ["stages"] };
     const before = new Map<string, string>();
     for (const [path, names] of Object.entries(blockNames)) {
       let raw = (await readFile(path, "utf8")).replaceAll("\n", "\r\n");
@@ -488,11 +503,10 @@ describe("generated blocks and fix scope", () => {
     const stageBefore = await readFile(stage, "utf8");
     const todoBefore = await readFile(todo, "utf8");
     const loaded = await loadAll(repo);
-    expect((await check(loaded)).filter((item) => item.rule === "generated")).toHaveLength(4);
+    expect((await check(loaded)).filter((item) => item.rule === "generated")).toHaveLength(3);
     expect(await check(loaded, { fix: true })).toEqual([]);
     expect(loaded.index.body).not.toContain("STALE");
     expect(loaded.rounds[0]?.stages).not.toContain("STALE");
-    expect(loaded.adrIndex?.body).not.toContain("STALE");
     for (const [path, names] of Object.entries(blockNames)) {
       const after = await readFile(path, "utf8");
       let authoredBefore = before.get(path) as string;
@@ -550,11 +564,27 @@ describe("generated blocks and fix scope", () => {
     const index = model.index.path;
     const stale = replaceGenerated(await readFile(index, "utf8"), "rounds", "stale");
     await writeFile(index, stale);
-    const adr = model.adrs[0] as (typeof model.adrs)[number];
-    await writeFile(adr.path, renderAdr(adr).replace("format: 1", "format: 3"));
+    const todo = model.todos[0]?.path as string;
+    await writeFile(todo, (await readFile(todo, "utf8")).replace("format: 1", "format: 3"));
     const result = await check(await loadAll(repo), { fix: true });
     expect(result.map((item) => item.rule)).toContain("format");
     expect(await readFile(index, "utf8")).toBe(stale);
+  });
+
+  test("docs/adr belongs to the adr plugin: a damaged or missing ADR directory neither blocks fix nor counts as a missing managed directory", async () => {
+    const { repo, model, adrs } = await diskFixture();
+    const index = model.index.path;
+    await writeFile(index, replaceGenerated(await readFile(index, "utf8"), "rounds", "stale"));
+    const adr = adrs[0] as (typeof adrs)[number];
+    await writeFile(adr.path, renderAdr(adr).replace("format: 1", "format: 3"));
+    const damaged = await check(await loadAll(repo), { fix: true });
+    expect(damaged.map((item) => [item.severity, item.rule])).toEqual([["warning", "adr-unreadable"]]);
+    expect(damaged[0]?.path).toBe(adr.path);
+    await rm(repo.adrDir, { recursive: true });
+    const loaded = await loadAll(repo);
+    expect(loaded.parseErrors).toEqual([]);
+    expect(loaded.adrs).toEqual({ managed: false, records: [], parseErrors: [] });
+    expect(await check(loaded)).toEqual([]);
   });
 
   test("fix re-reads disk under the repository lock rather than applying a stale model", async () => {

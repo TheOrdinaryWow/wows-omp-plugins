@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
+import type { AdrApi, AdrView } from "./adr.ts";
 import { discoverRepo } from "./git.ts";
 import { parseFrontmatter } from "./host.ts";
 
@@ -61,12 +61,14 @@ const HOW_THIS_DIRECTORY_WORKS: Readonly<Record<Format, string>> = { 1: HOW_THIS
 export type StageStatus = "planned" | "active" | "closed" | "dropped";
 export type RoundStatus = "planned" | "active" | "closed" | "dropped";
 type TodoStatus = "open" | "resolved" | "moved" | "wontfix" | "carried";
-type AdrStatus = "proposed" | "accepted" | "rejected" | "deprecated" | "superseded";
 export interface Repo {
   repoRoot: string;
   commonDir: string;
   roadmapDir: string;
+  /** Path only: roadmap never parses docs/adr, but previews hash it to detect stale confirmations. */
   adrDir: string;
+  /** The session's adr service. Without it, loadAll leaves `Model.adrs` unset (sidecar, injection and stage resolver reads). */
+  adr?: AdrApi;
 }
 
 interface Document {
@@ -140,26 +142,8 @@ export interface TodoDoc extends Document {
   items: TodoItem[];
 }
 
-export interface AdrDoc extends Document {
-  id: string;
-  title: string;
-  supersedes: string[];
-  superseded_by: string | null;
-  stage: string | null;
-  status: AdrStatus;
-  date: string;
-  decision_makers: string[];
-  consulted: string[];
-  informed: string[];
-  body: string;
-}
-
 export interface RoadmapIndexDoc extends Document {
   title: string;
-  body: string;
-}
-
-export interface AdrIndexDoc extends Document {
   body: string;
 }
 
@@ -174,11 +158,11 @@ export interface Model {
   rounds: RoundDoc[];
   stages: StageDoc[];
   todos: TodoDoc[];
-  adrs: AdrDoc[];
   repo?: Repo;
-  adrIndex?: AdrIndexDoc;
   files?: Record<string, string | Uint8Array>;
   parseErrors?: DocumentIssue[];
+  /** docs/adr as the adr plugin reported it; set by loadAll only when the repository carries the adr service. */
+  adrs?: AdrView;
 }
 
 export class DocumentError extends Error {
@@ -209,20 +193,16 @@ function text(value: unknown, key: string): string {
   return value;
 }
 
-function id(value: unknown, kind: "round" | "stage" | "todo" | "adr", key = "id"): string {
-  const patterns = { round: /^R[1-9]\d*$/, stage: /^S\d{2,}$/, todo: /^T\d{3,}$/, adr: /^ADR-\d{4,}$/ };
+function id(value: unknown, kind: "round" | "stage" | "todo", key = "id"): string {
+  const patterns = { round: /^R[1-9]\d*$/, stage: /^S\d{2,}$/, todo: /^T\d{3,}$/ };
   const result = text(value, key);
   if (!patterns[kind].test(result) || Number(result.replace(/\D/g, "")) < 1) invalid(`${key} is not a valid ${kind} id.`);
   return result;
 }
 
-function nullableId(value: unknown, kind: "stage" | "adr", key: string): string | null {
-  return value === null ? null : id(value, kind, key);
-}
-
-function strings(value: unknown, key: string, kind?: "stage" | "adr"): string[] {
+function stageIds(value: unknown, key: string): string[] {
   if (!Array.isArray(value)) invalid(`${key} must be a list.`);
-  return value.map((entry) => (kind ? id(entry, kind, key) : text(entry, key)));
+  return value.map((entry) => id(entry, "stage", key));
 }
 
 export function isCalendarDate(value: string): boolean {
@@ -465,7 +445,7 @@ function markdownMatches(body: string, pattern: RegExp, validate: boolean): RegE
       } else {
         const managed =
           MANAGED_COMMENTS[raw] === true ||
-          /^<!-- roadmap:generated:(?:stages|rounds|status|adrs) -->$/.test(raw) ||
+          /^<!-- roadmap:generated:(?:stages|rounds|status) -->$/.test(raw) ||
           raw === "<!-- /roadmap:generated -->";
         const line = raw.trimStart();
         const item = /^(?:[-+*]|\d{1,9}[.)]) +/.exec(line);
@@ -536,7 +516,6 @@ const ROUND_KEYS: Readonly<Record<Format, readonly string[]>> = {
   1: ["format", "id", "title", "status", "opened", "closed", "frozen_sha256"],
   2: ["format", "id", "title", "status", "target", "opened", "closed", "frozen_sha256"],
 };
-const ADR_KEYS = ["format", "id", "supersedes", "superseded_by", "stage", "status", "date", "decision-makers", "consulted", "informed"];
 const STAGE_HEADINGS = [
   "## Objective",
   "## Scope",
@@ -575,8 +554,8 @@ export function parseStage(content: string, path = ""): StageDoc {
     round: id(fm.round, "round", "round"),
     status: choice(fm.status, ["planned", "active", "closed", "dropped"], "status"),
     target: format === 1 ? null : date(fm.target, "target", true),
-    depends_on: strings(fm.depends_on, "depends_on", "stage"),
-    follows: nullableId(fm.follows, "stage", "follows"),
+    depends_on: stageIds(fm.depends_on, "depends_on"),
+    follows: fm.follows === null ? null : id(fm.follows, "stage", "follows"),
     created: date(fm.created, "created") as string,
     started: date(fm.started, "started", true),
     closed: date(fm.closed, "closed", true),
@@ -779,96 +758,6 @@ export function renderTodo(doc: TodoDoc): string {
   );
 }
 
-const madrTemplate = lf(readFileSync(new URL("../assets/madr/adr-template.md", import.meta.url), "utf8"));
-export const MADR_BODY_TEMPLATE = madrTemplate.slice(madrTemplate.indexOf("\n---\n") + 5).replace(/^\n/, "");
-export interface AdrSections {
-  context: string;
-  drivers?: string;
-  options: string[];
-  outcome: string;
-  consequences?: string;
-  confirmation?: string;
-  pros_cons?: string;
-  more_info?: string;
-}
-
-export function buildAdrBody(title: string, input: AdrSections): string {
-  const keep = ["## Context and Problem Statement", "## Considered Options", "## Decision Outcome"];
-  const content: Record<string, string | undefined> = {
-    "## Context and Problem Statement": input.context,
-    "## Decision Drivers": input.drivers,
-    "## Considered Options": input.options.map((option) => `* ${option}`).join("\n"),
-    "## Decision Outcome": input.outcome,
-    "### Consequences": input.consequences,
-    "### Confirmation": input.confirmation,
-    "## Pros and Cons of the Options": input.pros_cons,
-    "## More Information": input.more_info,
-  };
-  const headings = [...MADR_BODY_TEMPLATE.matchAll(/^##? .+$|^### (?:Consequences|Confirmation)$/gm)];
-  let result = `# ${text(title, "title")}\n\n`;
-  for (const heading of headings) {
-    const name = heading[0];
-    if (name.startsWith("# ")) continue;
-    const value = content[name];
-    if (value !== undefined || keep.includes(name)) result += section(name, value ?? "");
-  }
-  return result;
-}
-
-function validateAdrBody(body: string): string {
-  const title = /^# (.+)\n\n/.exec(body)?.[1];
-  if (!title) invalid("ADR requires a MADR title.");
-  const headings = markdownHeadings(body, /^## .+$|^### (?:Consequences|Confirmation)$/gm).map((match) => match[0]);
-  const templateHeadings = [...MADR_BODY_TEMPLATE.matchAll(/^## .+$|^### (?:Consequences|Confirmation)$/gm)].map((match) => match[0]);
-  let previous = -1;
-  for (const heading of headings) {
-    const position = templateHeadings.indexOf(heading);
-    if (position <= previous) invalid("ADR fixed headings must follow the vendored MADR template.");
-    previous = position;
-  }
-  for (const required of ["## Context and Problem Statement", "## Considered Options", "## Decision Outcome"]) {
-    if (!headings.includes(required)) invalid(`ADR missing fixed heading ${required}.`);
-  }
-  return title;
-}
-
-export function parseAdr(content: string, path = ""): AdrDoc {
-  const { fm, body, format } = header(content, ADR_KEYS);
-  const title = validateAdrBody(body);
-  return {
-    format,
-    path,
-    id: id(fm.id, "adr"),
-    title,
-    supersedes: strings(fm.supersedes, "supersedes", "adr"),
-    superseded_by: nullableId(fm.superseded_by, "adr", "superseded_by"),
-    stage: nullableId(fm.stage, "stage", "stage"),
-    status: choice(fm.status, ["proposed", "accepted", "rejected", "deprecated", "superseded"], "status"),
-    date: date(fm.date, "date") as string,
-    decision_makers: strings(fm["decision-makers"], "decision-makers"),
-    consulted: strings(fm.consulted, "consulted"),
-    informed: strings(fm.informed, "informed"),
-    body,
-  };
-}
-
-export function renderAdr(doc: AdrDoc): string {
-  return (
-    frontmatter({
-      format: doc.format,
-      id: doc.id,
-      supersedes: doc.supersedes,
-      superseded_by: doc.superseded_by,
-      stage: doc.stage,
-      status: doc.status,
-      date: doc.date,
-      "decision-makers": doc.decision_makers,
-      consulted: doc.consulted,
-      informed: doc.informed,
-    }) + lf(doc.body)
-  );
-}
-
 export function generatedBlock(name: string, content: string): string {
   return `<!-- roadmap:generated:${name} -->\n${content}\n<!-- /roadmap:generated -->`;
 }
@@ -877,7 +766,6 @@ const GENERATED_SECTIONS: Record<string, string> = {
   stages: "## Stages",
   rounds: "## Rounds",
   status: "## Current status",
-  adrs: "## Decisions",
 };
 
 function blockBounds(body: string, name: string): { start: number; end: number; innerStart: number; innerEnd: number } {
@@ -1010,43 +898,6 @@ export function upgradeRoadmapIndex(doc: RoadmapIndexDoc): void {
   doc.format = 2;
 }
 
-const ADR_INDEX_CONVENTIONS = `# Architecture Decision Records
-
-ADRs use the vendored MADR 4.0 body and format: 1 metadata. Files are NNNN-slug.md with ids ADR-NNNN. Create and revise proposed records through roadmap_adr; accepted records change through status transitions, supersession or dated notes under More Information. Confirmation describes verification; implementation steps belong to the plan. ADRs outlive roadmap rounds.
-
-## Decisions
-`;
-
-export function renderAdrTable(adrs: readonly AdrDoc[]): string {
-  return [
-    "| ADR | Title | Status | Date |",
-    "| --- | --- | --- | --- |",
-    ...ordered(adrs).map(
-      (adr) =>
-        `| ${adr.id} | ${cell(adr.title)} | ${adr.superseded_by ? `superseded by ${adr.superseded_by}` : adr.status} | ${adr.date} |`,
-    ),
-  ].join("\n");
-}
-
-export function parseAdrIndex(content: string, path = ""): AdrIndexDoc {
-  const { body, format } = header(content, ["format"]);
-  if (
-    !body.startsWith("# Architecture Decision Records\n\n") ||
-    markdownHeadings(body, /^## .+$/gm)
-      .map((heading) => heading[0])
-      .join("\n") !== "## Decisions"
-  )
-    invalid("Malformed ADR index fixed headings.");
-  generatedContent(body, "adrs");
-  return { format, path, body };
-}
-
-export function renderAdrIndex(doc: AdrIndexDoc, adrs?: readonly AdrDoc[]): string {
-  let body = doc.body || `${ADR_INDEX_CONVENTIONS}\n${generatedBlock("adrs", renderAdrTable([]))}\n`;
-  if (adrs) body = replaceGenerated(body, "adrs", renderAdrTable(adrs));
-  return frontmatter({ format: doc.format }) + lf(body);
-}
-
 export function sha256(content: string | Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -1113,19 +964,16 @@ export async function loadAll(repo: Repo): Promise<Model> {
     rounds: [],
     stages: [],
     todos: [],
-    adrs: [],
     files: {},
     parseErrors: [],
   };
   const files = model.files as NonNullable<Model["files"]>;
   const parseErrors = model.parseErrors as DocumentIssue[];
-  for (const base of [repo.roadmapDir, repo.adrDir]) {
-    try {
-      for (const path of await regularFiles(base)) files[path] = await readFile(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      parseErrors.push({ rule: "structure", path: base, message: "Managed directory is missing." });
-    }
+  try {
+    for (const path of await regularFiles(repo.roadmapDir)) files[path] = await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    parseErrors.push({ rule: "structure", path: repo.roadmapDir, message: "Managed directory is missing." });
   }
   const parse = <T>(path: string, parser: (content: string, path: string) => T): T | undefined => {
     const raw = files[path];
@@ -1145,7 +993,6 @@ export async function loadAll(repo: Repo): Promise<Model> {
     }
   };
   model.index = parse(indexPath, parseRoadmapIndex) ?? model.index;
-  model.adrIndex = parse(join(repo.adrDir, "README.md"), parseAdrIndex);
   const roundDirs = await readdir(repo.roadmapDir, { withFileTypes: true });
   for (const entry of roundDirs.filter((item) => item.isDirectory())) {
     const base = join(repo.roadmapDir, entry.name);
@@ -1174,17 +1021,15 @@ export async function loadAll(repo: Repo): Promise<Model> {
       if (stage) model.stages.push(stage);
     }
   }
-  for (const path of Object.keys(files).filter(
-    (path) => dirname(path) === repo.adrDir && path.endsWith(".md") && path !== join(repo.adrDir, "README.md"),
-  )) {
-    const adr = parse(path, parseAdr);
-    if (
-      !/^\d{4,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(basename(path)) ||
-      (adr && Number(basename(path).split("-")[0]) !== Number(adr.id.slice(4)))
-    ) {
-      parseErrors.push({ rule: "structure", path, message: "ADR file requires NNNN-slug.md naming with its ADR number." });
+  if (repo.adr) {
+    try {
+      const snapshot = await repo.adr.load(repo.repoRoot);
+      model.adrs = snapshot
+        ? { managed: true, records: snapshot.records, parseErrors: snapshot.parseErrors }
+        : { managed: false, records: [], parseErrors: [] };
+    } catch (error) {
+      model.adrs = { managed: false, records: [], parseErrors: [], error: error instanceof Error ? error.message : String(error) };
     }
-    if (adr) model.adrs.push(adr);
   }
   return model;
 }

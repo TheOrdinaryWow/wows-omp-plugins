@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { type ManageInput, manage } from "../plugins/adr/src/operations.ts";
 import { parseHtml, proseText } from "../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
+import { resolveStage } from "../plugins/roadmap/src/adr.ts";
 import { check } from "../plugins/roadmap/src/check.ts";
 import {
   generatedBlock,
@@ -13,10 +15,8 @@ import {
   loadRepo,
   type Model,
   markdownHeadings,
-  parseAdr,
   parseStage,
   type Repo,
-  renderAdr,
   renderRound,
   renderStage,
   renderStageTable,
@@ -30,7 +30,6 @@ import { discoverRepo } from "../plugins/roadmap/src/git.ts";
 import { renderHandoff, renderInjection } from "../plugins/roadmap/src/handoff.ts";
 import {
   type Actor,
-  adr,
   applyPrepared,
   atomicWrite,
   closeRound,
@@ -40,6 +39,7 @@ import {
   type PreparationReceipt,
   prepareInit,
   prepareRoundOpen,
+  prepareRoundPlan,
   type Receipt,
   type RoundInput,
   recordFreeWork,
@@ -48,7 +48,7 @@ import {
   stage,
   todo,
 } from "../plugins/roadmap/src/operations.ts";
-import { cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
+import { adrApi, cleanupFixtures, diskFixture, modelFixture, stageFixture } from "./roadmap-fixtures.ts";
 import {
   allowedMarkdownBodies,
   ambiguousMarkdownBodies,
@@ -120,7 +120,7 @@ async function emptyRepo(): Promise<Repo> {
   await git(repoRoot, ["init", "-q"]);
   const info = discoverRepo(repoRoot);
   if (!info) throw new Error("Temp git repository was not discovered.");
-  return { ...info, roadmapDir: join(repoRoot, "docs/roadmap"), adrDir: join(repoRoot, "docs/adr") };
+  return { ...info, roadmapDir: join(repoRoot, "docs/roadmap"), adrDir: join(repoRoot, "docs/adr"), adr: adrApi() };
 }
 
 async function initialized(): Promise<Repo> {
@@ -153,9 +153,21 @@ function evidence(id = "S01", criteria = ["DC1", "DC2"]): StageOperationInput {
   };
 }
 
+/** Every file under docs/roadmap and docs/adr by absolute path, so ADR writes count as managed changes too. */
 async function managedBytes(repo: Repo): Promise<Record<string, string>> {
-  const model = await loadAll(repo);
-  return Object.fromEntries(Object.entries(model.files ?? {}).map(([path, content]) => [path, Buffer.from(content).toString("utf8")]));
+  const files: Record<string, string> = {};
+  for (const directory of [repo.roadmapDir, repo.adrDir]) {
+    for (const name of await readdir(directory, { recursive: true }).catch(() => [])) {
+      const path = join(directory, name);
+      if ((await stat(path)).isFile()) files[path] = await readFile(path, "utf8");
+    }
+  }
+  return files;
+}
+
+/** The adr_manage tool's operation, with roadmap's stage resolver as the extension registers it. */
+function adrManage(repo: Repo, actor: Actor, input: ManageInput) {
+  return manage(repo.repoRoot, actor.kind, input, { resolver: resolveStage });
 }
 
 afterAll(async () => {
@@ -194,14 +206,14 @@ describe("roadmap stage lifecycle and close gate", () => {
       }),
     );
     success(await todo(repo, main, { action: "add", title: "Receipt cleanup", severity: "normal", source: "S02", target: "S02" }));
-    success(await adr(repo, main, { action: "create", title: "Order identity", stage: "S02", sections }));
-    const receipt = success(
-      await stage(repo, main, {
-        ...evidence("S02", ["DC1", "DC3"]),
-        todos: [{ id: "T001", disposition: "resolved", reference: "S02, commit abc1234" }],
-        adrs: [{ id: "ADR-0002", status: "accepted" }],
-      }),
-    );
+    await adrManage(repo, main, { action: "create", title: "Order identity", stage: "S02", sections });
+    const close: StageOperationInput = {
+      ...evidence("S02", ["DC1", "DC3"]),
+      todos: [{ id: "T001", disposition: "resolved", reference: "S02, commit abc1234" }],
+    };
+    refused(await stage(repo, main, close), "ADR-0002 Order identity");
+    await adrManage(repo, main, { action: "set_status", id: "ADR-0002", status: "accepted" });
+    const receipt = success(await stage(repo, main, close));
     expect(receipt.summary).toContain("Closed S02");
     const model = await loadAll(repo);
     const closed = model.stages.find((item) => item.id === "S02");
@@ -269,8 +281,6 @@ describe("roadmap stage lifecycle and close gate", () => {
         () => stage(repo, main, { action: "drop", id: "S01", reason: "Hide the retained date" }),
         () => stage(repo, main, { action: "renumber", id: "S01", new_id: "S10" }),
         () => todo(repo, main, { action: "add", title: "Forbidden TODO", severity: "normal", source: "Review", trigger: "Later" }),
-        () => adr(repo, main, { action: "create", title: "Forbidden ADR", status: "accepted", sections }),
-        () => adr(repo, main, { action: "note", id: "ADR-0001", text: "Forbidden note" }),
       ];
       for (const attempt of attempts) {
         refused(await attempt(), rule);
@@ -284,7 +294,7 @@ describe("roadmap stage lifecycle and close gate", () => {
     },
   );
 
-  test("criterion, TODO and ADR gate refusals write nothing; subagents cannot dispose proposed ADRs", async () => {
+  test("criterion and TODO refusals write nothing; close refuses while linked ADRs are proposed and records their statuses", async () => {
     const { repo } = await diskFixture();
     success(await stage(repo, main, { action: "start", id: "S01" }));
     const before = await managedBytes(repo);
@@ -298,21 +308,28 @@ describe("roadmap stage lifecycle and close gate", () => {
     );
     refused(await stage(repo, main, evidence("S01", ["DC1"])), "Every open TODO");
     expect(await managedBytes(repo)).toEqual(before);
-    success(await adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections }));
+    await adrManage(repo, sub, { action: "create", title: "Pending choice", stage: "S01", sections });
+    await adrManage(repo, main, { action: "create", title: "Unrelated choice", sections });
     const proposed = await managedBytes(repo);
     const close: StageOperationInput = {
       ...evidence("S01", ["DC1"]),
       todos: [{ id: "T001", disposition: "resolved", reference: "commit abc1234" }],
     };
-    refused(await stage(repo, main, close), "Every proposed ADR");
-    refused(await stage(repo, sub, { ...close, adrs: [{ id: "ADR-0002", status: "accepted" }] }), "main agent");
-    const pending = { id: "ADR-0002", status: "accepted" } as const;
-    refused(await stage(repo, main, { ...close, adrs: [pending, { id: "ADR-0001", status: "accepted" }] }), "ADR-0001 is accepted");
-    refused(await stage(repo, main, { ...close, adrs: [pending, pending] }), "listed more than once");
-    refused(await stage(repo, main, { ...close, adrs: [pending, { id: "ADR-0099", status: "accepted" }] }), "Unknown ADR ADR-0099");
+    const refusal = refused(await stage(repo, main, close), "S01 cannot close while linked ADRs are proposed: ADR-0002 Pending choice.");
+    expect(refusal.hints.join("\n")).toContain("adr_manage action set_status");
+    expect(refusal.reason).not.toContain("ADR-0003");
+    refused(await stage(repo, sub, close), "Only the main agent can accept or reject ADRs");
     expect(await managedBytes(repo)).toEqual(proposed);
-    success(await stage(repo, main, { ...close, adrs: [{ id: "ADR-0002", status: "rejected" }] }));
-    expect((await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002")?.status).toBe("rejected");
+    await expect(adrManage(repo, sub, { action: "set_status", id: "ADR-0002", status: "rejected" })).rejects.toThrow();
+    await adrManage(repo, main, { action: "set_status", id: "ADR-0002", status: "rejected" });
+    success(await stage(repo, sub, close));
+    const model = await loadAll(repo);
+    expect(model.stages[0]?.outcome).toEndWith("### ADRs\n\n- ADR-0001 accepted\n- ADR-0002 rejected");
+    expect(model.adrs?.records.map((adr) => [adr.id, adr.status])).toEqual([
+      ["ADR-0001", "accepted"],
+      ["ADR-0002", "rejected"],
+      ["ADR-0003", "proposed"],
+    ]);
   });
 
   test("close moves TODOs to another stage or a trigger, never to itself", async () => {
@@ -378,7 +395,9 @@ describe("roadmap stage lifecycle and close gate", () => {
     );
     success(await todo(repo, main, { action: "update", id: "T001", body: "S01 needs follow-up; S010 is a different id." }));
     const old = (await loadAll(repo)).stages.find((item) => item.id === "S01")?.path as string;
-    success(await stage(repo, main, { action: "renumber", id: "S01", new_id: "S10" }));
+    const renumbered = success(await stage(repo, main, { action: "renumber", id: "S01", new_id: "S10" }));
+    // The adr plugin rewrites the linked ADR after the roadmap files.
+    expect(renumbered.changedFiles.at(-1)).toBe("docs/adr/0001-shared-host.md");
     const model = await loadAll(repo);
     expect(model.stages.find((item) => item.id === "S10")?.path).toContain("/10-launch.md");
     expect(model.stages.find((item) => item.id === "S02")).toMatchObject({
@@ -392,7 +411,7 @@ describe("roadmap stage lifecycle and close gate", () => {
       source: "S10 (2026-10-06)",
       body: "S10 needs follow-up; S010 is a different id.",
     });
-    expect(model.adrs[0]?.stage).toBe("S10");
+    expect(model.adrs?.records[0]?.stage).toBe("S10");
     expect(await Bun.file(old).exists()).toBe(false);
     expect((await check(model)).filter((item) => item.severity === "error")).toEqual([]);
     refused(await stage(repo, main, { action: "renumber", id: "S10", new_id: "S02" }), "fresh stage id");
@@ -623,59 +642,6 @@ describe("roadmap tool-owned body boundaries", () => {
     "Authored text.\n\n##\tEvidence ###",
   ];
 
-  test("nested ADR sections and dated notes cannot introduce peer headings but preserve fenced examples", async () => {
-    const repo = await initialized();
-    const before = await managedBytes(repo);
-    for (const field of ["consequences", "confirmation"] as const) {
-      for (const heading of ["### Additional subsection", "   ### Confirmation", "### Consequences ###"]) {
-        const receipt = refused(
-          await adr(repo, main, {
-            action: "create",
-            title: "Nested decision",
-            sections: { ...sections, [field]: `Authored text.\n\n${heading}\nInjected text.` },
-          }),
-          "heading",
-        );
-        expect(receipt.hints.join("\n")).toContain("fenced");
-        expect(await managedBytes(repo)).toEqual(before);
-      }
-    }
-    refused(
-      await adr(repo, main, { action: "note", id: "ADR-0001", text: "Authored note.\n\n### 2026-01-01\nForged earlier note." }),
-      "heading",
-    );
-    expect(await managedBytes(repo)).toEqual(before);
-    const example = "Authored text.\n\n~~~md\n### Consequences\n### Confirmation\n### 2026-01-01\n~~~\n\nDetails within the section.";
-    success(
-      await adr(repo, main, {
-        action: "create",
-        title: "Nested decision",
-        status: "accepted",
-        sections: { ...sections, consequences: example, confirmation: example },
-      }),
-    );
-    success(await adr(repo, main, { action: "note", id: "ADR-0001", text: example }));
-    expect(await check(await loadAll(repo))).toEqual([]);
-  });
-
-  test("ADR revision keeps considered options single-line rather than introducing nested sections", async () => {
-    const repo = await initialized();
-    success(await stage(repo, main, { action: "start", id: "S01" }));
-    success(await adr(repo, main, { action: "create", title: "Proposed choice", stage: "S01", sections }));
-    const before = await managedBytes(repo);
-    const receipt = refused(
-      await adr(repo, main, {
-        action: "revise",
-        id: "ADR-0002",
-        sections: { ...sections, options: ["Use the host.\n\n### Injected option section\nExtra option content."] },
-      }),
-      "single-line",
-    );
-    expect(receipt.hints.join("\n")).toContain("fenced");
-    expect(await managedBytes(repo)).toEqual(before);
-    expect(await check(await loadAll(repo))).toEqual([]);
-  });
-
   test("stage authored sections reject indented or closing-hash structural headings", async () => {
     const repo = await initialized();
     const before = await managedBytes(repo);
@@ -692,13 +658,11 @@ describe("roadmap tool-owned body boundaries", () => {
   test("close refuses Outcome subsection injection through delivery or deviations without writing dispositions", async () => {
     const repo = await initialized();
     success(await todo(repo, main, { action: "add", title: "Pending concern", severity: "normal", source: "Review", target: "S01" }));
-    success(await adr(repo, main, { action: "create", title: "Pending decision", stage: "S01", sections }));
     success(await stage(repo, main, { action: "start", id: "S01" }));
     const before = await managedBytes(repo);
     const close: StageOperationInput = {
       ...evidence(),
       todos: [{ id: "T001", disposition: "resolved", reference: "Verified follow-up" }],
-      adrs: [{ id: "ADR-0002", status: "accepted" }],
     };
     for (const field of ["delivered", "deviations"] as const) {
       for (const heading of [
@@ -725,20 +689,17 @@ describe("roadmap tool-owned body boundaries", () => {
       expect(await managedBytes(repo)).toEqual(before);
     }
     expect((await loadAll(repo)).stages[0]?.status).toBe("active");
-    expect((await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002")?.status).toBe("proposed");
     expect((await loadAll(repo)).todos[0]?.items[0]?.status).toBe("open");
   });
 
   test("Setext and malformed backtick-info escapes cannot close or freeze a stage or apply its dispositions", async () => {
     const repo = await initialized();
     success(await todo(repo, main, { action: "add", title: "Pending concern", severity: "normal", source: "Review", target: "S01" }));
-    success(await adr(repo, main, { action: "create", title: "Pending decision", stage: "S01", sections }));
     success(await stage(repo, main, { action: "start", id: "S01" }));
     const before = await managedBytes(repo);
     const close: StageOperationInput = {
       ...evidence(),
       todos: [{ id: "T001", disposition: "resolved", reference: "Verified follow-up" }],
-      adrs: [{ id: "ADR-0002", status: "accepted" }],
     };
     for (const field of ["delivered", "deviations"] as const) {
       for (const body of headingEscapes) {
@@ -751,30 +712,7 @@ describe("roadmap tool-owned body boundaries", () => {
     expect(model.stages[0]?.status).toBe("active");
     expect(model.stages[0]?.closed_sha256).toBeNull();
     expect(model.todos[0]?.items[0]?.status).toBe("open");
-    expect(model.adrs.find((item) => item.id === "ADR-0002")?.status).toBe("proposed");
     expect(await check(model)).toEqual([]);
-  });
-
-  test("all ADR sections reject Setext and malformed-fence heading escapes before create, revise or supersede writes", async () => {
-    const repo = await initialized();
-    success(await stage(repo, main, { action: "start", id: "S01" }));
-    success(await adr(repo, main, { action: "create", title: "Proposed choice", stage: "S01", sections }));
-    const before = await managedBytes(repo);
-    for (const field of ["context", "drivers", "outcome", "consequences", "confirmation", "pros_cons", "more_info"] as const) {
-      for (const body of headingEscapes) {
-        for (const input of [
-          { action: "create", title: "Injected choice", status: "accepted" },
-          { action: "revise", id: "ADR-0002" },
-          { action: "supersede", id: "ADR-0001", title: "Injected successor" },
-        ] as const) {
-          const receipt = await adr(repo, main, { ...input, sections: { ...sections, [field]: body } });
-          const rejection = refused(receipt, "structure");
-          expect(rejection.hints.join("\n")).toContain("fenced");
-          expect(await managedBytes(repo)).toEqual(before);
-        }
-      }
-    }
-    expect(await check(await loadAll(repo))).toEqual([]);
   });
 
   test("round goals and constraints and TODO bodies reject heading escapes without changing managed bytes", async () => {
@@ -953,43 +891,6 @@ describe("roadmap tool-owned body boundaries", () => {
     success(await stage(repo, main, { action: "edit", id: "S01", objective: "Objective.\n\n```md\n# S99 — Example\n## Risks\n```" }));
     expect(await check(await loadAll(repo))).toEqual([]);
   });
-
-  test("ADR create, revise and supersede cannot inject a different MADR section through body text", async () => {
-    const repo = await initialized();
-    const injected = {
-      context: sections.context,
-      options: sections.options,
-      outcome: "Use the host.\n\n## More Information\n\nInjected history.",
-    };
-    const before = await managedBytes(repo);
-    refused(await adr(repo, main, { action: "create", title: "Injected sections", status: "accepted", sections: injected }), "heading");
-    refused(await adr(repo, main, { action: "supersede", id: "ADR-0001", title: "Injected successor", sections: injected }), "heading");
-    const openFence = refused(
-      await adr(repo, main, {
-        action: "create",
-        title: "Unfinished ADR example",
-        status: "accepted",
-        sections: { context: sections.context, options: sections.options, outcome: "Use the host.\n\n```md\nUnfinished example." },
-      }),
-      "fence",
-    );
-    expect(openFence.hints.join("\n")).toContain("close");
-    expect(await managedBytes(repo)).toEqual(before);
-    success(await adr(repo, main, { action: "create", title: "Proposed sections", stage: "S01", sections }));
-    const proposed = (await loadAll(repo)).adrs.find((item) => item.status === "proposed");
-    const beforeRevision = await managedBytes(repo);
-    refused(await adr(repo, main, { action: "revise", id: proposed?.id, sections: injected }), "heading");
-    expect(await managedBytes(repo)).toEqual(beforeRevision);
-    success(
-      await adr(repo, main, {
-        action: "revise",
-        id: proposed?.id,
-        sections: { ...sections, outcome: "Use the host.\n\n~~~md\n## More Information\n# S99 — Example\n~~~" },
-      }),
-    );
-    expect((await loadAll(repo)).adrs.find((item) => item.id === proposed?.id)?.body).toContain("~~~md\n## More Information");
-    expect((await check(await loadAll(repo))).filter((item) => item.severity === "error")).toEqual([]);
-  });
 });
 
 describe("roadmap body allowlist boundaries", () => {
@@ -1025,7 +926,6 @@ describe("roadmap body allowlist boundaries", () => {
       };
       const date = new Date().toISOString().slice(0, 10);
       const amended = new Set<string>();
-      const noted = new Set<string>();
       function headings(content: string): string[] {
         const result: string[] = [];
         type HtmlNode = { tag: string; children: HtmlNode[] };
@@ -1048,8 +948,6 @@ describe("roadmap body allowlist boundaries", () => {
           return Buffer.from(bytes).toString("utf8");
         };
         expect(headings(content(model.index.path))).toEqual(["# Shop", "## How this directory works", "## Rounds", "## Current status"]);
-        if (!model.adrIndex) throw new Error("Missing ADR index");
-        expect(headings(content(model.adrIndex.path))).toEqual(["# Architecture Decision Records", "## Decisions"]);
         for (const doc of model.rounds) {
           expect(headings(content(doc.path))).toEqual([
             `# ${doc.id} — ${doc.title}`,
@@ -1088,20 +986,6 @@ describe("roadmap body allowlist boundaries", () => {
             ...doc.items.filter((item) => item.status !== "open").map((item) => `### ${item.id} — ${item.title}`),
           ]);
         }
-        for (const doc of model.adrs) {
-          expect(headings(content(doc.path))).toEqual([
-            `# ${doc.title}`,
-            "## Context and Problem Statement",
-            "## Decision Drivers",
-            "## Considered Options",
-            "## Decision Outcome",
-            "### Consequences",
-            "### Confirmation",
-            "## Pros and Cons of the Options",
-            "## More Information",
-            ...(noted.has(doc.id) ? [`### ${date}`] : []),
-          ]);
-        }
         return model;
       }
       await wrote(
@@ -1132,11 +1016,6 @@ describe("roadmap body allowlist boundaries", () => {
       expect(resolved.todos[0]?.items[0]).toMatchObject({ source: body, trigger: body, body, reference: body });
       await wrote(todo(repo, main, { action: "add", title: "Close disposition", severity: "normal", source: body, target: "S01", body }));
       await wrote(todo(repo, main, { action: "add", title: "Known limitation", severity: "low", source: body, trigger: body, body }));
-      await wrote(adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections: adrText }));
-      await wrote(adr(repo, main, { action: "revise", id: "ADR-0002", sections: adrText }));
-      noted.add("ADR-0001");
-      await wrote(adr(repo, main, { action: "note", id: "ADR-0001", text: body }));
-      await wrote(adr(repo, main, { action: "supersede", id: "ADR-0001", title: "Successor choice", sections: adrText }));
       await wrote(stage(repo, main, { action: "start", id: "S01" }));
       amended.add("S01");
       await wrote(
@@ -1159,7 +1038,6 @@ describe("roadmap body allowlist boundaries", () => {
           deviations: body,
           evidence: ["DC1", "DC2"].map((criterion) => ({ criterion, result: "pass", method: body, summary: body, commit: body })),
           todos: [{ id: "T002", disposition: "resolved", reference: body }],
-          adrs: [{ id: "ADR-0002", status: "accepted" }],
         }),
       );
       expect(closed.stages[0]?.outcome).toContain(`### Delivered\n\n${body}\n\n### Deviations\n\n${body}`);
@@ -1176,10 +1054,9 @@ describe("roadmap body allowlist boundaries", () => {
     120_000,
   );
 
-  test("unsupported bodies refuse delivery, deviations, objective, TODO and every ADR section without changing managed bytes", async () => {
+  test("unsupported bodies refuse delivery, deviations, objective and TODO bodies without changing managed bytes", async () => {
     const repo = await initialized();
     success(await todo(repo, main, { action: "add", title: "Pending", severity: "normal", source: "Review", target: "S01" }));
-    success(await adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections }));
     const planned = await managedBytes(repo);
     for (const body of rejectedMarkdownBodies) {
       const peer = body.replace("### Evidence", "## Evidence");
@@ -1200,25 +1077,12 @@ describe("roadmap body allowlist boundaries", () => {
         );
         expect(await managedBytes(repo)).toEqual(planned);
       }
-      for (const field of ["context", "drivers", "outcome", "consequences", "confirmation", "pros_cons", "more_info"] as const) {
-        for (const input of [
-          { action: "create", title: "Injected", status: "accepted" },
-          { action: "revise", id: "ADR-0002" },
-          { action: "supersede", id: "ADR-0001", title: "Injected" },
-        ] as const) {
-          refused(await adr(repo, main, { ...input, sections: { ...sections, [field]: peer } }), "structure");
-          expect(await managedBytes(repo)).toEqual(planned);
-        }
-      }
-      refused(await adr(repo, main, { action: "note", id: "ADR-0001", text: body }), "structure");
-      expect(await managedBytes(repo)).toEqual(planned);
     }
     success(await stage(repo, main, { action: "start", id: "S01" }));
     const active = await managedBytes(repo);
     const close: StageOperationInput = {
       ...evidence(),
       todos: [{ id: "T001", disposition: "resolved", reference: "Verified" }],
-      adrs: [{ id: "ADR-0002", status: "accepted" }],
     };
     for (const body of rejectedMarkdownBodies) {
       for (const field of ["delivered", "deviations"] as const) {
@@ -1230,7 +1094,6 @@ describe("roadmap body allowlist boundaries", () => {
     expect(model.stages[0]?.status).toBe("active");
     expect(model.stages[0]?.closed_sha256).toBeNull();
     expect(model.todos[0]?.items[0]?.status).toBe("open");
-    expect(model.adrs.find((doc) => doc.id === "ADR-0002")?.status).toBe("proposed");
     expect(await check(model)).toEqual([]);
   }, 120_000);
 
@@ -1277,26 +1140,6 @@ describe("roadmap body allowlist boundaries", () => {
     await intact();
     success(await todo(repo, main, { action: "update", id: "T001", body: examples }));
     await intact();
-    success(
-      await adr(repo, main, {
-        action: "create",
-        title: "Examples",
-        status: "accepted",
-        sections: {
-          ...sections,
-          context: examples,
-          drivers: examples,
-          outcome: examples,
-          consequences: examples,
-          confirmation: examples,
-          pros_cons: examples,
-          more_info: examples,
-        },
-      }),
-    );
-    await intact();
-    success(await adr(repo, main, { action: "note", id: "ADR-0001", text: examples }));
-    await intact();
     success(await stage(repo, main, { action: "start", id: "S01" }));
     success(await stage(repo, main, { ...evidence(), delivered: examples, deviations: examples }));
     await intact();
@@ -1315,8 +1158,7 @@ describe("roadmap body allowlist boundaries", () => {
     const current = model.stages[0];
     const round = model.rounds[0];
     const todos = model.todos[0];
-    const decision = model.adrs[0];
-    if (!current || !round || !todos || !decision) throw new Error("Missing fixtures");
+    if (!current || !round || !todos) throw new Error("Missing fixtures");
     for (const { body } of [...markdownStructureEscapes, ...ambiguousMarkdownBodies]) {
       const peer = body.replace("### Evidence", "## Evidence");
       for (const [path, content] of [
@@ -1327,13 +1169,6 @@ describe("roadmap body allowlist boundaries", () => {
         ],
         [round.path, renderRound({ ...round, goal: peer })],
         [todos.path, renderTodo({ ...todos, items: todos.items.map((item) => ({ ...item, body })) })],
-        [
-          decision.path,
-          renderAdr({
-            ...decision,
-            body: decision.body.replace("## Context and Problem Statement\n", `## Context and Problem Statement\n\n${peer}\n\n`),
-          }),
-        ],
       ] as const) {
         const original = await readFile(path, "utf8");
         await writeFile(path, content);
@@ -1397,11 +1232,6 @@ describe("roadmap HTML body boundaries", () => {
       const body = (await readFile(doc.path, "utf8")).replace(/^---\n[\s\S]*?\n---\n/, "");
       expect(markdownHeadings(body, /^## .+$/gm).map((heading) => heading[0])).toEqual(["## Open", "## Closed in this round"]);
     }
-    for (const doc of model.adrs) {
-      const headings = markdownHeadings(doc.body, /^## .+$/gm).map((heading) => heading[0]);
-      for (const heading of ["## Context and Problem Statement", "## Considered Options", "## Decision Outcome"])
-        expect(headings.filter((value) => value === heading)).toHaveLength(1);
-    }
     return model;
   }
 
@@ -1428,13 +1258,11 @@ describe("roadmap HTML body boundaries", () => {
   test("delivery and deviations refuse all six reported HTML escapes before freezing or writing dispositions", async () => {
     const repo = await initialized();
     success(await todo(repo, main, { action: "add", title: "Pending", severity: "normal", source: "Review", target: "S01" }));
-    success(await adr(repo, main, { action: "create", title: "Pending choice", stage: "S01", sections }));
     success(await stage(repo, main, { action: "start", id: "S01" }));
     const before = await managedBytes(repo);
     const close: StageOperationInput = {
       ...evidence(),
       todos: [{ id: "T001", disposition: "resolved", reference: "Verified" }],
-      adrs: [{ id: "ADR-0002", status: "accepted" }],
     };
     for (const [opener] of htmlBlocks) {
       for (const field of ["delivered", "deviations"] as const)
@@ -1444,7 +1272,6 @@ describe("roadmap HTML body boundaries", () => {
     expect(model.stages[0]?.status).toBe("active");
     expect(model.stages[0]?.closed_sha256).toBeNull();
     expect(model.todos[0]?.items[0]?.status).toBe("open");
-    expect(model.adrs.find((doc) => doc.id === "ADR-0002")?.status).toBe("proposed");
   });
 
   test("TODO add and update cannot hide the next item or the closed section inside open HTML", async () => {
@@ -1469,47 +1296,6 @@ describe("roadmap HTML body boundaries", () => {
       );
     }
     expect((await intact(repo)).todos[0]?.items.map((item) => item.id)).toEqual(["T001", "T002"]);
-  });
-
-  test("all ADR sections and options reject open HTML before create, revise or supersede writes", async () => {
-    const repo = await initialized();
-    success(await stage(repo, main, { action: "start", id: "S01" }));
-    success(await adr(repo, main, { action: "create", title: "Proposed choice", stage: "S01", sections }));
-    const before = await managedBytes(repo);
-    for (const [opener] of htmlBlocks) {
-      for (const field of ["context", "drivers", "options", "outcome", "consequences", "confirmation", "pros_cons", "more_info"] as const) {
-        const candidate = { ...sections, [field]: field === "options" ? [opener] : `Authored text.\n\n${opener}` };
-        for (const input of [
-          { action: "create", title: "Unfinished choice", status: "accepted" },
-          { action: "revise", id: "ADR-0002" },
-          { action: "supersede", id: "ADR-0001", title: "Unfinished successor" },
-        ] as const)
-          await rejectsHtml(repo, await adr(repo, main, { ...input, sections: candidate }), before);
-      }
-    }
-    expect((await intact(repo)).adrs.map((doc) => [doc.id, doc.status])).toEqual([
-      ["ADR-0001", "accepted"],
-      ["ADR-0002", "proposed"],
-    ]);
-  });
-
-  test("ADR notes refuse new unclosed HTML and report an existing unclosed accepted body without rewriting it", async () => {
-    const repo = await initialized();
-    const before = await managedBytes(repo);
-    const current = (await loadAll(repo)).adrs[0];
-    if (!current) throw new Error("Missing ADR");
-    const original = await readFile(current.path, "utf8");
-    for (const [opener] of htmlBlocks) {
-      await rejectsHtml(repo, await adr(repo, main, { action: "note", id: current.id, text: `Note.\n\n${opener}` }), before);
-      const broken = `${original}\n${opener}\n`;
-      await writeFile(current.path, broken);
-      const receipt = refused(await adr(repo, main, { action: "note", id: current.id, text: "A visible dated note." }), "HTML");
-      expect(receipt.hints.join("\n")).toContain("close");
-      expect(await readFile(current.path, "utf8")).toBe(broken);
-      expect((await check(await loadAll(repo))).some((issue) => issue.path === current.path && issue.rule === "structure")).toBe(true);
-      await writeFile(current.path, original);
-    }
-    await intact(repo);
   });
 
   test("initialization and round reopening refuse unclosed goal, constraint, non-goal and principle inputs", async () => {
@@ -1606,7 +1392,6 @@ describe("roadmap HTML body boundaries", () => {
       [model.stages[0]?.path, "## Objective"],
       [model.rounds[0]?.path, "## Goal"],
       [model.todos[0]?.path, "### T001 — First"],
-      [model.adrs[0]?.path, "## Context and Problem Statement"],
     ];
     for (const [path, heading] of documents) {
       if (!path || !heading) throw new Error("Missing document");
@@ -1650,30 +1435,6 @@ describe("roadmap HTML body boundaries", () => {
       }
       success(await todo(repo, main, { action: "update", id: "T001", body: `${example}\n\n${prose}` }));
       expect((await intact(repo)).todos[0]?.items.map((item) => item.id)).toEqual(["T001", "T002"]);
-      success(
-        await adr(repo, main, {
-          action: "create",
-          title: "HTML examples",
-          status: "accepted",
-          sections: {
-            context: example,
-            drivers: example,
-            options: [inline, prose],
-            outcome: example,
-            consequences: example,
-            confirmation: example,
-            pros_cons: example,
-            more_info: example,
-          },
-        }),
-      );
-      await intact(repo);
-      for (const text of [example, prose]) {
-        success(await adr(repo, main, { action: "note", id: "ADR-0002", text }));
-        await intact(repo);
-      }
-      const decision = (await loadAll(repo)).adrs.find((doc) => doc.id === "ADR-0002");
-      expect(markdownHeadings(decision?.body as string, /^### \d{4}-\d{2}-\d{2}$/gm)).toHaveLength(2);
       success(await stage(repo, main, { action: "start", id: "S01" }));
       await intact(repo);
       success(await stage(repo, main, { ...evidence(), delivered: example, deviations: `${example}\n\n${prose}` }));
@@ -1721,162 +1482,135 @@ describe("roadmap HTML body boundaries", () => {
   });
 });
 
-describe("roadmap ADR operations", () => {
-  test("dated notes ignore fenced More Information examples and stay in the real section", async () => {
+describe("roadmap and the adr plugin", () => {
+  test("the planning handoff reads cited ADRs through the adr plugin and resolves supersession", async () => {
     const repo = await initialized();
-    for (const fence of ["~~~", "```"]) {
-      for (const more_info of [undefined, "Existing decision history."]) {
-        const context = `A documented example:\n\n${fence}md\n## More Information\n${fence}`;
-        success(
-          await adr(repo, main, {
-            action: "create",
-            title: `Fenced ${fence === "~~~" ? "tilde" : "backtick"} example ${Boolean(more_info)}`,
-            status: "accepted",
-            sections: { ...sections, context, more_info },
-          }),
-        );
-        const created = (await loadAll(repo)).adrs.at(-1);
-        if (!created) throw new Error("Missing created ADR");
-        const note = "The accepted decision was exercised in production.";
-        success(await adr(repo, main, { action: "note", id: created.id, text: note }));
-        const parsed = parseAdr(await readFile(created.path, "utf8"), created.path);
-        const headings = markdownHeadings(parsed.body, /^## .+$/gm);
-        const information = headings.filter((heading) => heading[0] === "## More Information");
-        expect(information).toHaveLength(1);
-        const start = information[0]?.index as number;
-        expect(headings.at(-1)?.[0]).toBe("## More Information");
-        expect(parsed.body.slice(0, start)).toContain(context);
-        expect(parsed.body.slice(0, start)).not.toContain(note);
-        expect(parsed.body.slice(start)).toContain(`### ${new Date().toISOString().slice(0, 10)}\n\n${note}`);
-        if (more_info) expect(parsed.body.slice(start)).toContain(more_info);
-        expect(parsed.status).toBe("accepted");
-        expect(await check(await loadAll(repo))).toEqual([]);
-      }
-    }
+    await adrManage(repo, main, {
+      action: "supersede",
+      id: "ADR-0001",
+      title: "Native host choice",
+      sections: { ...sections, outcome: "Use the newer host API." },
+    });
+    const start = success(await stage(repo, main, { action: "start", id: "S01" }));
+    expect(start.handoff).toContain("### ADR-0002 — Native host choice (accepted)\n\nDocument: docs/adr/0002-native-host-choice.md");
+    expect(start.handoff).toContain("Resolved from superseded ADR-0001");
+    expect(start.handoff).toContain("Use the newer host API.");
+    expect(start.handoff).not.toContain("### ADR-0001 —");
+    expect((await check(await loadAll(repo))).find((item) => item.rule === "superseded-adr")?.message).toContain("successor ADR-0002");
   });
 
-  test("dated notes refuse existing ADRs ending inside an open fence without rewriting accepted bodies", async () => {
+  test("round principles must cite existing, readable ADRs through the adr plugin", async () => {
     const repo = await initialized();
-    for (const fence of ["```", "````", "   ~~~~"]) {
-      for (const moreInfo of [false, true]) {
-        const document = (await loadAll(repo)).adrs[0];
-        if (!document) throw new Error("Missing accepted ADR");
-        document.body =
-          "# Host choice\n\n## Context and Problem Statement\nProblem.\n\n## Considered Options\n* Use the host\n\n" +
-          `## Decision Outcome\nKeep the accepted decision.\n\n${moreInfo ? "## More Information\nExisting history.\n\n" : ""}` +
-          `${fence}md\nAn unfinished example.\n`;
-        await writeFile(document.path, renderAdr(document));
-        const before = await managedBytes(repo);
-        const refusal = refused(await adr(repo, main, { action: "note", id: document.id, text: "A dated observation." }), "fence");
-        expect(refusal.hints.join("\n")).toContain("close");
-        expect(await managedBytes(repo)).toEqual(before);
-        const closing = fence.trim();
-        document.body += `${closing}\n\n`;
-        await writeFile(document.path, renderAdr(document));
-        success(await adr(repo, main, { action: "note", id: document.id, text: "A dated observation." }));
-        const parsed = parseAdr(await readFile(document.path, "utf8"), document.path);
-        const information = markdownHeadings(parsed.body, /^## More Information$/gm);
-        expect(information).toHaveLength(1);
-        expect(parsed.body.slice(information[0]?.index)).toContain(`### ${new Date().toISOString().slice(0, 10)}\n\nA dated observation.`);
-        expect(markdownHeadings(parsed.body, /^### \d{4}-\d{2}-\d{2}$/gm)).toHaveLength(1);
-        expect(parsed.status).toBe("accepted");
-        expect(await check(await loadAll(repo))).toEqual([]);
-      }
-    }
+    success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    const missing = { ...charter, principles: [{ text: "Use an unrecorded choice", adrs: ["ADR-0009"] }] };
+    refused(await prepareRoundOpen(repo, main, { round: missing, import_todos: [] }), "ADR ADR-0009 is missing or ambiguous.");
+    const path = join(repo.adrDir, "0001-host-choice.md");
+    const original = await readFile(path, "utf8");
+    await writeFile(path, original.replace("## Decision Outcome", "## Outcome"));
+    refused(await prepareRoundOpen(repo, main, { round: charter, import_todos: [] }), "ADR ADR-0001 could not be read");
+    await writeFile(path, original);
+    success(await openRound(repo, main, { round: charter, import_todos: [] }));
+    // Roadmap no longer needs docs/adr itself; only ADR citations do.
+    await rm(repo.adrDir, { recursive: true });
+    success(await stage(repo, main, { action: "add", ...stageInput, title: "Without ADRs" }));
+    const later = { round: { ...charter, title: "Later" } };
+    refused(await prepareRoundPlan(repo, main, later), "ADR management is not initialized in this repository");
+    refused(await prepareRoundPlan({ ...repo, adr: undefined }, main, later), "omp plugin install adr@wows-omp-plugins");
   });
 
-  test("dated note text must keep fences balanced and cannot inject MADR headings outside fenced examples", async () => {
-    const repo = await initialized();
-    const before = await managedBytes(repo);
-    refused(await adr(repo, main, { action: "note", id: "ADR-0001", text: "Observation.\n\n```md\nUnfinished example." }), "fence");
+  test("a renumbering whose ADR relink fails after the roadmap write reports the recovery state", async () => {
+    const { repo } = await diskFixture();
+    const api = repo.adr;
+    if (!api) throw new Error("The fixture carries the adr service.");
+    const failing: Repo = {
+      ...repo,
+      adr: {
+        ...api,
+        relinkStage: (root, actor, from, to, options) =>
+          options?.dryRun ? api.relinkStage(root, actor, from, to, options) : Promise.reject(new Error("Disk full.")),
+      },
+    };
+    const receipt = refused(await stage(failing, main, { action: "renumber", id: "S01", new_id: "S10" }), "ADR-0001 still link to S01");
+    expect(receipt.reason).toContain("Renumbered S01 to S10 in docs/roadmap/");
+    expect(receipt.reason).toContain("Disk full.");
+    expect(receipt.hints.join("\n")).toContain("Restore docs/roadmap/ and docs/adr/ with git, then renumber again");
+    const model = await loadAll(repo);
+    expect(model.stages.map((item) => item.id)).toEqual(["S10"]);
+    expect(model.adrs?.records[0]?.stage).toBe("S01");
+    expect((await check(model)).find((item) => item.rule === "dangling-reference")?.message).toBe(
+      "ADR-0001 refers to missing origin stage S01.",
+    );
+  });
+});
+
+describe("initialization through the adr plugin", () => {
+  test("the preview shows the initial ADRs the adr plugin will write, linked to initial stages by alias", async () => {
+    const repo = await emptyRepo();
+    const input: InitInput = {
+      ...initInput,
+      round: { ...charter, principles: [{ text: "Use the documented host choice", adrs: ["ADR-0001", "ADR-0002"] }] },
+      adrs: [
+        { title: "Host choice", status: "accepted", sections },
+        { id: "ADR-0002", title: "Checkout identity", status: "proposed", stage: "S01", sections },
+      ],
+    };
     refused(
-      await adr(repo, main, { action: "note", id: "ADR-0001", text: "Observation.\n\n### Consequences\nInjected section." }),
-      "heading",
+      await prepareInit(await emptyRepo(), main, { ...input, round: charter, adrs: [{ title: "Orphan", sections, stage: "S09" }] }),
+      "Initial ADR ADR-0001 links unknown stage S09",
     );
-    expect(await managedBytes(repo)).toEqual(before);
-    const note = "Observed the host.\n\n```md\n## More Information\n### Consequences\n```";
-    success(await adr(repo, main, { action: "note", id: "ADR-0001", text: note }));
+    const preview = await prepareInit(repo, main, input);
+    if (!preview.ok) throw new Error(preview.reason);
+    expect(preview.summary).toBe("Initialized Shop with R1, 1 stages and 2 ADRs.");
+    expect(preview.files.slice(-3).map((file) => file.path.slice(repo.repoRoot.length + 1))).toEqual([
+      "docs/adr/0001-host-choice.md",
+      "docs/adr/0002-checkout-identity.md",
+      "docs/adr/README.md",
+    ]);
+    expect(preview.files.find((file) => file.path.endsWith("0002-checkout-identity.md"))?.content).toContain('stage: "S01"');
+    expect(await readdir(repo.repoRoot)).toEqual([".git"]);
+    success(await applyPrepared(repo, main, preview.prepared));
+    for (const file of preview.files) expect(await readFile(file.path, "utf8")).toBe(file.content);
     const model = await loadAll(repo);
-    const body = model.adrs[0]?.body as string;
-    const information = markdownHeadings(body, /^## More Information$/gm);
-    expect(information).toHaveLength(1);
-    expect(body.slice(information[0]?.index)).toContain(`### ${new Date().toISOString().slice(0, 10)}\n\n${note}`);
-    expect(await check(model)).toEqual([]);
+    expect(model.rounds[0]?.principles).toBe("- Use the documented host choice (ADR-0001, ADR-0002).");
+    expect(model.adrs?.records.map((adr) => [adr.id, adr.status, adr.stage, adr.legacy])).toEqual([
+      ["ADR-0001", "accepted", undefined, false],
+      ["ADR-0002", "proposed", "S01", false],
+    ]);
+    expect((await check(model)).filter((item) => item.severity === "error")).toEqual([]);
   });
 
-  test("dated notes append real headings when an accepted ADR has no final newline", async () => {
-    const repo = await initialized();
-    const document = (await loadAll(repo)).adrs[0];
-    if (!document) throw new Error("Missing accepted ADR");
-    const original = document.body;
-    for (const existingInformation of [false, true]) {
-      document.body = `${original}${existingInformation ? "## More Information\n\nExisting history.\n\n" : ""}`.replace(/\n+$/, "");
-      const prefix = document.body;
-      await writeFile(document.path, renderAdr(document));
-      success(await adr(repo, main, { action: "note", id: document.id, text: "Observed without a final newline." }));
-      const parsed = parseAdr(await readFile(document.path, "utf8"), document.path);
-      expect(parsed.body.startsWith(prefix)).toBe(true);
-      const information = markdownHeadings(parsed.body, /^## More Information$/gm);
-      expect(information).toHaveLength(1);
-      expect(parsed.body.slice(information[0]?.index)).toContain(
-        `### ${new Date().toISOString().slice(0, 10)}\n\nObserved without a final newline.`,
-      );
-      expect(markdownHeadings(parsed.body, /^### \d{4}-\d{2}-\d{2}$/gm)).toHaveLength(1);
-      expect(await check(await loadAll(repo))).toEqual([]);
-    }
-  });
-
-  test("subagent creates proposed, proposed revisions retain metadata, and main-only transitions preserve accepted bodies", async () => {
-    const repo = await initialized();
-    success(await stage(repo, main, { action: "start", id: "S01" }));
-    const creation = success(
-      await adr(repo, sub, {
-        action: "create",
-        title: "Proposed API",
-        stage: "S01",
-        status: "accepted",
-        sections,
-        decision_makers: ["Owner"],
+  test("initialization adds initial ADRs to an already managed docs/adr and refuses an unmanaged one or a missing adr plugin", async () => {
+    const repo = await emptyRepo();
+    await repo.adr?.createMany(repo.repoRoot, "main", [{ title: "Existing decision", status: "accepted", sections }], { initialize: true });
+    refused(await prepareInit(repo, main, initInput), "Initial ADR alias ADR-0001 is also an existing ADR in docs/adr/.");
+    const receipt = success(
+      await initProject(repo, main, {
+        ...initInput,
+        round: {
+          ...charter,
+          principles: [
+            { text: "Keep the existing decision", adrs: ["ADR-0001"] },
+            { text: "Use the host", adrs: ["ADR-9001"] },
+          ],
+        },
+        adrs: [{ id: "ADR-9001", title: "Host choice", status: "accepted", sections }],
+        stages: [{ ...stageInput, design_constraints: "Use ADR-9001 and ADR-0001." }],
       }),
     );
-    expect(creation.warnings).toContain("Subagent ADRs are created as proposed.");
-    const original = (await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002");
-    expect(original?.status).toBe("proposed");
-    success(await adr(repo, sub, { action: "revise", id: "ADR-0002", sections: { ...sections, outcome: "Use the native API instead." } }));
-    const revised = (await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002");
-    expect(revised?.date).toBe(original?.date);
-    expect(revised?.stage).toBe("S01");
-    expect(revised?.decision_makers).toEqual(["Owner"]);
-    expect(revised?.body).toContain("Use the native API instead.");
-    refused(await adr(repo, sub, { action: "set_status", id: "ADR-0002", status: "accepted" }), "main agent");
-    refused(await adr(repo, sub, { action: "supersede", id: "ADR-0001", title: "Replacement", sections }), "main agent");
-    success(await adr(repo, main, { action: "set_status", id: "ADR-0002", status: "accepted" }));
-    refused(await adr(repo, main, { action: "revise", id: "ADR-0002", sections }), "Only proposed");
-    const before = (await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002")?.body as string;
-    success(await adr(repo, sub, { action: "note", id: "ADR-0002", text: "Observed the API working in the host smoke." }));
-    const noted = (await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002")?.body as string;
-    expect(noted.startsWith(before)).toBe(true);
-    expect(noted).toContain(`## More Information\n\n### ${new Date().toISOString().slice(0, 10)}\n\nObserved`);
-    success(await adr(repo, main, { action: "set_status", id: "ADR-0002", status: "deprecated" }));
-    expect((await loadAll(repo)).adrs.find((item) => item.id === "ADR-0002")?.body).toBe(noted);
-    success(
-      await adr(repo, main, {
-        action: "supersede",
-        id: "ADR-0001",
-        title: "Native host choice",
-        sections: { ...sections, outcome: "Use the newer host API." },
-      }),
-    );
+    expect(receipt.summary).toContain("1 ADRs added to the existing docs/adr/");
     const model = await loadAll(repo);
-    const successor = model.adrs.find((item) => item.id === "ADR-0003");
-    expect(model.adrs.find((item) => item.id === "ADR-0001")).toMatchObject({ status: "superseded", superseded_by: "ADR-0003" });
-    expect(successor).toMatchObject({ status: "accepted", supersedes: ["ADR-0001"] });
-    expect(await readFile(join(repo.adrDir, "README.md"), "utf8")).toContain("superseded by ADR-0003");
-    const handoff = renderHandoff(model, model.stages[0] as NonNullable<Model["stages"][0]>);
-    expect(handoff).toContain("ADR-0003 — Native host choice (accepted)");
-    expect(handoff).toContain("Resolved from superseded ADR-0001");
-    expect(handoff).toContain("Use the newer host API.");
-    expect(handoff).not.toContain("### ADR-0001 —");
+    expect(model.rounds[0]?.principles).toBe("- Keep the existing decision (ADR-0001).\n- Use the host (ADR-0002).");
+    expect(model.stages[0]?.design_constraints).toBe("Use ADR-0002 and ADR-0001.");
+    expect(model.adrs?.records.map((adr) => [adr.id, adr.title])).toEqual([
+      ["ADR-0001", "Existing decision"],
+      ["ADR-0002", "Host choice"],
+    ]);
+    const unmanaged = await emptyRepo();
+    await mkdir(unmanaged.adrDir, { recursive: true });
+    await writeFile(join(unmanaged.adrDir, "notes.md"), "User notes\n");
+    refused(await prepareInit(unmanaged, main, initInput), "docs/adr/ is not empty and is not managed by the adr plugin");
+    refused(await prepareInit({ ...(await emptyRepo()), adr: undefined }, main, initInput), "omp plugin install adr@wows-omp-plugins");
   });
 });
 
@@ -1959,7 +1693,7 @@ describe("round freeze, import and recovery", () => {
     expect((await check(closed)).filter((item) => item.severity === "error")).toEqual([]);
     const frozen = roundFiles(closed, round);
     const frozenText = Object.fromEntries(Object.entries(frozen).map(([path, content]) => [path, Buffer.from(content).toString("utf8")]));
-    success(await adr(repo, main, { action: "create", title: "Between rounds", sections, status: "accepted" }));
+    await adrManage(repo, main, { action: "create", title: "Between rounds", sections, status: "accepted" });
     refused(await stage(repo, main, { action: "add", ...stageInput }), "active round");
     refused(
       await todo(repo, main, { action: "add", title: "No round", source: "free work", severity: "low", trigger: "Later" }),
@@ -2024,7 +1758,7 @@ describe("round freeze, import and recovery", () => {
     success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
     const next = await prepareRoundOpen(repo, main, { round: { ...charter, title: "Next" }, import_todos: [] });
     if (!next.ok) throw new Error(next.reason);
-    success(await adr(repo, main, { action: "note", id: "ADR-0001", text: "Changed while the preview was visible." }));
+    await adrManage(repo, main, { action: "note", id: "ADR-0001", text: "Changed while the preview was visible." });
     refused(await applyPrepared(repo, main, next.prepared), "stale");
     expect((await loadAll(repo)).rounds).toHaveLength(1);
 
@@ -2035,7 +1769,7 @@ describe("round freeze, import and recovery", () => {
     await writeFile(join(staleRepo.adrDir, "existing.md"), "User document");
     refused(await applyPrepared(staleRepo, main, stale.prepared), "stale");
     expect(await Bun.file(join(staleRepo.roadmapDir, "README.md")).exists()).toBe(false);
-    refused(await prepareInit(staleRepo, main, initInput), "absent or empty");
+    refused(await prepareInit(staleRepo, main, initInput), "not managed by the adr plugin");
   });
 
   test("git worktrees share global counters while their roadmap documents remain branch-local", async () => {
@@ -2143,12 +1877,12 @@ async function rawManagedBytes(repo: Repo): Promise<Record<string, string>> {
 
 describe("cancellation after managed writing starts", () => {
   for (const boundary of ["committed", "temporary"] as const) {
-    test.each(["stage start", "stage close", "round close", "init", "round open"] as const)(
+    test.each(["stage start", "stage close", "round close", "round open"] as const)(
       boundary === "committed"
         ? "%s stops after the first committed file and does not run its success callback"
         : "%s cancellation after a temporary write prevents every rename and success callback",
       async (operation) => {
-        const repo = operation === "init" ? await emptyRepo() : await initialized();
+        const repo = await initialized();
         const controller = new AbortController();
         const attempted: string[] = [];
         const written: string[] = [];
@@ -2188,14 +1922,9 @@ describe("cancellation after managed writing starts", () => {
           const expected = await reviewedRound(repo);
           run = () => closeRound(repo, main, { expected, dispositions: [] }, options);
         } else {
-          if (operation === "round open") {
-            success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-            success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
-          }
-          const preview =
-            operation === "init"
-              ? await prepareInit(repo, main, initInput)
-              : await prepareRoundOpen(repo, main, { round: { ...charter, title: "Next" }, import_todos: [] });
+          success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
+          success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+          const preview = await prepareRoundOpen(repo, main, { round: { ...charter, title: "Next" }, import_todos: [] });
           if (!preview.ok) throw new Error(preview.reason);
           run = () => applyPrepared(repo, main, preview.prepared, options);
         }
@@ -2225,6 +1954,42 @@ describe("cancellation after managed writing starts", () => {
       },
     );
   }
+
+  test("init writes the confirmed ADR batch first, so a cancelled roadmap write reports both kinds of committed files", async () => {
+    const repo = await emptyRepo();
+    const preview = await prepareInit(repo, main, initInput);
+    if (!preview.ok) throw new Error(preview.reason);
+    const controller = new AbortController();
+    const written: string[] = [];
+    let callbacks = 0;
+    const receipt = refused(
+      await applyPrepared(repo, main, preview.prepared, {
+        signal: controller.signal,
+        async writeFile(path, content, options) {
+          await atomicWrite(path, content, options);
+          written.push(path);
+          controller.abort();
+        },
+        onSuccess() {
+          callbacks++;
+        },
+      }),
+      "cancelled",
+    );
+    expect(written).toHaveLength(1);
+    expect(callbacks).toBe(0);
+    const first = (written[0] as string).slice(repo.repoRoot.length + 1);
+    expect(receipt.hints[0]).toBe(
+      `Files committed by the interrupted operation: docs/adr/0001-host-choice.md, docs/adr/README.md, ${first}.`,
+    );
+    const adrFiles = preview.files.filter((file) => file.path.startsWith(`${repo.adrDir}/`));
+    expect(adrFiles.map((file) => file.path.slice(repo.repoRoot.length + 1))).toEqual([
+      "docs/adr/0001-host-choice.md",
+      "docs/adr/README.md",
+    ]);
+    for (const file of adrFiles) expect(await readFile(file.path, "utf8")).toBe(file.content);
+    expect(Object.keys(await rawManagedBytes(repo)).sort()).toEqual([...adrFiles.map((file) => file.path), written[0] as string].sort());
+  });
 
   test("cancellation while creating the parent directory prevents the temporary write", async () => {
     const repo = await emptyRepo();
@@ -2332,16 +2097,6 @@ describe("literal generated delimiters in authored bodies", () => {
     success(await todo(repo, main, { action: "move", id: "T001", trigger: inline }));
     success(await todo(repo, main, { action: "resolve", id: "T001", reference: inline }));
     expect((await intact(repo)).todos[0]?.items[0]?.body).toBe(`${example}\n\nUpdated.`);
-    success(await adr(repo, main, { action: "create", title: "Literal proposed decision", sections: literalSections }));
-    success(
-      await adr(repo, main, { action: "revise", id: "ADR-0002", sections: { ...literalSections, context: `${example}\n\nRevised.` } }),
-    );
-    success(await adr(repo, main, { action: "set_status", id: "ADR-0002", status: "accepted" }));
-    success(await adr(repo, main, { action: "note", id: "ADR-0002", text: example }));
-    success(await adr(repo, main, { action: "supersede", id: "ADR-0001", title: "Literal successor", sections: literalSections }));
-    model = await intact(repo);
-    expect(model.adrs.find((doc) => doc.id === "ADR-0002")?.body).toContain(`${example}\n\nRevised.`);
-    expect(model.adrs.find((doc) => doc.id === "ADR-0003")?.body).toContain(example);
     success(await recordFreeWork(repo, main, { stage: "S01", intent: inline }));
     success(await stage(repo, main, { action: "start", id: "S01" }));
     success(await stage(repo, main, { action: "amend", id: "S01", reason: inline, amendments: { remove: ["DC2"] } }));
@@ -2381,20 +2136,15 @@ describe("literal generated delimiters in authored bodies", () => {
       "## How this directory works\n",
       `## How this directory works\n\n${example}\n`,
     );
-    const adrPath = model.adrIndex?.path;
-    if (!adrPath) throw new Error("Missing ADR index");
-    const adrText = (await readFile(adrPath, "utf8")).replace("## Decisions\n", `## Decisions\n\n${example}\n`);
-    const expected: Record<string, string> = { [round.path]: roundText, [model.index.path]: rootText, [adrPath]: adrText };
+    const expected: Record<string, string> = { [round.path]: roundText, [model.index.path]: rootText };
     for (const [path, content] of Object.entries(expected)) {
       let stale = content;
-      for (const name of path === round.path ? ["stages"] : path === adrPath ? ["adrs"] : ["rounds", "status"])
-        stale = replaceGenerated(stale, name, "Stale real block");
+      for (const name of path === round.path ? ["stages"] : ["rounds", "status"]) stale = replaceGenerated(stale, name, "Stale real block");
       await writeFile(path, stale);
     }
     const before = await managedBytes(repo);
     const diagnostics = await check(await loadAll(repo));
     expect(diagnostics.filter((issue) => issue.severity === "error").map((issue) => issue.rule)).toEqual([
-      "generated",
       "generated",
       "generated",
       "generated",

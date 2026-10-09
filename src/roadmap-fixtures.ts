@@ -1,16 +1,17 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+
+import { type AdrDoc, buildAdrBody, renderAdr, renderIndex } from "../plugins/adr/src/documents.ts";
+import { registerService } from "../plugins/adr/src/service.ts";
+import { type AdrApi, type AdrRecord, resolveStage } from "../plugins/roadmap/src/adr.ts";
 import {
-  type AdrDoc,
-  buildAdrBody,
   generatedBlock,
   type Model,
   type Repo,
   type RoundDoc,
-  renderAdr,
-  renderAdrIndex,
   renderRoadmapIndex,
   renderRound,
   renderStage,
@@ -19,6 +20,17 @@ import {
   type StageDoc,
   type TodoDoc,
 } from "../plugins/roadmap/src/documents.ts";
+
+/**
+ * The adr plugin's real v1 service without a host session, with roadmap's stage resolver registered the way the roadmap
+ * extension registers it. Operation tests attach it to a Repo as the extension's requireRepo does.
+ */
+export function adrApi(): AdrApi {
+  const host = { on() {}, events: { on: () => () => {}, emit() {} } } as unknown as ExtensionAPI;
+  const { api } = registerService(host, () => {});
+  api.registerStageResolver(resolveStage);
+  return api;
+}
 
 export function stageFixture(overrides: Partial<StageDoc> = {}): StageDoc {
   return {
@@ -88,15 +100,16 @@ export function todoFixture(overrides: Partial<TodoDoc> = {}): TodoDoc {
   };
 }
 
+/** An ADR in the adr plugin's format; `path` is repository-relative until diskFixture places it. */
 export function adrFixture(overrides: Partial<AdrDoc> = {}): AdrDoc {
   const title = "Choose the shared host";
   return {
+    legacy: false,
     format: 1,
     path: "docs/adr/0001-shared-host.md",
     id: "ADR-0001",
     title,
     supersedes: [],
-    superseded_by: null,
     stage: "S01",
     status: "accepted",
     date: "2026-10-06",
@@ -117,16 +130,22 @@ export function adrFixture(overrides: Partial<AdrDoc> = {}): AdrDoc {
   };
 }
 
+/** The record the adr service reports for `doc`, as roadmap's loadAll stores it in `Model.adrs`. */
+export function adrRecord(doc: AdrDoc, repoRoot = ""): AdrRecord {
+  const { legacy, format: _format, path, body, ...fields } = doc;
+  return { ...fields, legacy, path: repoRoot ? relative(repoRoot, path) : path, body: body.replace(/^# [^\n]*\n\n?/, "") };
+}
+
 export function modelFixture(): Model {
   const stages = [stageFixture()];
   const rounds = [roundFixture({ stages: generatedBlock("stages", renderStageTable(stages, 1)) })];
   const index = { format: 1 as const, path: "docs/roadmap/README.md", title: "Example project", body: "" };
-  const adrIndex = { format: 1 as const, path: "docs/adr/README.md", body: "" };
-  return { index, rounds, stages, todos: [todoFixture()], adrs: [adrFixture()], adrIndex };
+  return { index, rounds, stages, todos: [todoFixture()], adrs: { managed: true, records: [adrRecord(adrFixture())], parseErrors: [] } };
 }
 
 const temporaryDirectories: string[] = [];
-export async function diskFixture(): Promise<{ repo: Repo; model: Model }> {
+/** A git work tree with the fixture roadmap and one adr-plugin ADR; `repo` carries the real ADR service. */
+export async function diskFixture(): Promise<{ repo: Repo; model: Model; adrs: AdrDoc[] }> {
   const root = await mkdtemp(join(tmpdir(), "roadmap-t2-"));
   temporaryDirectories.push(root);
   const git = Bun.spawn(["git", "init", "-q", root], { stdout: "pipe", stderr: "pipe" });
@@ -136,25 +155,26 @@ export async function diskFixture(): Promise<{ repo: Repo; model: Model }> {
     commonDir: join(root, ".git"),
     roadmapDir: join(root, "docs/roadmap"),
     adrDir: join(root, "docs/adr"),
+    adr: adrApi(),
   };
   const model = modelFixture();
+  const adrs = [adrFixture()];
   model.repo = repo;
   model.index.path = join(root, model.index.path);
-  if (model.adrIndex) model.adrIndex.path = join(root, model.adrIndex.path);
-  for (const doc of [...model.rounds, ...model.stages, ...model.todos, ...model.adrs]) doc.path = join(root, doc.path);
+  for (const doc of [...model.rounds, ...model.stages, ...model.todos, ...adrs]) doc.path = join(root, doc.path);
   const files = [
     { path: model.index.path, content: renderRoadmapIndex(model.index, model.rounds, model.stages) },
     ...model.rounds.map((doc) => ({ path: doc.path, content: renderRound(doc, model.stages) })),
     ...model.stages.map((doc) => ({ path: doc.path, content: renderStage(doc) })),
     ...model.todos.map((doc) => ({ path: doc.path, content: renderTodo(doc) })),
-    ...model.adrs.map((doc) => ({ path: doc.path, content: renderAdr(doc) })),
+    ...adrs.map((doc) => ({ path: doc.path, content: renderAdr(doc) })),
+    { path: join(root, "docs/adr/README.md"), content: renderIndex(undefined, adrs) },
   ];
-  if (model.adrIndex) files.push({ path: model.adrIndex.path, content: renderAdrIndex(model.adrIndex, model.adrs) });
   for (const file of files) {
     await mkdir(dirname(file.path), { recursive: true });
     await writeFile(file.path, file.content);
   }
-  return { repo, model };
+  return { repo, model, adrs };
 }
 
 export async function cleanupFixtures(): Promise<void> {

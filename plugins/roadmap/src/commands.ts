@@ -1,7 +1,8 @@
-import { lstat, readdir } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
+import type { AdrConnection } from "#src/adr.ts";
 import { check } from "#src/check.ts";
 import { loadAll, loadRepo, type Model, type Repo, roundFiles, roundSha256 } from "#src/documents.ts";
 import { autoCarryTodos, closeRound, type PreparationReceipt, prepareRetarget, prepareRoundDrop, prepareUpgrade } from "#src/operations.ts";
@@ -86,6 +87,7 @@ export function registerCommands(
   ses: RoadmapSession,
   uiFor: UiFactory,
   changed: (ctx: ExtensionContext) => void,
+  adr: AdrConnection,
 ): RoadmapCommands {
   let stages: Completion[] = [];
   let plannedRounds: Completion[] = [];
@@ -116,21 +118,19 @@ export function registerCommands(
       try {
         if (ctx.agent.kind !== "main") throw new Error("/init-project requires the main session.");
         if (args.trim()) throw new Error("Usage: /init-project");
-        const repo = await requireRepo(ctx, true);
+        const api = adr.require(ctx.sessionManager.getSessionId());
+        const repo = await requireRepo(ctx, api, true);
         try {
           await lstat(repo.roadmapDir);
           throw new Error("docs/roadmap/ already exists; this plugin does not adopt existing projects.");
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
-        try {
-          if ((await readdir(repo.adrDir)).length) throw new Error("docs/adr/ must be absent or empty before initialization.");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
+        if ((await api.dirState(repo.repoRoot)) === "unmanaged")
+          throw new Error("docs/adr/ is not empty and is not managed by the adr plugin; move its files out before initialization.");
         ses.arm(ctx, repo.repoRoot, "init");
         pi.sendUserMessage(
-          "Use the roadmap skill's /init-project interview checklist: project identity and description; first-round goal, constraints, non-goals and principles; decisions already made as initial ADRs; stage breakdown with objectives, scope, verifiable done criteria and dependencies. Interview me before drafting. Then call roadmap_init with the complete draft; it will show a preview for my confirmation before writing files.",
+          "Use the roadmap skill's /init-project interview checklist: project identity and description; first-round goal, constraints, non-goals and principles; decisions already made as initial ADRs, which roadmap_init creates through the adr plugin (existing ADRs in docs/adr/ are cited by their ids); stage breakdown with objectives, scope, verifiable done criteria and dependencies. Interview me before drafting. Then call roadmap_init with the complete draft; it will show a preview for my confirmation before writing files.",
         );
       } catch (error) {
         ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -173,6 +173,7 @@ export function registerCommands(
     const ui = uiFor(ctx);
     try {
       if (ctx.agent.kind !== "main") throw new Error("/roadmap commands require the main session.");
+      const api = adr.require(ctx.sessionManager.getSessionId());
       const words = splitArgs(args);
       let action = words[0];
       if (action === "confirm") {
@@ -184,12 +185,12 @@ export function registerCommands(
         }
         show(
           "wows-omp-roadmap.confirm",
-          await applyPreview(ses, ctx, preview.kind, preview.repo, actor(ctx), preview.generation, preview.prepared),
+          await applyPreview(ses, ctx, preview.kind, { ...preview.repo, adr: api }, actor(ctx), preview.generation, preview.prepared),
         );
         await refresh(ctx);
         return;
       }
-      const repo = await requireRepo(ctx);
+      const repo = await requireRepo(ctx, api);
       let model = await loadAll(repo);
       rememberStages(model);
       let selectedStage = words[1];
@@ -213,7 +214,7 @@ export function registerCommands(
       if (action === "close") {
         if (selectedStage) {
           ui.notify(
-            `To close ${selectedStage}, call roadmap_stage with action: "close", id: "${selectedStage}", delivered, passing evidence for every done criterion, and TODO/ADR dispositions. This menu does not close the stage.`,
+            `To close ${selectedStage}, call roadmap_stage with action: "close", id: "${selectedStage}", delivered, passing evidence for every done criterion, and TODO dispositions, after the main agent accepts or rejects the stage's proposed ADRs with adr_manage. This menu does not close the stage.`,
             "info",
           );
         }
@@ -243,7 +244,7 @@ export function registerCommands(
         if (errors.length) throw new Error(`Roadmap check failed: ${errors.map((diagnostic) => diagnostic.message).join("; ")}`);
         ses.arm(ctx, repo.repoRoot, "plan");
         pi.sendUserMessage(
-          `Use the roadmap skill to interview me ${selectedStage ? `to revise planned round ${selectedStage}` : "for a future planned round"}: title, goal, constraints, non-goals, principles citing ADRs and an optional target date. Then call roadmap_round_plan with ${selectedStage ? `id=${selectedStage}, ` : ""}round and optional target; show the exact preview and wait for my confirmation. If this is the first format-2 feature, the same preview warns that roadmap plugin 0.2.3 and earlier cannot read the upgraded repository.`,
+          `Use the roadmap skill to interview me ${selectedStage ? `to revise planned round ${selectedStage}` : "for a future planned round"}: title, goal, constraints, non-goals, principles citing existing ADRs (adr_status lists them; record new decisions with adr_manage first) and an optional target date. Then call roadmap_round_plan with ${selectedStage ? `id=${selectedStage}, ` : ""}round and optional target; show the exact preview and wait for my confirmation. If this is the first format-2 feature, the same preview warns that roadmap plugin 0.2.3 and earlier cannot read the upgraded repository.`,
         );
       } else if (action === "stage") {
         if (!selectedStage || words.length > 2) throw new Error("Usage: /roadmap stage <id>");
@@ -280,7 +281,7 @@ export function registerCommands(
         pi.sendUserMessage(
           first
             ? `Use the roadmap skill to review the lowest-numbered planned round ${first.id} — ${first.title}. Only this planned round can be activated; revise its charter if agreed. Review trigger-based carried TODOs from frozen rounds and agree which to import as new IDs; same-ID auto-carried TODOs cannot be imported again. Call roadmap_round_open with activate=${first.id}, import_todos and optionally round to revise the charter. Show the preview and wait for my confirmation before writing.`
-            : "Use the roadmap skill to interview me for the next round's charter: title, goal, constraints, non-goals and principles citing ADRs. Review carried TODOs in frozen rounds and agree which to import as new TODO ids. Then call roadmap_round_open with round and import_todos; show the preview and wait for my confirmation before writing.",
+            : "Use the roadmap skill to interview me for the next round's charter: title, goal, constraints, non-goals and principles citing existing ADRs (adr_status lists them; record new decisions with adr_manage first). Review carried TODOs in frozen rounds and agree which to import as new TODO ids. Then call roadmap_round_open with round and import_todos; show the preview and wait for my confirmation before writing.",
         );
       } else if (action === "close-round") {
         // Typed dispositions answer the per-TODO dialog; the status menu never supplies arguments.

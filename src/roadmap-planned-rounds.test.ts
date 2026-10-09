@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
@@ -12,8 +12,6 @@ import {
   parseDoneCriteria,
   type Repo,
   type RoundDoc,
-  renderAdr,
-  renderAdrIndex,
   renderRoadmapIndex,
   renderRound,
   renderStage,
@@ -46,6 +44,7 @@ import {
   stage,
   todo,
 } from "../plugins/roadmap/src/operations.ts";
+import { adrApi } from "./roadmap-fixtures.ts";
 
 const main: Actor = { sessionId: "main-session", kind: "main" };
 const sub: Actor = { sessionId: "sub-session", kind: "sub" };
@@ -116,14 +115,19 @@ async function v023Repo(): Promise<Repo> {
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
   }
-  return { ...info, roadmapDir: join(info.repoRoot, "docs/roadmap"), adrDir: join(info.repoRoot, "docs/adr") };
+  return { ...info, roadmapDir: join(info.repoRoot, "docs/roadmap"), adrDir: join(info.repoRoot, "docs/adr"), adr: adrApi() };
 }
 
+/** Every file under docs/roadmap and docs/adr, by repository-relative path. */
 async function bytes(repo: Repo): Promise<Record<string, string>> {
-  const model = await loadAll(repo);
-  return Object.fromEntries(
-    Object.entries(model.files ?? {}).map(([path, content]) => [relative(repo.repoRoot, path), Buffer.from(content).toString("utf8")]),
-  );
+  const files: Record<string, string> = {};
+  for (const directory of [repo.roadmapDir, repo.adrDir]) {
+    for (const name of await readdir(directory, { recursive: true }).catch(() => [])) {
+      const path = join(directory, name);
+      if ((await stat(path)).isFile()) files[relative(repo.repoRoot, path)] = await readFile(path, "utf8");
+    }
+  }
+  return files;
 }
 
 function under(files: Record<string, string>, prefix: string): Record<string, string> {
@@ -234,7 +238,7 @@ describe("roadmap 0.2.3 repositories", () => {
     const model = await loadAll(repo);
     expect(model.parseErrors).toEqual([]);
     expect(model.index.format).toBe(1);
-    for (const doc of [...model.rounds, ...model.stages, ...model.todos, ...model.adrs]) expect(doc.format).toBe(1);
+    for (const doc of [...model.rounds, ...model.stages, ...model.todos]) expect(doc.format).toBe(1);
     expect(
       model.rounds.map((round) => [round.id, round.status, round.target]).sort(([a], [b]) => String(a).localeCompare(String(b))),
     ).toEqual([
@@ -244,10 +248,13 @@ describe("roadmap 0.2.3 repositories", () => {
     for (const doc of model.stages) expect(renderStage(doc)).toBe(raw(model, doc.path));
     for (const doc of model.rounds) expect(renderRound(doc)).toBe(raw(model, doc.path));
     for (const doc of model.todos) expect(renderTodo(doc)).toBe(raw(model, doc.path));
-    for (const doc of model.adrs) expect(renderAdr(doc)).toBe(raw(model, doc.path));
     expect(renderRoadmapIndex(model.index, model.rounds, model.stages)).toBe(raw(model, model.index.path));
-    if (!model.adrIndex) throw new Error("Missing ADR index");
-    expect(renderAdrIndex(model.adrIndex, model.adrs)).toBe(raw(model, model.adrIndex.path));
+    // The legacy roadmap-format ADRs stay readable through the adr plugin without being rewritten.
+    expect(model.adrs).toMatchObject({ managed: true, parseErrors: [] });
+    expect(model.adrs?.records.map((adr) => [adr.id, adr.legacy, adr.stage])).toEqual([
+      ["ADR-0001", true, undefined],
+      ["ADR-0002", true, "S01"],
+    ]);
     const r1 = roundOf(model, "R1");
     expect(r1.frozen_sha256).toBe(roundSha256(roundFiles(model, r1)));
     for (const id of ["S01", "S05"]) expect(stageOf(model, id).closed_sha256).toBe(stageSha256(stageOf(model, id)));
@@ -262,7 +269,7 @@ describe("roadmap 0.2.3 repositories", () => {
     const after = await bytes(repo);
     const model = await loadAll(repo);
     expect(model.index.format).toBe(1);
-    for (const doc of [...model.rounds, ...model.stages, ...model.todos, ...model.adrs]) expect(doc.format).toBe(1);
+    for (const doc of [...model.rounds, ...model.stages, ...model.todos]) expect(doc.format).toBe(1);
     for (const content of Object.values(after)) expect(content).not.toContain(managedComment(2));
     expect(under(after, "docs/roadmap/01-launch/")).toEqual(under(original, "docs/roadmap/01-launch/"));
     expect(after["docs/roadmap/02-growth/stages/05-docs.md"]).toBe(original["docs/roadmap/02-growth/stages/05-docs.md"]);
@@ -324,7 +331,7 @@ describe("format upgrade", () => {
     expect(readme).toContain("| Round | Title | Status | Target | Opened | Closed |");
     const model = await loadAll(repo);
     expect(model.index.format).toBe(2);
-    for (const doc of [...model.rounds, ...model.stages, ...model.todos, ...model.adrs]) expect(doc.format).toBe(1);
+    for (const doc of [...model.rounds, ...model.stages, ...model.todos]) expect(doc.format).toBe(1);
     await expectClean(repo);
 
     refused(await applyPrepared(repo, main, stale.prepared), "stale");

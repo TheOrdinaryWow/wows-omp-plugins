@@ -4,7 +4,7 @@
 
 > 位于计划和任务之上的规划层：轮次、阶段和决策都保存在仓库里，不随会话结束而消失。
 
-把项目路线图以 Markdown 形式保存在你的仓库中，由代理通过专用工具维护。它记录构建轮次、每轮中带有可验证完成标准的阶段、延后的 TODO、MADR 格式的架构决策，以及关闭每个阶段时的证据。实现计划不放在这里。
+把项目路线图以 Markdown 形式保存在你的仓库中，由代理通过专用工具维护。它记录构建轮次、每轮中带有可验证完成标准的阶段、延后的 TODO 以及关闭每个阶段时的证据，并把阶段关联到 [adr 插件](../adr/README.zh.md)维护的架构决策。实现计划不放在这里。
 
 ## 安装
 
@@ -12,11 +12,11 @@
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-需要 OMP 18.5.1 或更高版本，并在 git 工作树中使用。安装后开启新会话。插件附带 `roadmap` 技能和一份固定版本的 MADR 4.0 模板。
+需要 OMP 18.5.1 或更高版本、git 工作树以及 `adr` 插件（`omp plugin install adr@wows-omp-plugins`）；安装并启用两者后开启新会话。缺少 adr 插件时，`/roadmap`、`/init-project` 和所有 `roadmap_*` 工具都会拒绝并给出上述安装提示，也不会注入路线图上下文，但对 `docs/roadmap/` 的编辑仍会被阻止。插件附带 `roadmap` 技能。
 
 ## 快速上手
 
-1. 在主会话中运行 `/init-project`。此时 `docs/roadmap/` 必须不存在，`docs/adr/` 必须不存在或为空。
+1. 在主会话中运行 `/init-project`。此时 `docs/roadmap/` 必须不存在；`docs/adr/` 可以不存在、为空或已由 adr 插件管理。
 2. 回答代理的访谈：项目描述；第一轮的目标、约束、非目标和原则；已经做出的决策；以及各阶段的目标、范围、完成标准和依赖。
 3. 查看预览并选择 `Write N files`。确认之前不会写入任何内容。
 4. 让代理开始一个阶段。它会拿到包含该阶段目标、范围、标准、TODO 和相关 ADR 的交接内容，并据此规划工作。
@@ -34,9 +34,9 @@ omp plugin install roadmap@wows-omp-plugins
 | 阶段（`S01`） | 一个目标、范围和可验证的完成标准。阶段从 `planned` 到 `active` 再到 `closed`，或者被 `dropped`。阶段开始前，它的依赖必须已关闭。 |
 | 完成标准（`DC1`） | 什么必须通过，以及如何验证。 |
 | TODO（`T001`） | 延后的工作，带有来源、严重度（`high`、`normal`、`low`），以及一个目标阶段或一个触发条件。 |
-| ADR（`ADR-0001`） | MADR 格式的决策记录。ADR 不随轮次结束而失效。 |
+| ADR（`ADR-0001`） | MADR 格式的决策记录，由 adr 插件维护。路线图在原则中引用 ADR，在阶段交接中展示它们，并把它们关联到阶段。ADR 不随轮次结束而失效。 |
 
-所有内容都位于 `docs/roadmap/` 和 `docs/adr/` 下。代理只能通过路线图工具修改这些文件，一个钩子会阻止普通的编辑。你仍然可以在自己的编辑器里修改正文。
+路线图文档位于 `docs/roadmap/` 下；ADR 位于 `docs/adr/` 下，归 adr 插件管理。代理只能通过路线图工具修改路线图文件，一个钩子会阻止普通的编辑（adr 插件以同样方式保护 `docs/adr/`）。你仍然可以在自己的编辑器里修改正文。
 
 轮次处于活动状态时，代理每个回合都会看到一份简短的路线图状态，包括当前会话绑定的阶段。
 
@@ -50,7 +50,7 @@ omp plugin install roadmap@wows-omp-plugins
 
 - 每条当前标准都有证据，包含 `result: "pass"`、实际使用的方法和摘要；
 - 指向该阶段的每个未关闭 TODO 都已带引用地解决，或已移到其他目标；
-- 与该阶段关联的每个提议中的 ADR 都已被接受或拒绝（由主会话决定，子代理不能决定）。
+- 与该阶段关联的 ADR 中没有仍处于提议状态的。否则关闭会被拒绝并列出它们；需先由主会话用 `adr_manage` 接受或拒绝。Outcome 会记录关联 ADR 的状态。
 
 插件只检查证据是否齐全，不检查证据是否属实；代理必须真的运行它所报告的检查。已关闭的阶段永远不会重新打开。需要修正时，新增一个 `follows` 该阶段的新阶段。
 
@@ -104,12 +104,11 @@ omp plugin install roadmap@wows-omp-plugins
 | `roadmap_status` | 轮次、阶段和未关闭的 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
 | `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
-| `roadmap_adr` | `create`、`revise`、`set_status`、`supersede`、`note`。 |
 | `roadmap_check` | 文档一致性检查；`fix: true` 重新生成自动生成的区块。 |
 | `roadmap_overlap` | 发起重叠询问。 |
 | `roadmap_init`、`roadmap_round_plan`、`roadmap_round_open` | 写入由 `/init-project`、`/roadmap plan-round` 和 `/roadmap new-round` 准备的预览。 |
 
-子代理也可以使用这些工具，但不能接受、拒绝或取代 ADR，也永远不会被询问。
+子代理也可以使用这些工具，但永远不会被询问。ADR 由 adr 插件的 `adr_status`、`adr_manage` 和 `adr_check` 管理。
 
 ## 设置
 
@@ -130,7 +129,7 @@ omp plugin install roadmap@wows-omp-plugins
 
 ## 已知限制
 
-- 初始化需要全新的 `docs/roadmap/` 和 `docs/adr/` 目录，无法接管已有的路线图或 ADR 目录。
+- 初始化需要全新的 `docs/roadmap/`；无法接管已有的路线图，也无法接管未由 adr 插件管理的非空 `docs/adr/`。
 - 计划中的轮次不能跳过或重新编号，放弃的轮次 ID 不会被重复使用。
 - 重叠检测取决于代理能否注意到重叠。
 - 编辑保护是尽力而为，尤其是对 `bash`，它不是沙箱。
@@ -146,4 +145,4 @@ omp plugin install roadmap@wows-omp-plugins
 
 ## 许可证
 
-MIT。随附的 MADR 模板在 `assets/madr/` 中保留各自的许可证。
+MIT。

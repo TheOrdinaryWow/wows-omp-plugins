@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "type": "module",
   "private": true,
-  "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",
+  "description": "Tool-managed project rounds, stages and TODOs, with stage-linked ADRs through the adr plugin",
   "license": "MIT",
   "imports": {
     "#src/*": "./src/*"

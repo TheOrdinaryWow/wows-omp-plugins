@@ -1,22 +1,19 @@
-import { relative } from "node:path";
+import { basename, relative } from "node:path";
 
-import { type AdrDoc, type Model, overdue, parseDoneCriteria, renderStage, type StageDoc, today } from "./documents.ts";
+import type { AdrRecord } from "./adr.ts";
+import { type Model, overdue, parseDoneCriteria, renderStage, type StageDoc, today } from "./documents.ts";
 import { byId, plannedRoundCounts, roundActual, schedule, stageActual } from "./state.ts";
 
 export interface StageBinding {
   stage: string;
 }
 
-function pathFor(model: Model, path: string): string {
-  return model.repo ? relative(model.repo.repoRoot, path) : path;
-}
-
-function successor(model: Model, initial: AdrDoc): AdrDoc {
+function successor(records: readonly AdrRecord[], initial: AdrRecord): AdrRecord {
   let adr = initial;
   const visited = new Set<string>();
   while (adr.superseded_by && !visited.has(adr.id)) {
     visited.add(adr.id);
-    const next = model.adrs.find((candidate) => candidate.id === adr.superseded_by);
+    const next = records.find((candidate) => candidate.id === adr.superseded_by);
     if (!next) break;
     adr = next;
   }
@@ -31,18 +28,27 @@ export function renderHandoff(model: Model, stage: StageDoc, on = today()): stri
       .join("\n")
       .match(/\bADR-\d{4,}\b/g) ?? [],
   );
-  const adrs = new Map<string, { adr: AdrDoc; cited: string[] }>();
+  const view = model.adrs;
+  const records = view?.records ?? [];
+  const adrs = new Map<string, { adr: AdrRecord; cited: string[] }>();
+  const notes: string[] = [];
+  if (citations.size && !view) notes.push("Cited ADRs are unavailable: the adr plugin is not loaded in this session.");
+  else if (citations.size && view?.error) notes.push(`Cited ADRs could not be read: ${view.error} Run adr_check.`);
   for (const cited of citations) {
-    const original = model.adrs.find((candidate) => candidate.id === cited);
-    if (!original) continue;
-    const adr = successor(model, original);
+    const original = records.find((candidate) => candidate.id === cited);
+    if (!original) {
+      const broken = view?.parseErrors.find((issue) => Number(basename(issue.path).split("-")[0]) === Number(cited.slice(4)));
+      if (broken) notes.push(`${cited} could not be read (${broken.path}: ${broken.message}). Run adr_check.`);
+      continue;
+    }
+    const adr = successor(records, original);
     const entry = adrs.get(adr.id) ?? { adr, cited: [] };
     if (cited !== adr.id) entry.cited.push(cited);
     adrs.set(adr.id, entry);
   }
   const parts = [
     `# Planning handoff: ${stage.id} — ${stage.title}`,
-    `Round: ${stage.round}${round ? ` — ${round.title}` : ""}\nStage document: ${pathFor(model, stage.path)}${scheduleLines(stage, round, on)}`,
+    `Round: ${stage.round}${round ? ` — ${round.title}` : ""}\nStage document: ${model.repo ? relative(model.repo.repoRoot, stage.path) : stage.path}${scheduleLines(stage, round, on)}`,
     `## Objective\n\n${stage.objective}`,
     `## Scope\n\n### In\n\n${stage.scope_in || "None."}\n\n### Out\n\n${stage.scope_out || "None."}`,
     `## Done criteria\n\n${parseDoneCriteria(stage.done_criteria)
@@ -61,19 +67,20 @@ export function renderHandoff(model: Model, stage: StageDoc, on = today()): stri
         : "None."
     }`,
     `## Cited ADRs\n\n${
-      adrs.size
-        ? [...adrs.values()]
-            .map(
+      adrs.size || notes.length
+        ? [
+            ...[...adrs.values()].map(
               ({ adr, cited }) =>
-                `### ${adr.id} — ${adr.title} (${adr.status})\n\nDocument: ${pathFor(model, adr.path)}${
+                `### ${adr.id} — ${adr.title} (${adr.status})\n\nDocument: ${adr.path}${
                   cited.length ? `\nResolved from superseded ${cited.join(", ")}.` : ""
-                }\n\n${adr.body.replace(/^# [^\n]+\n\n/, "")}`,
-            )
-            .join("\n\n")
+                }\n\n${adr.body.trimEnd()}`,
+            ),
+            ...notes,
+          ].join("\n\n")
         : "None."
     }`,
     `## Free-work log\n\nVerify in code what already exists before planning duplicate work.\n\n${stage.free_work_log || "No free work recorded."}`,
-    "## Closing guidance\n\nThe plan must cover every surviving done criterion. Close with roadmap_stage action=close and passing evidence for each criterion, delivered work and deviations. Resolve or move every open TODO targeting this stage, and have the main agent accept or reject every proposed ADR for it. roadmap_check verifies document consistency only; verify code and record real evidence before closing.",
+    "## Closing guidance\n\nThe plan must cover every surviving done criterion. Close with roadmap_stage action=close and passing evidence for each criterion, delivered work and deviations. Resolve or move every open TODO targeting this stage. Close refuses while an ADR linked to this stage is proposed: the main agent accepts or rejects it with adr_manage first. roadmap_check verifies document consistency only; verify code and record real evidence before closing.",
   );
   return `${parts.join("\n\n")}\n`;
 }
@@ -145,9 +152,9 @@ export function renderInjection(model: Model, binding?: StageBinding, on = today
     );
   }
   lines.push(
-    "Managed files change only through roadmap_* tools; do not write docs/roadmap/ or docs/adr/ directly.",
+    "Managed files change only through roadmap_* tools; do not write docs/roadmap/ directly. ADRs change through adr_manage.",
     "If the user's request overlaps an unclosed stage and this session is not working on it, call roadmap_overlap before starting.",
-    "Close stages with passing evidence for every done criterion and TODO/ADR dispositions. Check cannot detect code/document drift.",
+    "Close stages with passing evidence for every done criterion and TODO dispositions, after the main agent accepts or rejects the stage's proposed ADRs with adr_manage. Check cannot detect code/document drift.",
     "[/Roadmap status]",
   );
   return lines.join("\n");

@@ -5,7 +5,9 @@ description: Use for roadmap, planned rounds, target dates, stage, ADR, TODO, or
 
 # Roadmap
 
-Use this skill for judgment. The plugin owns document formats, numbering, indexes, and lifecycle gates. Never write managed files under `docs/roadmap/` or `docs/adr/` directly, run scripts that write them, or bypass a blocked write. User edits in an editor are separate from agent writes.
+Use this skill for judgment. The plugin owns document formats, numbering, indexes, and lifecycle gates. Never write managed files under `docs/roadmap/` directly, run scripts that write them, or bypass a blocked write. User edits in an editor are separate from agent writes.
+
+Roadmap requires the `adr` plugin: ADRs under `docs/adr/` are read and written only through it (`adr_status`, `adr_manage`, `adr_check`), and its `adr` skill holds the ADR judgment and review guidance. Without it, every `roadmap_*` tool, `/roadmap` and `/init-project` refuse with an install hint; ask the user to run `omp plugin install adr@wows-omp-plugins`, enable it and restart.
 
 Read `roadmap_status` first. With `stage`, it returns the stage detail and planning handoff. The overview includes planned rounds, optional targets, actual dates and overdue unfinished work, even when no round is active. Consult relevant accepted ADRs and their successors before planning changes. Treat documents as intent, not proof of what the code does.
 
@@ -16,7 +18,7 @@ Use the tool-owned body subset: plain paragraphs, flat bullet or ordered lists w
 - A scope or done-criterion change within an active stage belongs in `roadmap_stage` with `action: "amend"`. Record the delta and reason rather than rewriting its original commitment.
 - New planned work belongs in `roadmap_stage` with `action: "add"`. Its optional `round` selects an active or planned round; omitting it selects the active round. Use `action: "edit"` only while the stage is planned. Dependencies can reference only the same or earlier rounds.
 - Deferred or carried-over work belongs in `roadmap_todo`. Use `add`, `update`, `resolve`, or `move`; give each open item a source, severity, and either an unclosed stage in the active or a planned round, or a concrete trigger. Don't use a vague "later" target. New items go into the active round's TODO document. With no active round, a new item must target a planned round's stage and goes into that round's document. Planned-round documents can hold only TODOs for their own stages or TODOs with triggers.
-- A hard-to-reverse, cross-stage decision with real alternatives belongs in an ADR. A scope deviation isn't an ADR. Routine implementation choices and bug fixes aren't ADRs either.
+- A hard-to-reverse, cross-stage decision with real alternatives belongs in an ADR, recorded with `adr_manage` (pass `stage` to link it to the stage it came from). A scope deviation isn't an ADR. Routine implementation choices and bug fixes aren't ADRs either.
 - A failing test or broken build needs a fix now, not a TODO that hides unfinished work.
 
 Use `roadmap_stage` with `action: "start"` to start a planned stage or join an active one in the active round. Stages in planned rounds cannot start or bind. Read the returned handoff before planning implementation. Joining doesn't grant exclusive ownership; another session may be working on the same stage. Dependencies must be closed before starting. Don't bypass a refusal.
@@ -26,8 +28,8 @@ Use `roadmap_stage` with `action: "start"` to start a planned stage or join an a
 The user starts initialization with `/init-project`. Gather facts from the repository before asking questions, and skip questions already answered. Ask focused questions rather than handing the user a questionnaire.
 
 1. Establish project identity: name, purpose, current state, and who the work serves.
-2. Define the round goal, constraints, non-goals, and principles. Principles cite ADR ids; they never restate the decisions.
-3. Identify decisions already made. Capture their context, genuine alternatives, rationale, and consequences as initial ADRs. Don't invent options or approval history.
+2. Define the round goal, constraints, non-goals, and principles. Principles cite ADR ids, either initial ADRs or existing ones in a managed `docs/adr/`; they never restate the decisions.
+3. Identify decisions already made. Capture their context, genuine alternatives, rationale, and consequences as initial ADRs; `roadmap_init` creates them through the adr plugin in the same confirmed preview, numbered after any existing ADRs. An initial ADR's `id` is an alias that principles and stage text may cite and must not equal an existing ADR id; its `stage` names an initial stage alias. Don't invent options or approval history.
 4. Break the round into stages. For each, record an objective, scope in and out, done criteria with a specific verification method, and dependencies. Separate prerequisites from work that merely follows another stage.
 5. Confirm the interview summary with the user. Submit the agreed project, charter, ADRs, and stages through `roadmap_init`; let the plugin show the rendered file preview and obtain confirmation before writing. Cancellation or no answer isn't approval. Without a UI, the tool returns the preview and a `/roadmap confirm <token>` command instead of writing: show both to the user, and never run or claim the confirmation yourself. The same applies to `roadmap_round_plan`, `roadmap_round_open`, and the upgrade, drop-round and retarget command previews. When `roadmap_overlap` has no answer without a UI, ask the user and name `/roadmap overlap <stage> roadmap|free|unrelated [intent]`.
 
@@ -49,24 +51,17 @@ The upgrade changes the root marker and directory explanation, not every managed
 
 Use optional `target` on stage `add`, planned-stage `edit` or active-stage `amend`; an amendment still needs its reason. The user can also confirm `/roadmap retarget <round-or-stage> <YYYY-MM-DD|none>` for unclosed work in a format-2 repository. `none` clears the date. Without a UI, upgrade, drop and retarget require the user's `/roadmap confirm <token>` response like other held previews.
 
-## ADR judgment and review
+## ADRs
 
-When `skill://adr-skill` exists, read it and follow its triggers, repository scan, intent interview, confirmation gate, and review checklist. Adapt those instructions as follows:
-
-- Never run its scripts, copy its templates into managed files, choose filenames yourself, or write files directly. Use only `roadmap_adr` for ADR mutations; the plugin supplies numbering and the vendored MADR template.
-- Use MADR sections for context, decision drivers, considered options, decision outcome, consequences, pros and cons, Confirmation, and More Information. Use **Confirmation instead of Verification**. Leave implementation steps to the implementation plan, not an ADR Implementation Plan section.
-- Apply checklist items about implementation paths, patterns, migrations, and tasks to the separate plan. Apply its testability checks to Confirmation and the stage's done criteria. Review context, measurable constraints, genuine alternatives, tradeoffs, consequences, stakeholders, and status in the ADR itself.
-- Before accepting a decision, present the intent summary and any review gaps to the user. Don't infer acceptance from silence. Without a UI, create the ADR as `proposed`; subagents also create only proposed ADRs.
-
-Use `roadmap_adr` with `action: "create"` for a new record and `action: "revise"` for whole-body changes to a proposed record. Accepted ADRs aren't rewritten. A main agent uses `set_status` for acceptance, rejection, or deprecation; `supersede` for a replacement decision with linked predecessor and successor; and `note` for a dated addition under More Information. Subagents cannot accept, reject, deprecate, or supersede ADRs. ADR management remains available after a round closes.
+ADR judgment, review and every ADR mutation belong to the adr plugin: read its `adr` skill and use `adr_manage`. Roadmap reads ADRs through that plugin for principle citations, the handoff's Cited ADRs and close gates, and moves stage links when a planned stage is renumbered. ADRs remain available between rounds.
 
 ## Close a stage or round
 
 1. Read the current stage with `roadmap_status`. Compare its amended scope and criteria with the actual code and delivered behavior.
 2. Gather evidence for every done criterion: criterion id, `pass` or `fail`, method, observed summary, and a commit reference when useful. A general "tests passed" statement doesn't prove unrelated criteria. Failed or missing evidence means the stage isn't ready to close.
 3. Disposition every open TODO targeting the stage: resolve it with a reference, or move it to another valid target or trigger. Record carry-over honestly rather than marking it resolved.
-4. Have the main agent settle every proposed ADR tied to the stage as accepted or rejected. A subagent close requiring these dispositions must return to the main agent.
-5. Call `roadmap_stage` with `action: "close"`, delivered work, deviations, per-criterion evidence, TODO dispositions, and ADR dispositions. The hard gate decides whether closure succeeds; don't replace it with direct edits or claim success after a refusal.
+4. Have the main agent settle every proposed ADR linked to the stage with `adr_manage` (`set_status` accepted or rejected). Close refuses and lists them while any is proposed; a subagent cannot settle them and must return to the main agent.
+5. Call `roadmap_stage` with `action: "close"`, delivered work, deviations, per-criterion evidence and TODO dispositions. The Outcome records the linked ADRs' statuses. The hard gate decides whether closure succeeds; don't replace it with direct edits or claim success after a refusal.
 
 If a completion reminder supplies plan gate verdicts, treat them as evidence candidates. Map each relevant result to a criterion and verify gaps; plan completion doesn't automatically close the stage.
 

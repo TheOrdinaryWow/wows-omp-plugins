@@ -15,9 +15,9 @@
 | [`omo-toolkit`](plugins/omo-toolkit/README.zh.md) | OmO 的分类与调研代理、工作流技能和文档类 MCP 服务器 |
 | [`omo-ultrawork`](plugins/omo-ultrawork/README.zh.md) | OmO 的 Ultrawork 模式、`mass-ulw`、`/hyperplan` 和 `/ulw-research` |
 | [`omp-herdr-dag`](plugins/omp-herdr-dag/README.zh.md) | 在 Herdr 侧边窗格中实时展示待办、计划、Atlas 和子代理的关系图 |
-| [`roadmap`](plugins/roadmap/README.zh.md) | 通过代理工具管理项目的轮次、阶段、TODO 和 MADR 决策 |
+| [`roadmap`](plugins/roadmap/README.zh.md) | 通过代理工具管理项目的轮次、阶段和 TODO，并通过 adr 插件关联阶段的 ADR |
 
-每个插件都可以单独安装。
+每个插件都可以单独安装，只是 roadmap 需要同时安装 adr 插件。
 
 ## 安装
 

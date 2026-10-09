@@ -5,7 +5,8 @@ import { join } from "node:path";
 import type { Repo } from "./documents.ts";
 import { withFileLock } from "./host.ts";
 
-export type IdKind = "round" | "stage" | "todo" | "adr";
+export type IdKind = "round" | "stage" | "todo";
+/** `adr` stays in the file untouched: older roadmap releases and the adr plugin's legacy seeding still read it. */
 interface Counters {
   v: 1;
   round: number;
@@ -22,7 +23,7 @@ export async function withRepoLock<T>(repo: Repo, fn: () => Promise<T>): Promise
 
 /** The caller holds withRepoLock for the entire allocation and document mutation. Never nests a lock. */
 export async function allocate(repo: Repo, kind: IdKind, onDisk: number): Promise<number> {
-  if (!["round", "stage", "todo", "adr"].includes(kind)) throw new Error("Unknown roadmap id kind.");
+  if (!["round", "stage", "todo"].includes(kind)) throw new Error("Unknown roadmap id kind.");
   if (!Number.isSafeInteger(onDisk) || onDisk < 0) throw new Error("Highest on-disk id must be a non-negative safe integer.");
   const directory = join(repo.commonDir, "roadmap");
   const file = join(directory, "counters.json");

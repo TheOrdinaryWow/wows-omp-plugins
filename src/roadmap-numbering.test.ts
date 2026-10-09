@@ -37,20 +37,24 @@ test("two separate Bun processes allocate unique ids under one repository lock",
   });
 }, 20_000);
 
-test("each counter is independent, honours disk maxima and never reuses reserved numbers", async () => {
+test("each counter is independent, honours disk maxima, never reuses reserved numbers and keeps the adr value untouched", async () => {
   const { repo } = await diskFixture();
-  for (const kind of ["round", "stage", "todo", "adr"] as const) {
+  // Roadmap stopped allocating ADR ids; the key stays for older releases and the adr plugin's legacy seeding.
+  await mkdir(join(repo.commonDir, "roadmap"), { recursive: true });
+  await writeFile(join(repo.commonDir, "roadmap/counters.json"), `${JSON.stringify({ v: 1, round: 0, stage: 0, todo: 0, adr: 7 })}\n`);
+  for (const kind of ["round", "stage", "todo"] as const) {
     expect(await withRepoLock(repo, () => allocate(repo, kind, 12))).toBe(13);
     expect(await withRepoLock(repo, () => allocate(repo, kind, 4))).toBe(14);
     expect(await withRepoLock(repo, () => allocate(repo, kind, 21))).toBe(22);
     expect(await withRepoLock(repo, () => allocate(repo, kind, 0))).toBe(23);
   }
+  await expect(withRepoLock(repo, () => allocate(repo, "adr" as IdKind, 0))).rejects.toThrow("Unknown");
   expect(JSON.parse(await readFile(join(repo.commonDir, "roadmap/counters.json"), "utf8"))).toEqual({
     v: 1,
     round: 23,
     stage: 23,
     todo: 23,
-    adr: 23,
+    adr: 7,
   });
 });
 
@@ -65,11 +69,11 @@ test("allocate does not nest the caller's lock and the lock releases on an excep
   const { repo } = await diskFixture();
   await expect(
     withRepoLock(repo, async () => {
-      expect(await allocate(repo, "adr", 0)).toBe(1);
+      expect(await allocate(repo, "todo", 0)).toBe(1);
       throw new Error("operation failed after allocation");
     }),
   ).rejects.toThrow("operation failed");
-  expect(await withRepoLock(repo, () => allocate(repo, "adr", 0))).toBe(2);
+  expect(await withRepoLock(repo, () => allocate(repo, "todo", 0))).toBe(2);
 });
 
 test("invalid or unsupported counters pause instead of resetting and preserve bytes", async () => {

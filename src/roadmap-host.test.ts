@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const CHILD_ENV = "ROADMAP_HOST_CHECK";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
+const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
 
 async function hostCheck(root: string): Promise<void> {
   // Host paths are initialized at import time, after the child has its isolated HOME.
@@ -21,7 +22,7 @@ async function hostCheck(root: string): Promise<void> {
     sessionManager: SessionManager.create(root, join(root, "sessions")),
     settings: Settings.isolated({ "tools.approvalMode": "yolo", "autolearn.enabled": false }),
     toolNames: [],
-    additionalExtensionPaths: [ENTRY],
+    additionalExtensionPaths: [ENTRY, ADR_ENTRY],
     disableExtensionDiscovery: true,
     enableMCP: false,
     enableLsp: false,

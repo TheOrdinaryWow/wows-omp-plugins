@@ -15,9 +15,9 @@ A personal marketplace of [omp](https://omp.sh) plugins. Several of them port wo
 | [`omo-toolkit`](plugins/omo-toolkit/README.md) | OmO's category and research agents, workflow skills and documentation MCP servers |
 | [`omo-ultrawork`](plugins/omo-ultrawork/README.md) | OmO's ultrawork mode, `mass-ulw`, `/hyperplan` and `/ulw-research` |
 | [`omp-herdr-dag`](plugins/omp-herdr-dag/README.md) | Live todo, plan, Atlas and subagent graph in a Herdr side pane |
-| [`roadmap`](plugins/roadmap/README.md) | Project rounds, stages, TODOs and MADR decisions, managed through agent tools |
+| [`roadmap`](plugins/roadmap/README.md) | Project rounds, stages and TODOs managed through agent tools, with stage-linked ADRs through the adr plugin |
 
-Each plugin installs on its own.
+Each plugin installs on its own, except that roadmap requires the adr plugin.
 
 ## Install
 

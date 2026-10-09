@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
+import { ADR_INSTALL_HINT, type AdrApi, type AdrConnection } from "#src/adr.ts";
 import { check, type Diagnostics } from "#src/check.ts";
 import { loadAll, loadRepo, type Model, overdue, type Repo, renderRound, renderStage, type StageDoc, today } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
@@ -10,7 +11,6 @@ import { renderHandoff, renderInjection } from "#src/handoff.ts";
 import { withRepoLock } from "#src/numbering.ts";
 import {
   type Actor,
-  adr,
   applyPrepared,
   type PreparedOperation,
   prepareInit,
@@ -48,13 +48,14 @@ export function toolResult(receipt: ToolReceipt) {
   return { content: [{ type: "text" as const, text }], details: receipt, isError: !receipt.ok };
 }
 
-export async function requireRepo(ctx: ExtensionContext, initialize = false): Promise<Repo> {
+/** The repository with this session's ADR service attached, so reads include docs/adr through the adr plugin. */
+export async function requireRepo(ctx: ExtensionContext, adr: AdrApi, initialize = false): Promise<Repo> {
   const git = discoverRepo(ctx.cwd);
   if (!git) throw new Error("Roadmap requires a git work tree.");
-  if (initialize) return { ...git, roadmapDir: join(git.repoRoot, "docs/roadmap"), adrDir: join(git.repoRoot, "docs/adr") };
+  if (initialize) return { ...git, roadmapDir: join(git.repoRoot, "docs/roadmap"), adrDir: join(git.repoRoot, "docs/adr"), adr };
   const repo = await loadRepo(git.repoRoot);
   if (!repo) throw new Error("Roadmap is not initialized in this repository. Use /init-project first.");
-  return repo;
+  return { ...repo, adr };
 }
 
 export async function statusReceipt(repo: Repo, id?: string): Promise<Receipt> {
@@ -281,7 +282,13 @@ export async function applyPreview(
   });
 }
 
-export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFactory, changed: (ctx: ExtensionContext) => void): void {
+export function registerTools(
+  pi: ExtensionAPI,
+  ses: RoadmapSession,
+  uiFor: UiFactory,
+  changed: (ctx: ExtensionContext) => void,
+  adr: AdrConnection,
+): void {
   const z = pi.zod;
   const overlapFlights = new Map<string, Promise<ToolReceipt>>();
   const criterion = z.object({ id: z.string().optional(), statement: z.string(), verify: z.string() });
@@ -367,7 +374,6 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
         }),
       )
       .optional(),
-    adrs: z.array(z.object({ id: z.string(), status: z.enum(["accepted", "rejected"]) })).optional(),
     new_id: z.string().optional(),
   });
   const todoParameters = z.object({
@@ -380,13 +386,6 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     trigger: z.string().optional(),
     body: z.string().optional(),
     reference: z.string().optional(),
-  });
-  const adrParameters = z.object({
-    ...adrFields,
-    action: z.enum(["create", "revise", "set_status", "supersede", "note"]),
-    title: z.string().optional(),
-    sections: sections.optional(),
-    text: z.string().optional(),
   });
   const checkParameters = z.object({ fix: z.boolean().optional() });
   const overlapParameters = z.object({ stage: z.string(), intent: z.string() });
@@ -402,7 +401,9 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
   async function run(ctx: ExtensionContext, operation: (repo: Repo, owner: Actor) => Promise<ToolReceipt>, initialize = false) {
     try {
       ses.ensure(ctx);
-      return toolResult(await operation(await requireRepo(ctx, initialize), actor(ctx)));
+      const connected = adr.connect(ctx.sessionManager.getSessionId());
+      if (!("api" in connected)) return toolResult({ ok: false, reason: connected.reason, hints: [ADR_INSTALL_HINT] });
+      return toolResult(await operation(await requireRepo(ctx, connected.api, initialize), actor(ctx)));
     } catch (error) {
       return toolResult({
         ok: false,
@@ -430,7 +431,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap stage",
     description:
-      "Manage stage lifecycle. Start or join returns the planning handoff and binds this session. Close requires passing evidence for every done criterion and TODO/ADR dispositions.",
+      "Manage stage lifecycle. Start or join returns the planning handoff and binds this session. Close requires passing evidence for every done criterion and TODO dispositions, and refuses while ADRs linked to the stage are proposed.",
     parameters: stageParameters,
     approval: "write",
     async execute(_id, params: typeof stageParameters.infer, signal, _onUpdate, ctx) {
@@ -457,18 +458,6 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     approval: "write",
     async execute(_id, params: typeof todoParameters.infer, signal, _onUpdate, ctx) {
       return run(ctx, (repo, owner) => todo(repo, owner, params, { signal }));
-    },
-  });
-  pi.registerTool({
-    name: "roadmap_adr",
-    sourcePath: TOOL_SOURCE_PATH,
-    label: "Roadmap ADR",
-    description:
-      "Create MADR decisions, revise proposed ADRs, change status, supersede or append a dated note. Subagents can only create proposed ADRs and cannot decide statuses or supersede.",
-    parameters: adrParameters,
-    approval: "write",
-    async execute(_id, params: typeof adrParameters.infer, signal, _onUpdate, ctx) {
-      return run(ctx, (repo, owner) => adr(repo, owner, params, { signal }));
     },
   });
   pi.registerTool({
@@ -520,7 +509,7 @@ export function registerTools(pi: ExtensionAPI, ses: RoadmapSession, uiFor: UiFa
     sourcePath: TOOL_SOURCE_PATH,
     label: "Initialize Roadmap",
     description:
-      "Write the interviewed project, first-round charter, initial ADRs and stages after an exact user-confirmed preview. Only available to the main session armed by /init-project.",
+      "Write the interviewed project, first-round charter, initial ADRs (through the adr plugin) and stages after an exact user-confirmed preview. Only available to the main session armed by /init-project.",
     parameters: initParameters,
     approval: "write",
     async execute(_id, params: typeof initParameters.infer, signal, _onUpdate, ctx) {

@@ -4,7 +4,7 @@ English | [简体中文](REFERENCE.zh.md)
 
 ## Context injection
 
-While a round is active, the plugin reads the checked-out documents on each turn and injects bounded status into main and subagent context, including compact planned-round summaries with IDs, titles, targets and stage counts. The stage list is capped at 12, with a pointer to `roadmap_status` for the rest. With no active round, nothing is injected and free work continues normally; `roadmap_status` still lists planned rounds. ADR tools and edit protection stay available in an initialized repository.
+While a round is active, the plugin reads the checked-out documents on each turn and injects bounded status into main and subagent context, including compact planned-round summaries with IDs, titles, targets and stage counts. The stage list is capped at 12, with a pointer to `roadmap_status` for the rest. With no active round, nothing is injected and free work continues normally; `roadmap_status` still lists planned rounds. Nothing is injected when the adr plugin is not loaded. Edit protection stays active in an initialized repository either way.
 
 The overlap answer is stored per stage and session and reused. A stage already bound to the session returns in-system with its handoff, without a dialog or free-work entry, even headless. Subagents are never prompted.
 
@@ -17,10 +17,9 @@ Mutating tools use write approval; `roadmap_status` uses read approval.
 | `roadmap_status` | No parameters for rounds, targets, actual dates, overdue flags, stages and open TODOs by target or trigger; optional `stage` for full detail and handoff. |
 | `roadmap_stage` | `add`, `edit`, `amend`, `start`, `close`, `drop`, `renumber`. `add` accepts optional `round` and `target`; `edit` and `amend` also accept `target`. |
 | `roadmap_todo` | `add`, `update`, `resolve`, `move`. |
-| `roadmap_adr` | `create`, `revise`, `set_status`, `supersede`, `note`. |
 | `roadmap_check` | Optional `fix: true`. Checks documents, not code/document drift. |
 | `roadmap_overlap` | `stage` and `intent`. |
-| `roadmap_init` | `project`, `round`, initial `adrs` and `stages`; needs `/init-project` authorization and a confirmed preview. |
+| `roadmap_init` | `project`, `round`, initial `adrs` and `stages`; needs `/init-project` authorization and a confirmed preview. Initial ADRs are created through the adr plugin (see [ADRs through the adr plugin](#adrs-through-the-adr-plugin)). |
 | `roadmap_round_plan` | `round` charter, optional `id` to revise a planned round, optional `target`; needs `/roadmap plan-round [id]` authorization and a confirmed preview. |
 | `roadmap_round_open` | `import_todos` IDs and an optional `round` charter or `activate` round ID; needs `/roadmap new-round` authorization and a confirmed preview. When planned rounds exist, the lowest-numbered one is activated. |
 
@@ -34,15 +33,15 @@ Authorization comes from an explicit user command arming the main session. A suc
 | `edit` | Replace supplied fields, including `target`, of a planned stage. Use `amend` once active. |
 | `amend` | Append a dated delta with a required `reason` to an active stage. `amendments` can add, modify or remove criteria and add or remove in/out scope items; `target` records a date change. |
 | `start` | Requires the stage to belong to the active round, closed dependencies and no check errors; activates and binds it and returns a planning handoff. On an already active stage it joins without changing the document. |
-| `close` | Takes `id`, a `delivered` summary, optional `deviations`, and `evidence`, `todos` and `adrs` as described below. Records the Outcome and closure hash and freezes the stage. |
+| `close` | Takes `id`, a `delivered` summary, optional `deviations`, and `evidence` and `todos` as described below. Refused while an ADR linked to the stage is proposed. Records the Outcome, including the linked ADRs' statuses under `### ADRs`, and the closure hash, and freezes the stage. |
 | `drop` | Drop a planned or active stage with a required `reason`, after resolving or moving every open TODO targeting it. |
-| `renumber` | Renumber a planned stage with `new_id` and rewrite mutable references. Refused when closed history holds a reference that would need changing. |
+| `renumber` | Renumber a planned stage with `new_id` and rewrite mutable references, including ADR stage links through the adr plugin. Refused when closed history holds a reference that would need changing. |
 
 Stage close inputs:
 
 - `evidence`: one entry per current criterion with `criterion`, `result: "pass"`, the actual `method` and a `summary`; `commit` is optional. Missing or failed evidence refuses the close.
 - `todos`: each open TODO targeting the stage is `resolved` with a `reference` or `moved` to another valid target (a move leaves it open). A trigger can be given as the target `trigger: <text>`.
-- `adrs`: each proposed ADR associated with the stage is `accepted` or `rejected`. Subagents cannot decide these, so the main session must dispose of them before a subagent can close the stage.
+- ADRs: close reads the ADRs linked to the stage through the adr plugin. While any of them is `proposed`, close refuses and lists them; the main session accepts or rejects them with `adr_manage` first, since subagents cannot. Close also refuses while ADR files cannot be parsed, because a proposed link could hide in them.
 
 The handoff contains the objective, scope, done criteria, targeted TODOs, cited ADRs, the free-work log and closing guidance.
 
@@ -52,13 +51,16 @@ The handoff contains the objective, scope, done criteria, targeted TODOs, cited 
 
 `update` changes supplied fields of an open item in an active or planned round. `resolve` requires a `reference`. `move` replaces the target or trigger and refuses a closed or dropped target stage. Moving an item out of a planned round's document to another round leaves the old item as `moved`, pointing at a fresh TODO ID in the destination, which keeps the requested target and records the old ID and round in `carried_from`. A move to another planned round goes directly to that round's document even when an active round exists.
 
-### ADR actions
+### ADRs through the adr plugin
 
-`create` requires `title` and `sections` with `context`, nonempty `options` and `outcome`. Optional sections are `drivers`, `consequences`, `confirmation`, `pros_cons` and `more_info`; participant lists and a stage association are also supported. The vendored MADR 4.0 template has a Confirmation section and no implementation checklist.
+ADRs belong to the [adr plugin](../adr/README.md) (`adr_status`, `adr_manage`, `adr_check`, `/adr`); roadmap never parses or writes `docs/adr/`. It requests the adr service (`adr:binding-request` v1, see the adr plugin's REFERENCE "Service contract") for its own session at session start and again lazily, and registers a stage resolver that accepts any stage of the repository's roadmap, so `adr_manage` can link an ADR to a stage. The resolver is unregistered at shutdown and on rebuild.
 
-`revise` replaces the whole body of a proposed ADR, keeping its metadata, and can change the title. Accepted ADRs are not rewritten through `revise`. The main session can `set_status` to `accepted`, `rejected` or `deprecated`, or `supersede` an accepted or deprecated ADR with a newly accepted successor and reciprocal links. `note` appends dated `text` under More Information. Subagents create proposed ADRs whatever final status they request, and cannot set status or supersede.
+- Round principles (`/init-project`, `/roadmap plan-round`, `/roadmap new-round`) must cite ADRs the adr plugin reports. An unreadable ADR file or an uninitialized `docs/adr/` refuses with guidance.
+- `/init-project` previews initial ADRs with a dry run of the adr plugin's `createMany` (initializing `docs/adr/` when absent or empty, or adding to an already managed one), shows the ADR files in the same preview and creates them after confirmation, before writing any roadmap file. Initial ADR `id`s are aliases that principles and stage text may cite; they must not equal an existing ADR id. An initial ADR's `stage` names an initial stage alias.
+- `renumber` relinks ADR stage links after writing the roadmap files. The two writes are not one transaction: if the relink fails, the refusal lists the committed roadmap files and the ADRs still linked to the old id; restore `docs/roadmap/` and `docs/adr/` with git and renumber again.
+- The ADR id counter key in `<git common dir>/roadmap/counters.json` is kept as is; roadmap no longer allocates ADR ids.
 
-If an existing ADR ends inside an unterminated fence, `note` refuses without changing it. Repair the stored file in your editor, or correct the note to the allowed subset, and retry; the tool never rewrites an accepted body to repair it.
+The directory explanation written into `docs/roadmap/README.md` (formats 1 and 2) still says that ADRs change through roadmap tools; it is stored text that is kept byte-for-byte. ADRs are managed by the adr plugin.
 
 ## Markdown in tool-written text
 
@@ -90,7 +92,7 @@ The close dialog authorizes closing only the round and file snapshot reviewed be
 
 ## Edit protection
 
-After initialization, a tool-call hook protects `docs/roadmap/**` and `docs/adr/**` in main and subagent sessions. It finds the target's git work tree, checks lexical and resolved paths (including dangling symlink destinations) and blocks edits with guidance to use the roadmap tools. For existing file targets, it compares device and inode against multiply linked managed files in the session and target worktrees, so native `write` and `edit` cannot change a managed file through a hardlink alias, inside or outside the repository. Native paths follow the host's normalization for `@`-prefixed absolute paths, stray `:` prefixes, `~` paths and `file://` URLs.
+After initialization, a tool-call hook protects `docs/roadmap/**` in main and subagent sessions, whether or not the adr plugin is loaded; `docs/adr/**` is protected by the adr plugin. The hook finds the target's git work tree, checks lexical and resolved paths (including dangling symlink destinations) and blocks edits with guidance to use the roadmap tools. For existing file targets, it compares device and inode against multiply linked managed files in the session and target worktrees, so native `write` and `edit` cannot change a managed file through a hardlink alias, inside or outside the repository.
 
 Repositories without the initialization marker are unaffected. A validation, path-resolution or file-identity error in the hook refuses the call.
 

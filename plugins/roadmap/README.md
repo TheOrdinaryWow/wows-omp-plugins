@@ -4,7 +4,7 @@ English | [简体中文](README.zh.md)
 
 > The planning layer above your plans and tasks: rounds, stages and decisions that stay in your repository across sessions.
 
-Keeps a project roadmap in your repository as Markdown, maintained by the agent through dedicated tools. It records build rounds, the stages in each round with verifiable done criteria, deferred TODOs and architecture decisions in MADR format, plus the evidence that closed each stage. Implementation plans stay out of it.
+Keeps a project roadmap in your repository as Markdown, maintained by the agent through dedicated tools. It records build rounds, the stages in each round with verifiable done criteria, deferred TODOs and the evidence that closed each stage, and links stages to the architecture decisions the [adr plugin](../adr/README.md) keeps. Implementation plans stay out of it.
 
 ## Install
 
@@ -12,11 +12,11 @@ Keeps a project roadmap in your repository as Markdown, maintained by the agent 
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-Requires OMP 18.5.1 or newer and a git work tree. Start a new session after installing. The plugin ships the `roadmap` skill and a pinned MADR 4.0 template.
+Requires OMP 18.5.1 or newer, a git work tree and the `adr` plugin (`omp plugin install adr@wows-omp-plugins`); enable both and start a new session after installing. Without the adr plugin, `/roadmap`, `/init-project` and every `roadmap_*` tool refuse with that install hint and no roadmap context is injected, while edits to `docs/roadmap/` stay blocked. The plugin ships the `roadmap` skill.
 
 ## Quick start
 
-1. Run `/init-project` in the main session. `docs/roadmap/` must not exist yet, and `docs/adr/` must be absent or empty.
+1. Run `/init-project` in the main session. `docs/roadmap/` must not exist yet; `docs/adr/` may be absent, empty or already managed by the adr plugin.
 2. Answer the agent's interview: project description; the first round's goal, constraints, non-goals and principles; decisions already made; and the stages with objectives, scope, done criteria and dependencies.
 3. Review the preview and pick `Write N files`. Nothing is written before you confirm.
 4. Ask the agent to start a stage. It gets a handoff with the stage's objective, scope, criteria, TODOs and relevant ADRs, and plans the work from there.
@@ -34,9 +34,9 @@ Requires OMP 18.5.1 or newer and a git work tree. Start a new session after inst
 | Stage (`S01`) | An objective, scope and verifiable done criteria. Stages go from `planned` to `active` to `closed`, or are `dropped`. Dependencies must be closed before a stage starts. |
 | Done criterion (`DC1`) | What must pass and how to verify it. |
 | TODO (`T001`) | Deferred work with a source, a severity (`high`, `normal`, `low`) and either a target stage or a trigger. |
-| ADR (`ADR-0001`) | A decision in MADR format. ADRs outlive rounds. |
+| ADR (`ADR-0001`) | A decision in MADR format, kept by the adr plugin. Roadmap cites ADRs in principles, shows them in stage handoffs and links them to stages. ADRs outlive rounds. |
 
-Everything lives under `docs/roadmap/` and `docs/adr/`. The agent changes these files only through the roadmap tools, and a hook blocks ordinary edits to them. You can still edit body text in your own editor.
+Roadmap documents live under `docs/roadmap/`; ADRs live under `docs/adr/` and belong to the adr plugin. The agent changes roadmap files only through the roadmap tools, and a hook blocks ordinary edits to them (the adr plugin protects `docs/adr/` the same way). You can still edit body text in your own editor.
 
 While a round is active, the agent sees a short roadmap status in every turn, including which stage the session is bound to.
 
@@ -44,13 +44,13 @@ While a round is active, the agent sees a short roadmap status in every turn, in
 
 Starting a stage binds the session to it and returns the handoff. Starting a stage that is already active joins it instead, with a warning that another session may be working on it.
 
-Scope or criterion changes on an active stage are recorded with `amend` and a reason. Later work goes into TODOs and decisions into ADRs.
+Scope or criterion changes on an active stage are recorded with `amend` and a reason. Later work goes into TODOs and decisions into ADRs through `adr_manage`.
 
 A stage closes only from `active`, and only when:
 
 - every current criterion has evidence with `result: "pass"`, the method actually used and a summary;
 - every open TODO targeting the stage is resolved with a reference or moved to another target;
-- every proposed ADR tied to the stage is accepted or rejected (the main session decides this, not subagents).
+- no ADR linked to the stage is still proposed. Close refuses and lists them; the main session accepts or rejects them with `adr_manage` first. The Outcome records the linked ADRs' statuses.
 
 The plugin checks that the evidence is complete, not that it is true; the agent has to run the checks it reports. A closed stage never reopens. For corrective work, add a new stage that `follows` it.
 
@@ -104,12 +104,11 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 | `roadmap_status` | Rounds, stages and open TODOs; with `stage`, its full detail and handoff. |
 | `roadmap_stage` | `add`, `edit`, `amend`, `start`, `close`, `drop`, `renumber`. |
 | `roadmap_todo` | `add`, `update`, `resolve`, `move`. |
-| `roadmap_adr` | `create`, `revise`, `set_status`, `supersede`, `note`. |
 | `roadmap_check` | Document consistency check; `fix: true` regenerates generated blocks. |
 | `roadmap_overlap` | Ask the overlap question. |
 | `roadmap_init`, `roadmap_round_plan`, `roadmap_round_open` | Write the previews prepared by `/init-project`, `/roadmap plan-round` and `/roadmap new-round`. |
 
-Subagents can use the tools too, but cannot accept, reject or supersede ADRs and are never prompted.
+Subagents can use the tools too, but are never prompted. ADRs are managed with the adr plugin's `adr_status`, `adr_manage` and `adr_check`.
 
 ## Settings
 
@@ -130,7 +129,7 @@ Client programs can read the roadmap status from a state snapshot; see the [refe
 
 ## Known limitations
 
-- Initialization needs fresh `docs/roadmap/` and `docs/adr/` directories; existing roadmap or ADR trees cannot be adopted.
+- Initialization needs a fresh `docs/roadmap/`; an existing roadmap or a non-empty `docs/adr/` that the adr plugin does not manage cannot be adopted.
 - Planned rounds cannot be skipped or renumbered, and dropped round IDs are not reused.
 - Overlap detection depends on the agent noticing the overlap.
 - The edit protection is best effort, especially for `bash`, and is not a sandbox.
@@ -146,4 +145,4 @@ Client programs can read the roadmap status from a state snapshot; see the [refe
 
 ## License
 
-MIT. The vendored MADR template keeps its own licenses in `assets/madr/`.
+MIT.

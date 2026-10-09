@@ -3,11 +3,18 @@ import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 
+import {
+  ADR_INSTALL_HINT,
+  type AdrApi,
+  type AdrCreateInput,
+  type AdrRecord,
+  type AdrView,
+  type AdrWriteResult,
+  errorMessage,
+  withPendingStages,
+} from "./adr.ts";
 import { check, checkClosureIntegrity, type Diagnostics } from "./check.ts";
 import {
-  type AdrDoc,
-  type AdrSections,
-  buildAdrBody,
   DocumentError,
   type DoneCriterion,
   generatedBlock,
@@ -15,8 +22,6 @@ import {
   lf,
   loadAll,
   type Model,
-  markdownHeadings,
-  parseAdr,
   parseDoneCriteria,
   parseRoadmapIndex,
   parseRound,
@@ -24,8 +29,6 @@ import {
   parseTodo,
   type Repo,
   type RoundDoc,
-  renderAdr,
-  renderAdrIndex,
   renderRoadmapIndex,
   renderRound,
   renderStage,
@@ -92,7 +95,6 @@ export interface StageOperationInput extends Partial<StageInput> {
   deviations?: string;
   evidence?: Array<{ criterion: string; result: "pass" | "fail"; method: string; summary: string; commit?: string }>;
   todos?: Array<{ id: string; disposition: "resolved" | "moved"; target?: string; reference?: string }>;
-  adrs?: Array<{ id: string; status: "accepted" | "rejected" }>;
   new_id?: string;
 }
 
@@ -108,20 +110,9 @@ export interface TodoOperationInput {
   reference?: string;
 }
 
-export interface AdrInput {
+/** An initial ADR of /init-project: `id` is an alias that principles and stage text may cite, `stage` names an initial stage alias. */
+export interface InitAdrInput extends AdrCreateInput {
   id?: string;
-  title: string;
-  status?: "proposed" | "accepted" | "rejected" | "deprecated";
-  stage?: string;
-  sections: AdrSections;
-  decision_makers?: string[];
-  consulted?: string[];
-  informed?: string[];
-}
-
-export interface AdrOperationInput extends Partial<AdrInput> {
-  action: "create" | "revise" | "set_status" | "supersede" | "note";
-  text?: string;
 }
 
 export interface RoundInput {
@@ -135,7 +126,7 @@ export interface RoundInput {
 export interface InitInput {
   project: { name: string; description: string };
   round: RoundInput;
-  adrs: AdrInput[];
+  adrs: InitAdrInput[];
   stages: StageInput[];
 }
 
@@ -174,8 +165,20 @@ export interface PreparedOperation {
   repoRoot: string;
   snapshot: string;
   summary: string;
+  /** Every file the preview shows: roadmap files first, then the ADR files the adr plugin writes. */
   files: Array<{ path: string; content: string }>;
   warnings: string[];
+  /** /init-project only: the confirmed ADR batch, created through the adr plugin before any roadmap file is written. */
+  adr?: PreparedAdrs;
+}
+
+interface PreparedAdrs {
+  inputs: AdrCreateInput[];
+  /** Absolute paths and contents from the preview's dry run. */
+  files: Array<{ path: string; content: string }>;
+  ids: string[];
+  /** Stage ids the batch links before docs/roadmap exists; the stage resolver accepts them during the write. */
+  stages: string[];
 }
 
 export type PreparationReceipt =
@@ -196,6 +199,47 @@ const BODY_REPAIR_HINT =
   "Use plain paragraphs or flat lists with plain-text items. Keep inline code on one line; put literal Markdown or HTML inside a fully closed top-level fenced code block. Use spaces, not tabs, outside fences; single-line fields accept only plain text and same-line code spans.";
 const UPGRADE_HINT = "Ask the user to run /roadmap upgrade; agents never change the repository format.";
 export const FORMAT_WARNING = "This upgrades the repository to roadmap format 2: roadmap plugin 0.2.3 and earlier can no longer read it.";
+
+function adrService(repo: Repo): AdrApi {
+  if (!repo.adr) throw new Refusal("Roadmap needs the adr plugin, which is not loaded in this session.", [ADR_INSTALL_HINT]);
+  return repo.adr;
+}
+
+/** Calls the adr plugin; its errors carry user-facing guidance and become refusals. */
+async function adrCall<T>(context: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof Refusal) throw error;
+    throw new Refusal(`${context}: ${errorMessage(error)}`);
+  }
+}
+
+/** The ADRs a write depends on, as loadAll read them through the adr plugin. */
+function adrView(model: Model): AdrView {
+  const view = model.adrs;
+  if (!view) throw new Refusal("Roadmap needs the adr plugin to read ADRs, and it is not loaded in this session.", [ADR_INSTALL_HINT]);
+  if (view.error) throw new Refusal(`ADRs could not be read: ${view.error}`, ["Run adr_check and repair docs/adr/, then retry."]);
+  return view;
+}
+
+/** An ADR that a charter cites must exist and be readable. */
+function citedAdr(model: Model, id: string | undefined): AdrRecord {
+  const view = adrView(model);
+  const wanted = required(id, "ADR id");
+  const matches = view.records.filter((record) => record.id === wanted);
+  if (matches.length === 1) return matches[0] as AdrRecord;
+  const broken = view.parseErrors.find((issue) => Number(basename(issue.path).split("-")[0]) === numberOf(wanted));
+  if (!matches.length && broken)
+    throw new Refusal(`ADR ${wanted} could not be read: ${broken.message}`, [
+      `Repair ${broken.path} or restore it with git, then run adr_check.`,
+    ]);
+  throw new Refusal(`ADR ${wanted} is missing or ambiguous.`, [
+    view.managed
+      ? "Call adr_status for ADR ids; record a new decision with adr_manage first."
+      : "ADR management is not initialized in this repository; the user initializes it with /adr init, then decisions are recorded with adr_manage.",
+  ]);
+}
 
 function required(value: string | undefined, field: string, multiline = false): string {
   if (typeof value !== "string" || !value.trim() || (!multiline && /[\r\n]/.test(value))) {
@@ -251,22 +295,6 @@ function assertBody(body: string, options: Parameters<typeof validateBody>[1] = 
   }
 }
 
-function adrBody(title: string, sections: AdrSections): string {
-  for (const option of sections.options) requiredBody(option, "ADR option");
-  for (const body of [
-    sections.context,
-    sections.drivers,
-    sections.outcome,
-    sections.consequences,
-    sections.confirmation,
-    sections.pros_cons,
-    sections.more_info,
-  ]) {
-    if (body !== undefined) assertBody(body);
-  }
-  return buildAdrBody(title, sections);
-}
-
 function slug(title: string): string {
   const result = title
     .normalize("NFKD")
@@ -281,14 +309,7 @@ function numberOf(id: string): number {
 }
 
 function highest(model: Model, kind: IdKind): number {
-  const ids =
-    kind === "round"
-      ? model.rounds
-      : kind === "stage"
-        ? model.stages
-        : kind === "adr"
-          ? model.adrs
-          : model.todos.flatMap((doc) => doc.items);
+  const ids = kind === "round" ? model.rounds : kind === "stage" ? model.stages : model.todos.flatMap((doc) => doc.items);
   return Math.max(0, ...ids.map((doc) => numberOf(doc.id)));
 }
 
@@ -354,12 +375,6 @@ function promote(model: Model, doc: StageDoc | RoundDoc): void {
   doc.format = needed;
 }
 
-function findAdr(model: Model, id: string | undefined): AdrDoc {
-  const matches = model.adrs.filter((adr) => adr.id === required(id, "ADR id"));
-  if (matches.length !== 1) throw new Refusal(`ADR ${id} is missing or ambiguous.`);
-  return matches[0] as AdrDoc;
-}
-
 function roundTodo(model: Model, round: RoundDoc): TodoDoc {
   const doc = model.todos.find((todo) => todo.round === round.id);
   if (!doc) throw new Refusal(`The TODO document for ${round.id} is missing.`);
@@ -418,6 +433,10 @@ class Mutation {
   readonly warnings: string[] = [];
   handoff?: string;
   readOnly = false;
+  /** A renumbered stage's ADR links, moved through the adr plugin after the roadmap files are written. */
+  relink?: { from: string; to: string; ids: string[] };
+  /** /init-project's ADR batch, shown in the preview and written through the adr plugin. */
+  adr?: PreparedAdrs;
 
   constructor(readonly model: Model) {}
 
@@ -451,9 +470,6 @@ class Mutation {
       if (!sameFields(parseRound(content, path), round))
         throw new Refusal("Round body changes intended metadata or sections in the document structure.", [BODY_REPAIR_HINT]);
     }
-    const adr = this.model.adrs.find((doc) => doc.path === path);
-    if (adr && !sameFields(parseAdr(content, path), adr))
-      throw new Refusal("ADR body changes intended identity or metadata in the document structure.", [BODY_REPAIR_HINT]);
     const previous = this.model.files?.[path];
     if (previous !== undefined && Buffer.from(previous).toString("utf8") === content) return;
     this.changes.set(path, content);
@@ -478,11 +494,11 @@ class Mutation {
       this.put(round.path, renderRound(round));
     }
     this.put(this.model.index.path, renderRoadmapIndex(this.model.index, this.model.rounds, this.model.stages));
-    if (this.model.adrIndex) this.put(this.model.adrIndex.path, renderAdrIndex(this.model.adrIndex, this.model.adrs));
   }
 
-  async write(repo: Repo, summary: string, options: OperationOptions): Promise<Receipt> {
-    const changedFiles: string[] = [];
+  /** `written` lists files an earlier step of this operation already committed, for cancellation guidance. */
+  async write(repo: Repo, summary: string, options: OperationOptions, written: readonly string[] = []): Promise<Receipt> {
+    const changedFiles: string[] = [...written];
     try {
       for (const [path, content] of this.changes) {
         assertNotCancelled(options);
@@ -535,7 +551,8 @@ async function mutate(
       mutation.warnings.push(...(await checked(model)));
       const beforeWrite = guardMutation(model, options);
       if (beforeWrite) return beforeWrite;
-      const receipt = await mutation.write(repo, summary, options);
+      let receipt = await mutation.write(repo, summary, options);
+      if (receipt.ok && mutation.relink) receipt = await relinkAdrs(repo, actor, mutation.relink, receipt, options);
       if (receipt.ok) {
         const cancelled = guardCancellation(options, receipt.changedFiles);
         if (cancelled) return cancelled;
@@ -545,6 +562,33 @@ async function mutate(
     });
   } catch (error) {
     return failure(error);
+  }
+}
+
+/** Moves ADR stage links after a renumbering wrote docs/roadmap; the two writes are not one transaction. */
+async function relinkAdrs(
+  repo: Repo,
+  actor: Actor,
+  relink: NonNullable<Mutation["relink"]>,
+  receipt: Extract<Receipt, { ok: true }>,
+  options: OperationOptions,
+): Promise<Receipt> {
+  try {
+    const result = await adrService(repo).relinkStage(repo.repoRoot, actor.kind, relink.from, relink.to, { signal: options.signal });
+    return {
+      ...receipt,
+      changedFiles: [...receipt.changedFiles, ...result.files.map((file) => file.path)],
+      warnings: [...new Set([...receipt.warnings, ...result.warnings])],
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `Renumbered ${relink.from} to ${relink.to} in docs/roadmap/, but ${relink.ids.join(", ")} still link to ${relink.from}: ${errorMessage(error)}`,
+      hints: [
+        `Files committed by the renumbering: ${receipt.changedFiles.join(", ")}.`,
+        "A multi-file operation is not a transaction. Restore docs/roadmap/ and docs/adr/ with git, then renumber again; until then roadmap_check reports the dangling ADR stage links.",
+      ],
+    };
   }
 }
 
@@ -697,10 +741,23 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
   const todoDoc = roundTodo(model, activeRound(model));
   const pendingTodos = todoDoc.items.filter((item) => item.status === "open" && item.target === stage.id);
   const todoDispositions = input.todos ?? [];
-  const pendingAdrs = model.adrs.filter((adr) => adr.stage === stage.id && adr.status === "proposed");
-  if (actor.kind === "sub" && (pendingAdrs.length || input.adrs?.length)) {
-    throw new Refusal("The main agent must accept or reject this stage's proposed ADRs before a subagent can close it.");
-  }
+  const view = adrView(model);
+  if (view.parseErrors.length)
+    throw new Refusal(`ADR files could not be read, so ${stage.id}'s proposed ADRs cannot be verified.`, [
+      ...view.parseErrors.map((issue) => `${issue.path}: ${issue.message}`),
+      "Repair them in an editor or restore them with git, run adr_check, then close the stage again.",
+    ]);
+  const linkedAdrs = view.records.filter((adr) => adr.stage === stage.id);
+  const proposedAdrs = linkedAdrs.filter((adr) => adr.status === "proposed");
+  if (proposedAdrs.length)
+    throw new Refusal(
+      `${stage.id} cannot close while linked ADRs are proposed: ${proposedAdrs.map((adr) => `${adr.id} ${adr.title}`).join("; ")}.`,
+      [
+        actor.kind === "main"
+          ? "Accept or reject each one with adr_manage action set_status in the main session, then close the stage again."
+          : "Only the main agent can accept or reject ADRs. Return to the main agent, which settles them with adr_manage before the stage closes.",
+      ],
+    );
   const todoLog: string[] = [];
   const disposed = new Set<string>();
   for (const disposition of todoDispositions) {
@@ -723,28 +780,6 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
   if (pendingTodos.some((item) => !disposed.has(item.id))) {
     throw new Refusal("Every open TODO targeting this stage needs a resolved or moved disposition.");
   }
-  const adrLog: string[] = [];
-  const adrDisposed = new Set<string>();
-  for (const disposition of input.adrs ?? []) {
-    const adr = pendingAdrs.find((candidate) => candidate.id === disposition.id);
-    if (adrDisposed.has(disposition.id)) throw new Refusal(`ADR ${disposition.id} is listed more than once.`);
-    if (!adr) {
-      const known = model.adrs.find((candidate) => candidate.id === disposition.id);
-      throw new Refusal(
-        known
-          ? `${known.id} is ${known.status}${known.stage === stage.id ? "" : ` and tied to ${known.stage ?? "no stage"}`}, not a proposed ADR of ${stage.id}; list only this stage's proposed ADRs in adrs.`
-          : `Unknown ADR ${disposition.id}.`,
-      );
-    }
-    if (disposition.status !== "accepted" && disposition.status !== "rejected")
-      throw new Refusal("A proposed ADR needs accepted or rejected.");
-    adrDisposed.add(adr.id);
-    adr.status = disposition.status;
-    mutation.put(adr.path, renderAdr(adr));
-    adrLog.push(`- ${adr.id} ${adr.status}`);
-  }
-  if (pendingAdrs.some((adr) => !adrDisposed.has(adr.id)))
-    throw new Refusal("Every proposed ADR for this stage must be accepted or rejected.");
   const removed: string[] = [];
   let amendmentDate = "";
   for (const line of stage.amendments.split("\n")) {
@@ -763,7 +798,7 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
       ...removed,
     ].join("\n")}`,
     `### TODO\n\n${todoLog.join("\n") || "None."}`,
-    `### ADRs\n\n${adrLog.join("\n") || "None."}`,
+    `### ADRs\n\n${linkedAdrs.map((adr) => `- ${adr.id} ${adr.status}${adr.superseded_by ? ` by ${adr.superseded_by}` : ""}`).join("\n") || "None."}`,
   ].join("\n\n");
   stage.status = "closed";
   stage.closed = new Date().toISOString().slice(0, 10);
@@ -772,7 +807,7 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
   if (pendingTodos.length) mutation.put(todoDoc.path, renderTodo(todoDoc));
 }
 
-async function renumberStage(repo: Repo, mutation: Mutation, stage: StageDoc, newId: string | undefined): Promise<void> {
+async function renumberStage(repo: Repo, actor: Actor, mutation: Mutation, stage: StageDoc, newId: string | undefined): Promise<void> {
   const model = mutation.model;
   const oldId = stage.id;
   const pattern = new RegExp(`\\b${oldId}\\b`, "g");
@@ -828,11 +863,20 @@ async function renumberStage(repo: Repo, mutation: Mutation, stage: StageDoc, ne
       round[field] = round[field].replace(pattern, allocated);
     }
   }
-  for (const adr of model.adrs) {
-    if (adr.stage === oldId) {
-      adr.stage = allocated;
-      mutation.put(adr.path, renderAdr(adr));
-    }
+  const view = adrView(model);
+  if (view.parseErrors.length)
+    throw new Refusal(`ADR files could not be read, so ADR links to ${oldId} cannot be moved.`, [
+      ...view.parseErrors.map((issue) => `${issue.path}: ${issue.message}`),
+      "Repair them in an editor or restore them with git, then run adr_check.",
+    ]);
+  const linked = view.records.filter((adr) => adr.stage === oldId);
+  if (linked.length) {
+    await adrCall("ADR stage links cannot be moved", () =>
+      adrService(repo).relinkStage(repo.repoRoot, actor.kind, oldId, allocated, { dryRun: true }),
+    );
+    mutation.relink = { from: oldId, to: allocated, ids: linked.map((adr) => adr.id) };
+    // The check before writing sees the links as they will be once the relink lands.
+    for (const adr of linked) adr.stage = allocated;
   }
   mutation.remove(oldPath);
 }
@@ -919,7 +963,7 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
         current.outcome = `### Delivered\n\nNot delivered; stage dropped.\n\n### Deviations\n\n${reason}`;
       } else if (input.action === "renumber") {
         if (current.status !== "planned") throw new Refusal("Only a planned stage can be renumbered.");
-        await renumberStage(repo, mutation, current, input.new_id);
+        await renumberStage(repo, actor, mutation, current, input.new_id);
         return `Renumbered ${input.id} to ${current.id}; mutable references updated.`;
       } else throw new Refusal("Unknown stage action.");
       mutation.put(current.path, renderStage(current));
@@ -1007,87 +1051,6 @@ export async function todo(repo: Repo, actor: Actor, input: TodoOperationInput, 
   );
 }
 
-async function newAdr(repo: Repo, model: Model, actor: Actor, input: Partial<AdrInput>): Promise<AdrDoc> {
-  const title = required(input.title, "ADR title");
-  if (!input.sections) throw new Refusal("ADR sections are required.");
-  required(input.sections.context, "ADR context", true);
-  required(input.sections.outcome, "ADR outcome", true);
-  if (!input.sections.options?.length) throw new Refusal("An ADR needs at least one considered option.");
-  if (input.stage !== undefined) findStage(model, input.stage);
-  const body = adrBody(title, input.sections);
-  const n = await allocate(repo, "adr", highest(model, "adr"));
-  const adr: AdrDoc = {
-    format: model.index.format,
-    path: join(repo.adrDir, `${String(n).padStart(4, "0")}-${slug(title)}.md`),
-    id: `ADR-${String(n).padStart(4, "0")}`,
-    title,
-    supersedes: [],
-    superseded_by: null,
-    stage: input.stage ?? null,
-    status: actor.kind === "sub" ? "proposed" : (input.status ?? "proposed"),
-    date: new Date().toISOString().slice(0, 10),
-    decision_makers: input.decision_makers ?? [],
-    consulted: input.consulted ?? [],
-    informed: input.informed ?? [],
-    body,
-  };
-  model.adrs.push(adr);
-  return adr;
-}
-
-export async function adr(repo: Repo, actor: Actor, input: AdrOperationInput, options: OperationOptions = {}): Promise<Receipt> {
-  return mutate(
-    repo,
-    actor,
-    async (mutation) => {
-      if (input.action === "create") {
-        const created = await newAdr(repo, mutation.model, actor, input);
-        mutation.put(created.path, renderAdr(created));
-        if (actor.kind === "sub" && input.status && input.status !== "proposed")
-          mutation.warnings.push("Subagent ADRs are created as proposed.");
-        return `Created ${created.id} — ${created.title} (${created.status}).`;
-      }
-      const current = findAdr(mutation.model, input.id);
-      if (input.action === "revise") {
-        if (current.status !== "proposed") throw new Refusal("Only proposed ADRs can be revised; use a note or supersede an accepted ADR.");
-        if (!input.sections) throw new Refusal("ADR sections are required for a whole-body revision.");
-        required(input.sections.context, "ADR context", true);
-        required(input.sections.outcome, "ADR outcome", true);
-        if (!input.sections.options?.length) throw new Refusal("An ADR needs at least one considered option.");
-        current.title = input.title === undefined ? current.title : required(input.title, "ADR title");
-        current.body = adrBody(current.title, input.sections);
-      } else if (input.action === "set_status") {
-        if (actor.kind !== "main") throw new Refusal("Only the main agent can accept, reject or deprecate an ADR.");
-        if (!input.status || !["accepted", "rejected", "deprecated"].includes(input.status))
-          throw new Refusal("Use accepted, rejected or deprecated.");
-        if (current.superseded_by) throw new Refusal("A superseded ADR keeps its successor link and superseded status.");
-        current.status = input.status;
-      } else if (input.action === "supersede") {
-        if (actor.kind !== "main") throw new Refusal("Only the main agent can supersede an ADR.");
-        if (current.status !== "accepted" && current.status !== "deprecated")
-          throw new Refusal("Only an accepted or deprecated ADR can be superseded.");
-        const successor = await newAdr(repo, mutation.model, actor, { ...input, status: "accepted" });
-        successor.supersedes = [current.id];
-        current.superseded_by = successor.id;
-        current.status = "superseded";
-        mutation.put(successor.path, renderAdr(successor));
-        mutation.put(current.path, renderAdr(current));
-        return `${current.id} superseded by ${successor.id} — ${successor.title}.`;
-      } else if (input.action === "note") {
-        const note = required(input.text, "ADR note", true);
-        assertBody(note);
-        const information = markdownHeadings(current.body, /^## More Information$/gm);
-        current.body += current.body.endsWith("\n\n") ? "" : current.body.endsWith("\n") ? "\n" : "\n\n";
-        if (!information.length) current.body += "## More Information\n\n";
-        current.body += `### ${new Date().toISOString().slice(0, 10)}\n\n${note}\n\n`;
-      } else throw new Refusal("Unknown ADR action.");
-      mutation.put(current.path, renderAdr(current));
-      return `${current.id}: ${input.action} recorded.`;
-    },
-    options,
-  );
-}
-
 function charter(model: Model, input: RoundInput): Pick<RoundDoc, "title" | "goal" | "constraints" | "non_goals" | "principles"> {
   const title = required(input.title, "round title");
   const goal = required(input.goal, "round goal", true);
@@ -1098,7 +1061,7 @@ function charter(model: Model, input: RoundInput): Pick<RoundDoc, "title" | "goa
   const principles = input.principles
     .map((principle) => {
       if (!principle.adrs?.length) throw new Refusal("Every round principle must cite at least one ADR.");
-      for (const id of principle.adrs) findAdr(model, id);
+      for (const id of principle.adrs) citedAdr(model, id);
       return `- ${requiredBody(principle.text, "principle")} (${principle.adrs.join(", ")}).`;
     })
     .join("\n");
@@ -1160,11 +1123,11 @@ async function initPreflight(repo: Repo): Promise<void> {
     await lstat(repo.roadmapDir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    try {
-      if ((await readdir(repo.adrDir)).length) throw new Refusal("docs/adr/ must be absent or empty before initialization.");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const state = await adrCall("docs/adr/ could not be inspected", () => adrService(repo).dirState(repo.repoRoot));
+    if (state === "unmanaged")
+      throw new Refusal("docs/adr/ is not empty and is not managed by the adr plugin; this plugin does not adopt existing directories.", [
+        "Move the existing files out of docs/adr/ or ask the user how to proceed.",
+      ]);
     return;
   }
   throw new Refusal("docs/roadmap/ already exists; this plugin does not adopt existing projects.");
@@ -1185,11 +1148,9 @@ async function prepare(
         ? {
             repo,
             index: { format: 1, path: join(repo.roadmapDir, "README.md"), title: "", body: "" },
-            adrIndex: { format: 1, path: join(repo.adrDir, "README.md"), body: "" },
             rounds: [],
             stages: [],
             todos: [],
-            adrs: [],
             files: {},
           }
         : await loadAll(repo);
@@ -1202,8 +1163,9 @@ async function prepare(
         repoRoot: repo.repoRoot,
         snapshot: expected,
         summary,
-        files: [...mutation.changes].map(([path, content]) => ({ path, content })),
+        files: [...[...mutation.changes].map(([path, content]) => ({ path, content })), ...(mutation.adr?.files ?? [])],
         warnings: [...new Set(mutation.warnings)],
+        ...(mutation.adr ? { adr: mutation.adr } : {}),
       };
       preparedModels.set(prepared, model);
       return { ok: true, summary, files: prepared.files, warnings: prepared.warnings, prepared };
@@ -1216,24 +1178,64 @@ async function prepare(
 export async function prepareInit(repo: Repo, actor: Actor, input: InitInput): Promise<PreparationReceipt> {
   return prepare(repo, actor, true, async (mutation) => {
     const model = mutation.model;
+    const api = adrService(repo);
     model.index.title = required(input.project.name, "project name");
     assertBody(required(input.project.description, "project description", true));
-    const adrAliases: Record<string, string> = {};
-    const adrStages: Array<{ adr: AdrDoc; origin?: string }> = [];
-    for (const [index, original] of input.adrs.entries()) {
-      const created = await newAdr(repo, model, actor, { ...original, stage: undefined, status: original.status ?? "accepted" });
+    if (!Array.isArray(input.adrs)) throw new Refusal("Initial ADRs must be a list.");
+    const existing = await adrCall("docs/adr/ could not be read", () => api.load(repo.repoRoot));
+    if (existing?.parseErrors.length)
+      throw new Refusal("Managed ADR documents could not be loaded.", [
+        ...existing.parseErrors.map((issue) => `${issue.path}: ${issue.message}`),
+        "Repair them in an editor or restore them with git, then run adr_check.",
+      ]);
+    const records = existing?.records ?? [];
+    const adrAliases = new Map<string, string>();
+    const initial = input.adrs.map((original, index) => {
       const alias = original.id ?? `ADR-${String(index + 1).padStart(4, "0")}`;
-      if (adrAliases[alias]) throw new Refusal(`Repeated initial ADR alias ${alias}.`);
-      adrAliases[alias] = created.id;
-      adrStages.push({ adr: created, origin: original.stage });
-    }
+      if (adrAliases.has(alias)) throw new Refusal(`Repeated initial ADR alias ${alias}.`);
+      if (records.some((record) => record.id === alias))
+        throw new Refusal(`Initial ADR alias ${alias} is also an existing ADR in docs/adr/.`, [
+          "Give each initial ADR an id alias no existing ADR uses, such as ADR-9001, and cite existing ADRs by their own ids.",
+        ]);
+      adrAliases.set(alias, alias);
+      const { id: _alias, stage: _stage, ...create } = original;
+      return { alias, stage: original.stage, create: { ...create, status: original.status ?? "accepted" } };
+    });
+    // Ids do not depend on stage links, so a first dry run numbers the batch before stages exist to link.
+    const numbered = await adrCall("The initial ADRs were refused", () =>
+      api.createMany(
+        repo.repoRoot,
+        actor.kind,
+        initial.map((entry) => entry.create),
+        { dryRun: true, initialize: true },
+      ),
+    );
+    const provisional = initial.map((entry, index): AdrRecord => {
+      const id = numbered.ids[index];
+      if (!id) throw new Refusal("The adr plugin did not number every initial ADR.");
+      adrAliases.set(entry.alias, id);
+      return {
+        id,
+        title: entry.create.title,
+        status: entry.create.status,
+        date: today(),
+        supersedes: [],
+        decision_makers: entry.create.decision_makers ?? [],
+        consulted: entry.create.consulted ?? [],
+        informed: entry.create.informed ?? [],
+        path: numbered.files[index]?.path ?? "",
+        body: "",
+        legacy: false,
+      };
+    });
+    model.adrs = { managed: true, records: [...records, ...provisional], parseErrors: [] };
     const round = await newRound(repo, model, {
       ...input.round,
-      principles: input.round.principles.map((principle) => ({ ...principle, adrs: principle.adrs.map((id) => adrAliases[id] ?? id) })),
+      principles: input.round.principles.map((principle) => ({ ...principle, adrs: principle.adrs.map((id) => adrAliases.get(id) ?? id) })),
     });
     if (!input.stages.length) throw new Refusal("Initialization needs at least one stage.");
-    const stageAliases: Record<string, string> = {};
-    const rewriteAdrs = (text: string): string => text.replace(/\bADR-\d{4,}\b/g, (id) => adrAliases[id] ?? id);
+    const stageAliases = new Map<string, string>();
+    const rewriteAdrs = (text: string): string => text.replace(/\bADR-\d{4,}\b/g, (id) => adrAliases.get(id) ?? id);
     for (const [index, original] of input.stages.entries()) {
       const created = await newStage(repo, model, {
         ...original,
@@ -1249,23 +1251,45 @@ export async function prepareInit(repo: Repo, actor: Actor, input: InitInput): P
         risks: original.risks === undefined ? undefined : rewriteAdrs(original.risks),
       });
       const alias = original.id ?? `S${String(index + 1).padStart(2, "0")}`;
-      if (stageAliases[alias]) throw new Refusal(`Repeated initial stage alias ${alias}.`);
-      stageAliases[alias] = created.id;
+      if (stageAliases.has(alias)) throw new Refusal(`Repeated initial stage alias ${alias}.`);
+      stageAliases.set(alias, created.id);
     }
     for (const created of model.stages) {
-      created.depends_on = created.depends_on.map((id) => stageAliases[id] ?? id);
-      if (created.follows) created.follows = stageAliases[created.follows] ?? created.follows;
+      created.depends_on = created.depends_on.map((id) => stageAliases.get(id) ?? id);
+      if (created.follows) created.follows = stageAliases.get(created.follows) ?? created.follows;
       mutation.put(created.path, renderStage(created));
     }
-    for (const { adr, origin } of adrStages) {
-      if (origin) adr.stage = stageAliases[origin] ?? origin;
-      mutation.put(adr.path, renderAdr(adr));
+    const stages = model.stages.map((stage) => stage.id);
+    const linked = initial.map((entry, index): AdrCreateInput => {
+      if (entry.stage === undefined) return entry.create;
+      const stage = stageAliases.get(entry.stage) ?? entry.stage;
+      if (!stages.includes(stage))
+        throw new Refusal(`Initial ADR ${entry.alias} links unknown stage ${entry.stage}; use an initial stage alias such as S01.`);
+      (provisional[index] as AdrRecord).stage = stage;
+      return { ...entry.create, stage };
+    });
+    let batch = numbered;
+    if (linked.some((create) => create.stage !== undefined)) {
+      batch = await withPendingStages(repo.repoRoot, stages, () =>
+        adrCall("The initial ADR stage links were refused", () =>
+          api.createMany(repo.repoRoot, actor.kind, linked, { dryRun: true, initialize: true }),
+        ),
+      );
+      if (batch.ids.join() !== numbered.ids.join())
+        throw new Refusal("ADR ids changed while the preview was prepared.", ["Call roadmap_init again for a fresh preview."]);
     }
+    mutation.adr = {
+      inputs: linked,
+      ids: batch.ids,
+      stages,
+      files: batch.files.map((file) => ({ path: join(repo.repoRoot, file.path), content: file.content })),
+    };
+    mutation.warnings.push(...batch.warnings);
     mutation.put(roundTodo(model, round).path, renderTodo(roundTodo(model, round)));
     mutation.indexes();
     const root = renderRoadmapIndex(model.index, model.rounds, model.stages);
     model.index.body = parseRoadmapIndex(root).body.replace(/^# [^\n]+\n\n/, (heading) => `${heading}${input.project.description}\n\n`);
-    return `Initialized ${model.index.title} with ${round.id}, ${model.stages.length} stages and ${model.adrs.length} ADRs.`;
+    return `Initialized ${model.index.title} with ${round.id}, ${model.stages.length} stages and ${batch.ids.length} ADRs${existing ? " added to the existing docs/adr/" : ""}.`;
   });
 }
 
@@ -1405,6 +1429,43 @@ export async function prepareRoundOpen(repo: Repo, actor: Actor, input: RoundOpe
   });
 }
 
+/** Writes the confirmed initial ADRs before any roadmap file, so a refusal leaves docs/roadmap untouched. */
+async function writeAdrs(
+  repo: Repo,
+  actor: Actor,
+  adr: PreparedAdrs,
+  options: OperationOptions,
+): Promise<string[] | Extract<Receipt, { ok: false }>> {
+  const api = adrService(repo);
+  const shown = JSON.stringify(adr.files.map((file) => [file.path, file.content]));
+  const matches = (result: AdrWriteResult): boolean =>
+    JSON.stringify(result.files.map((file) => [join(repo.repoRoot, file.path), file.content])) === shown;
+  const create = (dryRun: boolean): Promise<AdrWriteResult> =>
+    withPendingStages(repo.repoRoot, adr.stages, () =>
+      api.createMany(repo.repoRoot, actor.kind, adr.inputs, { dryRun, initialize: true, signal: options.signal }),
+    );
+  if (!matches(await adrCall("The preview's ADRs were refused", () => create(true))))
+    throw new Refusal("The preview is stale: the ADR files it shows changed after it was prepared.");
+  let result: AdrWriteResult;
+  try {
+    result = await create(false);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `The initial ADRs could not be written: ${errorMessage(error)}`,
+      hints: ["Nothing under docs/roadmap/ was written. Restore any ADR files listed above with git before running /init-project again."],
+    };
+  }
+  const files = result.files.map((file) => file.path);
+  if (!matches(result))
+    return {
+      ok: false,
+      reason: "The adr plugin wrote different ADR files than the confirmed preview, so docs/roadmap/ was not written.",
+      hints: [`ADR files written: ${files.join(", ")}.`, "Restore docs/adr/ with git, then run /init-project again for a fresh preview."],
+    };
+  return files;
+}
+
 export async function applyPrepared(
   repo: Repo,
   actor: Actor,
@@ -1422,11 +1483,14 @@ export async function applyPrepared(
         throw new Refusal("The preview is stale: managed files changed after it was prepared.");
       await checked(model);
       const mutation = new Mutation(model);
-      for (const file of prepared.files) mutation.changes.set(file.path, file.content);
+      const adrFiles = new Set(prepared.adr?.files.map((file) => file.path));
+      for (const file of prepared.files) if (!adrFiles.has(file.path)) mutation.changes.set(file.path, file.content);
       mutation.warnings.push(...prepared.warnings);
       const beforeWrite = guardMutation(model, options);
       if (beforeWrite) return beforeWrite;
-      const result = await mutation.write(repo, prepared.summary, options);
+      const written = prepared.adr ? await writeAdrs(repo, actor, prepared.adr, options) : [];
+      if (!Array.isArray(written)) return written;
+      const result = await mutation.write(repo, prepared.summary, options, written);
       if (result.ok) {
         const cancelled = guardCancellation(options, result.changedFiles);
         if (cancelled) return cancelled;

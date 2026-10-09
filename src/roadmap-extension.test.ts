@@ -37,10 +37,14 @@ import {
   type RoundTodoDispositionChoice,
   type StatusMenuChoice,
 } from "../plugins/roadmap/src/ui.ts";
+import { adrApi } from "./roadmap-fixtures.ts";
 
 const CHILD_ENV = "ROADMAP_EXTENSION_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
+const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
+/** Native mutations of a managed file are refused by roadmap (docs/roadmap) or the adr plugin (docs/adr). */
+const PROTECTED = /roadmap_stage|adr_manage/;
 const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;
 const main: Actor = { sessionId: "fixture-main", kind: "main" };
 const draft: InitInput = {
@@ -136,7 +140,7 @@ async function git(root: string, args: string[]): Promise<void> {
 
 async function createHarness(
   root: string,
-  options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number]; lsp?: boolean } = {},
+  options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number]; lsp?: boolean; adr?: boolean } = {},
 ): Promise<Harness> {
   // These imports intentionally exercise the loader boundary after the child's isolated HOME is set.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
@@ -155,7 +159,7 @@ async function createHarness(
       "edit.mode": options.editMode ?? "hashline",
     }),
     toolNames: ["read", "write", "edit", "ast_edit", "bash", ...(options.lsp ? ["lsp"] : [])],
-    additionalExtensionPaths: [ENTRY],
+    additionalExtensionPaths: options.adr === false ? [ENTRY] : [ENTRY, ADR_ENTRY],
     disableExtensionDiscovery: true,
     enableMCP: false,
     enableLsp: options.lsp ?? false,
@@ -207,15 +211,16 @@ async function createHarness(
     "roadmap_status",
     "roadmap_stage",
     "roadmap_todo",
-    "roadmap_adr",
     "roadmap_check",
     "roadmap_overlap",
     "roadmap_init",
     "roadmap_round_open",
     "roadmap_round_plan",
+    ...(options.adr === false ? [] : ["adr_status", "adr_manage", "adr_check"]),
   ]) {
     assert(session.getToolByName(name), `Real loader must register ${name}`);
   }
+  assert.equal(session.getToolByName("roadmap_adr"), undefined, "roadmap_adr moved to the adr plugin as adr_manage");
   assert.equal(runner.createContext().agent.kind, options.sub ? "sub" : "main");
   return { session, runner, ui, kickoffs, messages, setUi };
 }
@@ -250,7 +255,7 @@ function cancelAfterCommit(path: string, before?: string, controller = new Abort
 async function initialized(root: string): Promise<Repo> {
   const info = discoverRepo(root);
   assert(info);
-  const repo: Repo = { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") };
+  const repo: Repo = { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr"), adr: adrApi() };
   const receipt = await initProject(repo, main, draft);
   assert(receipt.ok, JSON.stringify(receipt));
   return repo;
@@ -260,7 +265,11 @@ async function injection(h: Harness): Promise<string> {
   const result = await h.runner.emitBeforeAgentStart("Continue", undefined, ["Original host policy"]);
   if (!result?.systemPrompt) return "";
   assert.equal(result.systemPrompt[0], "Original host policy");
-  return result.systemPrompt.slice(1).join("\n");
+  // The adr plugin appends its own summary block; only roadmap's block is under test here.
+  return result.systemPrompt
+    .slice(1)
+    .filter((block) => block.startsWith("[Roadmap status]"))
+    .join("\n");
 }
 
 function holdOverlap(h: Harness, stageId = "S01") {
@@ -366,8 +375,7 @@ const CASES: Record<string, string> = {
     "confirmed round open queued under the lock refuses rebuilt session authority and succeeds in the unchanged session",
   "init-lock-cancel": "confirmed init cancelled while waiting for the repository lock writes nothing and retains arming",
   "round-lock-cancel": "confirmed round open cancelled while waiting for the repository lock preserves managed bytes and arming",
-  "mutation-lock-cancel":
-    "stage, TODO, ADR, overlap and check tools cancelled while waiting for the repository lock preserve managed bytes",
+  "mutation-lock-cancel": "stage, TODO, overlap and check tools cancelled while waiting for the repository lock preserve managed bytes",
   "prewrite-cancel": "mutations cancelled during locked validation cannot begin writing prepared or ordinary files",
   "midwrite-stage-start": "cancelled stage start stops after its stage file, preserves binding and is repaired by roadmap_check fix",
   "midwrite-stage-close": "cancelled stage close stops after its stage file without running binding cleanup",
@@ -375,20 +383,20 @@ const CASES: Record<string, string> = {
   "midwrite-round-open": "cancelled round open stops after its first previewed file without consuming arming",
   "midwrite-overlap-free": "cancelled free-work commit does not persist its overlap answer",
   ...Object.fromEntries(
-    [0, 1, 2, 3].map((count) => [
-      `check-fix-cancel-${count}`,
-      `cancelled check fixes report all ${count} committed files and a retry path`,
-    ]),
+    [0, 1, 2].map((count) => [`check-fix-cancel-${count}`, `cancelled check fixes report all ${count} committed files and a retry path`]),
   ),
   "check-fix-queued-objective": "queued no-op fix does not attribute another operation's objective edit",
   ...Object.fromEntries(
     [false, true].flatMap((cancelled) =>
-      [0, 1, 2, 3].map((count) => [
+      [0, 1, 2].map((count) => [
         `check-fix-queued-${cancelled ? "cancel" : "success"}-${count}`,
         `queued ${cancelled ? "cancelled" : "successful"} fix reports only its ${count} renames after another operation commits`,
       ]),
     ),
   ),
+  "adr-absent":
+    "without the adr plugin, roadmap tools and commands refuse with an install hint, injection is off and docs/roadmap stays protected",
+  "adr-close": "stage close refuses while linked ADRs are proposed and succeeds after adr_manage accepts them, recording their statuses",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
   "overlap-flight-concurrent": "concurrent overlap calls share one dialog and one free-work entry",
@@ -430,6 +438,7 @@ const CASES: Record<string, string> = {
 async function acceptance(name: string, root: string): Promise<void> {
   const h = await createHarness(root, {
     sub: name === "subagent" || name === "subagent-planning",
+    adr: name !== "adr-absent",
     lsp: name === "interception-lsp-rename",
     editMode:
       EDIT_MODES.find((mode) => name === `interception-mode-${mode}`) ??
@@ -458,7 +467,7 @@ async function acceptance(name: string, root: string): Promise<void> {
         ] as Array<[string, Record<string, unknown>]>) {
           const tool = h.session.getToolByName(toolName);
           assert(tool);
-          await assert.rejects(tool.execute(`block-${crypto.randomUUID()}`, input), /roadmap_stage/);
+          await assert.rejects(tool.execute(`block-${crypto.randomUUID()}`, input), PROTECTED);
         }
         const write = h.session.getToolByName("write");
         assert(write);
@@ -469,10 +478,10 @@ async function acceptance(name: string, root: string): Promise<void> {
         for (const prefix of ["scratch[old]", "scratch*old", "scratch?old", "scratch{old}"]) {
           for (const path of [current.path, adrPath]) {
             const literal = `${prefix}/../${relative(root, path)}`;
-            await assert.rejects(write.execute(`literal-write-${crypto.randomUUID()}`, { path: literal, content: "bad" }), /roadmap_stage/);
+            await assert.rejects(write.execute(`literal-write-${crypto.randomUUID()}`, { path: literal, content: "bad" }), PROTECTED);
             await assert.rejects(
               edit.execute(`literal-edit-${crypto.randomUUID()}`, { input: `[${literal}#ABCD]\nPUT <1:\n+bad` }),
-              /roadmap_stage/,
+              PROTECTED,
             );
           }
         }
@@ -490,7 +499,7 @@ async function acceptance(name: string, root: string): Promise<void> {
           );
         // A corrupt marker must not downgrade to an unprotected repository.
         await writeFile(join(repo.roadmapDir, "README.md"), "---\nformat: 99\nroadmap: { format: 99 }\n---\n");
-        await assert.rejects(write.execute("invalid-marker", { path: "docs/adr/x.md", content: "bad" }), /could not validate/);
+        await assert.rejects(write.execute("invalid-marker", { path: "docs/roadmap/x.md", content: "bad" }), /could not validate/);
       } else if (name === "patch") {
         const edit = h.session.getToolByName("edit");
         assert(edit);
@@ -532,12 +541,12 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert(write);
         await assert.rejects(write.execute("worktree-target", { path: join(tree, "docs/roadmap/x.md"), content: "bad" }), /roadmap_stage/);
         await symlink(join(tree, "docs/adr"), join(root, "adr-alias"));
-        await assert.rejects(write.execute("symlink-target", { path: "adr-alias/x.md", content: "bad" }), /roadmap_stage/);
+        await assert.rejects(write.execute("symlink-target", { path: "adr-alias/x.md", content: "bad" }), PROTECTED);
         const unmarked = join(dirname(root), "unmarked-worktree");
         await git(root, ["worktree", "add", "-q", "-b", "unmarked", unmarked]);
         await rm(join(unmarked, "docs/roadmap/README.md"));
-        await write.execute("unmarked-target", { path: join(unmarked, "docs/adr/x.md"), content: "allowed" });
-        assert.equal(await readFile(join(unmarked, "docs/adr/x.md"), "utf8"), "allowed");
+        await write.execute("unmarked-target", { path: join(unmarked, "docs/roadmap/x.md"), content: "allowed" });
+        assert.equal(await readFile(join(unmarked, "docs/roadmap/x.md"), "utf8"), "allowed");
       }
       assert.equal(await readFile(current.path, "utf8"), before);
     } else if (name.startsWith("interception-")) {
@@ -570,7 +579,7 @@ async function acceptance(name: string, root: string): Promise<void> {
               file: "source.ts",
               new_name: relative(root, path),
             }),
-            /roadmap_stage/,
+            PROTECTED,
           );
           await assert.rejects(
             lsp.execute(`managed-rename-source-${crypto.randomUUID()}`, {
@@ -578,7 +587,7 @@ async function acceptance(name: string, root: string): Promise<void> {
               file: relative(root, path),
               new_name: "renamed.md",
             }),
-            /roadmap_stage/,
+            PROTECTED,
           );
           await assert.rejects(
             lsp.execute(`managed-symbol-source-${crypto.randomUUID()}`, {
@@ -589,7 +598,7 @@ async function acceptance(name: string, root: string): Promise<void> {
               new_name: "records",
               apply: true,
             }),
-            /roadmap_stage/,
+            PROTECTED,
           );
           assert.equal(await readFile(path, "utf8"), before);
         }
@@ -602,11 +611,11 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert(alias && target);
           await symlink(target, join(root, alias));
           const path = alias === "outside-directory" ? `${alias}/new.md` : alias;
-          await assert.rejects(write.execute(`dangling-${alias}`, { path, content: "bad" }), /roadmap_stage/);
+          await assert.rejects(write.execute(`dangling-${alias}`, { path, content: "bad" }), PROTECTED);
           await assert.rejects(readFile(join(root, alias === "outside-directory" ? `${target}/new.md` : target)), { code: "ENOENT" });
         }
         await symlink("outside-alias.md", join(root, "outside-chain.md"));
-        await assert.rejects(write.execute("dangling-chain", { path: "outside-chain.md", content: "bad" }), /roadmap_stage/);
+        await assert.rejects(write.execute("dangling-chain", { path: "outside-chain.md", content: "bad" }), PROTECTED);
         await symlink("docs/unmanaged-new.md", join(root, "unmanaged-alias.md"));
         await write.execute("dangling-unmanaged", { path: "unmanaged-alias.md", content: "allowed\n" });
         assert.equal(await readFile(join(root, "docs/unmanaged-new.md"), "utf8"), "allowed\n");
@@ -648,7 +657,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             for (const scope of scopes(relative(root, guard))) {
               await assert.rejects(
                 ast.execute(`normalized-scope-${crypto.randomUUID()}`, { ops, paths: [scope] }),
-                name.endsWith("errors") ? /could not validate/ : /roadmap_stage/,
+                name.endsWith("errors") ? /could not validate/ : PROTECTED,
                 `ast_edit must refuse scope ${JSON.stringify(scope)}`,
               );
               for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
@@ -699,7 +708,7 @@ async function acceptance(name: string, root: string): Promise<void> {
         }
         for (const path of [current.path, join(repo.adrDir, "README.md")]) {
           const source = await readFile(path, "utf8");
-          await assert.rejects(edit.execute(`managed-${mode}-${crypto.randomUUID()}`, await inputFor(path)), /roadmap_stage/);
+          await assert.rejects(edit.execute(`managed-${mode}-${crypto.randomUUID()}`, await inputFor(path)), PROTECTED);
           assert.equal(await readFile(path, "utf8"), source);
         }
         const ordinary = join(root, "ordinary.md");
@@ -725,7 +734,7 @@ async function acceptance(name: string, root: string): Promise<void> {
               name === "interception-write-hardlinks"
                 ? write.execute(`hardlink-write-${crypto.randomUUID()}`, { path: alias, content: "bad\n" })
                 : edit.execute(`hardlink-edit-${crypto.randomUUID()}`, { path: alias, old_string: source, new_string: "bad\n" });
-            await assert.rejects(mutation, /roadmap_stage/);
+            await assert.rejects(mutation, PROTECTED);
             assert.equal(await readFile(path, "utf8"), source);
             assert.equal(await readFile(alias, "utf8"), source);
           }
@@ -747,7 +756,7 @@ async function acceptance(name: string, root: string): Promise<void> {
         const edit = h.session.getToolByName("edit");
         assert(edit);
         const alias = join(dirname(root), "stat-error-alias.md");
-        const dangling = join(repo.adrDir, "dangling.md");
+        const dangling = join(repo.roadmapDir, "dangling.md");
         const source = await readFile(current.path, "utf8");
         await link(current.path, alias);
         await symlink(join(root, "nonexistent.md"), dangling);
@@ -774,7 +783,7 @@ async function acceptance(name: string, root: string): Promise<void> {
                 ops: [{ pat: "const guarded = 1;", out: "const guarded = 2;" }],
                 paths: [scope],
               }),
-              /roadmap_stage/,
+              PROTECTED,
             );
             for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
           }
@@ -822,14 +831,14 @@ async function acceptance(name: string, root: string): Promise<void> {
           if (name === "interception-write-aliases") {
             paths.push(`[${path}#ABCD]`, `[${path}]`, `[@${absolute}#ABCD]`);
             for (const target of paths) {
-              await assert.rejects(write.execute(`alias-write-${crypto.randomUUID()}`, { path: target, content: "bad" }), /roadmap_stage/);
+              await assert.rejects(write.execute(`alias-write-${crypto.randomUUID()}`, { path: target, content: "bad" }), PROTECTED);
               assert.equal(await readFile(absolute, "utf8"), source);
             }
           } else if (name === "interception-replace-aliases") {
             for (const target of paths) {
               await assert.rejects(
                 edit.execute(`alias-replace-${crypto.randomUUID()}`, { path: target, old_string: source, new_string: "bad\n" }),
-                /roadmap_stage/,
+                PROTECTED,
               );
               assert.equal(await readFile(absolute, "utf8"), source);
             }
@@ -841,7 +850,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             for (const target of paths) {
               await assert.rejects(
                 edit.execute(`alias-hashline-${crypto.randomUUID()}`, { input: `[${target}#${tag}]\nPUT >$:\n+bad` }),
-                /roadmap_stage/,
+                PROTECTED,
               );
               assert.equal(await readFile(absolute, "utf8"), source);
             }
@@ -853,7 +862,7 @@ async function acceptance(name: string, root: string): Promise<void> {
                 edit.execute(`alias-patch-${crypto.randomUUID()}`, {
                   input: `*** Begin Patch\n*** Update File: ${target}\n@@\n-${heading}\n+# Bad\n*** End Patch`,
                 }),
-                /roadmap_stage/,
+                PROTECTED,
               );
               assert.equal(await readFile(absolute, "utf8"), source);
             }
@@ -904,15 +913,6 @@ async function acceptance(name: string, root: string): Promise<void> {
         ["roadmap_stage", { action: "edit", id: "S01", objective: "Forbidden rewrite" }],
         ["roadmap_stage", { action: "add", ...initial, title: "Forbidden addition" }],
         ["roadmap_todo", { action: "add", title: "Forbidden TODO", severity: "low", source: "Review", trigger: "Later" }],
-        [
-          "roadmap_adr",
-          {
-            action: "create",
-            title: "Forbidden ADR",
-            status: "accepted",
-            sections: { context: "Review", options: ["Host"], outcome: "Host" },
-          },
-        ],
       ] as const) {
         const receipt = await call(h, toolName, input);
         assert(!receipt.ok, JSON.stringify(receipt));
@@ -925,12 +925,12 @@ async function acceptance(name: string, root: string): Promise<void> {
     } else if (name.startsWith("check-fix-queued-")) {
       const repo = await initialized(root);
       const model = await loadAll(repo);
-      assert(model.stages[0] && model.rounds[0] && model.adrIndex);
+      assert(model.stages[0] && model.rounds[0]);
       const objectiveOnly = name.endsWith("objective");
       const count = objectiveOnly ? 0 : Number(name.at(-1));
       const cancelled = name.includes("-cancel-");
-      const paths = [model.index.path, model.rounds[0].path, model.adrIndex.path];
-      const names = ["status", "stages", "adrs"];
+      const paths = [model.index.path, model.rounds[0].path];
+      const names = ["status", "stages"];
       const stale = new Map<string, string>();
       let precedingWritten = false;
       const entered = Promise.withResolvers<void>();
@@ -1019,9 +1019,9 @@ async function acceptance(name: string, root: string): Promise<void> {
     } else if (name.startsWith("check-fix-cancel-")) {
       const repo = await initialized(root);
       const model = await loadAll(repo);
-      assert(model.rounds[0] && model.adrIndex);
-      const paths = [model.index.path, model.rounds[0].path, model.adrIndex.path];
-      const names = ["status", "stages", "adrs"];
+      assert(model.rounds[0]);
+      const paths = [model.index.path, model.rounds[0].path];
+      const names = ["status", "stages"];
       const expected = new Map<string, string>();
       const stale = new Map<string, string>();
       for (const [index, path] of paths.entries()) {
@@ -1099,7 +1099,7 @@ async function acceptance(name: string, root: string): Promise<void> {
     } else if (name === "prewrite-cancel") {
       const info = discoverRepo(root);
       assert(info);
-      const repo: Repo = { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") };
+      const repo: Repo = { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr"), adr: adrApi() };
       const preview = await prepareInit(repo, main, draft);
       assert(preview.ok, JSON.stringify(preview));
       const preparedController = new AbortController();
@@ -1212,7 +1212,9 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(preview);
       for (const file of preview.files) {
         const original = before?.[file.path];
-        if (file.path === first) assert.equal(await readFile(file.path, "utf8"), file.content);
+        // Initialization writes the confirmed ADR batch through the adr plugin before any roadmap file.
+        if (file.path === first || (initializing && file.path.startsWith(`${join(root, "docs/adr")}/`)))
+          assert.equal(await readFile(file.path, "utf8"), file.content);
         else if (original !== undefined) assert.equal(await readFile(file.path, "utf8"), Buffer.from(original).toString("utf8"));
         else assert.equal(await Bun.file(file.path).exists(), false, `${file.path} was written after cancellation`);
       }
@@ -1266,7 +1268,7 @@ async function acceptance(name: string, root: string): Promise<void> {
       const info = discoverRepo(root);
       assert(info);
       const repo: Repo = init
-        ? { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") }
+        ? { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr"), adr: adrApi() }
         : await initialized(root);
       if (!init) {
         assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
@@ -1318,10 +1320,6 @@ async function acceptance(name: string, root: string): Promise<void> {
       for (const [toolName, input] of [
         ["roadmap_stage", { action: "start", id: "S01" }],
         ["roadmap_todo", { action: "add", title: "Check retry", severity: "normal", source: "Review", target: "S01" }],
-        [
-          "roadmap_adr",
-          { action: "create", title: "Use local storage", sections: { context: "Persist data", options: ["Local"], outcome: "Use local" } },
-        ],
         ["roadmap_overlap", { stage: "S01", intent: "Inspect payments" }],
         ["roadmap_check", { fix: true }],
       ] as Array<[string, Record<string, unknown>]>) {
@@ -1402,7 +1400,7 @@ async function acceptance(name: string, root: string): Promise<void> {
       const info = discoverRepo(root);
       assert(info);
       const repo: Repo = init
-        ? { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") }
+        ? { ...info, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr"), adr: adrApi() }
         : await initialized(root);
       if (!init) {
         assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
@@ -1509,7 +1507,7 @@ async function acceptance(name: string, root: string): Promise<void> {
       } else if (name === "stale") {
         const gitInfo = discoverRepo(root);
         assert(gitInfo);
-        const repo: Repo = { ...gitInfo, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") };
+        const repo: Repo = { ...gitInfo, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr"), adr: adrApi() };
         h.ui.preview = async () => {
           await withRepoLock(repo, async () => {
             await mkdir(repo.roadmapDir, { recursive: true });
@@ -1613,7 +1611,7 @@ async function acceptance(name: string, root: string): Promise<void> {
       await mkdir(join(root, "docs/adr"), { recursive: true });
       await writeFile(join(root, "docs/adr/existing.md"), "user's ADR");
       await command(h, "init-project");
-      assert.match(h.ui.notifications.at(-1)?.message ?? "", /absent or empty/);
+      assert.match(h.ui.notifications.at(-1)?.message ?? "", /docs\/adr\/ is not empty and is not managed by the adr plugin/);
       assert.equal(h.kickoffs.length, 0);
       await rm(join(root, "docs/adr"), { recursive: true });
       await mkdir(join(root, "docs/roadmap"));
@@ -1623,6 +1621,71 @@ async function acceptance(name: string, root: string): Promise<void> {
       await rm(join(root, ".git"), { recursive: true });
       await command(h, "init-project");
       assert.match(h.ui.notifications.at(-1)?.message ?? "", /git work tree/);
+    } else if (name === "adr-absent") {
+      // The repository was initialized with the adr plugin; this session loads roadmap without it.
+      const repo = await initialized(root);
+      const before = (await loadAll(repo)).files;
+      assert.equal(await injection(h), "");
+      for (const [toolName, input] of [
+        ["roadmap_status", {}],
+        ["roadmap_stage", { action: "start", id: "S01" }],
+        ["roadmap_todo", { action: "add", title: "Later", severity: "low", source: "Review", trigger: "Later" }],
+        ["roadmap_check", { fix: true }],
+        ["roadmap_overlap", { stage: "S01", intent: "Inspect checkout" }],
+      ] as Array<[string, Record<string, unknown>]>) {
+        const receipt = await call(h, toolName, input);
+        assert(!receipt.ok, `${toolName}: ${JSON.stringify(receipt)}`);
+        assert.match(receipt.reason, /adr plugin, which is not loaded/);
+        assert.match(receipt.hints.join("\n"), /omp plugin install adr@wows-omp-plugins/);
+      }
+      for (const [commandName, args] of [
+        ["roadmap", ""],
+        ["roadmap", "check"],
+        ["init-project", ""],
+      ]) {
+        await command(h, commandName as string, args);
+        assert.match(h.ui.notifications.at(-1)?.message ?? "", /omp plugin install adr@wows-omp-plugins/);
+      }
+      assert.equal(h.kickoffs.length, 0);
+      // docs/roadmap stays protected; docs/adr belongs to the adr plugin, which is absent here.
+      const write = h.session.getToolByName("write");
+      assert(write);
+      await assert.rejects(write.execute("no-adr-roadmap", { path: "docs/roadmap/x.md", content: "bad" }), /roadmap_stage/);
+      assert.deepEqual((await loadAll(repo)).files, before);
+      await write.execute("no-adr-notes", { path: "docs/adr/notes.md", content: "allowed\n" });
+      assert.equal(await readFile(join(root, "docs/adr/notes.md"), "utf8"), "allowed\n");
+    } else if (name === "adr-close") {
+      const repo = await initialized(root);
+      const sections = { context: "Orders need identities", options: ["UUID", "Sequence"], outcome: "UUID" };
+      assert((await call(h, "roadmap_stage", { action: "start", id: "S01" })).ok);
+      const proposed = await call(h, "adr_manage", { action: "create", title: "Order identity", stage: "S01", sections });
+      assert(proposed.ok, JSON.stringify(proposed));
+      const refusal = await call(h, "roadmap_stage", closeInput);
+      assert(!refusal.ok);
+      assert.match(refusal.reason, /S01 cannot close while linked ADRs are proposed: ADR-0001 Order identity/);
+      assert.match(refusal.hints.join("\n"), /adr_manage action set_status/);
+      assert.equal((await loadAll(repo)).stages[0]?.status, "active");
+      assert((await call(h, "adr_manage", { action: "set_status", id: "ADR-0001", status: "accepted" })).ok);
+      const closed = await call(h, "roadmap_stage", closeInput);
+      assert(closed.ok, JSON.stringify(closed));
+      assert.match((await loadAll(repo)).stages[0]?.outcome ?? "", /### ADRs\n\n- ADR-0001 accepted$/);
+      // Renumbering relinks ADRs through the adr plugin; roadmap's resolver refuses unknown stages.
+      const initial = draft.stages[0];
+      assert(initial);
+      assert((await call(h, "roadmap_stage", { action: "add", ...initial, title: "Refunds" })).ok);
+      assert((await call(h, "adr_manage", { action: "create", title: "Refund policy", stage: "S02", sections })).ok);
+      const renumbered = await call(h, "roadmap_stage", { action: "renumber", id: "S02" });
+      assert(renumbered.ok, JSON.stringify(renumbered));
+      assert.deepEqual(
+        (await loadAll(repo)).adrs?.records.map((adr) => [adr.id, adr.stage]),
+        [
+          ["ADR-0001", "S01"],
+          ["ADR-0002", "S03"],
+        ],
+      );
+      const unknown = await call(h, "adr_manage", { action: "create", title: "Nowhere", stage: "S09", sections });
+      assert(!unknown.ok);
+      assert.match(unknown.reason, /Stage S09 cannot be linked/);
     } else {
       const repo = await initialized(root);
       if (name === "injection") {
@@ -1636,33 +1699,34 @@ async function acceptance(name: string, root: string): Promise<void> {
         await command(h, "roadmap", "close-round");
         assert.equal((await loadAll(repo)).rounds[0]?.status, "closed");
         assert.equal(await injection(h), "");
+        // ADRs stay available through the adr plugin after the round closes; it protects docs/adr itself.
         const write = h.session.getToolByName("write");
         assert(write);
-        await assert.rejects(write.execute("adr-after-close", { path: "docs/adr/x.md", content: "bad" }), /roadmap_adr/);
-        assert(
-          (
-            await call(h, "roadmap_adr", {
-              action: "create",
-              title: "Choice",
-              status: "accepted",
-              sections: { context: "Need a choice", options: ["A"], outcome: "A" },
-            })
-          ).ok,
-        );
+        await assert.rejects(write.execute("adr-after-close", { path: "docs/adr/x.md", content: "bad" }), /adr_manage/);
+        const created = await call(h, "adr_manage", {
+          action: "create",
+          title: "Choice",
+          status: "accepted",
+          sections: { context: "Need a choice", options: ["A"], outcome: "A" },
+        });
+        assert(created.ok, JSON.stringify(created));
       } else if (name === "subagent") {
         assert.match(await injection(h), /\[Roadmap status\]/);
-        assert(
-          (
-            await call(h, "roadmap_adr", {
-              action: "create",
-              title: "Choice",
-              status: "accepted",
-              sections: { context: "Need a choice", options: ["A"], outcome: "A" },
-            })
-          ).ok,
+        // The subagent session's roadmap registers its own stage resolver with its adr plugin.
+        const created = await call(h, "adr_manage", {
+          action: "create",
+          title: "Choice",
+          status: "accepted",
+          stage: "S01",
+          sections: { context: "Need a choice", options: ["A"], outcome: "A" },
+        });
+        assert(created.ok, JSON.stringify(created));
+        const adrs = (await loadAll(repo)).adrs?.records ?? [];
+        assert.deepEqual(
+          adrs.map((adr) => [adr.id, adr.status, adr.stage]),
+          [["ADR-0001", "proposed", "S01"]],
         );
-        assert.equal((await loadAll(repo)).adrs[0]?.status, "proposed");
-        const receipt = await call(h, "roadmap_adr", { action: "set_status", id: "ADR-0001", status: "accepted" });
+        const receipt = await call(h, "adr_manage", { action: "set_status", id: "ADR-0001", status: "accepted" });
         assert(!receipt.ok);
         assert.match(receipt.reason, /main/);
         assert((await call(h, "roadmap_overlap", { stage: "S01", intent: "Fix checkout" })).ok);

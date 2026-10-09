@@ -9,12 +9,14 @@ import { type AtlasCompleted, RoadmapContract } from "../plugins/omo-prometheus/
 import { discoverRepo } from "../plugins/roadmap/src/git.ts";
 import { type InitInput, initProject } from "../plugins/roadmap/src/operations.ts";
 import type { ToolReceipt } from "../plugins/roadmap/src/tools.ts";
+import { adrApi } from "./roadmap-fixtures.ts";
 
 const CHILD = "ROADMAP_PROMETHEUS_SDK";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const ROADMAP_ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
 const ROADMAP_DIR = fileURLToPath(new URL("../plugins/roadmap", import.meta.url));
 const PROMETHEUS_ENTRY = fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url));
+const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
 const draft: InitInput = {
   project: { name: "Contract fixture", description: "A verified roadmap event fixture" },
   round: { title: "Launch", goal: "Verify the integration", constraints: [], non_goals: [], principles: [] },
@@ -54,7 +56,7 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
   const git = discoverRepo(root);
   assert(git);
   const initialized = await initProject(
-    { ...git, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") },
+    { ...git, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr"), adr: adrApi() },
     { sessionId: "fixture-main", kind: "main" },
     draft,
   );
@@ -76,7 +78,8 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     sessionManager,
     settings: Settings.isolated({ "tools.approvalMode": "yolo", "autolearn.enabled": false }),
     toolNames: ["read", "write", "task"],
-    additionalExtensionPaths: reverse ? [roadmapEntry, PROMETHEUS_ENTRY] : [PROMETHEUS_ENTRY, roadmapEntry],
+    // Roadmap needs the adr plugin; both load orders must connect it.
+    additionalExtensionPaths: reverse ? [ADR_ENTRY, roadmapEntry, PROMETHEUS_ENTRY] : [PROMETHEUS_ENTRY, roadmapEntry, ADR_ENTRY],
     disableExtensionDiscovery: true,
     enableMCP: false,
     enableLsp: false,
@@ -99,7 +102,7 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
       },
     });
     assert.deepEqual(extensionsResult.errors, []);
-    assert.equal(extensionsResult.preparedExtensions?.length, 2);
+    assert.equal(extensionsResult.preparedExtensions?.length, 3);
     const runner = session.extensionRunner;
     assert(runner);
     extensionsResult.runtime.sendMessage = () => {};

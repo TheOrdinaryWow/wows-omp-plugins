@@ -67,7 +67,6 @@ function model(rounds: RoundDoc[], stages: StageDoc[], items: TodoItem[] = []): 
     rounds,
     stages,
     todos: [{ format: 1, path: "", round: "R1", items }],
-    adrs: [],
   };
 }
 

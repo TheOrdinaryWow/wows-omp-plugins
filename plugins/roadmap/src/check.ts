@@ -1,21 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
-  type AdrDoc,
   DocumentError,
   generatedContent,
   loadAll,
   type Model,
-  parseAdr,
-  parseAdrIndex,
   parseRoadmapIndex,
   parseRound,
   parseStage,
   parseTodo,
-  renderAdr,
-  renderAdrIndex,
-  renderAdrTable,
   renderCurrentStatus,
   renderRoadmapIndex,
   renderRound,
@@ -76,15 +71,6 @@ function generated(model: Model): Generated[] {
       ),
       source: content(round.path, renderRound(round)),
       frozen: round.status === "closed" || round.status === "dropped" || round.closed !== null || round.frozen_sha256 !== null,
-    });
-  }
-  if (model.adrIndex) {
-    blocks.push({
-      path: model.adrIndex.path,
-      name: "adrs",
-      expected: renderAdrTable(model.adrs),
-      source: content(model.adrIndex.path, renderAdrIndex(model.adrIndex)),
-      frozen: false,
     });
   }
   return blocks;
@@ -160,15 +146,13 @@ function diagnostics(model: Model): Diagnostics[] {
     }
   };
   validate(model.index, renderRoadmapIndex, parseRoadmapIndex);
-  if (model.adrIndex) validate(model.adrIndex, renderAdrIndex, parseAdrIndex);
   for (const doc of model.rounds) validate(doc, renderRound, parseRound);
   for (const doc of model.stages) validate(doc, renderStage, parseStage);
   for (const doc of model.todos) validate(doc, renderTodo, parseTodo);
-  for (const doc of model.adrs) validate(doc, renderAdr, parseAdr);
   result.push(...checkClosureIntegrity(model));
   const repository = model.index.format;
   if (!model.parseErrors?.some((issue) => issue.path === model.index.path)) {
-    for (const doc of [...model.rounds, ...model.stages, ...model.todos, ...model.adrs, ...(model.adrIndex ? [model.adrIndex] : [])]) {
+    for (const doc of [...model.rounds, ...model.stages, ...model.todos]) {
       if (doc.format > repository)
         report(
           "error",
@@ -186,7 +170,7 @@ function diagnostics(model: Model): Diagnostics[] {
       : "Cross-branch or cross-clone collisions require a manual decision; ids are never reused.";
     report("error", "duplicate-id", path, `Duplicate ${id}; also present in ${previous}. ${hint}`);
   };
-  for (const doc of [...model.rounds, ...model.stages, ...model.adrs]) {
+  for (const doc of [...model.rounds, ...model.stages]) {
     const previous = seen.get(doc.id);
     if (previous !== undefined) duplicate(doc.id, doc.path, previous);
     else seen.set(doc.id, doc.path);
@@ -217,7 +201,6 @@ function diagnostics(model: Model): Diagnostics[] {
   }
   const rounds = new Map(model.rounds.map((round) => [round.id, round]));
   const stages = new Map(model.stages.map((stage) => [stage.id, stage]));
-  const adrs = new Map(model.adrs.map((adr) => [adr.id, adr]));
   if (model.rounds.filter((round) => round.status === "active").length > 1)
     report("error", "structure", model.index.path, "At most one round may be active.");
   for (const stage of model.stages) {
@@ -305,20 +288,25 @@ function diagnostics(model: Model): Diagnostics[] {
       }
     }
   }
-  for (const adr of model.adrs) {
-    for (const reference of [...adr.supersedes, ...(adr.superseded_by ? [adr.superseded_by] : [])]) {
-      if (!adrs.has(reference)) report("error", "dangling-reference", adr.path, `${adr.id} refers to missing ADR ${reference}.`);
-    }
+  // ADR-internal consistency belongs to adr_check; these rules only relate ADRs to stages and citations.
+  const adrRoot = model.repo?.repoRoot ?? "";
+  const adrView = model.adrs;
+  if (adrView?.error)
+    report("warning", "adr-unreadable", join(adrRoot, "docs/adr"), `ADR stage checks were skipped: ${adrView.error} Run adr_check.`);
+  for (const issue of adrView?.parseErrors ?? [])
+    report("warning", "adr-unreadable", join(adrRoot, issue.path), `${issue.message} Its stage link was not checked; run adr_check.`);
+  const adrs = new Map((adrView?.records ?? []).map((adr) => [adr.id, adr]));
+  for (const adr of adrView?.records ?? []) {
     if (adr.stage && !stages.has(adr.stage))
-      report("error", "dangling-reference", adr.path, `${adr.id} refers to missing origin stage ${adr.stage}.`);
+      report("error", "dangling-reference", join(adrRoot, adr.path), `${adr.id} refers to missing origin stage ${adr.stage}.`);
     if (adr.status === "proposed" && (!adr.stage || stages.get(adr.stage)?.status !== "active")) {
-      report("warning", "proposed-adr", adr.path, `${adr.id} is proposed but not tied to an active stage.`);
+      report("warning", "proposed-adr", join(adrRoot, adr.path), `${adr.id} is proposed but not tied to an active stage.`);
     }
   }
   const warnReferences = (body: string, path: string): void => {
     for (const reference of new Set(body.match(/\bADR-\d{4,}\b/g) ?? [])) {
-      const adr: AdrDoc | undefined = adrs.get(reference);
-      if (adr?.superseded_by) report("warning", "superseded-adr", path, `${reference} is superseded; use successor ${adr.superseded_by}.`);
+      const successor = adrs.get(reference)?.superseded_by;
+      if (successor) report("warning", "superseded-adr", path, `${reference} is superseded; use successor ${successor}.`);
     }
   };
   for (const round of model.rounds) warnReferences(round.principles, round.path);

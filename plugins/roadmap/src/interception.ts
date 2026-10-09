@@ -14,12 +14,10 @@ import {
 
 const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;
 
-/** Includes the managed directory itself, since removing it also mutates its files. */
+/** Includes the managed directory itself, since removing it also mutates its files. docs/adr belongs to the adr plugin. */
 export function isManaged(path: string, repoRoot: string): boolean {
-  return ["docs/roadmap", "docs/adr"].some((directory) => {
-    const name = relative(join(repoRoot, directory), path);
-    return name === "" || (name !== ".." && !name.startsWith(`..${sep}`) && !isAbsolute(name));
-  });
+  const name = relative(join(repoRoot, "docs/roadmap"), path);
+  return name === "" || (name !== ".." && !name.startsWith(`..${sep}`) && !isAbsolute(name));
 }
 
 function bashTargets(command: string): string[] {
@@ -176,7 +174,7 @@ function managedFileIdentities(repoRoot: string): Set<string> {
       for (const name of readdirSync(path)) visit(join(path, name));
     } else if (info.isFile() && info.nlink > 1n) files.add(identity);
   }
-  for (const directory of ["docs/roadmap", "docs/adr"]) visit(join(repoRoot, directory));
+  visit(join(repoRoot, "docs/roadmap"));
   return files;
 }
 
@@ -188,8 +186,7 @@ export async function interceptionReason(toolName: string, input: Record<string,
   const marked = new Map<string, boolean>();
   const identities = new Map<string, Set<string>>();
   const broad = toolName !== "write" && toolName !== "edit" && toolName !== "apply_patch";
-  const reason =
-    "Managed Roadmap files must change through roadmap_stage, roadmap_todo or roadmap_adr (roadmap_check with fix for generated indexes).";
+  const reason = "Managed Roadmap files must change through roadmap_stage or roadmap_todo (roadmap_check with fix for generated indexes).";
   for (const candidate of candidates) {
     // Check both spellings: a symlink inside a managed directory must not grant an escape.
     for (const path of new Set([candidate, resolvedPath(candidate)])) {
@@ -200,12 +197,8 @@ export async function interceptionReason(toolName: string, input: Record<string,
       const identity = hardlinkIdentity(path);
       for (const repoRoot of roots) {
         const managed = isManaged(path, repoRoot);
-        const ancestor =
-          broad &&
-          ["docs/roadmap", "docs/adr"].some((directory) => {
-            const name = relative(path, join(repoRoot, directory));
-            return name === "" || (name !== ".." && !name.startsWith(`..${sep}`) && !isAbsolute(name));
-          });
+        const below = relative(path, join(repoRoot, "docs/roadmap"));
+        const ancestor = broad && (below === "" || (below !== ".." && !below.startsWith(`..${sep}`) && !isAbsolute(below)));
         if (!managed && !ancestor && !identity) continue;
         if (!marked.has(repoRoot)) marked.set(repoRoot, Boolean(await loadRepo(repoRoot)));
         if (!marked.get(repoRoot)) continue;

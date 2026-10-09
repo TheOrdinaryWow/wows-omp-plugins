@@ -17,10 +17,9 @@
 | `roadmap_status` | 不带参数时返回轮次、目标日期、实际日期、逾期标记、阶段，以及按目标或触发条件分组的未关闭 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
 | `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`。`add` 接受可选的 `round` 和 `target`；`edit` 和 `amend` 也接受 `target`。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
-| `roadmap_adr` | `create`、`revise`、`set_status`、`supersede`、`note`。 |
 | `roadmap_check` | 可选 `fix: true`。只检查文档，不检查代码与文档是否一致。 |
 | `roadmap_overlap` | `stage` 和 `intent`。 |
-| `roadmap_init` | `project`、`round`、初始的 `adrs` 和 `stages`；需要 `/init-project` 授权和已确认的预览。 |
+| `roadmap_init` | `project`、`round`、初始的 `adrs` 和 `stages`；需要 `/init-project` 授权和已确认的预览。初始 ADR 通过 adr 插件创建（见[通过 adr 插件管理的 ADR](#通过-adr-插件管理的-adr)）。 |
 | `roadmap_round_plan` | `round` 章程、用于修订计划轮次的可选 `id`、可选的 `target`；需要 `/roadmap plan-round [id]` 授权和已确认的预览。 |
 | `roadmap_round_open` | `import_todos` ID，以及可选的 `round` 章程或 `activate` 轮次 ID；需要 `/roadmap new-round` 授权和已确认的预览。存在计划轮次时，激活编号最小的那个。 |
 
@@ -34,15 +33,15 @@
 | `edit` | 替换计划阶段中提供的字段，包括 `target`。阶段激活后请改用 `amend`。 |
 | `amend` | 向活动阶段追加一条带日期的变更，必须写明 `reason`。`amendments` 可以新增、修改或删除标准，以及增删范围内/范围外条目；`target` 记录日期变化。 |
 | `start` | 要求阶段属于活动轮次、依赖已关闭且没有检查错误；激活并绑定阶段，返回规划交接内容。对已处于活动状态的阶段，则加入而不修改文档。 |
-| `close` | 接受 `id`、`delivered` 摘要、可选的 `deviations`，以及下文所述的 `evidence`、`todos` 和 `adrs`。记录 Outcome 和关闭哈希，并冻结阶段。 |
+| `close` | 接受 `id`、`delivered` 摘要、可选的 `deviations`，以及下文所述的 `evidence` 和 `todos`。与该阶段关联的 ADR 仍处于提议状态时拒绝。记录 Outcome（在 `### ADRs` 下包含关联 ADR 的状态）和关闭哈希，并冻结阶段。 |
 | `drop` | 放弃计划中或活动的阶段，必须写明 `reason`；需先解决或移走所有指向它的未关闭 TODO。 |
-| `renumber` | 用 `new_id` 为计划阶段重新编号，并改写可变的引用。如果已关闭的历史中有需要修改的引用，则拒绝。 |
+| `renumber` | 用 `new_id` 为计划阶段重新编号，并改写可变的引用，包括通过 adr 插件改写 ADR 的阶段关联。如果已关闭的历史中有需要修改的引用，则拒绝。 |
 
 关闭阶段的输入：
 
 - `evidence`：每条当前标准一项，包含 `criterion`、`result: "pass"`、实际使用的 `method` 和 `summary`；`commit` 可选。证据缺失或未通过时拒绝关闭。
 - `todos`：每个指向该阶段的未关闭 TODO，要么带 `reference` 标为 `resolved`，要么 `moved` 到另一个有效目标（移动后仍保持未关闭）。触发条件可以写成目标 `trigger: <text>`。
-- `adrs`：每个与该阶段关联的提议中 ADR 都要 `accepted` 或 `rejected`。子代理无法做这些决定，所以必须先由主会话处理，子代理才能关闭阶段。
+- ADR：关闭时通过 adr 插件读取与该阶段关联的 ADR。只要其中有 `proposed` 的，关闭就会拒绝并列出它们；需先由主会话用 `adr_manage` 接受或拒绝，子代理无法做这些决定。ADR 文件无法解析时关闭也会拒绝，因为其中可能藏有提议中的关联。
 
 交接内容包括目标、范围、完成标准、指向该阶段的 TODO、引用的 ADR、自由工作日志和关闭指引。
 
@@ -52,13 +51,16 @@
 
 `update` 修改活动或计划轮次中未关闭条目的指定字段。`resolve` 需要 `reference`。`move` 替换目标或触发条件，拒绝已关闭或已放弃的目标阶段。把条目从计划轮次的文档移到另一个轮次时，旧条目标记为 `moved` 并指向目标文档中的一个新 TODO ID；新条目保留请求的目标，并在 `carried_from` 中记录旧 ID 和来源轮次。移到另一个计划轮次时，即使存在活动轮次，也会直接写入那个轮次的文档。
 
-### ADR 操作
+### 通过 adr 插件管理的 ADR
 
-`create` 需要 `title`，以及包含 `context`、非空 `options` 和 `outcome` 的 `sections`。可选章节有 `drivers`、`consequences`、`confirmation`、`pros_cons` 和 `more_info`；也支持参与者列表和阶段关联。随附的 MADR 4.0 模板有 Confirmation 章节，没有实现清单。
+ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_check`、`/adr`）管理；路线图从不解析或写入 `docs/adr/`。它在会话开始时并在之后按需为自己的会话请求 adr 服务（`adr:binding-request` v1，见 adr 插件 REFERENCE 的“Service contract”），并注册一个接受仓库路线图中任意阶段的阶段解析器，使 `adr_manage` 能把 ADR 关联到阶段。会话关闭和重建时会注销该解析器。
 
-`revise` 替换提议中 ADR 的整个正文，保留其元数据，也可以修改标题。已接受的 ADR 不能通过 `revise` 改写。主会话可以用 `set_status` 设为 `accepted`、`rejected` 或 `deprecated`，或者用一个新接受的继任者 `supersede` 已接受或已弃用的 ADR，并建立双向链接。`note` 在 More Information 下追加带日期的 `text`。子代理无论请求什么最终状态，创建的都是提议中的 ADR，也不能设置状态或取代 ADR。
+- 轮次原则（`/init-project`、`/roadmap plan-round`、`/roadmap new-round`）必须引用 adr 插件报告的 ADR。ADR 文件无法读取或 `docs/adr/` 未初始化时会拒绝并给出指引。
+- `/init-project` 用 adr 插件 `createMany` 的试运行预览初始 ADR（`docs/adr/` 不存在或为空时一并初始化，已受管理时追加），在同一预览中展示 ADR 文件，确认后先创建它们，再写入任何路线图文件。初始 ADR 的 `id` 是别名，原则和阶段文本可以引用；它不能与已有 ADR 的 ID 相同。初始 ADR 的 `stage` 指向初始阶段的别名。
+- `renumber` 在写完路线图文件后改写 ADR 的阶段关联。两次写入不是一个事务：如果改写关联失败，拒绝信息会列出已提交的路线图文件和仍关联旧 ID 的 ADR；请用 git 恢复 `docs/roadmap/` 和 `docs/adr/` 后重新编号。
+- `<git common dir>/roadmap/counters.json` 中的 ADR 计数键保持原样；路线图不再分配 ADR ID。
 
-如果已有 ADR 以未闭合的代码围栏结尾，`note` 会拒绝且不做任何修改。请在编辑器中修复已存储的文件，或把新注释改成允许的语法子集，然后重试；工具从不为修复而改写已接受的正文。
+写入 `docs/roadmap/README.md` 的目录说明（格式 1 和 2）仍写着 ADR 通过路线图工具修改；那是逐字节保留的已存储文本。ADR 由 adr 插件管理。
 
 ## 工具写入文本中的 Markdown
 
@@ -90,7 +92,7 @@
 
 ## 编辑保护
 
-初始化之后，一个工具调用钩子会在主会话和子代理会话中保护 `docs/roadmap/**` 和 `docs/adr/**`。它会找到目标所在的 git 工作树，检查字面路径和解析后的路径（包括悬空符号链接的目标），并在阻止编辑时提示改用路线图工具。对于已存在的目标文件，它会把设备号和 inode 与会话及目标工作树中具有多个链接的托管文件比较，因此原生 `write` 和 `edit` 无法通过硬链接别名修改托管文件，无论别名在仓库内外。原生路径遵循宿主的规范化规则，包括以 `@` 开头的绝对路径、多余的 `:` 前缀、`~` 路径和 `file://` URL。
+初始化之后，一个工具调用钩子会在主会话和子代理会话中保护 `docs/roadmap/**`，无论 adr 插件是否加载；`docs/adr/**` 由 adr 插件保护。钩子会找到目标所在的 git 工作树，检查字面路径和解析后的路径（包括悬空符号链接的目标），并在阻止编辑时提示改用路线图工具。对于已存在的目标文件，它会把设备号和 inode 与会话及目标工作树中具有多个链接的托管文件比较，因此原生 `write` 和 `edit` 无法通过硬链接别名修改托管文件，无论别名在仓库内还是仓库外。
 
 没有初始化标记的仓库不受影响。钩子中出现校验、路径解析或文件识别错误时，会拒绝调用。
 
