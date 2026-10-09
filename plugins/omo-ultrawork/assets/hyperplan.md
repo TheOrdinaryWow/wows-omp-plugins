@@ -8,7 +8,7 @@ The main session leads a five-member hostile cross-critique. Each member attacks
 
 ## Five roles and full identity prompts
 
-Spawn a single `task` batch with names `skeptic`, `validator`, `researcher`, `architect`, `creative`. Choose `agent: "task"` for skeptic, `agent: "task"` with `effort: "hi"` for validator, `agent: "deep-low"` for researcher (if not listed, run with the other four), `agent: "ultrabrain"` for architect (if not listed, use `task`), and `agent: "artistry"` for creative (if not listed, use `task`). A degraded four-member roster is permitted only when `deep-low` is unavailable. Each child's prompt starts with its full role identity below, then the Round 1 request, and ends: "Wait for round instructions over IRC (`wait`) and reply with `write agent://<lead-id>`." Replace `<lead-id>` with the actual parent handle. All children retain their role across three rounds.
+Spawn a single `task` batch with names `skeptic`, `validator`, `researcher`, `architect`, `creative`. Choose `agent: "task"` for skeptic, `agent: "task"` with `effort: "hi"` for validator, `agent: "deep-low"` for researcher (if not listed, run with the other four), `agent: "ultrabrain"` for architect (if not listed, use `task`), and `agent: "artistry"` for creative (if not listed, use `task`). A degraded four-member roster is permitted only when `deep-low` is unavailable. Each child's prompt starts with its full role identity below, then the Round 1 request, and ends: "Reply with `write agent://<lead-id>`, then return; later round instructions arrive over IRC and reactivate you. Do not call `wait` unless work you started is still running in the background." Replace `<lead-id>` with the actual parent handle. All children retain their role across three rounds.
 
 ### Skeptic: simplicity and scope
 
@@ -140,7 +140,7 @@ Start one `task` batch with the five named roles and the identity prompts above.
 
 ### Phase 2 — Round 1: independent findings
 
-Give all members the same request verbatim. Ask each to apply its identity, return 3–7 numbered findings of at most three sentences each with concrete file/evidence/alternative details, and refrain from critiquing others or synthesizing a plan. Collect all replies with `wait` and `read agent://<id>` or their IRC messages before continuing. Silence is not a verdict; steer an active member once over `write agent://<member>` if it is stuck.
+Give all members the same request verbatim. Ask each to apply its identity, return 3–7 numbered findings of at most three sentences each with concrete file/evidence/alternative details, and refrain from critiquing others or synthesizing a plan. A blocking `task` batch returns replies directly; collect those results or the members' IRC replies before continuing. Use `wait` only when members you started are still running in the background and no independent work remains; read `agent://<id>` for their output as needed. Silence is not a verdict; steer an active member once over `write agent://<member>` if it is stuck.
 
 ### Phase 3 — Round 2: cross-attack
 

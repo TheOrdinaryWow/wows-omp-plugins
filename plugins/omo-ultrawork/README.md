@@ -29,6 +29,8 @@ The first reply in ultrawork mode starts with `ULTRAWORK MODE ENABLED!`, and the
 
 Typing `ulw` or `ultrawork` as a standalone word injects the hidden ultrawork directive ahead of your message. Later triggers in the same session add only a short reminder, since the directive is still in context; after compaction the full directive comes back on the next trigger. Keywords inside inline code, fenced blocks and slash commands do not count.
 
+If the session is busy, the hidden directive or reminder is sent as an aside that explicitly applies from your next/queued message, not the work already in progress. After the first successful todo `init` or `append` while armed, the fan-out reminder is attached to the tool result as trusted context once; compaction rearms it.
+
 `/ultrawork` or `/ulw` turns on persistent mode, so every message gets ultrawork without a keyword. Run either command again to turn it off. `/ultrawork <request>` turns the mode on and sends the request as your next message.
 
 The footer shows `Ultrawork mode` while persistent mode is on and `Ultrawork armed` after a keyword trigger. Mode and arming are saved in the session and restored on resume, switching, branching and tree navigation.

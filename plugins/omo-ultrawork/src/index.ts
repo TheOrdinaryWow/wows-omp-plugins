@@ -15,7 +15,6 @@ import { PluginStatePublisher } from "#src/plugin-state.ts";
 
 const STATE_ENTRY = "wows-omp-omo-ultrawork.state";
 const DIRECTIVE_MESSAGE = "wows-omp-omo-ultrawork.directive";
-const REMINDER_MESSAGE = "wows-omp-omo-ultrawork.fanout-reminder";
 const EXIT_MESSAGE = "wows-omp-omo-ultrawork.exit";
 const STATUS_KEY = "omo-ultrawork";
 const PACKAGE_NAME = "wows-omp-plugin-omo-ultrawork";
@@ -117,7 +116,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
   };
 
   const status = (ctx: ExtensionContext, state: ArmingState | undefined): void => {
-    ctx.ui.setStatus?.(STATUS_KEY, state?.mode ? "Ultrawork mode" : state?.armed ? "Ultrawork armed" : undefined);
+    ctx.ui.setStatus(STATUS_KEY, state?.mode ? "Ultrawork mode" : state?.armed ? "Ultrawork armed" : undefined);
   };
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
@@ -248,9 +247,13 @@ export default function ultrawork(pi: ExtensionAPI): void {
     }
     if (pointers.includes("mass-ulw")) content += `${content ? "\n" : ""}${MASS_ULW_POINTER}`;
 
+    const idle = ctx.isIdle();
+    if (!idle)
+      content = `The following ultrawork instructions apply from the user's next/queued message, not the work already in progress.\n${content}`;
+
     pi.sendMessage(
       { customType: DIRECTIVE_MESSAGE, content, display: false, attribution: "user" },
-      { deliverAs: ctx.isIdle() ? "nextTurn" : "aside" },
+      { deliverAs: idle ? "nextTurn" : "aside" },
     );
     if (state.mode || keyword) {
       state.armed = true;
@@ -266,13 +269,9 @@ export default function ultrawork(pi: ExtensionAPI): void {
     if (event.input.op !== "init" && event.input.op !== "append") return undefined;
     const state = stateFor(ctx.sessionManager.getSessionId());
     if (!state.armed || state.reminderSent) return undefined;
-    pi.sendMessage(
-      { customType: REMINDER_MESSAGE, content: TODO_FANOUT_REMINDER, display: false, attribution: "user" },
-      { deliverAs: "aside" },
-    );
     state.reminderSent = true;
     persist(ctx, state);
-    return undefined;
+    return { additionalContext: TODO_FANOUT_REMINDER };
   });
 
   const toggleCommand = {

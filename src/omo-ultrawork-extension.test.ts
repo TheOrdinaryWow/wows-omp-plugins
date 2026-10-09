@@ -14,6 +14,7 @@ interface Message {
   content: string;
   display: boolean;
   attribution: string;
+  deliverAs?: string;
 }
 
 async function scenario(name: string, root: string): Promise<void> {
@@ -32,6 +33,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const notices: string[] = [];
   const requests: string[] = [];
   const warnings: string[] = [];
+  let idle = true;
   const ctx = {
     cwd,
     hasUI: name === "tui" || name === "rpc",
@@ -39,7 +41,7 @@ async function scenario(name: string, root: string): Promise<void> {
     get sessionManager() {
       return manager;
     },
-    isIdle: () => true,
+    isIdle: () => idle,
     ui: { notify: (text: string) => notices.push(text), setStatus() {} },
   } as unknown as ExtensionCommandContext;
   AgentRegistry.resetGlobalForTests();
@@ -57,14 +59,14 @@ async function scenario(name: string, root: string): Promise<void> {
     registerCommand: (command: string, spec: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) =>
       commands.set(command, spec.handler),
     appendEntry: (customType: string, data: unknown) => manager.appendCustomEntry(customType, data),
-    sendMessage: (message: Message) => messages.push(message),
+    sendMessage: (message: Message, options?: { deliverAs?: string }) => messages.push({ ...message, deliverAs: options?.deliverAs }),
     sendUserMessage: (text: string) => requests.push(text),
   } as unknown as ExtensionAPI;
   register(api);
   const hook = async (event: string, payload: Record<string, unknown> = {}) => {
     const handler = hooks.get(event);
     assert(handler);
-    await handler({ type: event, ...payload }, ctx);
+    return await handler({ type: event, ...payload }, ctx);
   };
   const command = async (name: string, args = "") => {
     const handler = commands.get(name);
@@ -100,6 +102,49 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   try {
     await hook("session_start");
+    if (name === "busy-input") {
+      const scope = "The following ultrawork instructions apply from the user's next/queued message, not the work already in progress.\n";
+      idle = false;
+      await hook("input", { source: "user", text: "ulw fix the parser" });
+      assert(messages.at(-1)?.content.startsWith(`${scope}<ultrawork-mode>`));
+      assert.equal(messages.at(-1)?.deliverAs, "aside");
+      await hook("input", { source: "user", text: "ulw add the regression" });
+      assert(messages.at(-1)?.content.startsWith(`${scope}<omo-ultrawork-reminder>`));
+      assert.equal(messages.at(-1)?.deliverAs, "aside");
+      await hook("session_compact");
+      await hook("input", { source: "user", text: "ulw continue" });
+      assert(messages.at(-1)?.content.startsWith(`${scope}<ultrawork-mode>`));
+      idle = true;
+      await hook("input", { source: "user", text: "ulw finish" });
+      assert(messages.at(-1)?.content.startsWith("<omo-ultrawork-reminder>"));
+      assert.equal(messages.at(-1)?.deliverAs, "nextTurn");
+      assert.deepEqual((await snapshot()).state, payload(false, true));
+      return;
+    }
+    if (name === "todo-reminder") {
+      const todo = (op: string, isError = false, toolName = "todo") => hook("tool_result", { toolName, input: { op }, isError });
+      assert.equal(await todo("init"), undefined);
+      manager.appendCustomMessageEntry("wows-omp-omo-ultrawork.fanout-reminder", "Legacy fan-out reminder", false);
+      await hook("session_tree");
+      assert.equal((await snapshot()).state, null);
+      await hook("input", { source: "user", text: "ulw fix the parser" });
+      const messageCount = messages.length;
+      assert.equal(await todo("init", true), undefined);
+      assert.equal(await todo("start"), undefined);
+      assert.equal(await todo("init", false, "task"), undefined);
+      const result = (await todo("append")) as { additionalContext?: string } | undefined;
+      assert(result);
+      assert(result.additionalContext?.includes("COMPUTE the fan-out decision"));
+      assert.deepEqual(Object.keys(result), ["additionalContext"]);
+      assert.equal(messages.length, messageCount, "the reminder must not enqueue an aside message");
+      assert.equal(await todo("init"), undefined);
+      await hook("session_switch");
+      assert.equal(await todo("append"), undefined, "the sent flag must survive resume");
+      await hook("session_compact");
+      await hook("input", { source: "user", text: "ulw continue" });
+      assert.deepEqual(await todo("init"), result, "compaction rearms the fan-out reminder");
+      return;
+    }
     const initial = await snapshot();
     assert.equal(initial.state, null);
     assert.deepEqual(Object.keys(initial).sort(), ["plugin", "schema", "seq", "sessionId", "state", "updatedAt", "version"]);
@@ -174,7 +219,7 @@ if (process.env[CHILD_ENV]) {
   // bun:test cannot load in the executable child; this intentionally exercises an isolated module-loading boundary.
   const { describe, expect, test } = await import("bun:test");
   describe("ultrawork command feedback and session state projection", () => {
-    for (const name of ["headless", "tui", "rpc", "publish-failure"]) {
+    for (const name of ["headless", "tui", "rpc", "publish-failure", "busy-input", "todo-reminder"]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "ultrawork-extension-"));
         try {
