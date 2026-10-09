@@ -9,7 +9,7 @@ import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/l
 import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
-import { cfgTaskIsolationEnabled, cfgTaskIsolationMerge } from "@oh-my-pi/pi-coding-agent/task/settings";
+import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 
@@ -38,6 +38,7 @@ import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
 import { ChildEvidence, gateOutputSchema, parseVerifyOutput, verifyOutputSchema } from "./evidence.ts";
 import { collectComplianceEvidence } from "./git-evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
+import { forceBranchMerge, restoreIsolationMerge } from "./isolation-merge.ts";
 import {
   addDeferredFinding,
   addDiscoveredRow,
@@ -214,8 +215,6 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   /** Last serialized sidecar state per session; an unpublished session counts as `null`. */
   const publishedStates = new Map<string, string>();
-  /** Sessions already warned that host patch merges squash per-slice child commits. */
-  const patchMergeWarned = new Set<string>();
   let atlasPlans: AtlasCompletionPlan[] = [];
   let planReferences = new AtlasPlanReferences();
   const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
@@ -817,6 +816,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const live = mainSession(ctx);
     if (!live) return;
     restoreApprovalTiers(live);
+    restoreIsolationMerge(live);
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     if (record?.phase !== expected) return;
     const proposalPath = expected === "planning" ? record.planFilePath : undefined;
@@ -2446,12 +2446,10 @@ export default function prometheus(pi: ExtensionAPI): void {
           reason: `Task dispatch refused: ${errorMessage(error)}. Use a valid shared ledger and its current start binding; /atlas exit is the user exit.`,
         };
       }
-      if (isolationRequired && cfgTaskIsolationMerge.get(live.settings) === "patch" && !patchMergeWarned.has(originSessionId)) {
-        patchMergeWarned.add(originSessionId);
+      if (isolationRequired && forceBranchMerge(live)) {
         notify(
           ctx,
-          "Host task isolation merges child work as one patch (task.isolation.merge: patch), so each child's per-slice commits are squashed. Set task.isolation.merge to branch to keep them.",
-          "warning",
+          "Atlas switched task.isolation.merge from patch to branch while it executes, so each isolated child's commits land in this checkout instead of an uncommitted patch. Your setting returns when Atlas exits.",
         );
       }
     }
@@ -2632,6 +2630,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         detach(ownership);
       }
     }
+    if (live && restored?.phase !== "executing") restoreIsolationMerge(live);
     await settleDetached();
     await resumeLedger(ctx, restored, previousReference);
     if (!restored?.ownership) herdrDag.release(sessionId, "exit");
@@ -2674,7 +2673,10 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     const live = mainSession(ctx);
-    if (live) restoreApprovalTiers(live);
+    if (live) {
+      restoreApprovalTiers(live);
+      restoreIsolationMerge(live);
+    }
     const sessionId = ctx.sessionManager.getSessionId();
     herdrDag.release(sessionId, "shutdown");
     clearObservation(ctx, sessionId);
@@ -2698,7 +2700,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     publishedStates.delete(sessionId);
     reviewLevels.delete(sessionId);
     deliverySettings.delete(sessionId);
-    patchMergeWarned.delete(sessionId);
     atlasWidgets.delete(sessionId);
     herdrDag.forget(sessionId);
     roadmap.forget(sessionId);

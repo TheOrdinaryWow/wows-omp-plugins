@@ -48,7 +48,7 @@ Atlas 父会话的每次 `task` 调用，要么是绑定调用，要么是调研
 - **绑定调用**的每个任务恰好带一行 `atlas_assignment`。`{"rows": {...}}` 绑定已开始的 T、D、X、F 或 P1 尝试；`{"verify": {"T3": "…"}}` 绑定一个 HEAVY 行的验证尝试。每个关口和每个验证者都需要单独的子代理，并使用 `atlas_ledger` 给出的 `outputSchema` 和 `schemaMode: "strict"`。实现已记录的行会拒绝再次派发实现。
 - **调研调用**不带 `atlas_assignment` 行。每个任务指定的代理必须在当前列表中，且其定义把工具限制在 `read`、`find`、`grep`、`glob`、`ast_grep` 和 `web_search`（外加宿主自动添加的 `yield`）；没有 `tools` 列表的代理会被拒绝。额外的 `tools` 会被拒绝，`metis` 和 `momus` 仍只在规划阶段可用，调研同样需要有效的执行记录。调研子代理在执行记录中没有对应的行，也不能完成任何一行。在同一次调用里混用绑定任务和调研任务会被拒绝。
 
-隔离跟随宿主设置。`task.isolation.enabled` 开启时，每次派发 T、D、X 和 P1 都必须传入 `isolated: true`；关口、验证者和调研子代理可以隔离，也可以不隔离。`task.isolation.merge` 为 `patch` 时，第一次隔离派发会提示一次：子代理的提交会被压成一个补丁。
+隔离跟随宿主设置。`task.isolation.enabled` 开启时，每次派发 T、D、X 和 P1 都必须传入 `isolated: true`；关口、验证者和调研子代理可以隔离，也可以不隔离。宿主的 patch 合并会把隔离子代理的改动以未提交状态放进工作区，并丢掉它的提交，所以 `task.isolation.merge` 为 `patch` 时，第一次隔离派发会以运行时覆盖的方式把它切到 `branch`，并提示一次。退出 Atlas、切换到不在执行中的会话、会话关闭时都会恢复原值，已保存的设置不会被改写。
 
 ## 代理回退
 

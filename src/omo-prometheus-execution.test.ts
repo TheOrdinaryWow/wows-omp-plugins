@@ -1752,7 +1752,7 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "isolation-required") {
     // Host modules load only inside the isolated child process, after HOME is private.
-    const { cfgTaskIsolationEnabled } = await import("@oh-my-pi/pi-coding-agent/task/settings");
+    const { cfgTaskIsolationEnabled, cfgTaskIsolationMerge } = await import("@oh-my-pi/pi-coding-agent/task/settings");
     cfgTaskIsolationEnabled.override(settings, true);
     const dispatch = async (id: string, extra: Record<string, unknown> = {}) => {
       ok(await call({ action: "start", id }));
@@ -1764,14 +1764,18 @@ async function scenario(name: string, root: string): Promise<void> {
         input: { agent: item.dispatchAgent, task, solutionSpace: "Scoped", ...extra },
       })) as { block?: boolean; reason?: string } | undefined;
     };
-    const warnings = () => notices.filter((notice) => notice.includes("task.isolation.merge")).length;
     assert.match((await dispatch("T1"))?.reason ?? "", /T1 is implementation work and must dispatch with isolated: true/);
-    assert.equal(warnings(), 0);
+    assert.equal(cfgTaskIsolationMerge.get(settings), "patch");
     ok(await call({ action: "reopen", id: "T1" }));
     assert.equal(await dispatch("T1", { isolated: true }), undefined);
     assert.equal(await dispatch("T3", { isolated: true }), undefined);
-    // Patch merges squash per-slice commits; the user hears it once per session.
-    assert.equal(warnings(), 1);
+    // Patch merges would drop each child's commits, so Atlas runs isolated children with branch merges and says so once.
+    assert.equal(cfgTaskIsolationMerge.get(settings), "branch");
+    assert.equal(notices.filter((notice) => notice.includes("task.isolation.merge")).length, 1);
+    // Leaving execution puts the user's setting back without leaving a runtime layer behind.
+    await hook("session_shutdown");
+    assert.equal(cfgTaskIsolationMerge.get(settings), "patch");
+    assert.equal(settings.getProvenance(cfgTaskIsolationMerge), "default");
     return;
   }
   if (name === "discover") {
