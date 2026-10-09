@@ -19,6 +19,21 @@
 - Reopen and block affect only the named row, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.18.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.17.1...omo-prometheus@0.18.0) (2026-10-09)
+
+
+### Features
+
+* **omo-prometheus:** add a delivery setting that picks the plan delivery mode or asks ([f3e60de](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/f3e60ded11cb49029677db090867084f657ddcd9))
+* **omo-prometheus:** add ledger v5 with tiers, HEAVY verification, discovered rows, and PR delivery ([798ddf2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/798ddf2c7478c8f287f851563fb7b5302e5132a0))
+* **omo-prometheus:** anchor planning on the affected user's ideal state with tiered tasks, QA contracts and delivery mode ([8cf7c45](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/8cf7c45105e8fa068eeea08075daab6c4c070e8a))
+* **omo-prometheus:** enforce a configurable plan-review round limit ([824dc62](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/824dc620c423a38fe66b31718778659a2c00bde2))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** bind plan reviews to the plan file instead of an inline copy ([532229d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/532229d362234086dae40d98813986e3ab6a49d1))
+
 ## [0.17.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.17.0...omo-prometheus@0.17.1) (2026-10-09)
 
 

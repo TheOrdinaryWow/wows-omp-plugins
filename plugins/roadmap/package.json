@@ -1,6 +1,6 @@
 {
   "name": "wows-omp-plugin-roadmap",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "type": "module",
   "private": true,
   "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",

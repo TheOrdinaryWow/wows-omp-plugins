@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.3.2...roadmap@0.4.0) (2026-10-09)
+
+
+### Features
+
+* **roadmap:** retain Atlas delivery summaries for stage closure ([ce73a17](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/ce73a17018c850bb394073a81c0322a4d5f187dc))
+
 ## [0.3.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.3.1...roadmap@0.3.2) (2026-10-09)
 
 

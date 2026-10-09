@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.5...omp-herdr-dag@0.5.0) (2026-10-09)
+
+
+### Features
+
+* **omp-herdr-dag:** accept discovery and verification timeline events ([633bd59](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/633bd59fe7034a05b41f7909260229a70a77636a))
+* **omp-herdr-dag:** show discovered work delivery and verification ([c712431](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c712431e578619f6e8654a3298f2193df105ea74))
+
 ## [0.4.5](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.4...omp-herdr-dag@0.4.5) (2026-10-09)
 
 
