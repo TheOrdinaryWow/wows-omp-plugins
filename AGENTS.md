@@ -138,11 +138,25 @@ pi.registerTool({
 
 `pi.typebox.Type.Object(...)` infers without the annotation if you prefer it.
 
+Any `tool_call`, `tool_result` or `tool_approval_*` handler turns off the host's
+speculative batch `task` launch and speculative reads for the whole session
+(omp 18.4.3+). Register them only when the plugin must block or rewrite a call;
+a plugin that only observes results listens to `tool_execution_end` instead, as
+omp-herdr-dag does. Guidance for the model after a tool runs goes through the
+`tool_result` `additionalContext` return, not an extra `sendMessage`.
+
+Since omp 18.4.12 the host tells subagents not to run builds or tests unless
+their assignment explicitly says so. Prompts that dispatch children whose work
+is accepted on their own evidence (Atlas rows, audit fixers, ultrawork lanes)
+must name the checks in every assignment.
+
 `judge-dispatch` routes only by rewriting `task` tool calls. OMP's
 `before_subagent_spawn` hook can swap a child's model but not its agent type, so
 `eval.agent()` and `workpool()` stay unrouted. An earlier "enhanced" mode coded
 against a hypothetical routing API that no omp release ever shipped, and it was
-removed. Build on a host surface only once a released omp exposes it.
+removed. Build on a host surface only once a released omp exposes it. A `task`
+item that sets its own `model` (omp 18.5.0+) is pinned: the plugin still routes
+its agent and effort but never replaces or re-reports that model.
 
 It derives its legal agent set from the live `task` tool description and reads
 its settings on every call from `ctx.cwd` (never `process.cwd()`), because plugin
