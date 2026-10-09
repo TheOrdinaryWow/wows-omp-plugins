@@ -90,7 +90,6 @@ async function scenario(name: "rpc" | "headless", root: string): Promise<void> {
     },
     getTodoPhases: () => [],
     setTodoPhases() {},
-    getAsyncJobSnapshot: () => ({ running: [], recent: [], delivery: { queued: 0, delivering: false, pendingJobIds: [] } }),
     asyncJobManager: { getAllJobs: () => [] },
   } as unknown as AgentSession;
   AgentRegistry.resetGlobalForTests();
@@ -148,7 +147,7 @@ async function scenario(name: "rpc" | "headless", root: string): Promise<void> {
       commands.set(command, spec.handler),
     logger: { warn() {} },
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-    getAllTools: () => [{ name: "task", description: "# Available Agents\n### task\nworker", sourceInfo: { source: "builtin" } }],
+    getAllTools: () => [{ name: "task", description: "# Available Agents\n- `task`: worker", sourceInfo: { source: "builtin" } }],
     getActiveTools: () => ["task"],
     setActiveTools: async () => {},
     sendMessage: (message: { content: string }) => messages.push(message.content),

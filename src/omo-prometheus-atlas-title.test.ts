@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { type AtlasTitleSession, retitleForAtlas } from "../plugins/omo-prometheus/src/atlas-title.ts";
+
+const hostTitlePrompt = await readFile(
+  join(dirname(fileURLToPath(import.meta.resolve("@oh-my-pi/pi-coding-agent"))), "prompts/system/title-system.md"),
+  "utf8",
+);
 
 const plan = { name: "billing-cleanup", content: "# Billing cleanup\n\nRemove the legacy invoice path." };
 
@@ -63,11 +71,18 @@ test("a later request supersedes one still in flight", async () => {
   expect(names).toEqual([{ name: "Atlas: Second plan", source: "auto" }]);
 });
 
+test("without an override, the host's own default title prompt leads the Atlas rules", async () => {
+  const { session, prompts } = fakeSession();
+  await retitleForAtlas(session, plan);
+  expect(prompts[0]?.startsWith(`${hostTitlePrompt.trim()}\n\n`)).toBe(true);
+  expect(prompts[0]).toContain('Start the title with "Atlas"');
+});
+
 test("the user's title prompt override takes precedence over the host default", async () => {
   const custom = fakeSession({ override: "Titles are lowercase Chinese." });
   await retitleForAtlas(custom.session, plan);
   const prompt = custom.prompts[0] ?? "";
   expect(prompt.startsWith("Titles are lowercase Chinese.")).toBe(true);
-  expect(prompt).not.toContain("Write a ~5 word title");
+  expect(prompt).not.toContain(hostTitlePrompt.trim().split("\n")[0] ?? "");
   expect(prompt).toContain("Atlas");
 });

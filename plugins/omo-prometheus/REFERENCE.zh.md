@@ -32,7 +32,6 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 | `recall`、`reflect`、`retain`、`memory_edit`、`learn`、`manage_skill` | 始终：它们写入的是记忆后端和托管技能，不是工作区 |
 | `goal`、`context_notes`、`new_context` | 始终 |
 | `write` | `agent://` 同伴消息、`proc://<id>/kill`，以及对任何已放行工具的 `xd://` 调用 |
-| `hub` | 观察类操作和发给代理的 `send`，不允许向进程输入 |
 
 其他工具一律屏蔽，包括 `bash`、`eval`、`edit`、`ast_edit`、文件写入、`security_scan` 以及 `checkpoint`/`rewind`（回退会让会话树分叉，脱离证明已完成行的回执）。其他扩展或 MCP 服务器注册的工具即使与原生工具同名也会被屏蔽，下表列出的除外。
 

@@ -32,7 +32,6 @@ The guard admits only tools that observe the session or change host-owned state;
 | `recall`, `reflect`, `retain`, `memory_edit`, `learn`, `manage_skill` | always: they write memory backends and managed skills, not the workspace |
 | `goal`, `context_notes`, `new_context` | always |
 | `write` | `agent://` peer messages, `proc://<id>/kill`, and `xd://` dispatch of any admitted tool |
-| `hub` | observing ops and `send` to agents, never process input |
 
 Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file writes, `security_scan` and `checkpoint`/`rewind` (rewinding would branch the session tree away from the receipts that prove completed rows). Tools registered by other extensions or MCP servers are blocked even when they share a native tool's name, unless listed below.
 

@@ -101,7 +101,6 @@ async function scenario(name: string, root: string): Promise<void> {
     },
     getTodoPhases: () => [],
     setTodoPhases() {},
-    getAsyncJobSnapshot: () => ({ running: [], recent: [], delivery: { queued: 0, delivering: false, pendingJobIds: [] } }),
     asyncJobManager: { getAllJobs: () => [] },
   } as unknown as AgentSession;
   AgentRegistry.resetGlobalForTests();
@@ -137,7 +136,7 @@ async function scenario(name: string, root: string): Promise<void> {
       getActiveTools: () => ["task", "roadmap_stage"],
       setActiveTools: async () => {},
       getAllTools: () => [
-        { name: "task", description: "# Available Agents\n### task\nworker\n### reviewer\nreview", sourceInfo: { source: "builtin" } },
+        { name: "task", description: "# Available Agents\n- `task`: worker\n- `reviewer`: review", sourceInfo: { source: "builtin" } },
         { name: "write", sourceInfo: { source: "builtin" } },
         { name: "roadmap_stage", sourceInfo: { source, path: sourcePath } },
         ...[...tools.values()].map((tool) => ({ name: tool.name, sourceInfo: { source: "extension", path: PROMETHEUS_ENTRY } })),

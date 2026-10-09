@@ -456,24 +456,11 @@ const READ_ONLY_DEBUG_ACTIONS: Record<string, true> = {
   variables: true,
 };
 
-const OBSERVING_OR_COORDINATING_HUB_OPS: Record<string, true> = {
-  cancel: true,
-  describe: true,
-  inbox: true,
-  jobs: true,
-  list: true,
-  logs: true,
-  ps: true,
-  send: true,
-  wait: true,
-};
-
 const SAFE_XDEV_TOOLS: Record<string, true> = {
   ...ALLOWED_TOOLS,
   ...MAGIC_CONTEXT_TOOLS,
   debug: true,
   github: true,
-  hub: true,
   ida: true,
   lsp: true,
   read: true,
@@ -548,17 +535,6 @@ function lspBlockReason(input: Record<string, unknown>): string | undefined {
   return `\`lsp\` action \`${action}\` can mutate files or server state`;
 }
 
-function hubBlockReason(input: Record<string, unknown>): string | undefined {
-  const op = stringField(input, "op");
-  if (!op) return "a `hub` call without an explicit op";
-  if (input.signal !== undefined || input.keys !== undefined || input.text !== undefined) {
-    return "`hub` process input (signal/keys/stdin) is an execution surface";
-  }
-  if (op === "send" && stringField(input, "name")) return "`hub send` with `name` writes to a supervised process";
-  if (OBSERVING_OR_COORDINATING_HUB_OPS[op] !== true) return `\`hub\` op \`${op}\` starts or mutates a process`;
-  return undefined;
-}
-
 function githubBlockReason(input: Record<string, unknown>): string | undefined {
   const op = stringField(input, "op");
   if (READ_ONLY_GITHUB_OPS[op] === true) return undefined;
@@ -580,7 +556,7 @@ function idaBlockReason(input: Record<string, unknown>): string | undefined {
 function writeBlockReason(input: Record<string, unknown>, roadmapToolSourcePath?: string): string | undefined {
   const path = stringField(input, "path");
   const lowerPath = path.toLowerCase();
-  // Peer messaging on hosts that replaced `hub send`; the host rejects JSON-path targets.
+  // Peer messaging; the host rejects JSON-path targets.
   if (lowerPath.startsWith("agent://")) return undefined;
   if (PROC_CANCEL_PATH.test(path)) return undefined;
   if (lowerPath.startsWith("proc://"))
@@ -620,8 +596,6 @@ export function executionBlockReason(toolName: string, input: unknown, roadmapTo
       return readBlockReason(args);
     case "lsp":
       return lspBlockReason(args);
-    case "hub":
-      return hubBlockReason(args);
     case "github":
       return githubBlockReason(args);
     case "debug":

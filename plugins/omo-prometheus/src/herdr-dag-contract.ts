@@ -105,8 +105,8 @@ export class HerdrDagContract {
   readonly #bindings = new Map<string, Binding>();
   #sessionId?: string;
 
-  constructor(readonly events?: ContractEvents) {
-    events?.on("herdr-dag:hello", (payload) => {
+  constructor(readonly events: ContractEvents) {
+    events.on("herdr-dag:hello", (payload) => {
       if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return;
       const hello = payload as Partial<HerdrDagHello>;
       if (hello.v !== 1 || typeof hello.sessionId !== "string" || typeof hello.requestId !== "string") return;
@@ -131,7 +131,7 @@ export class HerdrDagContract {
   }
 
   #emit(sessionId: string, channel: string, payload: unknown): void {
-    if (this.#enabled.get(sessionId) === true) this.events?.emit(channel, payload);
+    if (this.#enabled.get(sessionId) === true) this.events.emit(channel, payload);
   }
 
   #hello(sessionId: string, requestId?: string): void {

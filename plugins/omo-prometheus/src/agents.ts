@@ -1,11 +1,9 @@
 /** Spawnable names come from the live task-tool description, not the plugin catalog. */
 const AVAILABLE_AGENTS_HEADING = "# Available Agents";
-const AGENT_HEADING_PATTERN = /^###\s+([A-Za-z0-9_-]+)(?:\s|$)/;
 const AGENT_BULLET_PATTERN = /^-\s+`([A-Za-z0-9_-]+)`(?:\s|:|$)/;
 
 /**
- * The host renders this section after spawn policy and disabled-agent filtering.
- * Older hosts use ### headings; newer hosts use backticked bullet names.
+ * The host renders this section after spawn policy and disabled-agent filtering, one backticked bullet name per agent.
  * An absent or unrecognized section is unknown, not an empty legal set.
  */
 export function parseLegalAgentNames(taskDescription: string): string[] | undefined {
@@ -15,7 +13,7 @@ export function parseLegalAgentNames(taskDescription: string): string[] | undefi
   const section = taskDescription.slice(headingIndex + AVAILABLE_AGENTS_HEADING.length);
   for (const line of section.split("\n")) {
     if (/^#{1,2}\s/.test(line)) break;
-    const name = AGENT_HEADING_PATTERN.exec(line)?.[1] ?? AGENT_BULLET_PATTERN.exec(line)?.[1];
+    const name = AGENT_BULLET_PATTERN.exec(line)?.[1];
     if (name && !names.includes(name)) names.push(name);
   }
   if (names.length) return names;

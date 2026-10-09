@@ -117,17 +117,41 @@ async function scenario(name: string, root: string): Promise<void> {
   const sessionFiles = new Map<string, { id: string; entries: unknown[] }>();
   const completions = new Map<string, (prefix: string) => Array<{ value: string; description?: string }> | null>();
   const commands = new Map<string, (args: string, context: ExtensionContext) => Promise<void>>();
-  const nativeJobs: Array<{
+  type NativeJob = {
     id: string;
     agentId: string;
     type: "task";
     status: string;
     startTime: number;
     label: string;
-    ownerId?: string;
-    promise?: Promise<void>;
-  }> = [];
+    ownerId: string;
+    promise: Promise<void>;
+  };
+  const nativeJobs: NativeJob[] = [];
   let settleNativeJob: (() => void) | undefined;
+  /** Like the host job manager, a run that completes or fails settles the job promise; a cancel request alone does not. */
+  const nativeJob = (agentId: string, initial: string): NativeJob => {
+    const run = Promise.withResolvers<void>();
+    let status = initial;
+    if (initial === "completed" || initial === "failed") run.resolve();
+    settleNativeJob = run.resolve;
+    return {
+      id: `job-${agentId}`,
+      agentId,
+      type: "task",
+      startTime: Date.now(),
+      label: agentId,
+      ownerId: "Main",
+      promise: run.promise,
+      get status() {
+        return status;
+      },
+      set status(next: string) {
+        status = next;
+        if (next === "completed" || next === "failed") run.resolve();
+      },
+    };
+  };
   const sessionManager = {
     getSessionId: () => sessionId,
     getSessionDir: () => join(root, "sessions"),
@@ -170,11 +194,6 @@ async function scenario(name: string, root: string): Promise<void> {
     asyncJobManager: { getAllJobs: ({ ownerId }: { ownerId: string }) => nativeJobs.filter((job) => job.ownerId === ownerId) },
     effectiveExtensionRoots: undefined,
     getSessionAgents: () => [],
-    getAsyncJobSnapshot: () => ({
-      running: nativeJobs.filter((job) => job.status === "running"),
-      recent: nativeJobs.filter((job) => job.status !== "running"),
-      delivery: { queued: 0, delivering: false, pendingJobIds: [] },
-    }),
   }) as AgentSession;
   const switchTo = async (id: string, next: unknown[], reason: "new" | "resume") => {
     sessionId = id;
@@ -264,7 +283,8 @@ async function scenario(name: string, root: string): Promise<void> {
       getAllTools: () => [
         {
           name: "task",
-          description: "# Available Agents\n### task\nworker\n### reviewer\nreview\n### scout\nresearch",
+          description:
+            "# Available Agents\n- `task`: worker\n- `reviewer`: review\n- `scout` (READ-ONLY; investigation only, no edits): research",
           sourceInfo: { source: "builtin" },
         },
         { name: "write", sourceInfo: { source: "builtin" } },
@@ -655,6 +675,7 @@ async function scenario(name: string, root: string): Promise<void> {
       finalResult?: boolean;
       finalError?: string;
       asyncStatus?: string;
+      index?: number;
     } = {},
   ) => {
     const content =
@@ -686,28 +707,13 @@ async function scenario(name: string, root: string): Promise<void> {
       bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
         id: childAgentId,
         agent: prepared.item.dispatchAgent,
-        index: 0,
+        index: options.index ?? 0,
         status: options.nativeStatus ?? "completed",
         sessionFile,
         parentToolCallId: prepared.toolCallId,
       });
     if (options.asyncStatus !== undefined) {
-      nativeJobs.push({
-        id: `job-${childAgentId}`,
-        agentId: childAgentId,
-        type: "task",
-        status: options.asyncStatus,
-        startTime: Date.now(),
-        label: childAgentId,
-        ...(name === "cancelled-live-child"
-          ? {
-              ownerId: "Main",
-              promise: new Promise<void>((resolve) => {
-                settleNativeJob = resolve;
-              }),
-            }
-          : {}),
-      });
+      nativeJobs.push(nativeJob(childAgentId, options.asyncStatus));
       await hook("tool_result", {
         toolName: "task",
         toolCallId: prepared.toolCallId,
@@ -1248,16 +1254,6 @@ async function scenario(name: string, root: string): Promise<void> {
     });
     const job = manager.getJob(id);
     assert(job);
-    nativeJobs.push({
-      id: job.id,
-      agentId: "AbortableWake",
-      type: "task",
-      startTime: job.startTime,
-      label: job.label,
-      get status() {
-        return job.status;
-      },
-    });
     try {
       await hook("context", { messages: [] });
       if (name === "wake-wrapper-cancel") assert(manager.cancel(id, { ownerId: "Main" }));
@@ -1334,6 +1330,42 @@ async function scenario(name: string, root: string): Promise<void> {
     await commands.get("atlas")?.("integrity", ctx);
     ok(await call({ action: "status" }));
     assert.equal((await row("T3")).status, "open");
+    return;
+  }
+  if (name === "batch-error-sibling") {
+    ok(await call({ action: "start", id: "T1" }));
+    ok(await call({ action: "start", id: "T3" }));
+    const current = await ledger();
+    const first = await row("T1");
+    const third = await row("T3");
+    const toolCallId = "salvaged-batch";
+    const input = {
+      context: "Independent native task members",
+      tasks: [first, third].map((item) => ({
+        agent: item.dispatchAgent,
+        task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { [item.id]: item.attempt } })}\nExecute ${item.id}`,
+      })),
+    };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
+    await publish({ item: first, current, toolCallId, input }, "LandedSibling", { finalResult: false });
+    await publish({ item: third, current, toolCallId, input }, "SalvagedMember", { finalResult: false, index: 1 });
+    // The host ORs every member's payload into one batch isError; only the salvaged member carries its own error.
+    await hook("tool_result", {
+      toolName: "task",
+      toolCallId,
+      input,
+      isError: true,
+      details: {
+        results: [
+          { id: "LandedSibling", index: 0, exitCode: 0, aborted: false },
+          { id: "SalvagedMember", index: 1, exitCode: 0, aborted: false, error: "Isolated branch merge failed" },
+        ],
+      },
+      content: [{ type: "text", text: "Task execution failed: Isolated branch merge failed" }],
+    });
+    ok(await done("T1", "LandedSibling"));
+    assert.equal((await row("T1")).status, "done");
+    refused(await done("T3", "SalvagedMember"));
     return;
   }
   if (name === "atlas-model-role") {
@@ -2047,6 +2079,7 @@ if (process.env[CHILD_ENV]) {
       "wake-wrapper-direct-abort",
       "mixed-schedule-failure",
       "mixed-inline-failure",
+      "batch-error-sibling",
       "compact-handoff",
       "compact-inline-mismatch",
       "compact-reference-mismatch",

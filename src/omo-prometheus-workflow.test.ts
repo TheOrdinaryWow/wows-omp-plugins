@@ -116,8 +116,6 @@ describe("Atlas execution guard", () => {
     expect(executionBlockReason("bash", { command: "bun test" })).toBeTruthy();
     expect(executionBlockReason("lsp", { action: "references" })).toBeUndefined();
     expect(executionBlockReason("lsp", { action: "rename", apply: true })).toBeTruthy();
-    expect(executionBlockReason("hub", { op: "wait" })).toBeUndefined();
-    expect(executionBlockReason("hub", { op: "start", application: "bun" })).toBeTruthy();
   });
 
   test("recursively classifies xd device calls instead of treating write as a bypass", () => {

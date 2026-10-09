@@ -27,6 +27,13 @@ interface Assignment {
   failedInFinalProgress?: boolean;
 }
 
+/** The parent's native async jobs, read from its job manager; `onSettled` re-runs detached-ownership settlement. */
+interface NativeJobs {
+  ownerId: string;
+  jobs: readonly unknown[];
+  onSettled: () => void;
+}
+
 interface ObservedChild {
   childAgentId: string;
   assignment: Assignment;
@@ -315,6 +322,7 @@ export class ChildEvidence {
     const assignments = this.#dispatches.get(`${sessionId}:${toolCallId}`);
     if (!assignments) return;
     for (const assignment of assignments) assignment.returnedAt ??= Date.now();
+    // The tool-level flag ORs every member's payload, so it can decide only a call without result details.
     if (!object(details)) {
       if (isError) for (const assignment of assignments) assignment.finalStatus = "failed";
       return;
@@ -335,8 +343,7 @@ export class ChildEvidence {
         const assignment = assignments[result.index as number];
         if (!assignment) continue;
         const child = this.#children.get(`${sessionId}:${result.id}`);
-        const finalStatus =
-          !isError && result.exitCode === 0 && result.aborted !== true && result.error === undefined ? "completed" : "failed";
+        const finalStatus = result.exitCode === 0 && result.aborted !== true && result.error === undefined ? "completed" : "failed";
         assignment.finalStatus = finalStatus;
         if (child?.assignment === assignment && !child.reactivation)
           child.finalStatus = child.finalStatus === "failed" ? "failed" : finalStatus;
@@ -349,88 +356,53 @@ export class ChildEvidence {
     }
   }
 
-  observeAsyncJobs(sessionId: string, snapshot: unknown, native?: { ownerId: string; jobs: unknown; onSettled: () => void }): void {
-    if (!object(snapshot)) return;
-    if (native && Array.isArray(native.jobs)) {
-      for (const job of native.jobs) {
-        if (
-          !object(job) ||
-          job.ownerId !== native.ownerId ||
-          job.type !== "task" ||
-          typeof job.id !== "string" ||
-          typeof job.agentId !== "string" ||
-          typeof job.startTime !== "number" ||
-          !(job.promise instanceof Promise)
-        )
-          continue;
-        for (const assignments of this.#dispatches.values()) {
-          for (const assignment of assignments) {
-            if (
-              assignment.sessionId !== sessionId ||
-              assignment.nativeChildId !== job.agentId ||
-              assignment.returnedAt === undefined ||
-              job.startTime < assignment.dispatchedAt ||
-              job.startTime > assignment.returnedAt ||
-              assignment.observingSettlement
-            )
-              continue;
-            if (assignment.nativeJobId && (assignment.nativeJobId !== job.id || assignment.nativeJobStart !== job.startTime)) continue;
-            assignment.nativeJobId = job.id;
-            assignment.nativeJobStart = job.startTime;
-            assignment.observingSettlement = true;
-            // Keep the exact native promise/object even if the manager evicts its row on a session switch.
-            void job.promise.then(
-              () => {
-                assignment.settled = true;
-                assignment.finalStatus = job.status === "completed" && assignment.finalStatus !== "failed" ? "completed" : "failed";
-                const child = this.#children.get(`${sessionId}:${job.agentId}`);
-                if (child?.assignment === assignment && !child.reactivation) child.finalStatus = assignment.finalStatus;
-                native.onSettled();
-              },
-              () => {
-                assignment.settled = true;
-                assignment.finalStatus = "failed";
-                const child = this.#children.get(`${sessionId}:${job.agentId}`);
-                if (child?.assignment === assignment && !child.reactivation) child.finalStatus = "failed";
-                native.onSettled();
-              },
-            );
-          }
-        }
-      }
-    }
-    for (const bucket of [snapshot.running, snapshot.recent]) {
-      if (!Array.isArray(bucket)) continue;
-      for (const job of bucket) {
-        if (
-          !object(job) ||
-          job.type !== "task" ||
-          typeof job.id !== "string" ||
-          typeof job.agentId !== "string" ||
-          typeof job.startTime !== "number"
-        )
-          continue;
-        for (const assignments of this.#dispatches.values()) {
-          for (const assignment of assignments) {
-            if (
-              assignment.sessionId !== sessionId ||
-              assignment.nativeChildId !== job.agentId ||
-              assignment.returnedAt === undefined ||
-              job.startTime < assignment.dispatchedAt ||
-              job.startTime > assignment.returnedAt
-            )
-              continue;
-            if (assignment.nativeJobId && (assignment.nativeJobId !== job.id || assignment.nativeJobStart !== job.startTime)) continue;
-            assignment.nativeJobId = job.id;
-            assignment.nativeJobStart = job.startTime;
-            const child = this.#children.get(`${sessionId}:${job.agentId}`);
-            if (job.status === "failed") assignment.finalStatus = "failed";
-            // cancelled/aborted is a request status until the native run actually settles.
-            else if ((job.status === "cancelled" || job.status === "aborted") && assignment.settled) assignment.finalStatus = "failed";
-            else if (job.status === "completed" && assignment.finalStatus !== "failed") assignment.finalStatus = "completed";
-            if (child?.assignment === assignment && !child.reactivation && assignment.finalStatus)
-              child.finalStatus = assignment.finalStatus;
-          }
+  /**
+   * Bind returned assignments to the parent's native task jobs. Only the exact job promise's settlement records a final
+   * outcome; the retained promise survives the manager evicting its row.
+   */
+  observeAsyncJobs(sessionId: string, native: NativeJobs): void {
+    for (const job of native.jobs) {
+      if (
+        !object(job) ||
+        job.ownerId !== native.ownerId ||
+        job.type !== "task" ||
+        typeof job.id !== "string" ||
+        typeof job.agentId !== "string" ||
+        typeof job.startTime !== "number" ||
+        !(job.promise instanceof Promise)
+      )
+        continue;
+      for (const assignments of this.#dispatches.values()) {
+        for (const assignment of assignments) {
+          if (
+            assignment.sessionId !== sessionId ||
+            assignment.nativeChildId !== job.agentId ||
+            assignment.returnedAt === undefined ||
+            job.startTime < assignment.dispatchedAt ||
+            job.startTime > assignment.returnedAt ||
+            assignment.observingSettlement
+          )
+            continue;
+          if (assignment.nativeJobId && (assignment.nativeJobId !== job.id || assignment.nativeJobStart !== job.startTime)) continue;
+          assignment.nativeJobId = job.id;
+          assignment.nativeJobStart = job.startTime;
+          assignment.observingSettlement = true;
+          void job.promise.then(
+            () => {
+              assignment.settled = true;
+              assignment.finalStatus = job.status === "completed" && assignment.finalStatus !== "failed" ? "completed" : "failed";
+              const child = this.#children.get(`${sessionId}:${job.agentId}`);
+              if (child?.assignment === assignment && !child.reactivation) child.finalStatus = assignment.finalStatus;
+              native.onSettled();
+            },
+            () => {
+              assignment.settled = true;
+              assignment.finalStatus = "failed";
+              const child = this.#children.get(`${sessionId}:${job.agentId}`);
+              if (child?.assignment === assignment && !child.reactivation) child.finalStatus = "failed";
+              native.onSettled();
+            },
+          );
         }
       }
     }
@@ -444,29 +416,21 @@ export class ChildEvidence {
         if (child?.assignment === assignment && !child.reactivation) child.finalStatus = "failed";
       }
     }
-    this.#observeReactivations(sessionId, snapshot, native);
+    this.#observeReactivations(sessionId, native);
   }
 
-  #observeReactivations(
-    sessionId: string,
-    snapshot: Record<string, unknown>,
-    native?: { ownerId: string; jobs: unknown; onSettled: () => void },
-  ): void {
+  #observeReactivations(sessionId: string, native: NativeJobs): void {
     for (const child of this.#reactivations) {
       const turn = child.reactivation;
       if (!turn || child.assignment.sessionId !== sessionId) continue;
-      const jobs =
-        native && Array.isArray(native.jobs)
-          ? native.jobs
-          : [...(Array.isArray(snapshot.running) ? snapshot.running : []), ...(Array.isArray(snapshot.recent) ? snapshot.recent : [])];
-      const candidates = jobs.filter((job): job is Record<string, unknown> => {
+      const candidates = native.jobs.filter((job): job is Record<string, unknown> => {
         if (
           !object(job) ||
+          job.ownerId !== native.ownerId ||
           job.type !== "task" ||
           typeof job.id !== "string" ||
           job.agentId !== child.childAgentId ||
-          typeof job.startTime !== "number" ||
-          (native && job.ownerId !== native.ownerId)
+          typeof job.startTime !== "number"
         )
           return false;
         if (turn.nativeJobId) return job.id === turn.nativeJobId && job.startTime === turn.nativeJobStart;
@@ -491,26 +455,22 @@ export class ChildEvidence {
       // IRC wake jobs wrap untilAborted(signal, outcome.promise). Cancelling the wrapper
       // settles job.promise before the underlying wake/finalizer, so it cannot release ownership.
       if (job.status === "cancelled" || job.status === "aborted" || abortSignal?.aborted === true) continue;
-      if (native && job.promise instanceof Promise) {
-        if (turn.observingSettlement) continue;
-        turn.observingSettlement = true;
-        void job.promise.then(
-          () => {
-            if ((job.status !== "completed" && job.status !== "failed") || abortSignal?.aborted === true) return;
-            turn.settled = true;
-            child.finalStatus = job.status;
-            native.onSettled();
-          },
-          () => {
-            // Native manager promises normally absorb run rejection. A rejected wrapper
-            // cannot authenticate the underlying wake's final outcome.
-            child.finalStatus = "failed";
-          },
-        );
-      } else if (!native && job.status === "completed") {
-        turn.settled = true;
-        child.finalStatus = job.status;
-      }
+      // Without its own settlement promise a wake job row cannot authenticate a final outcome.
+      if (turn.observingSettlement || !(job.promise instanceof Promise)) continue;
+      turn.observingSettlement = true;
+      void job.promise.then(
+        () => {
+          if ((job.status !== "completed" && job.status !== "failed") || abortSignal?.aborted === true) return;
+          turn.settled = true;
+          child.finalStatus = job.status;
+          native.onSettled();
+        },
+        () => {
+          // Native manager promises normally absorb run rejection. A rejected wrapper
+          // cannot authenticate the underlying wake's final outcome.
+          child.finalStatus = "failed";
+        },
+      );
     }
   }
 

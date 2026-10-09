@@ -50,12 +50,12 @@ export class RoadmapContract {
   readonly #bindings = new Map<string, RoadmapBinding>();
   readonly #completed = new Set<string>();
 
-  constructor(readonly events?: ContractEvents) {}
+  constructor(readonly events: ContractEvents) {}
 
   requestBinding(sessionId: string): RoadmapBinding | undefined {
     const requestId = randomUUID();
     let binding: RoadmapBinding | undefined;
-    const unsubscribe = this.events?.on("roadmap:binding", (payload) => {
+    const unsubscribe = this.events.on("roadmap:binding", (payload) => {
       if (
         !object(payload) ||
         payload.v !== 1 ||
@@ -81,9 +81,9 @@ export class RoadmapContract {
       binding = payload as unknown as RoadmapBinding;
     });
     try {
-      this.events?.emit("roadmap:binding-request", { v: 1, sessionId, requestId });
+      this.events.emit("roadmap:binding-request", { v: 1, sessionId, requestId });
     } finally {
-      unsubscribe?.();
+      unsubscribe();
     }
     if (binding) this.#bindings.set(sessionId, binding);
     else this.#bindings.delete(sessionId);
@@ -98,7 +98,7 @@ export class RoadmapContract {
   emitCompleted(event: Omit<AtlasCompleted, "v" | "at">): void {
     if (this.#completed.has(event.planId)) return;
     this.#completed.add(event.planId);
-    this.events?.emit("atlas:completed", { ...event, v: 1, at: new Date().toISOString() } satisfies AtlasCompleted);
+    this.events.emit("atlas:completed", { ...event, v: 1, at: new Date().toISOString() } satisfies AtlasCompleted);
   }
 
   forget(sessionId: string): void {

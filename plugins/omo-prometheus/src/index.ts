@@ -225,7 +225,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   let planReferences = new AtlasPlanReferences();
   const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
   let settlementTimer: NodeJS.Timeout | undefined;
-  const evidenceSubscription = pi.events?.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (payload) => {
+  pi.events.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (payload) => {
     childEvidence.observe(payload);
     // Wake turns reuse the original dispatch id; retain their exact jobs before history eviction.
     for (const ownership of ownerships) {
@@ -492,7 +492,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     `Atlas execution paused: ${record.ledgerError ?? "the shared approved execution ledger is unavailable"}. No new task dispatch or completion is permitted. Restore the exact shared proof, or run /atlas exit and obtain fresh native approval. Existing artifacts are preserved; there is no prompt-only fallback.`;
 
   const storeFor = (ctx: ExtensionContext): AtlasStore => {
-    if (typeof ctx.sessionManager.getSessionDir !== "function" || !ctx.sessionManager.getArtifactsDir()) {
+    if (!ctx.sessionManager.getArtifactsDir()) {
       throw new Error("Atlas requires a file-backed session with a durable session directory");
     }
     const sessionDir = ctx.sessionManager.getSessionDir();
@@ -570,19 +570,15 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const observeNativeJobs = (sessionId: string, live: AgentSession, parentAgentId: string): void => {
-    if (typeof live.getAsyncJobSnapshot !== "function") return;
     const manager = live.asyncJobManager;
-    const native =
-      typeof manager?.getAllJobs === "function"
-        ? {
-            ownerId: parentAgentId,
-            jobs: manager.getAllJobs({ ownerId: parentAgentId }),
-            onSettled: () => {
-              void settleDetached();
-            },
-          }
-        : undefined;
-    childEvidence.observeAsyncJobs(sessionId, live.getAsyncJobSnapshot({ recentLimit: Number.MAX_SAFE_INTEGER }), native);
+    if (!manager) return;
+    childEvidence.observeAsyncJobs(sessionId, {
+      ownerId: parentAgentId,
+      jobs: manager.getAllJobs({ ownerId: parentAgentId }),
+      onSettled: () => {
+        void settleDetached();
+      },
+    });
   };
 
   const settleDetached = async (): Promise<void> => {
@@ -706,8 +702,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   ): Promise<void> => {
     const live = mainSession(ctx);
     const activation = record.activation;
-    if (!live || typeof live.setPlanReferencePath !== "function")
-      throw new Error("this host cannot bind the approved Atlas plan reference");
+    if (!live) throw new Error("the registered main session is unavailable to bind the approved Atlas plan reference");
     if ((await fs.realpath(ctx.cwd)) !== plan.cwd) throw new Error("the approved plan belongs to a different workspace");
     const sessionId = ctx.sessionManager.getSessionId();
     await settleDetached();
@@ -2496,7 +2491,6 @@ export default function prometheus(pi: ExtensionAPI): void {
       const isolationRequired = cfgTaskIsolationEnabled.get(live.settings) && (await isGitWorkTree(ctx.cwd));
       let remembered = false;
       try {
-        if (!evidenceSubscription) throw new Error("native child lifecycle evidence is unavailable on this host");
         await withExecutionLedger(ctx, record, (ledger) => {
           const artifactsDir = ctx.sessionManager.getArtifactsDir();
           if (!artifactsDir) throw new Error("native task artifacts are unavailable");
