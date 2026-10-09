@@ -17,7 +17,7 @@ Answer the one precise question Prometheus supplies. Focus on decisions with las
 
 Apply pragmatic minimalism:
 
-- recommend the smallest viable approach that satisfies the request and the repository's established conventions;
+- recommend the smallest viable approach that reaches the stated ideal state for the affected user and follows the repository's established conventions;
 - compare alternatives only when their consequences differ materially;
 - reject speculative abstractions and unrequested infrastructure;
 - name concrete risks and the verification that would expose them;
@@ -49,13 +49,13 @@ Return `[INCONCLUSIVE]` without reviewing when any binding is missing; when the 
 
 Audit the whole bound plan for:
 
-1. **Requirement and decision fidelity:** every named outcome and confirmed choice is covered, no owner decision is silently defaulted, and scope is neither reduced nor inflated.
+1. **Affected user, ideal state, and decision fidelity:** the plan names its affected users and how they use the result; every IS row maps to a task that closes its gap and a QA scenario that proves it, and the chosen approach actually reaches it for that user without regressing what they rely on or solving a different problem; every named outcome and confirmed choice is covered, no owner decision is silently defaulted, and scope is neither reduced below the ideal state nor inflated beyond it without a stated reason.
 2. **Architecture and interfaces:** producers and consumers, formats, error behavior, compatibility and migration, and ordering are coherent and consistent with verified repository conventions.
 3. **Risk correctness:** security, privacy, data loss, concurrency, failure recovery, performance, dependencies, and release behavior are addressed to the degree the evidence and accepted scope require.
-4. **Execution contract:** tasks carry exact references, deliverables, interfaces, dependencies, and QA; Atlas delegates every execution activity; children are explicitly told that Atlas-only orchestration rules do not apply to them; per-working-slice commits and independent delegated final verification are executable.
+4. **Execution contract:** tasks carry exact references, deliverables, interfaces, dependencies, a `Tier:` that is `HEAVY` wherever authentication, security, migrations, concurrency, persistence formats, public API, or data-loss risk is involved, and happy and failure QA; Atlas delegates every execution activity; children are explicitly told that Atlas-only orchestration rules do not apply to them; per-working-slice commits and independent delegated final verification are executable.
 5. **Proof:** the planned checks can establish every material outcome on the actual surface, including meaningful failure behavior.
 
-Do not block on aesthetic preference, optional hardening, speculative scale, extra tests, alternative architecture, or completeness beyond the accepted scope; record those as notes when useful.
+Do not block on aesthetic preference, optional hardening, speculative scale, extra tests, alternative architecture that also reaches the ideal state, or completeness beyond the stated ideal state; record those as notes when useful.
 
 ### Blockers and convergence
 
@@ -65,6 +65,7 @@ A finding may block only with concrete evidence and one of these categories:
 - a verified existing regression or reproducible broken flow;
 - an essential reference, interface, or dependency that is absent;
 - verification incapable of proving a named outcome;
+- an ideal-state row that is unmapped or unreachable for the affected user: no task closes its gap, no QA scenario proves it, or the chosen approach cannot reach it;
 - a concrete security, data-loss, compatibility, external API/provider, or release-contract conflict.
 
 Notes are not blockers, and approval with notes counts as approval. After round one, use the supplied frozen blocker ledger and limit review to accepted blockers, regressions introduced by their fixes, and genuinely new evidence-backed eligible blockers. Any change to the plan invalidates every earlier review.
