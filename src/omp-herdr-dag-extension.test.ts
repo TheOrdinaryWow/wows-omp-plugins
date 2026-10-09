@@ -133,6 +133,8 @@ async function scenario(name: string, root: string): Promise<void> {
   const nativeNow = Date.now;
   const peers: Peer[] = [];
   let shutdown = false;
+  // A collab guest's replica session never streams; a local tool call always ends while the agent streams.
+  let idle = false;
   const ctx = {
     cwd,
     hasUI: name !== "non-ui",
@@ -147,6 +149,7 @@ async function scenario(name: string, root: string): Promise<void> {
       },
     },
     invokeTool: async () => ({ content: [{ type: "text", text: "native" }], details: { op: "init", phases: list }, isError: false }),
+    isIdle: () => idle,
   } as unknown as ExtensionContext;
   AgentRegistry.resetGlobalForTests();
   const live = {
@@ -186,7 +189,7 @@ async function scenario(name: string, root: string): Promise<void> {
   };
   const todo = async (op = "init", phases = list) => {
     const details = { op, phases };
-    await hook("tool_result", { toolName: "todo", details, isError: false });
+    await hook("tool_execution_end", { toolName: "todo", toolCallId: `todo-${Date.now()}`, result: { details }, isError: false });
     manager.appendMessage({
       role: "toolResult",
       toolCallId: `todo-${Date.now()}`,
@@ -211,10 +214,11 @@ async function scenario(name: string, root: string): Promise<void> {
   const splits = () => calls.filter((args) => args[1] === "split").length;
   const dir = () => join(manager.getSessionDir(), "herdr-dag", manager.getSessionId());
   const proposal = () =>
-    hook("tool_result", {
+    hook("tool_execution_end", {
       toolName: "write",
+      toolCallId: "proposal",
       isError: false,
-      details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
+      result: { details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } } },
     });
   const handoff =
     'Plan approved.\n\n<plan path="local://approved.md">\n# Plan\n</plan>\nFull plan inlined below; durable copy at `local://approved.md`';
@@ -435,6 +439,16 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal(state(), "executing");
       await hook("agent_end");
       assert.equal(state(), "idle");
+    } else if (name === "collab-guest") {
+      // Observe-only: a tool_result handler would turn off host speculative task launches.
+      assert(!hooks.has("tool_result"));
+      await hook("session_start");
+      idle = true;
+      await proposal();
+      await todo();
+      const peer = await connect();
+      assert.equal((await peer.snapshot()).runs.at(-1)?.source, "todo");
+      assert(!manager.getBranch().some((entry) => entry.type === "custom" && entry.customType === PLAN_EXECUTION_ENTRY));
     } else if (name === "queued-plan") {
       await configure({ displayTiming: "plan-execution" });
       await hook("session_start");
@@ -1023,6 +1037,7 @@ if (process.env[CHILD_ENV]) {
       "outside-herdr",
       "streaming",
       "plan",
+      "collab-guest",
       "queued-plan",
       "canonical-final-turn",
       "stale-approval",

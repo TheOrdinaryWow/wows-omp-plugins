@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/p
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
-import { VERSION } from "@oh-my-pi/pi-utils";
 
 import { type TodoDependency, type TodoPhase, validateTodoEdges } from "#src/model.ts";
 
@@ -52,7 +51,7 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
       ctx: ExtensionContext,
     ) {
       if (!ctx.invokeTool) {
-        const text = `Herdr DAG cannot delegate todo on OMP ${VERSION}: ctx.invokeTool is unavailable (requires OMP 18.3.5 or newer).`;
+        const text = "Herdr DAG cannot delegate todo: the native todo tool is not available in this session.";
         if (!warnedMissingInvoke) {
           warnedMissingInvoke = true;
           pi.logger.warn(text);

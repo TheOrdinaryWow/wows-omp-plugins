@@ -55,6 +55,8 @@ export interface TaskCard {
   activations: number;
   model?: string;
   retry?: { attempt: number; maxAttempts: number; errorMessage: string };
+  /** Host completion estimate (0-100) for a running child; absent in older snapshots and when the host has no estimate. */
+  completionPercent?: number;
   sessionFile?: string;
   startedAt: number;
   finishedAt?: number;
@@ -356,6 +358,7 @@ export function attachTask(previous: TaskCard | undefined, update: TaskUpdate): 
     task.currentTool = undefined;
     task.currentToolArgs = undefined;
     task.retry = undefined;
+    task.completionPercent = undefined;
   }
   if (previous && previous.status !== "running" && update.status !== "started") return task;
   task.detached = update.detached ?? task.detached;

@@ -81,18 +81,60 @@ describe("task sources", () => {
         expect(source.tasks.find((card) => card.id === id)?.status).toBe(status);
       }
       events.emit("task:subagent:lifecycle", { id: "live", status: "started" });
-      events.emit("task:subagent:event", {
-        id: "live",
-        event: { type: "tool_execution_start", toolName: "bash", args: { command: "pwd" } },
+      events.emit("task:subagent:progress", {
+        progress: { id: "live", currentTool: "bash", currentToolArgs: "pwd", completionPercent: 40 },
       });
-      expect(source.tasks.find((card) => card.id === "live")?.currentTool).toBe("bash");
+      const live = () => source.tasks.find((card) => card.id === "live");
+      expect(live()).toMatchObject({ currentTool: "bash", currentToolArgs: "pwd", completionPercent: 40 });
       now += 10001;
       source.sample();
-      expect(source.tasks.find((card) => card.id === "live")?.stalled).toBe(true);
+      expect(live()?.stalled).toBe(true);
       expect(source.stalledTaskIds.has("live")).toBe(true);
-      events.emit("task:subagent:event", { id: "live", event: { type: "tool_execution_end" } });
+      events.emit("task:subagent:progress", { progress: { id: "live", completionPercent: 60 } });
       expect(source.stalledTaskIds.has("live")).toBe(false);
-      expect(source.tasks.find((card) => card.id === "live")?.stalled).toBe(false);
+      expect(live()).toMatchObject({ stalled: false, currentTool: undefined, currentToolArgs: undefined, completionPercent: 60 });
+      events.emit("task:subagent:lifecycle", { id: "live", status: "completed" });
+      events.emit("task:subagent:lifecycle", { id: "live", status: "started" });
+      expect(live()?.completionPercent).toBeUndefined();
+    } finally {
+      source.dispose();
+    }
+  });
+
+  test("the final task result fails or aborts children that settled as completed", () => {
+    const events = new Events();
+    const source = new TaskSource({ events, inProgressNode: () => undefined, scheduleInterval: () => () => {} });
+    try {
+      for (const id of ["merge", "exit", "cancel", "ok", "running"]) {
+        events.emit("task:subagent:lifecycle", { id, status: "started" });
+        if (id !== "running") events.emit("task:subagent:lifecycle", { id, status: "completed" });
+      }
+      const notified: string[][] = [];
+      source.subscribe((tasks) => notified.push(tasks.map((card) => card.status)));
+      source.settle({
+        results: [
+          { id: "merge", exitCode: 0, error: "patch apply failed" },
+          { id: "exit", exitCode: 1 },
+          { id: "cancel", exitCode: 0, aborted: true },
+          { id: "ok", exitCode: 0 },
+          { id: "running", exitCode: 0, error: "merge failed" },
+          { id: "unknown", exitCode: 1 },
+        ],
+      });
+      const status = (id: string) => source.tasks.find((card) => card.id === id)?.status;
+      expect([status("merge"), status("exit"), status("cancel"), status("ok"), status("running")]).toEqual([
+        "failed",
+        "failed",
+        "aborted",
+        "completed",
+        "failed",
+      ]);
+      expect(source.tasks.find((card) => card.id === "running")?.finishedAt).toBeDefined();
+      expect(source.tasks.some((card) => card.id === "unknown")).toBe(false);
+      expect(notified).toHaveLength(2);
+      source.settle({ results: [] });
+      source.settle(undefined);
+      expect(notified).toHaveLength(2);
     } finally {
       source.dispose();
     }
@@ -104,14 +146,14 @@ describe("task sources", () => {
       {
         id: "grand",
         parentId: "parent",
-        kind: "subagent",
+        kind: "sub",
         displayName: "nested",
         status: "running",
         sessionFile: "/grand",
         createdAt: 1,
         lastActivity: 2,
       },
-      { id: "foreign", parentId: "other", kind: "subagent", displayName: "foreign", status: "running", createdAt: 1, lastActivity: 2 },
+      { id: "foreign", parentId: "other", kind: "sub", displayName: "foreign", status: "running", createdAt: 1, lastActivity: 2 },
     ];
     let changed: ((event: { type: string; ref: RegistryRef }) => void) | undefined;
     let tick: (() => void) | undefined;

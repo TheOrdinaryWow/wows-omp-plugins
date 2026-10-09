@@ -54,9 +54,13 @@ async function hostCheck(root: string): Promise<void> {
   const { getLatestTodoPhasesFromEntries } = await import("@oh-my-pi/pi-coding-agent/tools/todo");
   const { toolRenderers } = await import("@oh-my-pi/pi-tui/tools");
   const tui = await import("@oh-my-pi/pi-tui");
+  const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai");
   await tui.initTheme();
   const edges: TodoEdgesEntry[] = [];
   const observed: Array<{ toolName: string; details?: unknown }> = [];
+  const executionEnds: Array<{ toolName: string; idle: boolean }> = [];
+  // A placeholder key lets the host pick a bundled model; the agent loop below runs on a scripted stream and never reaches the network.
+  process.env.ANTHROPIC_API_KEY = "test-key";
   const manager = SessionManager.create(root, join(root, "sessions"));
   const { session, extensionsResult } = await createAgentSession({
     cwd: root,
@@ -87,6 +91,11 @@ async function hostCheck(root: string): Promise<void> {
       (pi) =>
         pi.on("tool_result", (event) => {
           observed.push({ toolName: event.toolName, details: event.details });
+        }),
+      // Same guard as the plugin's tool_execution_end handler: a local tool call ends while the session streams.
+      (pi) =>
+        pi.on("tool_execution_end", (event, ctx) => {
+          executionEnds.push({ toolName: event.toolName, idle: ctx.isIdle() });
         }),
     ],
   });
@@ -155,6 +164,39 @@ async function hostCheck(root: string): Promise<void> {
     assert(!malformed.isError);
     assert(malformed.content.some((item) => item.type === "text" && item.text.includes("Herdr DAG edges:")));
     assert.equal(malformed.details.phases[0]?.tasks[1]?.status, "in_progress");
+    let turn = 0;
+    session.agent.streamFn = (streamModel) => {
+      const stream = createAssistantMessageEventStream();
+      const content =
+        turn++ === 0
+          ? [{ type: "toolCall" as const, id: "loop-todo", name: "todo", arguments: { op: "start", task: "C" } }]
+          : [{ type: "text" as const, text: "Done." }];
+      const message = {
+        role: "assistant" as const,
+        content,
+        api: streamModel.api,
+        provider: streamModel.provider,
+        model: streamModel.id,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: content[0]?.type === "toolCall" ? ("toolUse" as const) : ("stop" as const),
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: message });
+        stream.push({ type: "done", reason: message.stopReason, message });
+      });
+      return stream;
+    };
+    await session.prompt("Start C.");
+    assert(session.isStreaming === false);
+    assert.deepEqual(executionEnds, [{ toolName: "todo", idle: false }]);
     console.log("HERDR_DAG_TODO_HOST_OK");
   } finally {
     await session.dispose();
@@ -589,12 +631,12 @@ if (process.env[CHILD_ENV]) {
       expect(h.records).toEqual([]);
     });
 
-    test("missing invokeTool returns a versioned error and logs once", async () => {
+    test("missing invokeTool returns an unavailable-tool error and logs once", async () => {
       const h = harness();
       const ctx = { sessionManager: h.ctx.sessionManager } as ExtensionContext;
       const result = await h.definition?.execute("missing", { op: "init" }, undefined, undefined, ctx);
       expect(result?.isError).toBe(true);
-      expect(result?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("OMP 18.3.5 or newer") });
+      expect(result?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("native todo tool is not available") });
       await h.definition?.execute("missing-again", { op: "init" }, undefined, undefined, ctx);
       expect(h.warnings).toHaveLength(1);
       expect(h.forwarded).toEqual([]);

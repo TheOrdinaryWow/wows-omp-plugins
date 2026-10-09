@@ -7,7 +7,7 @@ export interface SourceEvents {
 export interface RegistryRef {
   id: string;
   displayName: string;
-  kind: string;
+  kind: "main" | "sub" | "advisor";
   parentId?: string;
   status: string;
   sessionFile?: string | null;
@@ -47,7 +47,7 @@ export class TaskSource {
 
   constructor(options: TaskSourceOptions) {
     this.#options = options;
-    for (const channel of ["lifecycle", "progress", "event"] as const) {
+    for (const channel of ["lifecycle", "progress"] as const) {
       this.#unsubscribe.push(options.events.on(`task:subagent:${channel}`, (payload) => this.#frame(channel, payload)));
     }
     if (options.registry) {
@@ -109,20 +109,6 @@ export class TaskSource {
     if (!id || !progress) return;
     const previous = this.#cards.get(id);
     const at = this.#now();
-    if (channel === "event") {
-      const event = record(data.event);
-      if (!previous || !event) return;
-      if (event.type === "tool_execution_start") {
-        previous.currentTool = string(event.toolName);
-        previous.currentToolArgs = event.args === undefined ? undefined : JSON.stringify(event.args);
-      } else if (event.type === "tool_execution_end") {
-        previous.currentTool = undefined;
-        previous.currentToolArgs = undefined;
-      }
-      this.#activity.set(id, at);
-      this.#notify();
-      return;
-    }
     const status = channel === "progress" ? "progress" : string(data.status);
     if (!status || !["started", "progress", "completed", "failed", "aborted"].includes(status)) return;
     const node = status === "started" ? this.#options.inProgressNode() : undefined;
@@ -157,6 +143,7 @@ export class TaskSource {
       card.currentTool = string(progress.currentTool);
       card.currentToolArgs = string(progress.currentToolArgs);
       if (!retry) card.retry = undefined;
+      card.completionPercent = number(progress.completionPercent);
     }
     card.description = string(data.description) ?? string(progress.description) ?? card.description;
     card.sessionFile = string(data.sessionFile) ?? card.sessionFile;
@@ -165,11 +152,33 @@ export class TaskSource {
     this.#activity.set(id, at);
     this.sample();
   }
+  /**
+   * The settled lifecycle frame precedes isolation merge and patch apply; the final `task` tool result
+   * carries each child's real outcome, so a child that failed afterwards stops showing as completed.
+   */
+  settle(details: unknown): void {
+    const results = record(details)?.results;
+    if (!Array.isArray(results)) return;
+    let changed = false;
+    for (const value of results) {
+      const result = record(value);
+      const id = string(result?.id);
+      const card = id === undefined ? undefined : this.#cards.get(id);
+      if (!result || !card || (card.status !== "running" && card.status !== "completed")) continue;
+      const exitCode = number(result.exitCode) ?? 0;
+      const status = result.aborted === true ? "aborted" : exitCode !== 0 || string(result.error) ? "failed" : undefined;
+      if (!status) continue;
+      if (card.status === "running") this.#cards.set(card.id, attachTask(card, { id: card.id, status, at: this.#now() }));
+      else card.status = status;
+      changed = true;
+    }
+    if (changed) this.#notify();
+  }
   sample(): void {
     const refs = this.#options.registry?.list() ?? [];
     const byId = new Map(refs.map((ref) => [ref.id, ref]));
     for (const ref of refs) {
-      if ((ref.kind !== "sub" && ref.kind !== "subagent") || !ref.parentId) continue;
+      if (ref.kind !== "sub" || !ref.parentId) continue;
       const parent = this.#cards.get(ref.parentId);
       if (parent?.depth !== 1) continue;
       const existing = this.#cards.get(ref.id);

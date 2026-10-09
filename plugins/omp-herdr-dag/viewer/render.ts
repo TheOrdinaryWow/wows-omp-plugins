@@ -1359,7 +1359,12 @@ function taskCard(task: TaskCard, input: RenderInput, ctx: Ctx, width: number, s
     }
   }
   // Title embedded in the top border.
-  const status = task.status === "running" ? (stalled ? " stalled" : "") : ` ${task.status}`;
+  // Snapshots from older plugin versions carry no estimate, so the field may be absent.
+  const percent =
+    task.status === "running" && typeof task.completionPercent === "number" && Number.isFinite(task.completionPercent)
+      ? ` ${Math.round(Math.min(100, Math.max(0, task.completionPercent)))}%`
+      : "";
+  const status = task.status === "running" ? `${percent}${stalled ? " stalled" : ""}` : ` ${task.status}`;
   const statusStyle = fg(ctx.pal, task.status === "failed" ? "error" : stalled || task.status === "aborted" ? "warning" : "dim", {
     bold: stalled || task.status === "failed",
   });

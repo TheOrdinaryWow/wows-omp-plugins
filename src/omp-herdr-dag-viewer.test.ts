@@ -482,6 +482,18 @@ describe("omp-herdr-dag viewer rendering", () => {
     }
   });
 
+  test("running cards show the host completion estimate next to their status; cards without it render as before", async () => {
+    const snapshot = await fixture("tasks");
+    const running = snapshot.tasks.find((task) => task.status === "running");
+    if (!running) throw new Error("Expected running fixture card");
+    const top = (task: typeof running): string => strip(frame({ ...snapshot, tasks: [task] }, { view: "tasks", cols: 90 }).join("\n"));
+    const plain = { ...running, retry: undefined, stalled: false, completionPercent: undefined };
+    expect(top({ ...plain, completionPercent: 42.4 })).toContain(`${running.agent} 42% `);
+    expect(top({ ...plain, completionPercent: 42.4, stalled: true })).toContain(`${running.agent} 42% stalled`);
+    expect(top({ ...plain, status: "completed", completionPercent: 42 })).not.toContain("42%");
+    expect(top(plain)).not.toMatch(/\d+%/);
+  });
+
   test("selection moves through nodes and the footer shows the selected node's detail", async () => {
     const snapshot = await fixture("atlas");
     const viewState: ViewState = { ...DEFAULT_VIEW_STATE, folded: [] };

@@ -427,9 +427,11 @@ class DagExtension {
     this.#publish();
   }
 
-  async toolResult(event: { toolName: string; details?: unknown; isError?: boolean }): Promise<void> {
+  /** `local` is false for events mirrored onto a collab guest, which must not append plan entries to the replica. */
+  async toolResult(event: { toolName: string; details?: unknown; isError?: boolean }, local: boolean): Promise<void> {
     if (!this.#server) return;
-    this.#plan.observeResult(event);
+    if (local) this.#plan.observeResult(event);
+    if (event.toolName === "task") this.#tasks?.settle(event.details);
     const todoGeneration = this.#todo?.generation;
     this.#todo?.observeResult(event);
     if (this.#todo?.generation !== todoGeneration) this.#generation += 1;
@@ -523,6 +525,12 @@ export default function herdrDag(pi: ExtensionAPI, deps: Dependencies = {}): voi
     }),
   );
   pi.on("agent_end", (event) => extension.run(() => extension.agentEnd(event.willContinue)));
-  pi.on("tool_result", (event) => extension.run(() => extension.toolResult(event)));
+  // Notification-only, unlike `tool_result`: a lifecycle handler would disable host speculative launches.
+  pi.on("tool_execution_end", (event, ctx) => {
+    // A collab guest's replica session never streams; its tool_execution_end events are mirrored host calls.
+    const local = !ctx.isIdle();
+    const details = (event.result as { details?: unknown } | undefined)?.details;
+    return extension.run(() => extension.toolResult({ toolName: event.toolName, isError: event.isError, details }, local));
+  });
   pi.on("session_shutdown", () => extension.shutdown());
 }
