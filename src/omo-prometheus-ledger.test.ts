@@ -2,17 +2,26 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 
 import {
+  addDeferredFinding,
+  addDiscoveredRow,
   addFixRow,
+  type ChildReceipt,
   createLedger,
   isComplete,
+  type LedgerItem,
   ledgerRows,
   nextDispatchable,
   parsePlanChecklist,
+  planDigest,
+  recordReceipt,
+  recordVerification,
   refreshDispatchAgents,
   renderLedgerSummary,
   reopenRow,
   restoreLedger,
   startRow,
+  startVerification,
+  verificationStatus,
 } from "../plugins/omo-prometheus/src/ledger.ts";
 
 const plan = `# Work plan
@@ -37,6 +46,25 @@ const plan = `# Work plan
 - [ ] F3. Real-surface QA
 - [ ] F4. Success-criteria fidelity
 `;
+
+const heavyPlan = plan.replace("  - Depends on: T1\n", "  - Depends on: T1\n  - Tier: HEAVY\n");
+
+function receiptFor(row: LedgerItem, attempt: string, childAgentId: string): ChildReceipt {
+  return {
+    receiptId: `receipt-${childAgentId}`,
+    ledgerId: "ledger",
+    planSha256: "a".repeat(64),
+    rowId: row.id,
+    attempt,
+    childAgentId,
+    parentAgentId: "Main",
+    sessionId: "session",
+    childCreatedAt: Date.now(),
+    outputSha256: "b".repeat(64),
+    capturedAt: Date.now(),
+    nativeFinal: true,
+  };
+}
 
 describe("Prometheus execution ledger", () => {
   test("parses task dependencies, checkbox states, and four exact gates", () => {
@@ -233,13 +261,13 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(4);
+    expect(restored.version).toBe(5);
     expect(restored.fixes).toEqual([]);
     expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
   });
 
-  test("upgrades a version-three ledger in place to version four without a Git baseline", () => {
+  test("upgrades a version-three ledger in place to version five without a Git baseline", () => {
     const current = createLedger("local://example-plan.md", plan);
     addFixRow(current, "F2", { title: "Tighten scope", acceptance: "scope matches", agent: "task", reason: "drift" });
     const legacy = {
@@ -249,7 +277,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(4);
+    expect(restored.version).toBe(5);
     expect(restored.gitBaseline).toBeUndefined();
     expect(restored.fixes.map((row) => row.id)).toEqual(["X1"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -287,7 +315,176 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(4);
+    expect(restored.version).toBe(5);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
+  });
+
+  test("tier defaults to LIGHT, HEAVY is read case-insensitively, and other values or duplicates are refused", () => {
+    expect(parsePlanChecklist(plan).items.map((item) => item.tier)).toEqual(["light", "light", "light"]);
+    expect(parsePlanChecklist(heavyPlan).items.map((item) => item.tier)).toEqual(["light", "heavy", "light"]);
+    expect(parsePlanChecklist(heavyPlan.replace("Tier: HEAVY", "Tier: heavy")).items[1]?.tier).toBe("heavy");
+    expect(parsePlanChecklist(heavyPlan.replace("Tier: HEAVY", "Tier: MEDIUM")).errors).toContain("T2: Tier must be LIGHT or HEAVY");
+    expect(parsePlanChecklist(heavyPlan.replace("  - Tier: HEAVY\n", "  - Tier: HEAVY\n  - Tier: LIGHT\n")).errors).toContain(
+      "T2: duplicate Tier field",
+    );
+    const ledger = createLedger("local://example-plan.md", heavyPlan);
+    expect(ledger.items.map((item) => item.tier)).toEqual(["light", "heavy", "light"]);
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, heavyPlan, ledger.planSha256).items[1]?.tier).toBe("heavy");
+    const downgraded = structuredClone(ledger);
+    if (downgraded.items[1]) downgraded.items[1].tier = "light";
+    expect(() => restoreLedger(downgraded, ledger.planFilePath, heavyPlan, ledger.planSha256)).toThrow("Malformed execution ledger row T2");
+  });
+
+  test("a plan-level Delivery line adds P1 after every gate; duplicates, bad values, and misplaced lines are refused", () => {
+    const direct = createLedger("local://example-plan.md", plan);
+    expect(direct.delivery).toBe("direct");
+    expect(direct.deliveries).toEqual([]);
+    const pr = createLedger("local://example-plan.md", plan.replace("## Tasks", "Delivery: pr\n\n## Tasks"));
+    expect(pr.delivery).toBe("pr");
+    expect(pr.deliveries.map(({ id, dependsOn, tier }) => ({ id, dependsOn, tier }))).toEqual([
+      { id: "P1", dependsOn: ["F1", "F2", "F3", "F4"], tier: undefined },
+    ]);
+    expect(ledgerRows(pr).map((row) => row.id)).toEqual(["T1", "T2", "T3", "F1", "F2", "F3", "F4", "P1"]);
+    expect(parsePlanChecklist(plan.replace("## Tasks", "Delivery: ship\n\n## Tasks")).delivery).toBe("ship");
+    expect(parsePlanChecklist(plan.replace("## Tasks", "```\nDelivery: maybe\n```\n- Delivery: pr\n\n## Tasks")).delivery).toBe("direct");
+    expect(parsePlanChecklist(plan.replace("## Tasks", "Delivery: pr\nDelivery: ship\n\n## Tasks")).errors).toContain(
+      "Line 4: duplicate Delivery line",
+    );
+    expect(parsePlanChecklist(plan.replace("## Tasks", "Delivery: later\n\n## Tasks")).errors).toContain(
+      "Line 3: Delivery must be direct, pr, or ship",
+    );
+    expect(parsePlanChecklist(plan.replace("## Final gates", "## Final gates\nDelivery: pr")).errors).toContain(
+      "Line 18: Delivery is a plan-level line outside ## Tasks and ## Final gates",
+    );
+    expect(() => createLedger("local://example-plan.md", plan.replace("## Tasks", "Delivery: later\n\n## Tasks"))).toThrow("Delivery");
+  });
+
+  test("fix rows also hold back delivery, and P1 only completes the plan", () => {
+    const content = plan.replace("## Tasks", "Delivery: pr\n\n## Tasks");
+    const ledger = createLedger("local://example-plan.md", content);
+    for (const row of ledger.items) row.status = "done";
+    for (const gate of ledger.gates) startRow(ledger, gate.id);
+    addFixRow(ledger, "F3", { title: "Fix QA", acceptance: "scenario passes", agent: "task", reason: "failed", tier: "HEAVY" });
+    expect(ledger.fixes[0]?.tier).toBe("heavy");
+    expect(ledger.deliveries[0]?.dependsOn).toEqual(["F1", "F2", "F3", "F4", "X1"]);
+    for (const row of [...ledger.items, ...ledger.fixes, ...ledger.gates]) {
+      row.status = "done";
+      row.receipt = receiptFor(row, row.attempt ?? "attempt", `Child${row.id}`);
+      if (row.tier === "heavy") row.verification = { verdict: "pass", receipt: receiptFor(row, "verify", `Verifier${row.id}`) };
+    }
+    expect(isComplete(ledger)).toBe(false);
+    expect(nextDispatchable(ledger).map((row) => row.id)).toEqual(["P1"]);
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, content, ledger.planSha256).deliveries).toHaveLength(1);
+  });
+
+  test("discovered rows dispatch at once, hold back every gate, and are refused once a gate has started", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    const found = { title: "Repair the parser", acceptance: "the parser test passes", agent: "task", reason: "T1 exposed it" };
+    expect(() => addDiscoveredRow(ledger, "F1", found)).toThrow("T or D row");
+    expect(() => addDiscoveredRow(ledger, "T1", { ...found, reason: " " })).toThrow("why it belongs");
+    const d1 = addDiscoveredRow(ledger, "T1", { ...found, tier: "heavy" });
+    expect(d1).toMatchObject({ id: "D1", origin: "T1", reason: "T1 exposed it", tier: "heavy", dependsOn: [], status: "open" });
+    expect(addDiscoveredRow(ledger, "D1", found).id).toBe("D2");
+    expect(ledger.gates.every((gate) => JSON.stringify(gate.dependsOn) === JSON.stringify(["T1", "T2", "T3", "D1", "D2"]))).toBe(true);
+    expect(nextDispatchable(ledger).map((row) => row.id)).toEqual(["T1", "D1", "D2"]);
+    expect(ledgerRows(ledger).map((row) => row.id)).toEqual(["T1", "T2", "T3", "D1", "D2", "F1", "F2", "F3", "F4"]);
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).discoveries).toHaveLength(2);
+    const rebound = structuredClone(ledger);
+    if (rebound.discoveries[0]) rebound.discoveries[0].origin = "F2";
+    expect(() => restoreLedger(rebound, ledger.planFilePath, plan, ledger.planSha256)).toThrow("discovered row D1");
+
+    for (const row of [...ledger.items, ...ledger.discoveries]) row.status = "done";
+    startRow(ledger, "F2");
+    expect(() => addDiscoveredRow(ledger, "T1", found)).toThrow("final gate has already started");
+    expect(ledger.discoveries).toHaveLength(2);
+    // Out-of-scope findings never add a row, so they stay recordable for the final report.
+    addDeferredFinding(ledger, { title: "Legacy importer leaks handles", reason: "outside this change", origin: "T1" });
+    expect(() => addDeferredFinding(ledger, { title: "Unknown", reason: "x", origin: "T9" })).toThrow("Unknown ledger row T9");
+    expect(ledger.deferred.map(({ title, origin }) => ({ title, origin }))).toEqual([
+      { title: "Legacy importer leaks handles", origin: "T1" },
+    ]);
+    expect(renderLedgerSummary(ledger)).toContain("Deferred out-of-scope findings (1; list them in the final report):");
+  });
+
+  test("a HEAVY row is done only after a fresh verifier passes; a failed verification reopens it with the summary", () => {
+    const ledger = createLedger("local://example-plan.md", heavyPlan, ["task", "deep-high"]);
+    const row = ledger.items[1];
+    if (!row) throw new Error("Missing T2");
+    if (ledger.items[0]) ledger.items[0].status = "done";
+    expect(() => startVerification(ledger, "T1")).toThrow("not HEAVY");
+    startRow(ledger, "T2");
+    expect(() => startVerification(ledger, "T2")).toThrow("no recorded implementation");
+    recordReceipt(row, receiptFor(row, row.attempt ?? "", "Implementer"), "implementation evidence");
+    expect(row.status).toBe("in_progress");
+    expect(verificationStatus(row)).toBe("pending");
+    expect(renderLedgerSummary(ledger)).toContain("T2 implementation is recorded; start its independent verification");
+    expect(() => startVerification(ledger, "T2", "momus", ["task", "momus"])).toThrow("plan-gated");
+    startVerification(ledger, "T2", undefined, ["task", "deep-high"]);
+    expect(row.verification?.dispatchAgent).toBe("deep-high");
+    expect(verificationStatus(row)).toBe("running");
+    expect(renderLedgerSummary(ledger)).toContain(`"verify":{"T2":"${row.verification?.attempt}"}`);
+
+    recordVerification(ledger, row, { verdict: "fail", childAgentId: "Verifier", summary: "rollback path loses rows" });
+    expect(row.status).toBe("open");
+    expect(row.receipt).toBeUndefined();
+    expect(row.evidence).toBe("Verification failed: rollback path loses rows");
+    expect(verificationStatus(row)).toBe("failed");
+    startRow(ledger, "T2");
+    // The failure survives a fresh implementation attempt so its assignment can carry it.
+    expect(row.verification?.summary).toBe("rollback path loses rows");
+    expect(renderLedgerSummary(ledger)).toContain(
+      "Last verification of T2 failed; give the next implementation child: rollback path loses rows",
+    );
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, heavyPlan, ledger.planSha256).items[1]?.verification?.verdict).toBe(
+      "fail",
+    );
+
+    recordReceipt(row, receiptFor(row, row.attempt ?? "", "Implementer2"), "implementation evidence");
+    expect(verificationStatus(row)).toBe("pending");
+    startVerification(ledger, "T2");
+    const attempt = row.verification?.attempt ?? "";
+    recordVerification(ledger, row, {
+      verdict: "pass",
+      receipt: receiptFor(row, attempt, "Verifier2"),
+      summary: "verified",
+      evidence: "path: ok",
+    });
+    expect(row.status).toBe("done");
+    expect(verificationStatus(row)).toBe("passed");
+    expect(() => recordVerification(ledger, row, { verdict: "fail", childAgentId: "Late", summary: "late" })).toThrow(
+      "no running verification",
+    );
+  });
+
+  test("upgrades a version-four ledger to LIGHT rows and derives delivery from the approved plan", () => {
+    const content = plan
+      .replace("## Tasks", "Delivery: ship\n\n## Tasks")
+      .replace("  - Depends on: T1\n", "  - Depends on: T1\n  - Tier: HEAVY\n");
+    const current = createLedger("local://example-plan.md", content);
+    addFixRow(current, "F2", { title: "Tighten scope", acceptance: "scope matches", agent: "task", reason: "drift" });
+    const { discoveries: _d, deferred: _r, delivery: _m, deliveries: _p, ...rest } = structuredClone(current);
+    const legacy = {
+      ...rest,
+      version: 4,
+      items: rest.items.map(({ tier: _tier, ...row }) => row),
+      fixes: rest.fixes.map(({ tier: _tier, ...row }) => row),
+    };
+    const restored = restoreLedger(legacy, current.planFilePath, content, current.planSha256);
+    expect(restored).toBe(legacy as unknown as typeof restored);
+    expect(restored.version).toBe(5);
+    // Rows approved before tiers existed keep the LIGHT evidence rule, even where the plan text names HEAVY.
+    expect([...restored.items, ...restored.fixes].map((row) => row.tier)).toEqual(["light", "light", "light", "light"]);
+    expect(restored.delivery).toBe("ship");
+    expect(restored.deliveries.map(({ id, dependsOn }) => ({ id, dependsOn }))).toEqual([
+      { id: "P1", dependsOn: ["F1", "F2", "F3", "F4", "X1"] },
+    ]);
+    expect(restored.discoveries).toEqual([]);
+    expect(restored.deferred).toEqual([]);
+    // A pre-v5 plan whose Delivery prose is not the new grammar keeps delivering directly.
+    const prose = plan.replace("## Tasks", "Delivery: through the release train\n\n## Tasks");
+    expect(() => createLedger("local://example-plan.md", prose)).toThrow("Delivery");
+    const old = { ...structuredClone(rest), version: 4, fixes: [], planSha256: planDigest(prose) };
+    for (const gate of old.gates) gate.dependsOn = ["T1", "T2", "T3"];
+    expect(restoreLedger(old, old.planFilePath, prose, old.planSha256).delivery).toBe("direct");
   });
 });

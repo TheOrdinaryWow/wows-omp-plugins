@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { AtlasLiveSnapshot, AtlasProgress } from "../plugins/omo-prometheus/src/atlas-live.ts";
-import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
-import { type AtlasSnapshot, HerdrDagContract } from "../plugins/omo-prometheus/src/herdr-dag-contract.ts";
+import type { AtlasPlanDetail, AtlasRowDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
+import { type AtlasSnapshot, contractRow, HerdrDagContract } from "../plugins/omo-prometheus/src/herdr-dag-contract.ts";
 import { addFixRow, ledgerRows, planDigest, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
 
 const CHILD = "PROMETHEUS_DAG_SCENARIO";
@@ -379,6 +379,27 @@ if (process.env[CHILD]) {
       publish(new Map());
       producer.release("a", "exit");
       expect(emitted).toHaveLength(count);
+    });
+
+    test("rows carry their kind from the id prefix plus tier and verification state, never verifier summaries", () => {
+      const base = { title: "Row", status: "open", agent: "task", updatedAt: 1, acceptance: "check" } as const;
+      const rows: AtlasRowDetail[] = [
+        { ...base, dependsOn: [], id: "T1", tier: "heavy", verification: { status: "running", summary: "private verdict" } },
+        { ...base, dependsOn: [], id: "D1", origin: "T1", reason: "private reason", tier: "light" },
+        { ...base, dependsOn: [], id: "X1", origin: "F2", tier: "light" },
+        { ...base, dependsOn: [], id: "F2" },
+        { ...base, dependsOn: [], id: "P1" },
+      ];
+      const mapped = rows.map(contractRow);
+      expect(mapped.map(({ id, kind, origin, tier }) => ({ id, kind, origin, tier }))).toEqual([
+        { id: "T1", kind: "task", origin: undefined, tier: "heavy" },
+        { id: "D1", kind: "discovered", origin: "T1", tier: "light" },
+        { id: "X1", kind: "fix", origin: "F2", tier: "light" },
+        { id: "F2", kind: "gate", origin: undefined, tier: undefined },
+        { id: "P1", kind: "delivery", origin: undefined, tier: undefined },
+      ]);
+      expect(mapped[0]?.verification).toEqual({ status: "running" });
+      expect(JSON.stringify(mapped)).not.toContain("private");
     });
   });
 }

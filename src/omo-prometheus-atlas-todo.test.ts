@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 import { atlasTodoPhases, mergeAtlasTodos, syncAtlasTodos } from "../plugins/omo-prometheus/src/atlas-todo.ts";
-import { addFixRow, createLedger, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
+import { addDiscoveredRow, addFixRow, createLedger, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
 
 const plan = `# Plan
 ## Tasks
@@ -69,4 +69,16 @@ test("sync replaces only Atlas phases, retains other phase positions, and skips 
   const next = mergeAtlasTodos(current, state);
   expect(next?.[1]?.tasks[0]?.status).toBe("in_progress");
   expect(next?.[0]).toBe(personal);
+});
+
+test("discovered and delivery phases keep ledger order around the gates", () => {
+  const state = createLedger("/bundle/plan.md", plan.replace("## Tasks", "Delivery: ship\n## Tasks"), ["task"]);
+  const before = atlasTodoPhases(state);
+  expect(before.map((phase) => phase.name)).toEqual(["Atlas tasks", "Atlas final gates", "Atlas delivery"]);
+  addDiscoveredRow(state, "T1", { title: "Repair parser", acceptance: "parser test passes", agent: "task", reason: "T1 exposed it" }, [
+    "task",
+  ]);
+  const next = mergeAtlasTodos(before, state);
+  expect(next?.map((phase) => phase.name)).toEqual(["Atlas tasks", "Atlas discovered", "Atlas final gates", "Atlas delivery"]);
+  expect(next?.[1]?.tasks).toEqual([{ content: "D1. Repair parser", status: "pending" }]);
 });

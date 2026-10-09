@@ -1,4 +1,5 @@
 import type { AtlasRow, AtlasSnapshot } from "./herdr-dag-contract.ts";
+import type { Delivery } from "./ledger.ts";
 import type { PrometheusPhase } from "./workflow.ts";
 
 export const PROMETHEUS_STATE_KIND = "omo-prometheus/state";
@@ -15,8 +16,11 @@ export interface PrometheusStateRow {
   attempt?: string;
   startedAt?: number;
   evidence?: string;
-  /** Fix rows name the gate that requested them. */
+  /** Fix rows name the gate that requested them; discovered rows name the row whose work surfaced them. */
   origin?: string;
+  tier?: AtlasRow["tier"];
+  /** HEAVY rows: the independent verifier's state. */
+  verification?: AtlasRow["verification"];
   /** Native child observed for the row's current attempt. */
   child?: { id: string; status: string; currentTool?: string };
 }
@@ -42,6 +46,11 @@ export interface PrometheusAtlasState {
   runningChildren?: number;
   rows?: PrometheusStateRow[];
   gates?: PrometheusStateGate[];
+  /** D rows: in-scope defects found during execution. */
+  discoveries?: Array<Pick<PrometheusStateRow, "id" | "title" | "status" | "origin">>;
+  /** Out-of-scope findings recorded for the final report. */
+  deferred?: number;
+  delivery?: Delivery;
 }
 
 export interface PrometheusStateV1 {
@@ -62,6 +71,9 @@ export interface PrometheusStateInput {
   ledgerError?: string;
   /** The snapshot last published to the Herdr DAG contract for the bound plan. */
   snapshot?: AtlasSnapshot;
+  /** Plan-level ledger facts the DAG snapshot does not carry. */
+  delivery?: Delivery;
+  deferredCount?: number;
 }
 
 const RUNNING: Record<string, true> = { started: true, running: true };
@@ -100,6 +112,8 @@ export function prometheusState(input: PrometheusStateInput): PrometheusStateV1 
         startedAt: row.startedAt,
         evidence: row.evidence,
         origin: row.origin,
+        tier: row.tier,
+        verification: row.verification,
         child: current ? { id: current.childAgentId, status: current.status, currentTool: current.progress?.currentTool } : undefined,
       };
     });
@@ -112,6 +126,11 @@ export function prometheusState(input: PrometheusStateInput): PrometheusStateV1 
     atlas.gates = rows
       .filter((row) => row.kind === "gate")
       .map((row) => ({ id: row.id, title: row.title, status: row.status, evidence: row.evidence }));
+    atlas.discoveries = rows
+      .filter((row) => row.kind === "discovered")
+      .map((row) => ({ id: row.id, title: row.title, status: row.status, origin: row.origin }));
+    atlas.deferred = input.deferredCount;
+    atlas.delivery = input.delivery;
   }
   return { kind: PROMETHEUS_STATE_KIND, version: 1, phase: "executing", atlas };
 }

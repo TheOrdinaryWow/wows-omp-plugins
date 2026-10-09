@@ -20,16 +20,23 @@ export interface AtlasRow {
   id: string;
   title: string;
   status: "open" | "in_progress" | "done" | "blocked";
-  kind: "task" | "fix" | "gate";
+  /** Derived from the id prefix: T task, D discovered, X fix, F gate, P delivery. */
+  kind: "task" | "discovered" | "fix" | "gate" | "delivery";
   agent: string;
   dispatchAgent?: string;
   dependsOn: string[];
   evidence?: string;
+  /** The attempt bound to the child currently working the row (a running verifier's for HEAVY rows). */
   attempt?: string;
   startedAt?: number;
   childAgentId?: string;
   updatedAt: number;
+  /** X rows: the rejecting gate. D rows: the row whose work surfaced the defect. */
   origin?: string;
+  /** T, D and X rows. */
+  tier?: "light" | "heavy";
+  /** HEAVY rows only. */
+  verification?: { status: "pending" | "running" | "passed" | "failed" };
 }
 export interface AtlasContractLiveRow {
   childAgentId: string;
@@ -70,12 +77,14 @@ export function contractPlan(plan: AtlasPlan): AtlasContractPlan {
   return { id: plan.id, name: plan.name, planFilePath: plan.planFilePath, cwd: plan.cwd };
 }
 
+const ROW_KINDS: Record<string, AtlasRow["kind"]> = { T: "task", D: "discovered", X: "fix", F: "gate", P: "delivery" };
+
 export function contractRow(row: AtlasRowDetail): AtlasRow {
   return {
     id: row.id,
     title: row.title,
     status: row.status,
-    kind: row.id.startsWith("X") ? "fix" : row.id.startsWith("F") ? "gate" : "task",
+    kind: ROW_KINDS[row.id[0] ?? ""] ?? "task",
     agent: row.originalAgent ?? row.agent,
     dispatchAgent: row.dispatchAgent,
     dependsOn: [...row.dependsOn],
@@ -85,6 +94,8 @@ export function contractRow(row: AtlasRowDetail): AtlasRow {
     childAgentId: row.childAgentId,
     updatedAt: row.updatedAt,
     origin: row.origin,
+    tier: row.tier,
+    verification: row.verification && { status: row.verification.status },
   };
 }
 

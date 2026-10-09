@@ -19,16 +19,19 @@ export function atlasWidgetLines({ detail, rows, runningChildren }: AtlasLiveSna
   const lines = listed.map((item) => {
     const current = rows.get(item.id);
     const child = current?.attempt === item.attempt ? current : undefined;
-    const activity = !child
-      ? "waiting for child"
-      : child.progress?.currentTool
-        ? child.progress.currentTool
-        : child.progress?.lastIntent
-          ? singleLine(child.progress.lastIntent)
-          : child.status === "started" || child.status === "running"
-            ? "running"
-            : `child ${child.status}`;
-    return `${item.id} ${item.title} (${item.agent}) · ${activity}`;
+    const activity =
+      item.verification?.status === "pending"
+        ? "awaiting verification"
+        : !child
+          ? "waiting for child"
+          : child.progress?.currentTool
+            ? child.progress.currentTool
+            : child.progress?.lastIntent
+              ? singleLine(child.progress.lastIntent)
+              : child.status === "started" || child.status === "running"
+                ? "running"
+                : `child ${child.status}`;
+    return `${item.id} ${item.title} (${item.agent}) · ${item.verification?.status === "running" ? "verify: " : ""}${activity}`;
   });
   if (listed.length < active.length) lines.push(`+${active.length - listed.length} more in progress`);
   return [title, ...lines];
@@ -76,16 +79,21 @@ export class AtlasStatusWidget implements Component {
       const progress = child?.progress;
       const head = `${rowMark(t, item.status)} ${item.id.padEnd(idWidth)} ${t.fg("muted", item.agent)} ${t.fg("dim", formatElapsed(item.startedAt, at))}`;
       const usage = progress ? t.fg("dim", ` · ${formatNumber(progress.tokens)} tok · $${progress.cost.toFixed(2)}`) : "";
-      const activity = !child
-        ? t.fg("dim", "waiting for child")
-        : progress?.currentTool
-          ? `${progress.currentTool}${progress.currentToolArgs ? t.fg("dim", ` ${singleLine(progress.currentToolArgs)}`) : ""}`
-          : progress?.lastIntent
-            ? singleLine(progress.lastIntent)
-            : t.fg("dim", child.status === "started" || child.status === "running" ? "running" : `child ${child.status}`);
+      // A HEAVY row's recorded implementation waits for, then runs, its independent verifier.
+      const phase = item.verification?.status === "running" ? t.fg("accent", "verify ") : "";
+      const activity =
+        item.verification?.status === "pending"
+          ? t.fg("dim", "awaiting verification")
+          : !child
+            ? t.fg("dim", "waiting for child")
+            : progress?.currentTool
+              ? `${progress.currentTool}${progress.currentToolArgs ? t.fg("dim", ` ${singleLine(progress.currentToolArgs)}`) : ""}`
+              : progress?.lastIntent
+                ? singleLine(progress.lastIntent)
+                : t.fg("dim", child.status === "started" || child.status === "running" ? "running" : `child ${child.status}`);
       // Activity is free text; it takes whatever width the fixed fields leave instead of pushing usage off.
-      const room = width - visibleWidth(head) - visibleWidth(usage) - 3;
-      return room >= 8 ? `${head} ${t.fg("dim", "·")} ${truncateToWidth(activity, room)}${usage}` : `${head}${usage}`;
+      const room = width - visibleWidth(head) - visibleWidth(usage) - visibleWidth(phase) - 3;
+      return room >= 8 ? `${head} ${t.fg("dim", "·")} ${phase}${truncateToWidth(activity, room)}${usage}` : `${head}${usage}`;
     });
     if (listed.length < active.length) lines.push(t.fg("dim", `+${active.length - listed.length} more in progress`));
     return [title, ...lines].map((line) => truncateToWidth(line, Math.max(1, width)));

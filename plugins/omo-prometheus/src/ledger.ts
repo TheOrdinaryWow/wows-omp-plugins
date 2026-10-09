@@ -3,6 +3,26 @@ import { createHash, randomUUID } from "node:crypto";
 import { isKnownAgent, resolveAgent } from "./agents.ts";
 
 export type ItemStatus = "open" | "in_progress" | "done" | "blocked";
+/** Evidence depth. A HEAVY row is done only after a fresh child independently verifies its recorded implementation. */
+export type Tier = "light" | "heavy";
+/** How finished work leaves the workspace: `pr` and `ship` add the P1 delivery row after every gate. */
+export type Delivery = "direct" | "pr" | "ship";
+/** Observer view of a HEAVY row's verification; derived, never persisted. */
+export type VerificationStatus = "pending" | "running" | "passed" | "failed";
+
+/** Independent check of a HEAVY row's recorded implementation by a fresh verifier child. */
+export interface Verification {
+  /** Binds one verifier child; absent until `atlas_ledger verify` starts one. */
+  attempt?: string;
+  startedAt?: number;
+  dispatchAgent?: string;
+  childAgentId?: string;
+  /** The verifier's receipt; present only after a PASS. */
+  receipt?: ChildReceipt;
+  verdict?: "pass" | "fail";
+  /** The verifier's own summary. A FAIL summary stays on the reopened row for the next implementation attempt. */
+  summary?: string;
+}
 
 export interface LedgerItem {
   id: string;
@@ -13,32 +33,54 @@ export interface LedgerItem {
   dispatchAgent?: string;
   dependsOn: string[];
   status: ItemStatus;
+  /** T, D and X rows; gates and the delivery row have none. */
+  tier?: Tier;
   evidence?: string;
   childAgentId?: string;
   attempt?: string;
   startedAt?: number;
+  /** Receipt of the row's own child. A HEAVY row holds its implementation receipt while `in_progress` until verified. */
   receipt?: ChildReceipt;
-  /** Final gate whose rejection created this fix row. */
+  /** HEAVY rows only. */
+  verification?: Verification;
+  /** X rows: the final gate whose rejection created them. D rows: the T or D row whose work surfaced them. */
   origin?: string;
+  /** D rows: why the defect belongs to this plan. */
+  reason?: string;
   updatedAt: number;
 }
 
+/** Out-of-scope finding recorded during execution; it gets no row and is listed in the final report. */
+export interface DeferredFinding {
+  title: string;
+  reason: string;
+  /** Row whose work surfaced it, when one did. */
+  origin?: string;
+  at: number;
+}
+
 export interface ExecutionLedger {
-  version: 4;
+  version: 5;
   ledgerId: string;
   planFilePath: string;
   planSha256: string;
   items: LedgerItem[];
+  /** D rows: in-scope defects found during execution, appended before any gate starts. Every gate waits for them. */
+  discoveries: LedgerItem[];
   /** X rows appended after a final gate rejected the work; they are not part of the approved plan text. */
   fixes: LedgerItem[];
   gates: LedgerItem[];
+  /** Empty for `direct`; otherwise the single P1 row, which waits for every gate and fix row. */
+  deliveries: LedgerItem[];
+  deferred: DeferredFinding[];
+  delivery: Delivery;
   createdAt: number;
   /** `HEAD` commit of the plan workspace when the bundle was created; absent outside Git or for upgraded ledgers. */
   gitBaseline?: string;
 }
 
 export function ledgerRows(ledger: ExecutionLedger): LedgerItem[] {
-  return [...ledger.items, ...ledger.fixes, ...ledger.gates];
+  return [...ledger.items, ...ledger.discoveries, ...ledger.fixes, ...ledger.gates, ...ledger.deliveries];
 }
 
 /** Authenticated native final success, archived with its original session identity in shared evidence. */
@@ -47,6 +89,7 @@ export interface ChildReceipt {
   ledgerId: string;
   planSha256: string;
   rowId: string;
+  /** The row attempt, or the verification attempt for a verifier receipt. */
   attempt: string;
   childAgentId: string;
   parentAgentId: string;
@@ -62,6 +105,7 @@ export function planDigest(content: string): string {
 }
 
 const ROW = /^- \[([ xX~])\] (T\d+|F[1-4])\. (.+)$/;
+const DELIVERY_LINE = /^Delivery:(.*)$/;
 const AGENT_NAME = /^[A-Za-z0-9_-]+$/;
 const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const GATES = [
@@ -70,16 +114,47 @@ const GATES = [
   { id: "F3", title: "Real-surface QA", agent: "deep-low" },
   { id: "F4", title: "Success-criteria fidelity", agent: "deep-high" },
 ] as const;
+const DELIVERY_ROWS = {
+  pr: {
+    title: "Deliver: push the branch and open a pull request",
+    acceptance: "The branch is pushed and an open pull request targets the default branch; the child reports its URL",
+  },
+  ship: {
+    title: "Ship: open a pull request, wait for CI, and merge it",
+    acceptance: "The pull request's required checks passed and it is merged; the child reports its URL and the merge commit",
+  },
+} as const;
+/** Requested agent of a verifier child when Atlas names none. */
+const VERIFY_AGENT = "deep-high";
+const PLAN_GATED: Record<string, true> = { metis: true, momus: true };
 
 type ParsedItem = Omit<LedgerItem, "updatedAt">;
 
+export interface ParsedPlan {
+  items: ParsedItem[];
+  gates: ParsedItem[];
+  delivery: Delivery;
+  errors: string[];
+}
+
+/**
+ * Parse the approved plan grammar. `legacy` re-derives a pre-v5 ledger's plan exactly as it was approved:
+ * it ignores `Tier:` fields (every row stays LIGHT) and takes delivery from one valid `Delivery:` line, else `direct`.
+ */
 export function parsePlanChecklist(
   planContent: string,
   availableAgents?: readonly string[],
-): { items: ParsedItem[]; gates: ParsedItem[]; errors: string[] } {
+  options: { legacy?: boolean } = {},
+): ParsedPlan {
+  const legacy = options.legacy === true;
   const items: ParsedItem[] = [];
   const gates: ParsedItem[] = [];
   const errors: string[] = [];
+  const deliveryLines: { line: number; value: string }[] = [];
+  const deliveryErrors: string[] = [];
+  const field = legacy
+    ? /^\s+(?:-\s*)?(Agent|Depends on|Acceptance):\s*(.*?)\s*$/i
+    : /^\s+(?:-\s*)?(Agent|Depends on|Acceptance|Tier):\s*(.*?)\s*$/i;
   let section: "tasks" | "gates" | undefined;
   let hasTasks = false;
   let hasGates = false;
@@ -91,7 +166,7 @@ export function parsePlanChecklist(
     if (!current || section !== "tasks") return;
     const fields = new Map<string, string>();
     for (const line of body) {
-      const match = /^\s+(?:-\s*)?(Agent|Depends on|Acceptance):\s*(.*?)\s*$/i.exec(line);
+      const match = field.exec(line);
       if (match?.[1] !== undefined && match[2] !== undefined) {
         const key = match[1].toLowerCase();
         if (fields.has(key)) errors.push(`${current.id}: duplicate ${match[1]} field`);
@@ -107,6 +182,13 @@ export function parsePlanChecklist(
       errors.push(`${current.id}: Depends on must list T-ids or none`);
     } else {
       current.dependsOn = depends.toLowerCase() === "none" ? [] : depends.toUpperCase().split(/\s*,\s*/);
+    }
+    const tier = fields.get("tier");
+    if (tier === undefined || /^light$/i.test(tier)) current.tier = "light";
+    else if (/^heavy$/i.test(tier)) current.tier = "heavy";
+    else {
+      current.tier = "light";
+      errors.push(`${current.id}: Tier must be LIGHT or HEAVY`);
     }
     current.acceptance = fields.get("acceptance") ?? "";
     if (!current.acceptance) errors.push(`${current.id}: Acceptance must describe an observable check`);
@@ -137,6 +219,12 @@ export function parsePlanChecklist(
         hasGates = true;
         section = "gates";
       } else section = undefined;
+      continue;
+    }
+    const deliveryLine = DELIVERY_LINE.exec(line);
+    if (deliveryLine) {
+      if (section) deliveryErrors.push(`Line ${index + 1}: Delivery is a plan-level line outside ## Tasks and ## Final gates`);
+      else deliveryLines.push({ line: index + 1, value: (deliveryLine[1] ?? "").trim() });
       continue;
     }
     if (!section) continue;
@@ -193,17 +281,31 @@ export function parsePlanChecklist(
   }
   if (pending.size && !errors.length) errors.push(`Dependency cycle: ${[...pending.keys()].join(", ")}`);
   for (const gate of gates) gate.dependsOn = [...ids];
-  return { items, gates, errors };
+
+  let delivery: Delivery = "direct";
+  for (const [index, entry] of deliveryLines.entries()) {
+    const value = entry.value.toLowerCase();
+    if (index > 0) deliveryErrors.push(`Line ${entry.line}: duplicate Delivery line`);
+    else if (value === "direct" || value === "pr" || value === "ship") delivery = value;
+    else deliveryErrors.push(`Line ${entry.line}: Delivery must be direct, pr, or ship`);
+  }
+  if (legacy) {
+    // A pre-v5 plan was approved without this grammar; anything but one valid line keeps `direct`.
+    if (deliveryErrors.length) delivery = "direct";
+    for (const item of items) item.tier = "light";
+  } else errors.push(...deliveryErrors);
+  return { items, gates, delivery, errors };
 }
 
-export function createLedger(
+function buildLedger(
   planFilePath: string,
   planContent: string,
-  availableAgents?: readonly string[],
-  gitBaseline?: string,
+  availableAgents: readonly string[] | undefined,
+  gitBaseline: string | undefined,
+  legacy: boolean,
 ): ExecutionLedger {
   if (gitBaseline !== undefined && !GIT_SHA.test(gitBaseline)) throw new Error("Invalid Git baseline commit");
-  const parsed = parsePlanChecklist(planContent, availableAgents);
+  const parsed = parsePlanChecklist(planContent, availableAgents, { legacy });
   if (parsed.errors.length) throw new Error(parsed.errors.join("; "));
   const now = Date.now();
   const withDispatch = (item: ParsedItem): LedgerItem => ({
@@ -213,17 +315,42 @@ export function createLedger(
     status: "open",
     updatedAt: now,
   });
+  const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 4,
+    version: 5,
     ledgerId: randomUUID(),
     planFilePath,
     planSha256: planDigest(planContent),
     items: parsed.items.map(withDispatch),
+    discoveries: [],
     fixes: [],
     gates: parsed.gates.map(withDispatch),
+    deliveries: delivery
+      ? [
+          withDispatch({
+            id: "P1",
+            title: delivery.title,
+            agent: "task",
+            acceptance: delivery.acceptance,
+            dependsOn: parsed.gates.map((gate) => gate.id),
+            status: "open",
+          }),
+        ]
+      : [],
+    deferred: [],
+    delivery: parsed.delivery,
     createdAt: now,
     ...(gitBaseline === undefined ? {} : { gitBaseline }),
   };
+}
+
+export function createLedger(
+  planFilePath: string,
+  planContent: string,
+  availableAgents?: readonly string[],
+  gitBaseline?: string,
+): ExecutionLedger {
+  return buildLedger(planFilePath, planContent, availableAgents, gitBaseline, false);
 }
 
 /**
@@ -250,29 +377,67 @@ export function nextDispatchable(ledger: ExecutionLedger): LedgerItem[] {
   return rows.filter((item) => item.status === "open" && item.dependsOn.every((id) => done.has(id)));
 }
 
+export function verificationStatus(row: LedgerItem): VerificationStatus | undefined {
+  if (row.tier !== "heavy") return undefined;
+  const verification = row.verification;
+  if (verification?.verdict === "pass") return "passed";
+  if (verification?.attempt !== undefined && verification.verdict === undefined) return "running";
+  return verification?.verdict === "fail" ? "failed" : "pending";
+}
+
+/** The attempt bound to the child currently working the row: a running verifier, else the row's own attempt. */
+export function currentAttempt(row: LedgerItem): string | undefined {
+  return verificationStatus(row) === "running" ? row.verification?.attempt : row.attempt;
+}
+
 export function isComplete(ledger: ExecutionLedger): boolean {
-  return ledgerRows(ledger).every((item) => item.status === "done" && item.receipt !== undefined);
+  return ledgerRows(ledger).every(
+    (item) =>
+      item.status === "done" &&
+      item.receipt !== undefined &&
+      (item.tier !== "heavy" || (item.verification?.verdict === "pass" && item.verification.receipt !== undefined)),
+  );
 }
 
 export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: readonly string[]): string {
   const cell = (text: string) => text.replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|");
   const lines = [
     `Plan ledger: ${ledger.planFilePath} (sha256 ${ledger.planSha256})`,
-    "| ID | Status | Agent | Depends on | Acceptance | Evidence |",
-    "| --- | --- | --- | --- | --- | --- |",
+    "| ID | Status | Tier | Agent | Depends on | Acceptance | Evidence |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
   ];
+  const notes: string[] = [];
   for (const item of ledgerRows(ledger)) {
     const dependsOn = item.dependsOn.join(", ") || "none";
     const dispatch = item.dispatchAgent ?? resolveAgent(item.agent, availableAgents).dispatchAgent;
     const missing = item.status === "done" ? "unavailable" : "unavailable (choose with agent on start)";
     const owner = dispatch === item.agent ? item.agent : `${item.agent} -> ${dispatch ?? missing}`;
+    const verification = verificationStatus(item);
+    const status = item.status === "in_progress" && item.receipt ? `${item.status} (verify ${verification})` : item.status;
     lines.push(
-      `| ${item.id}. ${cell(item.title)} | ${item.status} | ${owner} | ${dependsOn} | ${cell(item.acceptance)} | ${cell(item.evidence ?? "—")} |`,
+      `| ${item.id}. ${cell(item.title)} | ${status} | ${item.tier?.toUpperCase() ?? "—"} | ${owner} | ${dependsOn} | ${cell(item.acceptance)} | ${cell(item.evidence ?? "—")} |`,
     );
-    if (item.status === "in_progress") {
-      lines.push(
+    if (item.status === "in_progress" && !item.receipt) {
+      notes.push(
         `Assignment for ${item.id}: atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, rows: { [item.id]: item.attempt } })}`,
       );
+    } else if (item.status === "in_progress" && verification === "running") {
+      notes.push(
+        `Verify assignment for ${item.id} (agent ${item.verification?.dispatchAgent}): atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, verify: { [item.id]: item.verification?.attempt } })}`,
+      );
+    } else if (item.status === "in_progress") {
+      notes.push(`${item.id} implementation is recorded; start its independent verification with atlas_ledger verify.`);
+    }
+    if (verification === "failed" && item.status !== "done") {
+      notes.push(`Last verification of ${item.id} failed; give the next implementation child: ${cell(item.verification?.summary ?? "")}`);
+    }
+  }
+  lines.push(...notes);
+  lines.push(`Delivery: ${ledger.delivery}${ledger.deliveries.length ? ` (${ledger.deliveries.map((row) => row.id).join(", ")})` : ""}`);
+  if (ledger.deferred.length) {
+    lines.push(`Deferred out-of-scope findings (${ledger.deferred.length}; list them in the final report):`);
+    for (const finding of ledger.deferred) {
+      lines.push(`- ${cell(finding.title)}: ${cell(finding.reason)}${finding.origin ? ` (from ${finding.origin})` : ""}`);
     }
   }
   const next = nextDispatchable(ledger).map((item) => item.id);
@@ -280,58 +445,117 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
   return lines.join("\n");
 }
 
+function validAgent(agent: unknown): agent is string {
+  return typeof agent === "string" && AGENT_NAME.test(agent);
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validVerification(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const verification = value as Partial<Verification>;
+  return (
+    (verification.attempt === undefined || nonEmpty(verification.attempt)) &&
+    (verification.startedAt === undefined || Number.isFinite(verification.startedAt)) &&
+    (verification.dispatchAgent === undefined || typeof verification.dispatchAgent === "string") &&
+    (verification.childAgentId === undefined || typeof verification.childAgentId === "string") &&
+    (verification.receipt === undefined ||
+      (verification.receipt !== null && typeof verification.receipt === "object" && !Array.isArray(verification.receipt))) &&
+    (verification.verdict === undefined || verification.verdict === "pass" || verification.verdict === "fail") &&
+    (verification.summary === undefined || typeof verification.summary === "string")
+  );
+}
+
 /** Restore structural state only; callers must independently authenticate each completed receipt. */
 export function restoreLedger(data: unknown, planFilePath: string, planContent: string, approvedSha256: string): ExecutionLedger {
   if (!data || typeof data !== "object" || !("version" in data)) throw new Error("Execution ledger is not a versioned object");
   const version = data.version;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new Error("Unsupported execution ledger version");
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) {
+    throw new Error("Unsupported execution ledger version");
+  }
   // Validate the complete persisted shape and its approved definition below before returning it.
   const saved = data as ExecutionLedger;
   if (saved.planFilePath !== planFilePath || saved.planSha256 !== approvedSha256 || planDigest(planContent) !== approvedSha256) {
     throw new Error("Execution ledger or current plan no longer matches the exact approved plan");
   }
+  const legacy = version !== 5;
   if (
     !Array.isArray(saved.items) ||
     !Array.isArray(saved.gates) ||
     (version >= 3 && !Array.isArray(saved.fixes)) ||
+    (!legacy &&
+      (!Array.isArray(saved.discoveries) ||
+        !Array.isArray(saved.deliveries) ||
+        !Array.isArray(saved.deferred) ||
+        !["direct", "pr", "ship"].includes(saved.delivery))) ||
     !Number.isFinite(saved.createdAt) ||
     (version !== 1 && saved.gitBaseline !== undefined && (typeof saved.gitBaseline !== "string" || !GIT_SHA.test(saved.gitBaseline)))
   ) {
     throw new Error("Malformed execution ledger rows, creation time, or Git baseline");
   }
-  const fixes: LedgerItem[] = version >= 3 ? saved.fixes : [];
-  const expected = createLedger(
+  const expected = buildLedger(
     planFilePath,
     planContent,
     saved.items.map((item) => item?.agent),
+    undefined,
+    legacy,
   );
-  if (saved.items.length !== expected.items.length || saved.gates.length !== expected.gates.length) {
+  if (
+    saved.items.length !== expected.items.length ||
+    saved.gates.length !== expected.gates.length ||
+    (!legacy && (saved.delivery !== expected.delivery || saved.deliveries.length !== expected.deliveries.length))
+  ) {
     throw new Error("Execution ledger rows differ from the approved plan");
   }
+  const fixes: LedgerItem[] = version >= 3 ? saved.fixes : [];
+  const discoveries: LedgerItem[] = legacy ? [] : saved.discoveries;
+  const taskIds = expected.items.map((item) => item.id);
   const gateIds = expected.gates.map((gate) => gate.id);
+  for (const [index, row] of discoveries.entries()) {
+    if (
+      !row ||
+      row.id !== `D${index + 1}` ||
+      !nonEmpty(row.title) ||
+      !nonEmpty(row.acceptance) ||
+      !nonEmpty(row.reason) ||
+      !validAgent(row.agent) ||
+      typeof row.origin !== "string" ||
+      !(taskIds.includes(row.origin) || discoveries.slice(0, index).some((earlier) => earlier?.id === row.origin)) ||
+      (row.tier !== "light" && row.tier !== "heavy")
+    ) {
+      throw new Error(`Malformed execution ledger discovered row ${row?.id ?? index}`);
+    }
+  }
   for (const [index, fix] of fixes.entries()) {
     if (
       !fix ||
       fix.id !== `X${index + 1}` ||
-      typeof fix.title !== "string" ||
-      !fix.title.trim() ||
-      typeof fix.acceptance !== "string" ||
-      !fix.acceptance.trim() ||
-      typeof fix.agent !== "string" ||
-      !AGENT_NAME.test(fix.agent) ||
+      !nonEmpty(fix.title) ||
+      !nonEmpty(fix.acceptance) ||
+      !validAgent(fix.agent) ||
       typeof fix.origin !== "string" ||
-      !gateIds.includes(fix.origin)
+      !gateIds.includes(fix.origin) ||
+      (!legacy && fix.tier !== "light" && fix.tier !== "heavy")
     ) {
       throw new Error(`Malformed execution ledger fix row ${fix?.id ?? index}`);
     }
   }
-  const taskIds = expected.items.map((item) => item.id);
-  const gateDependencies = (id: string) => [...taskIds, ...fixes.filter((fix) => fix.origin === id).map((fix) => fix.id)];
-  const rows = [...saved.items, ...fixes, ...saved.gates];
+  const discoveryIds = discoveries.map((row) => row.id);
+  const fixIds = fixes.map((fix) => fix.id);
+  const gateDependencies = (id: string) => [...taskIds, ...discoveryIds, ...fixes.filter((fix) => fix.origin === id).map((fix) => fix.id)];
+  const deliveryDefinitions = expected.deliveries.map((row) => ({ ...row, dependsOn: [...gateIds, ...fixIds] }));
+  // Pre-v5 ledgers gain the delivery row their approved plan text names.
+  const deliveries = legacy ? deliveryDefinitions : saved.deliveries;
+  const rows = [...saved.items, ...discoveries, ...fixes, ...saved.gates, ...deliveries];
   const definitions = [
     ...expected.items,
+    ...discoveries.map((row) => ({ ...row, dependsOn: [] })),
     ...fixes.map((fix) => ({ ...fix, dependsOn: [] })),
     ...expected.gates.map((gate) => ({ ...gate, dependsOn: gateDependencies(gate.id) })),
+    ...deliveryDefinitions,
   ];
   for (const [index, row] of rows.entries()) {
     const definition = definitions[index];
@@ -340,6 +564,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       (version === 1 && definition?.id.startsWith("F") && dependsOn === "[]") ||
       // Version two made F4 wait for F1–F3; all gates now run together.
       (version === 2 && definition?.id === "F4" && dependsOn === JSON.stringify([...taskIds, "F1", "F2", "F3"]));
+    const planned =
+      definition !== undefined && (definition.id.startsWith("T") || definition.id.startsWith("F") || definition.id.startsWith("P"));
     if (
       !row ||
       !definition ||
@@ -353,7 +579,11 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       (row.evidence !== undefined && typeof row.evidence !== "string") ||
       (row.childAgentId !== undefined && typeof row.childAgentId !== "string") ||
       (row.dispatchAgent !== undefined && typeof row.dispatchAgent !== "string") ||
-      (version !== 1 && row.acceptance !== definition.acceptance)
+      (version !== 1 && row.acceptance !== definition.acceptance) ||
+      // Approved rows keep the plan's tier; appended rows chose theirs when added. Gates and delivery have none.
+      (!legacy && planned && row.tier !== definition.tier) ||
+      (!legacy && !validVerification(row.verification)) ||
+      (!legacy && row.verification !== undefined && row.tier !== "heavy")
     ) {
       throw new Error(`Malformed execution ledger row ${definition?.id ?? index}`);
     }
@@ -366,6 +596,20 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       if (row.status !== "done") throw new Error(`Missing attempt binding for ${row.id}`);
     }
   }
+  if (!legacy) {
+    for (const finding of saved.deferred) {
+      if (
+        !finding ||
+        typeof finding !== "object" ||
+        !nonEmpty(finding.title) ||
+        !nonEmpty(finding.reason) ||
+        (finding.origin !== undefined && typeof finding.origin !== "string") ||
+        !Number.isFinite(finding.at)
+      ) {
+        throw new Error("Malformed execution ledger deferred finding");
+      }
+    }
+  }
   if (version === 1) return expected;
   if (typeof saved.ledgerId !== "string" || !saved.ledgerId) throw new Error("Missing execution ledger identity");
   if (version === 2) {
@@ -373,8 +617,16 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     saved.fixes = [];
     for (const gate of saved.gates) gate.dependsOn = gateDependencies(gate.id);
   }
-  // Version four only adds the optional Git baseline; upgraded ledgers stay without one.
-  saved.version = 4;
+  if (legacy) {
+    // Version four only added the optional Git baseline; upgraded ledgers stay without one.
+    // Version five rows default to LIGHT, so pre-v5 plans keep their per-row evidence rule.
+    for (const row of [...saved.items, ...saved.fixes]) row.tier = "light";
+    saved.discoveries = [];
+    saved.deferred = [];
+    saved.delivery = expected.delivery;
+    saved.deliveries = deliveries;
+    saved.version = 5;
+  }
   return saved;
 }
 
@@ -388,18 +640,38 @@ export function reopenRow(ledger: ExecutionLedger, id: string, reason?: string):
   row.attempt = undefined;
   row.startedAt = undefined;
   row.receipt = undefined;
+  // Only a verifier's failure summary outlives the attempt; the next implementation child needs it.
+  if (row.verification !== undefined) {
+    row.verification =
+      row.verification.verdict === "fail"
+        ? { verdict: "fail", summary: row.verification.summary, childAgentId: row.verification.childAgentId }
+        : undefined;
+  }
   row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
   return row;
 }
 
+function checkedAgent(agent: string, availableAgents: readonly string[] | undefined, role: string): string {
+  if (!AGENT_NAME.test(agent) || (!isKnownAgent(agent) && !availableAgents?.includes(agent))) {
+    throw new Error(`${role} agent ${agent} is neither available nor a known fallback agent`);
+  }
+  return agent;
+}
+
+function checkedTier(tier: string | undefined): Tier {
+  const value = (tier ?? "light").toLowerCase();
+  if (value !== "light" && value !== "heavy") throw new Error("Tier must be LIGHT or HEAVY");
+  return value;
+}
+
 /**
- * Record the correction a rejecting final gate asked for as a new X row, and make only that gate wait for it.
+ * Record the correction a rejecting final gate asked for as a new X row, and make only that gate (and delivery) wait for it.
  * Completed plan rows and the other gates keep their proof.
  */
 export function addFixRow(
   ledger: ExecutionLedger,
   gateId: string,
-  fix: { title: string; acceptance: string; agent: string; reason: string },
+  fix: { title: string; acceptance: string; agent: string; reason: string; tier?: string },
   availableAgents?: readonly string[],
 ): LedgerItem {
   const gate = ledger.gates.find((item) => item.id === gateId);
@@ -410,25 +682,85 @@ export function addFixRow(
   const reason = fix.reason.trim();
   if (!title || !acceptance || !reason)
     throw new Error("A fix row requires a title, an observable acceptance check, and the gate's rejection");
-  if (!AGENT_NAME.test(fix.agent) || (!isKnownAgent(fix.agent) && !availableAgents?.includes(fix.agent))) {
-    throw new Error(`Fix agent ${fix.agent} is neither available nor a known fallback agent`);
-  }
+  const agent = checkedAgent(fix.agent, availableAgents, "Fix");
+  const tier = checkedTier(fix.tier);
   const row: LedgerItem = {
     id: `X${ledger.fixes.length + 1}`,
     title,
-    agent: fix.agent,
+    agent,
     acceptance,
-    dispatchAgent: resolveAgent(fix.agent, availableAgents).dispatchAgent,
+    dispatchAgent: resolveAgent(agent, availableAgents).dispatchAgent,
     dependsOn: [],
     status: "open",
+    tier,
     evidence: `${gateId} rejected: ${reason}`,
     origin: gateId,
     updatedAt: Date.now(),
   };
   ledger.fixes.push(row);
   gate.dependsOn.push(row.id);
+  for (const delivery of ledger.deliveries) delivery.dependsOn.push(row.id);
   reopenRow(ledger, gateId, `Rerun after ${gate.dependsOn.filter((id) => id.startsWith("X")).join(", ")}: ${reason}`);
   return row;
+}
+
+/** A gate has run (or been corrected) once any gate holds an attempt or any fix row exists. */
+export function gatesStarted(ledger: ExecutionLedger): boolean {
+  return ledger.fixes.length > 0 || ledger.gates.some((gate) => gate.status !== "open" || gate.attempt !== undefined);
+}
+
+/**
+ * Append an in-scope defect found mid-execution as a D row that can dispatch at once; every gate waits for it.
+ * Refused once a gate has started: from then on a gate's rejection (fix rows) carries further corrections.
+ */
+export function addDiscoveredRow(
+  ledger: ExecutionLedger,
+  origin: string,
+  found: { title: string; acceptance: string; agent: string; reason: string; tier?: string },
+  availableAgents?: readonly string[],
+): LedgerItem {
+  if (gatesStarted(ledger)) {
+    throw new Error("A final gate has already started; record further in-scope corrections through that gate's rejection with fix");
+  }
+  if (![...ledger.items, ...ledger.discoveries].some((row) => row.id === origin)) {
+    throw new Error(`Discovered work names the T or D row whose work surfaced it, not ${origin || "(missing id)"}`);
+  }
+  const title = found.title.trim();
+  const acceptance = found.acceptance.trim();
+  const reason = found.reason.trim();
+  if (!title || !acceptance || !reason) {
+    throw new Error("Discovered work requires a title, an observable acceptance check, and why it belongs to this plan");
+  }
+  const agent = checkedAgent(found.agent, availableAgents, "Discovered row");
+  const row: LedgerItem = {
+    id: `D${ledger.discoveries.length + 1}`,
+    title,
+    agent,
+    acceptance,
+    dispatchAgent: resolveAgent(agent, availableAgents).dispatchAgent,
+    dependsOn: [],
+    status: "open",
+    tier: checkedTier(found.tier),
+    evidence: `Discovered during ${origin}: ${reason}`,
+    origin,
+    reason,
+    updatedAt: Date.now(),
+  };
+  ledger.discoveries.push(row);
+  for (const gate of ledger.gates) gate.dependsOn.push(row.id);
+  return row;
+}
+
+/** Record an out-of-scope finding for the final report; it adds no row and nothing waits for it. */
+export function addDeferredFinding(ledger: ExecutionLedger, finding: { title: string; reason: string; origin?: string }): DeferredFinding {
+  const title = finding.title.trim();
+  const reason = finding.reason.trim();
+  if (!title || !reason) throw new Error("A deferred finding requires a title and why it is out of scope");
+  const origin = finding.origin?.trim() || undefined;
+  if (origin !== undefined && !ledgerRows(ledger).some((row) => row.id === origin)) throw new Error(`Unknown ledger row ${origin}`);
+  const entry: DeferredFinding = { title, reason, ...(origin ? { origin } : {}), at: Date.now() };
+  ledger.deferred.push(entry);
+  return entry;
 }
 
 /**
@@ -465,4 +797,85 @@ export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: stri
   row.updatedAt = Math.max(row.startedAt, row.updatedAt + 1);
   row.evidence = undefined;
   return row;
+}
+
+/** Record an authenticated receipt of the row's own child. A HEAVY row then waits for its verification. */
+export function recordReceipt(row: LedgerItem, receipt: ChildReceipt, evidence: string): void {
+  row.receipt = receipt;
+  row.childAgentId = receipt.childAgentId;
+  row.evidence = evidence;
+  if (row.tier === "heavy") row.verification = {};
+  else row.status = "done";
+  row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
+}
+
+/** Bind a fresh verifier to a HEAVY row whose implementation is recorded; a restart replaces an unfinished verifier. */
+export function startVerification(
+  ledger: ExecutionLedger,
+  id: string,
+  chosenAgent?: string,
+  availableAgents?: readonly string[],
+): LedgerItem {
+  const row = ledgerRows(ledger).find((item) => item.id === id);
+  if (!row) throw new Error(`Unknown ledger row ${id}`);
+  if (row.tier !== "heavy") throw new Error(`${id} is not HEAVY; only HEAVY rows get an independent verification child`);
+  if (row.status !== "in_progress" || !row.receipt) {
+    throw new Error(`${id} has no recorded implementation to verify; mark its implementation child done first`);
+  }
+  if (chosenAgent !== undefined) {
+    if (PLAN_GATED[chosenAgent]) throw new Error(`${chosenAgent} stays plan-gated and cannot verify execution rows`);
+    if (availableAgents !== undefined && !availableAgents.includes(chosenAgent)) {
+      throw new Error(`${chosenAgent} is not a spawnable agent; choose one of: ${availableAgents.join(", ") || "(none)"}`);
+    }
+    checkedAgent(chosenAgent, availableAgents, "Verification");
+  }
+  const dispatchAgent = chosenAgent ?? resolveAgent(VERIFY_AGENT, availableAgents).dispatchAgent;
+  if (!dispatchAgent) {
+    throw new Error(
+      `No verification agent can be spawned; start verify again with agent set to one of: ${availableAgents?.join(", ") || "(none)"}`,
+    );
+  }
+  const startedAt = Date.now();
+  row.verification = { attempt: randomUUID(), startedAt, dispatchAgent };
+  row.updatedAt = Math.max(startedAt, row.updatedAt + 1);
+  return row;
+}
+
+/**
+ * Record the verifier's authenticated verdict. PASS completes the row; FAIL reopens it for a new implementation
+ * attempt and keeps the verifier's summary for that attempt's assignment.
+ */
+export function recordVerification(
+  ledger: ExecutionLedger,
+  row: LedgerItem,
+  result:
+    | { verdict: "pass"; receipt: ChildReceipt; summary: string; evidence: string }
+    | { verdict: "fail"; childAgentId: string; summary: string },
+): void {
+  const verification = row.verification;
+  if (row.tier !== "heavy" || row.status !== "in_progress" || !verification?.attempt || verification.verdict !== undefined) {
+    throw new Error(`${row.id} has no running verification`);
+  }
+  if (result.verdict === "pass") {
+    row.verification = {
+      ...verification,
+      childAgentId: result.receipt.childAgentId,
+      receipt: result.receipt,
+      verdict: "pass",
+      summary: result.summary,
+    };
+    row.evidence = `${row.evidence ?? ""}\nVerified: ${result.evidence}`.trim();
+    row.status = "done";
+    row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
+    return;
+  }
+  row.verification = { verdict: "fail", summary: result.summary, childAgentId: result.childAgentId };
+  reopenRow(ledger, row.id, `Verification failed: ${result.summary}`);
+}
+
+/** Discard a verifier binding that can no longer report (interrupted or resumed elsewhere); the implementation stays. */
+export function resetVerification(row: LedgerItem): void {
+  if (row.tier !== "heavy" || !row.receipt) return;
+  row.verification = {};
+  row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
 }

@@ -197,6 +197,54 @@ export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: 
   return PLAN_GATED_SPAWN_REASON;
 }
 
+/** Whether any task in a native call carries an `atlas_assignment` binding line (in its body or the batch context). */
+export function carriesAtlasAssignment(input: unknown): boolean {
+  const args = record(input);
+  if (!args) return false;
+  const texts = [args.context, args.task, ...(Array.isArray(args.tasks) ? args.tasks.map((item) => record(item)?.task) : [])];
+  return texts.some((text) => typeof text === "string" && /^\s*atlas_assignment:/m.test(text));
+}
+
+/**
+ * Tools that only read the workspace or the web, plus `yield`, which the host adds to every explicit tool list to
+ * return the result. `lsp` is absent: it applies code actions and renames.
+ */
+const READ_ONLY_TOOLS: Record<string, true> = {
+  read: true,
+  find: true,
+  grep: true,
+  glob: true,
+  ast_grep: true,
+  web_search: true,
+  yield: true,
+};
+
+/**
+ * During execution, a task call without any `atlas_assignment` is read-only research: it needs no ledger row and its
+ * output is never row evidence. Every child must use a live-roster agent whose definition restricts it to read-only
+ * tools (no `tools` field means every tool), never extra eval-defined tools; metis and momus stay plan-gated.
+ */
+export function researchSpawnBlockReason(
+  input: unknown,
+  roster: readonly string[] | undefined,
+  definitions: readonly { name: string; tools?: string[] }[],
+): string | undefined {
+  const args = record(input);
+  if (!args) return "Task input must be an object";
+  for (const raw of Array.isArray(args.tasks) ? args.tasks : [args]) {
+    const item = record(raw);
+    const agent = nonEmptyString(item?.agent) ?? "task";
+    if (PLAN_GATED_AGENTS[agent] === true) return `${agent} stays plan-gated; it cannot run as an unbound research child`;
+    if (item?.tools !== undefined) return "Read-only research children cannot carry extra tools";
+    if (roster && !roster.includes(agent)) return `${agent} is not in the live spawnable roster`;
+    const tools = definitions.find((definition) => definition.name === agent)?.tools;
+    if (!tools || tools.some((tool) => READ_ONLY_TOOLS[tool] !== true)) {
+      return `a task call without atlas_assignment is read-only research, and ${agent} can write (${tools ? `its tools include ${tools.filter((tool) => READ_ONLY_TOOLS[tool] !== true).join(", ")}` : "its definition grants every tool"}). Start a ledger row for implementation work, or research with an agent restricted to ${Object.keys(READ_ONLY_TOOLS).join(", ")}`;
+    }
+  }
+  return undefined;
+}
+
 function stringArray(value: unknown): string[] | undefined {
   return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined;
 }

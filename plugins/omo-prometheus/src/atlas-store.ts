@@ -7,18 +7,26 @@ import * as path from "node:path";
 
 import { type AtlasEvent, derivedTimeline, ledgerEvents, parseTimeline, rowSnapshot } from "#src/atlas-timeline.ts";
 
-import { validateGateOutput } from "./evidence.ts";
+import { parseVerifyOutput, validateGateOutput } from "./evidence.ts";
 import { gitHead } from "./git-evidence.ts";
 import {
   type ChildReceipt,
   createLedger,
+  currentAttempt,
+  type DeferredFinding,
+  type Delivery,
   type ExecutionLedger,
   type ItemStatus,
   isComplete,
+  type LedgerItem,
   ledgerRows,
   planDigest,
   reopenRow,
+  resetVerification,
   restoreLedger,
+  type Tier,
+  type VerificationStatus,
+  verificationStatus,
 } from "./ledger.ts";
 import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
 import { isRoadmapStage, type RoadmapStage } from "./roadmap-contract.ts";
@@ -48,9 +56,15 @@ export interface AtlasRowDetail {
   originalAgent?: string;
   dispatchAgent?: string;
   origin?: string;
+  /** D rows: why the discovered defect belongs to the plan. */
+  reason?: string;
   acceptance: string;
   dependsOn: string[];
+  tier?: Tier;
+  /** HEAVY rows: the verifier's state and, after a verdict, its summary. */
+  verification?: { status: VerificationStatus; summary?: string };
   evidence?: string;
+  /** The attempt bound to the child currently working the row: a running verifier's, else the row's own. */
   attempt?: string;
   startedAt?: number;
   childAgentId?: string;
@@ -73,6 +87,9 @@ export interface AtlasPlanDetail {
   /** Some row moved or a session has held the plan before. */
   started: boolean;
   inUse: boolean;
+  /** Present for a readable ledger. */
+  delivery?: Delivery;
+  deferred?: DeferredFinding[];
 }
 
 interface Approval {
@@ -91,10 +108,13 @@ interface Attempt {
   attempt: string;
   startedAt: number;
   receiptId: string | null;
+  /** Version 2: a HEAVY row's verification attempt and the verifier's receipt once it passed. */
+  verify?: { attempt: string; startedAt: number; receiptId: string | null };
 }
 
+/** Version 2 adds per-row verification attempts; version 1 files upgrade on load. */
 interface Checkpoint {
-  version: 1;
+  version: 2;
   approvalSha256: string;
   ledgerId: string;
   planSha256: string;
@@ -209,26 +229,54 @@ async function exclusiveFile(file: string, data: unknown): Promise<void> {
 
 function checkpointFor(ledger: ExecutionLedger, approvalSha256: string): Checkpoint {
   return {
-    version: 1,
+    version: 2,
     approvalSha256,
     ledgerId: ledger.ledgerId,
     planSha256: ledger.planSha256,
     attempts: Object.fromEntries(
-      ledgerRows(ledger).map((row) => [
-        row.id,
-        row.attempt && row.startedAt !== undefined
-          ? { attempt: row.attempt, startedAt: row.startedAt, receiptId: row.status === "done" ? (row.receipt?.receiptId ?? null) : null }
-          : null,
-      ]),
+      ledgerRows(ledger).map((row) => {
+        const verification = row.verification;
+        return [
+          row.id,
+          row.attempt && row.startedAt !== undefined
+            ? {
+                attempt: row.attempt,
+                startedAt: row.startedAt,
+                // A HEAVY row holds its implementation receipt while in progress; reopening always discards it.
+                receiptId: row.receipt?.receiptId ?? null,
+                ...(verification?.attempt && verification.startedAt !== undefined
+                  ? {
+                      verify: {
+                        attempt: verification.attempt,
+                        startedAt: verification.startedAt,
+                        receiptId: verification.receipt?.receiptId ?? null,
+                      },
+                    }
+                  : {}),
+              }
+            : null,
+        ];
+      }),
     ),
   };
 }
 
+function validAttempt(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const attempt = value as Partial<Attempt>;
+  return (
+    typeof attempt.attempt === "string" &&
+    attempt.attempt.length > 0 &&
+    Number.isFinite(attempt.startedAt) &&
+    (attempt.receiptId === null || (typeof attempt.receiptId === "string" && RECEIPT_ID.test(attempt.receiptId)))
+  );
+}
+
 function validateCheckpoint(raw: unknown, ledger: ExecutionLedger, approvalSha256: string): Checkpoint {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Malformed Atlas attempt checkpoint");
-  const value = raw as Partial<Checkpoint>;
+  const value = raw as Partial<Omit<Checkpoint, "version">> & { version?: unknown };
   if (
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
     value.approvalSha256 !== approvalSha256 ||
     value.ledgerId !== ledger.ledgerId ||
     value.planSha256 !== ledger.planSha256 ||
@@ -237,26 +285,20 @@ function validateCheckpoint(raw: unknown, ledger: ExecutionLedger, approvalSha25
     Array.isArray(value.attempts)
   )
     throw new Error("Atlas attempt checkpoint does not match the approved ledger");
-  const attempts = value.attempts;
+  const attempts = { ...value.attempts };
   const rows = ledgerRows(ledger);
-  // A fix row is checkpointed before the ledger that adds it, so an interrupted write may leave only its checkpoint key.
+  // Version 1 predates delivery rows; a P row the upgraded ledger derived from its plan has not started yet.
+  if (value.version === 1) for (const row of rows) if (row.id.startsWith("P") && !Object.hasOwn(attempts, row.id)) attempts[row.id] = null;
+  // Appended rows are checkpointed before the ledger that adds them, so an interrupted write may leave only their key.
   const unexpected = Object.keys(attempts).filter((id) => !rows.some((row) => row.id === id));
-  if (rows.some((row) => !Object.hasOwn(attempts, row.id)) || unexpected.some((id) => !/^X[1-9]\d*$/.test(id))) {
+  if (rows.some((row) => !Object.hasOwn(attempts, row.id)) || unexpected.some((id) => !/^[XD][1-9]\d*$/.test(id))) {
     throw new Error("Atlas attempt checkpoint has missing or unexpected rows");
   }
   for (const attempt of Object.values(attempts)) {
-    if (
-      attempt !== null &&
-      (typeof attempt !== "object" ||
-        Array.isArray(attempt) ||
-        typeof attempt.attempt !== "string" ||
-        !attempt.attempt ||
-        !Number.isFinite(attempt.startedAt) ||
-        (attempt.receiptId !== null && (typeof attempt.receiptId !== "string" || !RECEIPT_ID.test(attempt.receiptId))))
-    )
+    if (attempt !== null && (!validAttempt(attempt) || (attempt.verify !== undefined && !validAttempt(attempt.verify))))
       throw new Error("Malformed Atlas attempt checkpoint");
   }
-  return value as Checkpoint;
+  return { version: 2, approvalSha256, ledgerId: ledger.ledgerId, planSha256: ledger.planSha256, attempts };
 }
 
 async function deadOwner(claim: Claim): Promise<boolean> {
@@ -643,33 +685,41 @@ export class AtlasStore {
             total: rows.length,
             timeline,
             startedAt: starts.length ? Math.min(...starts) : undefined,
-            rows: rows.map((row) => ({
-              id: row.id,
-              title: row.title,
-              status: row.status,
-              agent: row.dispatchAgent ?? row.agent,
-              originalAgent: row.agent,
-              dispatchAgent: row.dispatchAgent,
-              origin: row.origin,
-              acceptance: row.acceptance,
-              dependsOn: row.dependsOn,
-              evidence: row.evidence,
-              attempt: row.attempt,
-              startedAt: row.startedAt,
-              childAgentId: row.childAgentId,
-              updatedAt: row.updatedAt,
-              receipt: row.receipt && {
-                receiptId: row.receipt.receiptId,
-                childAgentId: row.receipt.childAgentId,
-                sessionId: row.receipt.sessionId,
-                capturedAt: row.receipt.capturedAt,
-              },
-              outputPath: row.receipt && path.join(plan.directory, "evidence", `${row.receipt.receiptId}.md`),
-            })),
+            rows: rows.map((row) => {
+              const verification = verificationStatus(row);
+              return {
+                id: row.id,
+                title: row.title,
+                status: row.status,
+                agent: row.dispatchAgent ?? row.agent,
+                originalAgent: row.agent,
+                dispatchAgent: row.dispatchAgent,
+                origin: row.origin,
+                reason: row.reason,
+                acceptance: row.acceptance,
+                dependsOn: row.dependsOn,
+                tier: row.tier,
+                verification: verification && { status: verification, summary: row.verification?.summary },
+                evidence: row.evidence,
+                attempt: currentAttempt(row),
+                startedAt: row.startedAt,
+                childAgentId: row.childAgentId,
+                updatedAt: row.updatedAt,
+                receipt: row.receipt && {
+                  receiptId: row.receipt.receiptId,
+                  childAgentId: row.receipt.childAgentId,
+                  sessionId: row.receipt.sessionId,
+                  capturedAt: row.receipt.capturedAt,
+                },
+                outputPath: row.receipt && path.join(plan.directory, "evidence", `${row.receipt.receiptId}.md`),
+              };
+            }),
             unfinished: !mismatch && !complete,
             enterable: !mismatch && !complete && !inUse,
             started,
             inUse,
+            delivery: ledger.delivery,
+            deferred: ledger.deferred.map((finding) => ({ ...finding })),
           };
         } catch (error) {
           return {
@@ -698,7 +748,7 @@ export class AtlasStore {
             (entry) =>
               entry.kind === event.kind &&
               entry.row === event.row &&
-              (entry.kind === "reopened" || entry.kind === "fix_added" || entry.attempt === event.attempt),
+              (entry.kind === "reopened" || entry.kind === "fix_added" || entry.kind === "discovered" || entry.attempt === event.attempt),
           ),
       );
       return [...saved, ...derived].sort((a, b) => a.at - b.at);
@@ -875,21 +925,65 @@ export class AtlasStore {
       const saved = await jsonFile(`${base}.json`);
       const output = await regularFile(`${base}.md`);
       const row = ledgerRows(ledger).find((item) => item.id === receipt.rowId);
+      const verify = row?.verification?.attempt !== undefined && receipt.attempt === row.verification.attempt;
+      const startedAt = verify ? row?.verification?.startedAt : row?.startedAt;
       if (
         !row ||
-        row.startedAt === undefined ||
-        receipt.childCreatedAt < row.startedAt ||
+        startedAt === undefined ||
+        receipt.childCreatedAt < startedAt ||
         receipt.capturedAt < receipt.childCreatedAt ||
         JSON.stringify(saved) !== JSON.stringify(receipt) ||
         !output.trim() ||
         planDigest(output) !== receipt.outputSha256
       )
         return false;
+      // Only a passing verifier's output is ever archived as verification proof.
+      if (verify) return parseVerifyOutput(output, ledger, row).verdict === "PASS";
       if (row.id.startsWith("F")) validateGateOutput(output, ledger, row);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** The row's own child receipt matches its attempt, the leading checkpoint, and the archived output. */
+  async #provenReceipt(plan: AtlasPlan, ledger: ExecutionLedger, row: LedgerItem, saved: Attempt | null | undefined): Promise<boolean> {
+    const receipt = row.receipt;
+    return (
+      receipt !== undefined &&
+      validReceipt(receipt) &&
+      saved?.receiptId === receipt.receiptId &&
+      receipt.rowId === row.id &&
+      receipt.attempt === row.attempt &&
+      receipt.childAgentId === row.childAgentId &&
+      (await this.#verifyReceipt(plan, ledger, receipt))
+    );
+  }
+
+  /** A HEAVY row's passing verifier: a fresh child bound to the checkpointed verification attempt. */
+  async #provenVerification(
+    plan: AtlasPlan,
+    ledger: ExecutionLedger,
+    row: LedgerItem,
+    saved: Attempt | null | undefined,
+  ): Promise<boolean> {
+    const verification = row.verification;
+    const receipt = verification?.receipt;
+    const bound = saved?.verify;
+    return (
+      verification?.verdict === "pass" &&
+      receipt !== undefined &&
+      validReceipt(receipt) &&
+      bound !== undefined &&
+      bound.attempt === verification.attempt &&
+      bound.startedAt === verification.startedAt &&
+      bound.receiptId === receipt.receiptId &&
+      receipt.rowId === row.id &&
+      receipt.attempt === verification.attempt &&
+      receipt.childAgentId === verification.childAgentId &&
+      !(receipt.sessionId === row.receipt?.sessionId && receipt.childAgentId === row.receipt?.childAgentId) &&
+      (await this.#verifyReceipt(plan, ledger, receipt))
+    );
   }
 
   async transaction<T>(
@@ -913,21 +1007,27 @@ export class AtlasStore {
       for (const row of ledgerRows(ledger)) {
         const saved = checkpoint.attempts[row.id];
         const sameAttempt = saved !== null && saved !== undefined && saved.attempt === row.attempt && saved.startedAt === row.startedAt;
-        if (row.status === "in_progress" && (options?.resume || !sameAttempt)) {
+        if (row.status === "in_progress" && row.receipt) {
+          // A HEAVY row's recorded implementation survives an interruption; only its unfinished verifier is discarded.
+          if (row.tier !== "heavy" || !sameAttempt || !(await this.#provenReceipt(plan, ledger, row, saved))) {
+            reopenRow(ledger, row.id, INVALID_PROOF);
+            changed = true;
+          } else if (row.verification?.attempt !== undefined) {
+            const sameVerify = saved?.verify?.attempt === row.verification.attempt && saved.verify.startedAt === row.verification.startedAt;
+            if (options?.resume || !sameVerify) {
+              resetVerification(row);
+              changed = true;
+            }
+          }
+        } else if (row.status === "in_progress" && (options?.resume || !sameAttempt)) {
           reopenRow(ledger, row.id, "Interrupted or invalidated attempt reopened; dispatch a fresh child.");
           changed = true;
         }
         if (row.status !== "done") continue;
-        const receipt = row.receipt;
         if (
           !sameAttempt ||
-          !receipt ||
-          !validReceipt(receipt) ||
-          saved.receiptId !== receipt.receiptId ||
-          receipt.rowId !== row.id ||
-          receipt.attempt !== row.attempt ||
-          receipt.childAgentId !== row.childAgentId ||
-          !(await this.#verifyReceipt(plan, ledger, receipt))
+          !(await this.#provenReceipt(plan, ledger, row, saved)) ||
+          (row.tier === "heavy" && !(await this.#provenVerification(plan, ledger, row, saved)))
         ) {
           reopenRow(ledger, row.id, INVALID_PROOF);
           changed = true;
@@ -945,8 +1045,12 @@ export class AtlasStore {
       options?.assertActive?.();
       const scope: TransactionScope = { store: this, plan, sessionId, ledger, checkpoint, active: true, authenticated: new Map() };
       for (const row of ledgerRows(ledger)) {
-        if (row.status === "done" && row.receipt && row.startedAt !== undefined) {
+        if (row.receipt && row.startedAt !== undefined) {
           scope.authenticated.set(row.id, { receipt: JSON.stringify(row.receipt), startedAt: row.startedAt });
+        }
+        const verification = row.verification;
+        if (verification?.receipt && verification.startedAt !== undefined) {
+          scope.authenticated.set(`${row.id}#verify`, { receipt: JSON.stringify(verification.receipt), startedAt: verification.startedAt });
         }
       }
       let result: T;
@@ -961,7 +1065,11 @@ export class AtlasStore {
       const validated = restoreLedger(ledger, plan.planFilePath, content, plan.planSha256);
       if (validated !== ledger || ledger.ledgerId !== checkpoint.ledgerId) throw new Error("Atlas ledger identity changed in transaction");
       for (const row of ledgerRows(ledger)) {
-        if (row.status !== "done") continue;
+        const holdsReceipt = row.status === "done" || (row.status === "in_progress" && row.tier === "heavy" && row.receipt !== undefined);
+        if (!holdsReceipt) {
+          if (row.receipt || row.verification?.receipt) throw new Error(`Atlas cannot persist a receipt on unfinished row ${row.id}`);
+          continue;
+        }
         if (
           !row.receipt ||
           row.receipt.rowId !== row.id ||
@@ -970,6 +1078,22 @@ export class AtlasStore {
           scope.authenticated.get(row.id)?.receipt !== JSON.stringify(row.receipt) ||
           scope.authenticated.get(row.id)?.startedAt !== row.startedAt ||
           !(await this.#verifyReceipt(plan, ledger, row.receipt))
+        ) {
+          throw new Error(`Atlas cannot persist unverified completion for ${row.id}`);
+        }
+        const verification = row.verification;
+        if (row.tier !== "heavy" || (row.status !== "done" && !verification?.receipt)) continue;
+        const authenticated = scope.authenticated.get(`${row.id}#verify`);
+        if (
+          row.status !== "done" ||
+          verification?.verdict !== "pass" ||
+          !verification.receipt ||
+          verification.receipt.rowId !== row.id ||
+          verification.receipt.attempt !== verification.attempt ||
+          verification.receipt.childAgentId !== verification.childAgentId ||
+          authenticated?.receipt !== JSON.stringify(verification.receipt) ||
+          authenticated.startedAt !== verification.startedAt ||
+          !(await this.#verifyReceipt(plan, ledger, verification.receipt))
         ) {
           throw new Error(`Atlas cannot persist unverified completion for ${row.id}`);
         }
@@ -1002,15 +1126,22 @@ export class AtlasStore {
     )
       throw new Error("Atlas receipt differs from the owned native assignment");
     const row = ledgerRows(ledger).find((item) => item.id === receipt.rowId);
+    // A verifier receipt binds the HEAVY row's verification attempt; every other receipt binds the row attempt.
+    const verification = row?.verification;
+    const verify = verification?.attempt !== undefined && receipt.attempt === verification.attempt;
+    const startedAt = verify ? verification?.startedAt : row?.startedAt;
+    const saved = row ? scope.checkpoint.attempts[row.id] : undefined;
+    const bound = verify ? saved?.verify : saved;
     if (
       row?.status !== "in_progress" ||
       !row.attempt ||
-      row.attempt !== receipt.attempt ||
       row.startedAt === undefined ||
-      receipt.childCreatedAt < row.startedAt ||
+      startedAt === undefined ||
+      (verify ? !row.receipt || verification?.verdict !== undefined : row.receipt !== undefined || row.attempt !== receipt.attempt) ||
+      receipt.childCreatedAt < startedAt ||
       receipt.capturedAt < receipt.childCreatedAt ||
-      scope.checkpoint.attempts[row.id]?.attempt !== receipt.attempt ||
-      scope.checkpoint.attempts[row.id]?.startedAt !== row.startedAt
+      bound?.attempt !== receipt.attempt ||
+      bound.startedAt !== startedAt
     )
       throw new Error("Atlas receipt does not match an active ledger attempt");
     const evidenceDir = path.join(scope.plan.directory, "evidence");
@@ -1027,14 +1158,15 @@ export class AtlasStore {
         throw new Error("Malformed archived Atlas receipt");
       }
       if (old.receiptId === receipt.receiptId) throw new Error("Atlas receipt identity already exists");
-      if (row.id.startsWith("F") && old.sessionId === receipt.sessionId && old.childAgentId === receipt.childAgentId) {
-        throw new Error("Final gates require a fresh native child in the origin session");
+      if ((verify || row.id.startsWith("F")) && old.sessionId === receipt.sessionId && old.childAgentId === receipt.childAgentId) {
+        throw new Error("Final gates and verifications require a fresh native child in the origin session");
       }
     }
     const output = await regularFile(nativeOutputPath);
     if (!output.trim() || planDigest(output) !== receipt.outputSha256)
       throw new Error("Native child output no longer matches its captured digest");
-    if (row.id.startsWith("F")) validateGateOutput(output, ledger, row);
+    if (verify && parseVerifyOutput(output, ledger, row).verdict !== "PASS") throw new Error("Only a passing verification is archived");
+    if (!verify && row.id.startsWith("F")) validateGateOutput(output, ledger, row);
     const copy = path.join(evidenceDir, `${receipt.receiptId}.md`);
     const handle = await fs.open(copy, "wx", 0o600);
     try {
@@ -1046,6 +1178,6 @@ export class AtlasStore {
     await syncDirectory(evidenceDir);
     await exclusiveFile(path.join(evidenceDir, `${receipt.receiptId}.json`), receipt);
     if (!scope.active) throw new Error("Atlas receipt transaction has already ended");
-    scope.authenticated.set(row.id, { receipt: JSON.stringify(receipt), startedAt: row.startedAt });
+    scope.authenticated.set(verify ? `${row.id}#verify` : row.id, { receipt: JSON.stringify(receipt), startedAt });
   }
 }

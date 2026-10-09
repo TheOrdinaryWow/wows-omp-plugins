@@ -560,6 +560,14 @@ export class AtlasPlanView implements Component {
       `${mark} ${ROW_STATUS[item.status] ?? item.status}${item.attempt ? t.fg("dim", ` · attempt ${item.attempt.slice(0, 8)}`) : ""}`,
     );
     field("Agent", item.agent);
+    if (item.tier) field("Tier", item.tier.toUpperCase());
+    if (item.verification) {
+      field(
+        "Verify",
+        `${item.verification.status}${item.verification.summary ? t.fg("dim", ` · ${singleLine(item.verification.summary)}`) : ""}`,
+      );
+    }
+    if (item.origin) field("Origin", `${item.origin}${item.reason ? t.fg("dim", ` · ${singleLine(item.reason)}`) : ""}`);
     field("Depends", item.dependsOn.length ? item.dependsOn.join(", ") : t.format.dash);
     field("Updated", formatTime(item.updatedAt));
     if (item.status === "in_progress") {

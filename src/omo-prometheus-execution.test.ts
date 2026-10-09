@@ -9,7 +9,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { prompt as hostPrompt } from "@oh-my-pi/pi-utils";
 
-import type { ExecutionLedger, LedgerItem } from "../plugins/omo-prometheus/src/ledger.ts";
+import { type ExecutionLedger, type LedgerItem, ledgerRows } from "../plugins/omo-prometheus/src/ledger.ts";
 
 const CHILD_ENV = "PROMETHEUS_EXECUTION_SCENARIO";
 const THIS_FILE = fileURLToPath(import.meta.url);
@@ -164,6 +164,8 @@ async function scenario(name: string, root: string): Promise<void> {
       reference = path;
     },
     asyncJobManager: { getAllJobs: ({ ownerId }: { ownerId: string }) => nativeJobs.filter((job) => job.ownerId === ownerId) },
+    effectiveExtensionRoots: undefined,
+    getSessionAgents: () => [],
     getAsyncJobSnapshot: () => ({
       running: nativeJobs.filter((job) => job.status === "running"),
       recent: nativeJobs.filter((job) => job.status !== "running"),
@@ -247,7 +249,11 @@ async function scenario(name: string, root: string): Promise<void> {
       getActiveTools: () => ["task", "read", "write", "atlas_ledger", "atlas_release"],
       setActiveTools: async () => {},
       getAllTools: () => [
-        { name: "task", description: "# Available Agents\n### task\nworker\n### reviewer\nreview", sourceInfo: { source: "builtin" } },
+        {
+          name: "task",
+          description: "# Available Agents\n### task\nworker\n### reviewer\nreview\n### scout\nresearch",
+          sourceInfo: { source: "builtin" },
+        },
         { name: "write", sourceInfo: { source: "builtin" } },
         ...[...tools.values()].map((tool) => ({
           name: tool.name,
@@ -284,7 +290,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const ledger = async (): Promise<ExecutionLedger> => JSON.parse(await readFile(ledgerFile, "utf8"));
   const row = async (id: string): Promise<LedgerItem> => {
     const current = await ledger();
-    const item = [...current.items, ...(current.fixes ?? []), ...current.gates].find((item) => item.id === id);
+    const item = ledgerRows(current).find((item) => item.id === id);
     assert(item);
     return item;
   };
@@ -322,7 +328,14 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(InternalUrlRouter.instance().getHandler("atlas"), undefined);
     return;
   }
-  await writeFile(sourcePlanFile, name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : plan);
+  const heavyPlan = plan.replace(
+    "  - Acceptance: prerequisite behavior is observed",
+    "  - Tier: HEAVY\n  - Acceptance: prerequisite behavior is observed",
+  );
+  await writeFile(
+    sourcePlanFile,
+    name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : name.startsWith("heavy-") ? heavyPlan : plan,
+  );
   await commands.get("prometheus")?.("", ctx);
   if (name === "propose-grammar") {
     const propose = async (content: string) =>
@@ -1012,7 +1025,8 @@ async function scenario(name: string, root: string): Promise<void> {
     const { applyOpsToPhases } = await import("@oh-my-pi/pi-coding-agent/tools/todo");
     const normalized = applyOpsToPhases(todoPhases, [{ op: "unblock", task: "X1. Stabilize retention test" }]);
     assert.deepEqual(normalized.errors, []);
-    assert.equal(normalized.phases.find((phase) => phase.name === "Atlas final gates")?.tasks[1]?.status, "in_progress");
+    // The host keeps one running item, which rewrites some parallel Atlas row the ledger still holds elsewhere.
+    assert.notDeepEqual(normalized.phases, todoPhases);
     live.setTodoPhases(normalized.phases);
     const priorWrites = entries.length;
     const correctedResult = await hook("tool_result", {
@@ -1587,6 +1601,147 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
 
+  if (name === "heavy-verify" || name === "heavy-verify-fail") {
+    const prepared = await prepare("T1");
+    assert.match(prepared.startText ?? "", /T1 is HEAVY/);
+    await publish(prepared, "Implementer");
+    ok(await done("T1", "Implementer"));
+    let current = await row("T1");
+    assert.equal(current.status, "in_progress");
+    assert.equal(current.receipt?.childAgentId, "Implementer");
+    // A recorded implementation alone never completes the row, so nothing waiting on it may start.
+    refused(await done("T1", "Implementer"));
+    refused(await call({ action: "start", id: "T2" }));
+    refused(await call({ action: "verify", id: "T3" }));
+    const again = (await hook("tool_call", { toolName: "task", toolCallId: `dispatch-${sequence++}`, input: prepared.input })) as
+      | { block?: boolean; reason?: string }
+      | undefined;
+    assert.match(again?.reason ?? "", /already recorded/);
+    const started = await call({ action: "verify", id: "T1" });
+    ok(started);
+    current = await row("T1");
+    const attempt = current.verification?.attempt;
+    const verifyStartedAt = current.verification?.startedAt;
+    assert(attempt && verifyStartedAt !== undefined);
+    const planSha256 = (await ledger()).planSha256;
+    const marker = `atlas_assignment: ${JSON.stringify({ planSha256, verify: { T1: attempt } })}`;
+    assert(started.content.some((part) => part.text?.includes(marker)));
+    const input = {
+      agent: current.verification?.dispatchAgent,
+      task: `${marker}\nVerify T1 adversarially and report; never fix.`,
+      solutionSpace: "Verification only",
+      outputSchema: started.details?.outputSchema,
+      schemaMode: "strict",
+    };
+    const loose = (await hook("tool_call", {
+      toolName: "task",
+      toolCallId: `dispatch-${sequence++}`,
+      input: { ...input, schemaMode: "permissive" },
+    })) as { block?: boolean } | undefined;
+    assert.equal(loose?.block, true);
+    const verifier: PreparedAssignment = { item: current, current: await ledger(), toolCallId: `dispatch-${sequence++}`, input };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: verifier.toolCallId, input }), undefined);
+    // The implementer's own completion never counts as the independent verification.
+    refused(await done("T1", "Implementer"));
+    const verdict = name === "heavy-verify" ? "PASS" : "FAIL";
+    await publish(verifier, "Verifier", {
+      createdAt: verifyStartedAt,
+      content: JSON.stringify({ rowId: "T1", planSha256, attempt, verdict, summary: `Verifier ${verdict}`, evidence: ["reproduced"] }),
+    });
+    ok(await done("T1", "Verifier"));
+    current = await row("T1");
+    if (name === "heavy-verify-fail") {
+      assert.equal(current.status, "open");
+      assert.equal(current.receipt, undefined);
+      assert.equal(current.verification?.verdict, "fail");
+      assert.equal(current.evidence, "Verification failed: Verifier FAIL");
+      const restarted = await call({ action: "start", id: "T1" });
+      ok(restarted);
+      assert(restarted.content.some((part) => part.text?.includes("give this to the implementation child: Verifier FAIL")));
+      return;
+    }
+    assert.equal(current.status, "done");
+    assert.equal(current.verification?.verdict, "pass");
+    assert.equal(current.verification?.receipt?.childAgentId, "Verifier");
+    ok(await call({ action: "start", id: "T2" }));
+    await reload();
+    ok(await call({ action: "status" }));
+    assert.equal((await row("T1")).status, "done");
+    return;
+  }
+  if (name === "research-children") {
+    const research = async (agent: string, extra: Record<string, unknown> = {}) =>
+      (await hook("tool_call", {
+        toolName: "task",
+        toolCallId: `research-${sequence++}`,
+        input: { agent, task: "Diagnose why T1 fails; report findings only.", solutionSpace: "Read-only diagnosis", ...extra },
+      })) as { block?: boolean; reason?: string } | undefined;
+    // Read-only capability comes from the live agent definition: scout's tools only read.
+    assert.equal(await research("scout"), undefined);
+    for (const agent of ["task", "reviewer"]) assert.match((await research(agent))?.reason ?? "", /read-only research, and \S+ can write/);
+    assert.match((await research("scout", { tools: ["probe"] }))?.reason ?? "", /cannot carry extra tools/);
+    assert.match((await research("momus", { task: "review_kind: compliance\nDiagnose" }))?.reason ?? "", /momus stays plan-gated/);
+    // A research child's output is never row evidence, and research never rides in a bound batch.
+    const prepared = await prepare("T1");
+    const scoutCall = `research-${sequence++}`;
+    const scoutInput = { agent: "scout", task: "Inspect the T1 failure.", solutionSpace: "Read-only diagnosis" };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: scoutCall, input: scoutInput }), undefined);
+    await publish({ ...prepared, toolCallId: scoutCall, input: scoutInput }, "Scout");
+    refused(await done("T1", "Scout"));
+    const mixed = (await hook("tool_call", {
+      toolName: "task",
+      toolCallId: `dispatch-${sequence++}`,
+      input: { context: "Shared context", tasks: [prepared.input, scoutInput] },
+    })) as { block?: boolean; reason?: string } | undefined;
+    assert.match(mixed?.reason ?? "", /their own task call/);
+    return;
+  }
+  if (name === "isolation-required") {
+    // Host modules load only inside the isolated child process, after HOME is private.
+    const { cfgTaskIsolationEnabled } = await import("@oh-my-pi/pi-coding-agent/task/settings");
+    cfgTaskIsolationEnabled.override(settings, true);
+    const dispatch = async (id: string, extra: Record<string, unknown> = {}) => {
+      ok(await call({ action: "start", id }));
+      const item = await row(id);
+      const task = `atlas_assignment: ${JSON.stringify({ planSha256: (await ledger()).planSha256, rows: { [id]: item.attempt } })}\nImplement ${id}`;
+      return (await hook("tool_call", {
+        toolName: "task",
+        toolCallId: `dispatch-${sequence++}`,
+        input: { agent: item.dispatchAgent, task, solutionSpace: "Scoped", ...extra },
+      })) as { block?: boolean; reason?: string } | undefined;
+    };
+    const warnings = () => notices.filter((notice) => notice.includes("task.isolation.merge")).length;
+    assert.match((await dispatch("T1"))?.reason ?? "", /T1 is implementation work and must dispatch with isolated: true/);
+    assert.equal(warnings(), 0);
+    ok(await call({ action: "reopen", id: "T1" }));
+    assert.equal(await dispatch("T1", { isolated: true }), undefined);
+    assert.equal(await dispatch("T3", { isolated: true }), undefined);
+    // Patch merges squash per-slice commits; the user hears it once per session.
+    assert.equal(warnings(), 1);
+    return;
+  }
+  if (name === "discover") {
+    const discover = (params: Record<string, unknown>) => call({ action: "discover", ...params });
+    const defect = { id: "T1", title: "Repair the shared parser", acceptance: "the parser test passes", evidence: "T1 exposed it" };
+    refused(await discover(defect));
+    ok(await discover({ ...defect, scope: "in" }));
+    const d1 = await row("D1");
+    assert.equal(d1.origin, "T1");
+    assert.equal(d1.tier, "light");
+    assert.deepEqual((await row("F1")).dependsOn, ["T1", "T2", "T3", "D1"]);
+    assert.deepEqual(
+      todoPhases.map((phase) => phase.name),
+      ["Atlas tasks", "Atlas discovered", "Atlas final gates"],
+    );
+    ok(await discover({ scope: "out", title: "Legacy importer leaks handles", evidence: "Outside this change" }));
+    assert.equal((await ledger()).deferred.length, 1);
+    await tasksDone();
+    await finish("D1");
+    await prepare("F1");
+    refused(await discover({ ...defect, id: "T2", scope: "in" }));
+    ok(await discover({ scope: "out", id: "F1", title: "Unrelated flaky test", evidence: "Outside this change" }));
+    return;
+  }
   await tasksDone();
   if (name === "untrusted-children") {
     const review = await prepare("F1");
@@ -1790,6 +1945,11 @@ if (process.env[CHILD_ENV]) {
       "plan-mode-restored",
       "plan-mode-reentered",
       "propose-grammar",
+      "heavy-verify",
+      "heavy-verify-fail",
+      "research-children",
+      "isolation-required",
+      "discover",
     ]) {
       // Each scenario runs in its own process with a private HOME, so scenarios share no state.
       test.concurrent(name, async () => {

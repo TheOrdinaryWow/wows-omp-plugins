@@ -8,6 +8,8 @@ import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugi
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
+import { cfgTaskIsolationEnabled, cfgTaskIsolationMerge } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 
@@ -33,10 +35,12 @@ import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.
 import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
-import { ChildEvidence, gateOutputSchema } from "./evidence.ts";
+import { ChildEvidence, gateOutputSchema, parseVerifyOutput, verifyOutputSchema } from "./evidence.ts";
 import { collectComplianceEvidence } from "./git-evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
 import {
+  addDeferredFinding,
+  addDiscoveredRow,
   addFixRow,
   type ExecutionLedger,
   isComplete,
@@ -44,10 +48,13 @@ import {
   ledgerRows,
   parsePlanChecklist,
   planDigest,
+  recordReceipt,
+  recordVerification,
   refreshDispatchAgents,
   renderLedgerSummary,
   reopenRow,
   startRow,
+  startVerification,
 } from "./ledger.ts";
 import { writeLedgerAtomic } from "./ledger-store.ts";
 import { PluginStatePublisher } from "./plugin-state.ts";
@@ -59,6 +66,7 @@ import {
   atlasArgumentCompletions,
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
+  carriesAtlasAssignment,
   EXECUTION_PREAMBLE,
   EXECUTION_START_NOTICE,
   executionBlockReason,
@@ -80,6 +88,7 @@ import {
   prometheusArtifactUrl,
   proposedPlanPathFromToolResult,
   proposedPlanUrl,
+  researchSpawnBlockReason,
   taskSpawnBlockReason,
 } from "./workflow.ts";
 
@@ -178,6 +187,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   /** Last serialized sidecar state per session; an unpublished session counts as `null`. */
   const publishedStates = new Map<string, string>();
+  /** Sessions already warned that host patch merges squash per-slice child commits. */
+  const patchMergeWarned = new Set<string>();
   let atlasPlans: AtlasCompletionPlan[] = [];
   let planReferences = new AtlasPlanReferences();
   const hostBindings = new WeakMap<AgentSession, { sessionId: string; planUrl: string; previousReference: string | undefined }>();
@@ -299,6 +310,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!mainSession(ctx)) return;
     const sessionId = ctx.sessionManager.getSessionId();
     const record = records.get(sessionId);
+    const detail = liveModels.get(sessionId)?.snapshot.detail;
     const state = prometheusState({
       phase: record?.phase ?? "idle",
       proposalAwaitingApproval: record?.proposalAwaitingApproval,
@@ -307,6 +319,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       planName: record?.ownership?.plan.name,
       ledgerError: record?.ledgerError,
       snapshot: herdrDag.snapshot(sessionId),
+      delivery: detail?.delivery,
+      deferredCount: detail?.deferred?.length,
     });
     const serialized = JSON.stringify(state);
     if ((publishedStates.get(sessionId) ?? "null") === serialized) return;
@@ -984,9 +998,13 @@ export default function prometheus(pi: ExtensionAPI): void {
         const snapshot: unknown = JSON.parse(await fs.readFile(record.ledgerPath ?? "", "utf8"));
         const rows =
           snapshot && typeof snapshot === "object" && "items" in snapshot && "gates" in snapshot
-            ? [snapshot.items, "fixes" in snapshot ? snapshot.fixes : [], snapshot.gates].flatMap((list) =>
-                Array.isArray(list) ? list : [],
-              )
+            ? [
+                snapshot.items,
+                "discoveries" in snapshot ? snapshot.discoveries : [],
+                "fixes" in snapshot ? snapshot.fixes : [],
+                snapshot.gates,
+                "deliveries" in snapshot ? snapshot.deliveries : [],
+              ].flatMap((list) => (Array.isArray(list) ? list : []))
             : [];
         if (rows.length) remaining = rows.filter((row) => row?.status !== "done" || !row.receipt).length;
       } catch {
@@ -1611,37 +1629,52 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   const ledgerParameters = z.object({
     action: z
-      .enum(["status", "start", "done", "block", "reopen", "fix"])
+      .enum(["status", "start", "done", "verify", "block", "reopen", "fix", "discover"])
       .describe(
-        "status shows every row; start, done, block, and reopen change the row named by id; fix appends an X row for the rejecting gate named by id",
+        "status shows every row; start, done, block, and reopen change the row named by id; verify binds a fresh verifier to the HEAVY row named by id once its implementation is done; fix appends an X row for the rejecting gate named by id; discover records work found while executing the row named by id: scope in appends a D row, scope out records a deferred finding",
       ),
-    id: z.string().optional().describe("Row id such as T3, X1, or F2; required for every action except status"),
+    id: z
+      .string()
+      .optional()
+      .describe("Row id such as T3, D1, X1, F2, or P1; required for every action except status and an out-of-scope discover"),
     evidence: z
       .string()
       .optional()
       .describe(
-        "Inspected observable evidence; required for done, block, and fix (the gate's rejection). Gate verdicts are read from native child output, not this text",
+        "Inspected observable evidence; required for done, block, fix (the gate's rejection), and discover (why the finding is in or out of scope). Gate and verifier verdicts are read from native child output, not this text",
       ),
     childAgentId: z
       .string()
       .optional()
-      .describe("Required for done: exact id of the owned native child dispatched for this started attempt"),
-    title: z.string().optional().describe("Required for fix: the correction the rejecting gate asked for"),
-    acceptance: z.string().optional().describe("Required for fix: the observable check that proves the correction"),
+      .describe("Required for done: exact id of the owned native child dispatched for this started attempt or verification"),
+    title: z.string().optional().describe("Required for fix and discover: the correction or finding"),
+    acceptance: z.string().optional().describe("Required for fix and in-scope discover: the observable check that proves the work"),
+    scope: z
+      .enum(["in", "out"])
+      .optional()
+      .describe("Required for discover: in = a defect inside this change's blast radius (new D row); out = outside it (deferred, no row)"),
+    tier: z
+      .enum(["LIGHT", "HEAVY"])
+      .optional()
+      .describe(
+        "fix and in-scope discover: HEAVY for auth, security, migrations, concurrency, persistence formats, public API, or data-loss risk (default LIGHT)",
+      ),
     agent: z
       .string()
       .optional()
       .describe(
-        "fix: agent that performs the correction (default task). start: the listed agent to dispatch when the row shows unavailable, i.e. neither its requested agent nor a fallback can be spawned; pick the most specific fit for the row's work",
+        "fix and discover: agent that performs the work (default task). verify: the verifier agent (default deep-high, falling back to task). start: the listed agent to dispatch when the row shows unavailable, i.e. neither its requested agent nor a fallback can be spawned; pick the most specific fit for the row's work",
       ),
   });
   type LedgerParams = {
-    action: "status" | "start" | "done" | "block" | "reopen" | "fix";
+    action: "status" | "start" | "done" | "verify" | "block" | "reopen" | "fix" | "discover";
     id?: string;
     evidence?: string;
     childAgentId?: string;
     title?: string;
     acceptance?: string;
+    scope?: "in" | "out";
+    tier?: "LIGHT" | "HEAVY";
     agent?: string;
   };
 
@@ -1789,7 +1822,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Reopen/block affect only the named row.",
+      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. A HEAVY row's done records its implementation; verify then binds a distinct fresh verifier child with structured output, and only its PASS completes the row (FAIL reopens it with the verifier's summary). Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Before any gate starts, discover scope in appends a D row every gate waits for; discover scope out records a deferred finding for the final report. P1 delivers after every gate. Reopen/block affect only the named row.",
     parameters: ledgerParameters,
     defaultInactive: true,
     loadMode: "essential",
@@ -1807,11 +1840,49 @@ export default function prometheus(pi: ExtensionAPI): void {
           const wasComplete = isComplete(ledger);
           if (params.action === "status") return { content: [{ type: "text" as const, text: ledgerSummary(ledger) }], details: { ledger } };
           const id = params.id?.trim();
+          const evidence = params.evidence?.trim();
+          if (params.action === "discover" && params.scope === "out") {
+            const finding = addDeferredFinding(ledger, { title: params.title ?? "", reason: evidence ?? "", origin: id });
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `Deferred out of scope: ${finding.title}. No row waits for it; list it in the final report.\n\n${ledgerSummary(ledger)}`,
+                },
+              ],
+              details: { deferred: ledger.deferred.length },
+            };
+          }
           const item = ledgerRows(ledger).find((entry) => entry.id === id);
           if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
-          const evidence = params.evidence?.trim();
           let schema: Record<string, unknown> | undefined;
           let planBinding = "";
+          let note = "";
+          if (params.action === "discover") {
+            if (params.scope !== "in") throw new Error("discover requires scope in (a D row) or out (a deferred finding)");
+            const found = addDiscoveredRow(
+              ledger,
+              item.id,
+              {
+                title: params.title ?? "",
+                acceptance: params.acceptance ?? "",
+                agent: params.agent?.trim() || "task",
+                reason: evidence ?? "",
+                tier: params.tier,
+              },
+              availableAgents(),
+            );
+            changedRow = found;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `${found.id} records in-scope work found during ${item.id}; it can dispatch now and every gate waits for it.\n\n${ledgerSummary(ledger)}`,
+                },
+              ],
+              details: { id: found.id, status: found.status, origin: item.id },
+            };
+          }
           if (params.action === "fix") {
             const fix = addFixRow(
               ledger,
@@ -1821,6 +1892,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                 acceptance: params.acceptance ?? "",
                 agent: params.agent?.trim() || "task",
                 reason: evidence ?? "",
+                tier: params.tier,
               },
               availableAgents(),
             );
@@ -1844,15 +1916,30 @@ export default function prometheus(pi: ExtensionAPI): void {
             }
             startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
+            if (item.tier === "heavy") {
+              note = `\n${item.id} is HEAVY: mark its implementation child done, then bind a distinct fresh verifier with atlas_ledger verify.`;
+              if (item.verification?.verdict === "fail") {
+                note += `\nIts previous verification failed; give this to the implementation child: ${item.verification.summary ?? ""}`;
+              }
+            }
+          } else if (params.action === "verify") {
+            startVerification(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
+            schema = verifyOutputSchema(ledger, item);
+            planBinding = `\nVerifier binding for a fresh ${item.verification?.dispatchAgent} child (copy literally): atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, verify: { [item.id]: item.verification?.attempt } })}`;
           } else if (params.action === "done") {
             const childAgentId = params.childAgentId?.trim();
             if (!evidence || !childAgentId) throw new Error(`Marking ${item.id} done requires inspected evidence and childAgentId`);
+            const verifying = item.tier === "heavy" && item.receipt !== undefined;
+            if (verifying && (item.verification?.attempt === undefined || item.verification.verdict !== undefined)) {
+              throw new Error(`${item.id} implementation is already recorded; bind its verifier with atlas_ledger verify first`);
+            }
             const parent = AgentRegistry.global()
               .list()
               .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
             if (!parent) throw new Error("Registered parent identity is unavailable");
             observeFinalJobs(ctx);
-            const receipt = await childEvidence.capture({
+            const nativeOutput = path.join(ctx.sessionManager.getArtifactsDir() as string, `${childAgentId}.md`);
+            const { receipt, output } = await childEvidence.capture({
               registry: AgentRegistry.global(),
               parentAgentId: parent.id,
               sessionId: ctx.sessionManager.getSessionId(),
@@ -1860,17 +1947,33 @@ export default function prometheus(pi: ExtensionAPI): void {
               ledger,
               row: item,
               childAgentId,
-              priorReceipts: ledgerRows(ledger).flatMap((row) => (row.receipt ? [row.receipt] : [])),
+              priorReceipts: ledgerRows(ledger).flatMap((row) => [
+                ...(row.receipt ? [row.receipt] : []),
+                ...(row.verification?.receipt ? [row.verification.receipt] : []),
+              ]),
+              verify: verifying,
             });
             if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during child evidence capture");
-            // Only authenticated final native results can publish shared immutable proof.
-            await store.saveReceipt(plan, receipt, path.join(ctx.sessionManager.getArtifactsDir() as string, `${childAgentId}.md`));
-            if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while child evidence was copied");
-            item.receipt = receipt;
-            item.childAgentId = childAgentId;
-            item.evidence = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
-            item.status = "done";
-            item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
+            const archived = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
+            const verdict = verifying ? parseVerifyOutput(output, ledger, item) : undefined;
+            if (verdict?.verdict === "INCONCLUSIVE") {
+              throw new Error(
+                `${item.id} verification was inconclusive: ${verdict.summary}. Bind a fresh verifier with atlas_ledger verify, or reopen or block the row`,
+              );
+            }
+            if (verdict?.verdict === "FAIL") {
+              recordVerification(ledger, item, { verdict: "fail", childAgentId, summary: verdict.summary });
+              note = `\n${item.id} verification failed, so the row is open again. Start a new implementation attempt and give its child this failure: ${verdict.summary}`;
+            } else {
+              // Only authenticated final native results can publish shared immutable proof.
+              await store.saveReceipt(plan, receipt, nativeOutput);
+              if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while child evidence was copied");
+              if (verdict) recordVerification(ledger, item, { verdict: "pass", receipt, summary: verdict.summary, evidence: archived });
+              else recordReceipt(item, receipt, archived);
+              if (item.status === "in_progress") {
+                note = `\n${item.id} is HEAVY: its implementation is recorded. Bind a distinct fresh verifier with atlas_ledger verify id=${item.id}.`;
+              }
+            }
             const completedNow = !wasComplete && isComplete(ledger);
             // A plan proposed before its stage was started has no approved stage; the executing session's live binding stands in.
             const liveStage = completedNow && !plan.roadmapStage ? roadmap.requestBinding(ctx.sessionManager.getSessionId()) : undefined;
@@ -1886,7 +1989,24 @@ export default function prometheus(pi: ExtensionAPI): void {
                   return { gateId: output.gateId, verdict: output.verdict, summary: output.summary };
                 }),
               );
-              completion = { sessionId: ctx.sessionManager.getSessionId(), planId: plan.id, roadmapStage, gates };
+              const delivered = ledger.deliveries[0];
+              const prefix = delivered?.receipt ? `${path.join(plan.directory, "evidence", `${delivered.receipt.receiptId}.md`)}: ` : "";
+              completion = {
+                sessionId: ctx.sessionManager.getSessionId(),
+                planId: plan.id,
+                roadmapStage,
+                gates,
+                ...(ledger.delivery !== "direct" && delivered
+                  ? {
+                      delivery: {
+                        mode: ledger.delivery,
+                        summary: delivered.evidence?.startsWith(prefix)
+                          ? delivered.evidence.slice(prefix.length)
+                          : (delivered.evidence ?? ""),
+                      },
+                    }
+                  : {}),
+              };
             }
           } else {
             if (params.action === "block" && !evidence) throw new Error("Blocking a row requires an explanation");
@@ -1897,11 +2017,12 @@ export default function prometheus(pi: ExtensionAPI): void {
             if (params.action === "block") item.status = "blocked";
           }
           changedRow = item;
+          const schemaLabel = params.action === "verify" ? "Verifier task outputSchema" : "Gate task outputSchema";
           return {
             content: [
               {
                 type: "text" as const,
-                text: `${item.id} is now ${item.status}.\n\n${ledgerSummary(ledger)}${schema ? `\nGate task outputSchema (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
+                text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger)}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
               },
             ],
             details: { id: item.id, status: item.status, outputSchema: schema },
@@ -1915,7 +2036,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             content: [
               ...result.content,
               ...(gitEvidence ? [{ type: "text" as const, text: gitEvidence.text }] : []),
-              { type: "text" as const, text: atlasTodoRefreshCall(params.action as Exclude<LedgerParams["action"], "status">, changedRow) },
+              { type: "text" as const, text: atlasTodoRefreshCall(changedRow) },
             ],
             details: gitEvidence ? { ...result.details, complianceEvidence: gitEvidence } : result.details,
           };
@@ -2208,15 +2329,26 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (!detail) detail = provenanceBlockReason(event.toolName, roadmapToolSourcePath);
     if (!detail && nested) detail = provenanceBlockReason(nested.toolName, roadmapToolSourcePath);
     // Native xdev task dispatch is intercepted again at its inner task boundary.
-    if (!detail && event.toolName === "task") {
+    if (!detail && event.toolName === "task" && !carriesAtlasAssignment(event.input)) {
+      // Unbound read-only research needs no ledger row, yet still requires a valid ledger: a paused plan dispatches nothing.
+      try {
+        if (!(await readLedger(ctx, record))) throw new Error(pauseMessage(record));
+        const { agents } = await discoverAgents(ctx.cwd, undefined, live.effectiveExtensionRoots);
+        const research = researchSpawnBlockReason(event.input, availableAgents(), [...agents, ...live.getSessionAgents()]);
+        if (research) throw new Error(research);
+      } catch (error) {
+        return { block: true, reason: `Task dispatch refused: ${errorMessage(error)}. /atlas exit is the user exit.` };
+      }
+    } else if (!detail && event.toolName === "task") {
       const originSessionId = ctx.sessionManager.getSessionId();
+      const isolationRequired = cfgTaskIsolationEnabled.get(live.settings);
       let remembered = false;
       try {
         if (!evidenceSubscription) throw new Error("native child lifecycle evidence is unavailable on this host");
         await withExecutionLedger(ctx, record, (ledger) => {
           const artifactsDir = ctx.sessionManager.getArtifactsDir();
           if (!artifactsDir) throw new Error("native task artifacts are unavailable");
-          childEvidence.rememberDispatch(event.toolCallId, originSessionId, ledger, event.input, artifactsDir);
+          childEvidence.rememberDispatch(event.toolCallId, originSessionId, ledger, event.input, artifactsDir, { isolationRequired });
           remembered = true;
         });
       } catch (error) {
@@ -2225,6 +2357,14 @@ export default function prometheus(pi: ExtensionAPI): void {
           block: true,
           reason: `Task dispatch refused: ${errorMessage(error)}. Use a valid shared ledger and its current start binding; /atlas exit is the user exit.`,
         };
+      }
+      if (isolationRequired && cfgTaskIsolationMerge.get(live.settings) === "patch" && !patchMergeWarned.has(originSessionId)) {
+        patchMergeWarned.add(originSessionId);
+        notify(
+          ctx,
+          "Host task isolation merges child work as one patch (task.isolation.merge: patch), so each child's per-slice commits are squashed. Set task.isolation.merge to branch to keep them.",
+          "warning",
+        );
       }
     }
     if (!detail) return undefined;
@@ -2372,7 +2512,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.lastContinuationLedgerStamp = stamp;
     return {
       continue: true,
-      additionalContext: `<atlas-continuation>\n${ledgerSummary(ledger)}\nDispatch the next unblocked items with task; record progress with atlas_ledger; call atlas_release only when every T and F row is done.\n</atlas-continuation>`,
+      additionalContext: `<atlas-continuation>\n${ledgerSummary(ledger)}\nDispatch the next unblocked items with task; record progress with atlas_ledger; call atlas_release only when every row is done.\n</atlas-continuation>`,
     };
   });
 
@@ -2469,6 +2609,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     await statePublisher.flush();
     publishedStates.delete(sessionId);
     reviewLevels.delete(sessionId);
+    patchMergeWarned.delete(sessionId);
     atlasWidgets.delete(sessionId);
     herdrDag.forget(sessionId);
     roadmap.forget(sessionId);

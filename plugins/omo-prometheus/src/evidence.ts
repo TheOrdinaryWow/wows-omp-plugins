@@ -6,11 +6,15 @@ import type { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-reg
 
 import { type ChildReceipt, type ExecutionLedger, type LedgerItem, ledgerRows, planDigest } from "./ledger.ts";
 
+export type ChildVerdict = "PASS" | "FAIL" | "INCONCLUSIVE";
+
 interface Assignment {
   ledgerId: string;
   sessionId: string;
   planSha256: string;
   rows: Record<string, string>;
+  /** The rows map binds a HEAVY row's verification attempt, never its implementation. */
+  verify: boolean;
   dispatchedAt: number;
   artifactsDir: string;
   finalStatus?: "completed" | "failed";
@@ -89,13 +93,68 @@ export function validateGateOutput(content: string, ledger: ExecutionLedger, row
     );
 }
 
+/** The exact outputSchema given to a HEAVY row's verifier child, bound like a gate to the row and verify attempt. */
+export function verifyOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["rowId", "planSha256", "attempt", "verdict", "summary", "evidence"],
+    properties: {
+      rowId: { const: row.id },
+      planSha256: { const: ledger.planSha256 },
+      attempt: { const: row.verification?.attempt },
+      verdict: { enum: ["PASS", "FAIL", "INCONCLUSIVE"] },
+      summary: { type: "string", minLength: 1 },
+      evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+    },
+  };
+}
+
+/** Read a verifier's verdict from its complete JSON artifact; a FAIL is a valid result, a mismatched binding is not. */
+export function parseVerifyOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): { verdict: ChildVerdict; summary: string } {
+  let result: unknown;
+  try {
+    result = JSON.parse(content);
+  } catch {
+    throw new Error(`${row.id} verifier output must be a JSON object matching the verification outputSchema`);
+  }
+  if (
+    !object(result) ||
+    result.rowId !== row.id ||
+    result.planSha256 !== ledger.planSha256 ||
+    row.verification?.attempt === undefined ||
+    result.attempt !== row.verification.attempt ||
+    (result.verdict !== "PASS" && result.verdict !== "FAIL" && result.verdict !== "INCONCLUSIVE") ||
+    typeof result.summary !== "string" ||
+    !result.summary.trim() ||
+    !Array.isArray(result.evidence) ||
+    !result.evidence.length ||
+    result.evidence.some((entry) => typeof entry !== "string" || !entry.trim())
+  ) {
+    throw new Error(`${row.id} verifier output does not match the current plan and verification attempt`);
+  }
+  return { verdict: result.verdict, summary: result.summary.trim() };
+}
+
 /** Correlates native dispatch and terminal lifecycle events; it never launches or schedules children. */
 export class ChildEvidence {
   readonly #dispatches = new Map<string, Assignment[]>();
   readonly #children = new Map<string, ObservedChild>();
   readonly #reactivations = new Set<ObservedChild>();
 
-  rememberDispatch(toolCallId: string, sessionId: string, ledger: ExecutionLedger, input: unknown, artifactsDir: string): void {
+  /**
+   * Bind every task in one native call to started ledger attempts. `rows` binds implementation, gate, and delivery
+   * attempts; `verify` binds exactly one HEAVY row's verification attempt. Under host isolation, implementation rows
+   * (T, D, X, P) must request `isolated: true`; gates and verifiers are not forced either way.
+   */
+  rememberDispatch(
+    toolCallId: string,
+    sessionId: string,
+    ledger: ExecutionLedger,
+    input: unknown,
+    artifactsDir: string,
+    options: { isolationRequired?: boolean } = {},
+  ): void {
     if (this.#dispatches.has(`${sessionId}:${toolCallId}`))
       throw new Error("Native task dispatch identity was already used in this session");
     if (!object(input)) throw new Error("Task input must identify its ledger assignment");
@@ -103,30 +162,65 @@ export class ChildEvidence {
     if (!tasks.length) throw new Error("Task batch is empty");
     const bound = new Set<string>();
     const dispatchedAt = Date.now();
-    const assignments = tasks.map((task) => {
+    const assignments = tasks.map((task): Assignment => {
       if (!object(task) || typeof task.task !== "string") throw new Error("Every task needs an assignment body");
       const text = `${typeof input.context === "string" ? input.context : ""}\n${task.task}`;
       const markers = [...text.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)];
-      if (markers.length !== 1) throw new Error("Each task must include exactly one atlas_assignment JSON line from ledger start");
+      if (markers.length !== 1) {
+        throw new Error(
+          "Each task must include exactly one atlas_assignment JSON line from ledger start; dispatch read-only research children in their own task call",
+        );
+      }
       const binding: unknown = JSON.parse(markers[0]?.[1] ?? "null");
-      if (!object(binding) || binding.planSha256 !== ledger.planSha256 || !object(binding.rows) || !Object.keys(binding.rows).length) {
+      const verify = object(binding) && binding.verify !== undefined;
+      const entries = object(binding) ? (verify ? binding.verify : binding.rows) : undefined;
+      if (
+        !object(binding) ||
+        binding.planSha256 !== ledger.planSha256 ||
+        (verify && binding.rows !== undefined) ||
+        !object(entries) ||
+        !Object.keys(entries).length
+      ) {
         throw new Error("Task assignment does not match the approved plan");
       }
       const rows: Record<string, string> = {};
-      for (const [id, attempt] of Object.entries(binding.rows)) {
+      for (const [id, attempt] of Object.entries(entries)) {
         const row = ledgerRows(ledger).find((candidate) => candidate.id === id);
-        if (row?.status !== "in_progress" || typeof attempt !== "string" || attempt !== row.attempt) {
-          throw new Error(`${id} has no current started attempt; use atlas_ledger start before dispatch`);
-        }
         if (bound.has(id)) throw new Error(`${id} is assigned more than once in this batch`);
-        if ((task.agent ?? "task") !== row.dispatchAgent) throw new Error(`${id} requires dispatch agent ${row.dispatchAgent}`);
-        if (id.startsWith("F") && (Object.keys(binding.rows).length !== 1 || !object(task.outputSchema) || task.schemaMode !== "strict")) {
-          throw new Error("Each final gate needs its own fresh child with the supplied outputSchema and schemaMode strict");
+        if (verify) {
+          const verification = row?.verification;
+          if (
+            row?.status !== "in_progress" ||
+            !verification?.attempt ||
+            verification.verdict !== undefined ||
+            typeof attempt !== "string" ||
+            attempt !== verification.attempt
+          ) {
+            throw new Error(`${id} has no current verification attempt; use atlas_ledger verify before dispatch`);
+          }
+          if ((task.agent ?? "task") !== verification.dispatchAgent) {
+            throw new Error(`${id} verification requires dispatch agent ${verification.dispatchAgent}`);
+          }
+          if (Object.keys(entries).length !== 1 || !object(task.outputSchema) || task.schemaMode !== "strict") {
+            throw new Error("Each verification needs its own fresh child with the supplied outputSchema and schemaMode strict");
+          }
+        } else {
+          if (row?.status !== "in_progress" || typeof attempt !== "string" || attempt !== row.attempt) {
+            throw new Error(`${id} has no current started attempt; use atlas_ledger start before dispatch`);
+          }
+          if (row.receipt) throw new Error(`${id} implementation is already recorded; dispatch its verifier with atlas_ledger verify`);
+          if ((task.agent ?? "task") !== row.dispatchAgent) throw new Error(`${id} requires dispatch agent ${row.dispatchAgent}`);
+          if (id.startsWith("F") && (Object.keys(entries).length !== 1 || !object(task.outputSchema) || task.schemaMode !== "strict")) {
+            throw new Error("Each final gate needs its own fresh child with the supplied outputSchema and schemaMode strict");
+          }
+          if (options.isolationRequired && !id.startsWith("F") && task.isolated !== true) {
+            throw new Error(`Host task isolation is on: ${id} is implementation work and must dispatch with isolated: true`);
+          }
         }
         bound.add(id);
         rows[id] = attempt;
       }
-      return { ledgerId: ledger.ledgerId, sessionId, planSha256: ledger.planSha256, rows, dispatchedAt, artifactsDir };
+      return { ledgerId: ledger.ledgerId, sessionId, planSha256: ledger.planSha256, rows, verify, dispatchedAt, artifactsDir };
     });
     this.#dispatches.set(`${sessionId}:${toolCallId}`, assignments);
   }
@@ -438,6 +532,10 @@ export class ChildEvidence {
     );
   }
 
+  /**
+   * Authenticate the row's current child. `verify` captures a HEAVY row's verifier, bound to the verification attempt;
+   * the parsed output is returned so the caller can read a verifier's verdict without rereading the file.
+   */
   async capture(options: {
     registry: AgentRegistry;
     parentAgentId: string;
@@ -447,10 +545,16 @@ export class ChildEvidence {
     row: LedgerItem;
     childAgentId: string;
     priorReceipts: readonly ChildReceipt[];
-  }): Promise<ChildReceipt> {
+    verify?: boolean;
+  }): Promise<{ receipt: ChildReceipt; output: string }> {
     const { registry, parentAgentId, sessionId, artifactsDir, ledger, row, childAgentId, priorReceipts } = options;
+    const verify = options.verify === true;
     if (row.status !== "in_progress" || !row.attempt || row.startedAt === undefined)
       throw new Error(`${row.id} must be started before completion`);
+    const attempt = verify ? row.verification?.attempt : row.attempt;
+    const startedAt = verify ? row.verification?.startedAt : row.startedAt;
+    if (!attempt || startedAt === undefined || (verify && row.verification?.verdict !== undefined))
+      throw new Error(`${row.id} has no running verification; use atlas_ledger verify first`);
     if (!/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(childAgentId)) throw new Error("Invalid child agent id");
     const child = registry.get(childAgentId);
     const observed = this.#children.get(`${sessionId}:${childAgentId}`);
@@ -463,9 +567,10 @@ export class ChildEvidence {
       observed.assignment.sessionId !== sessionId ||
       observed.assignment.ledgerId !== ledger.ledgerId ||
       observed.assignment.planSha256 !== ledger.planSha256 ||
-      observed.assignment.rows[row.id] !== row.attempt ||
+      observed.assignment.verify !== verify ||
+      observed.assignment.rows[row.id] !== attempt ||
       observed.sessionFile !== child.sessionFile ||
-      child.createdAt < row.startedAt
+      child.createdAt < startedAt
     ) {
       throw new Error(
         "No native successful completion for this current assignment; use a fresh child to revalidate historical or stale work",
@@ -486,18 +591,19 @@ export class ChildEvidence {
       throw new Error("Child output is not an owned native artifact of this session");
     }
     if (
-      row.id.startsWith("F") &&
+      (verify || row.id.startsWith("F")) &&
       priorReceipts.some((receipt) => receipt.sessionId === sessionId && receipt.childAgentId === childAgentId)
     ) {
       throw new Error(
-        "Final gates require distinct fresh verification children, never an implementation or previously used verifier child",
+        "Final gates and verifications require distinct fresh verification children, never an implementation or previously used verifier child",
       );
     }
     const stat = await fs.lstat(outputPath);
     if (!stat.isFile()) throw new Error("Child evidence must be a native output file, not a link");
     const content = await fs.readFile(outputPath, "utf8");
     if (!content.trim()) throw new Error("Child output is empty");
-    if (row.id.startsWith("F")) validateGateOutput(content, ledger, row);
+    if (verify) parseVerifyOutput(content, ledger, row);
+    else if (row.id.startsWith("F")) validateGateOutput(content, ledger, row);
     // A lifecycle change during the file read cannot authorize a now-running or replaced generation.
     if (
       registry.get(childAgentId) !== child ||
@@ -507,18 +613,21 @@ export class ChildEvidence {
     )
       throw new Error("Child changed while evidence was being captured; retry after completion");
     return {
-      receiptId: randomUUID(),
-      ledgerId: ledger.ledgerId,
-      planSha256: ledger.planSha256,
-      rowId: row.id,
-      attempt: row.attempt,
-      childAgentId,
-      parentAgentId,
-      sessionId,
-      childCreatedAt: child.createdAt,
-      outputSha256: planDigest(content),
-      capturedAt: Date.now(),
-      nativeFinal: true,
+      receipt: {
+        receiptId: randomUUID(),
+        ledgerId: ledger.ledgerId,
+        planSha256: ledger.planSha256,
+        rowId: row.id,
+        attempt,
+        childAgentId,
+        parentAgentId,
+        sessionId,
+        childCreatedAt: child.createdAt,
+        outputSha256: planDigest(content),
+        capturedAt: Date.now(),
+        nativeFinal: true,
+      },
+      output: content,
     };
   }
 }

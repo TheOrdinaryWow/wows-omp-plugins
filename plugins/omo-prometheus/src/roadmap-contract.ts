@@ -21,6 +21,8 @@ export interface AtlasCompleted {
   planId: string;
   roadmapStage: RoadmapStage;
   gates: Array<{ gateId: string; verdict: string; summary: string }>;
+  /** Present when the plan delivers through a pull request; emitted only after its P1 row is done. */
+  delivery?: { mode: "pr" | "ship"; summary: string };
   at: string;
 }
 

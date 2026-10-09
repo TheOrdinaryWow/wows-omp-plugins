@@ -77,7 +77,9 @@ async function scenario(name: string, root: string): Promise<void> {
     join(root, ".omp/plugin-overrides.json"),
     JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { herdrDag: false, atlasWidget: false } } }),
   );
-  await writeFile(join(artifacts, "local/bound-plan.md"), content);
+  // A `pr` delivery plan completes only once its P1 row is done.
+  const planContent = name === "delivered" ? content.replace("## Tasks", "Delivery: pr\n\n## Tasks") : content;
+  await writeFile(join(artifacts, "local/bound-plan.md"), planContent);
   const sessionId = "bound-session";
   const entries: Array<{ type: string; customType?: string; data?: Record<string, unknown> }> = [];
   const sessionManager = {
@@ -156,7 +158,7 @@ async function scenario(name: string, root: string): Promise<void> {
     return result;
   };
   // The responder reads the live flag so a stage started during execution changes later answers.
-  let stageBound = name === "bound" || name === "restored";
+  let stageBound = name === "bound" || name === "restored" || name === "delivered";
   const responder = () =>
     bus.on("roadmap:binding-request", (raw) => {
       const request = raw as { sessionId: string; requestId: string };
@@ -195,7 +197,7 @@ async function scenario(name: string, root: string): Promise<void> {
       "utf8",
     );
     await hook("before_agent_start", {
-      prompt: prompt.render(template, { planFilePath: reference, planContent: content, contextPreserved: false }),
+      prompt: prompt.render(template, { planFilePath: reference, planContent, contextPreserved: false }),
       systemPrompt: [],
     });
   }
@@ -312,6 +314,11 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(completionEvents.length, 0);
   }
   await finish("F4");
+  if (name === "delivered") {
+    // Every gate passed, yet the stage hears nothing until the pull request exists.
+    assert.equal(completionEvents.length, 0);
+    await finish("P1");
+  }
   assert.equal(completionEvents.length, expectsCompletion ? 1 : 0);
   if (expectsCompletion) {
     const event = completionEvents[0];
@@ -325,6 +332,7 @@ async function scenario(name: string, root: string): Promise<void> {
       ["F1", "F2", "F3", "F4"].map((gateId) => ({ gateId, verdict: "PASS", summary: `Verified ${gateId} from native output` })),
     );
     assert(Number.isFinite(Date.parse(event.at)));
+    assert.deepEqual(event.delivery, name === "delivered" ? { mode: "pr", summary: "Caller inspection, not the gate summary" } : undefined);
   }
   await call({ action: "status" });
   await call({ action: "reopen", id: "F4", evidence: "Recheck the gate" });
@@ -415,7 +423,7 @@ if (process.env[CHILD]) {
     ] as const)
       expect(executionBlockReason(toolName, input, ROADMAP_ENTRY)).toBeTruthy();
   });
-  for (const name of ["bound", "absent", "unbound", "late", "restored", "legacy", "lazy"]) {
+  for (const name of ["bound", "absent", "unbound", "late", "restored", "legacy", "lazy", "delivered"]) {
     test(`Prometheus roadmap contract: ${name}`, async () => {
       const home = await realpath(await mkdtemp(join(tmpdir(), "prometheus-roadmap-")));
       try {

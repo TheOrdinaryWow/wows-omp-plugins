@@ -4,9 +4,11 @@ import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { ExecutionLedger, LedgerItem } from "./ledger.ts";
 
 const TASKS = "Atlas tasks";
+const DISCOVERED = "Atlas discovered";
 const FIXES = "Atlas fixes";
 const GATES = "Atlas final gates";
-const ATLAS_PHASES: Record<string, true> = { [TASKS]: true, [FIXES]: true, [GATES]: true };
+const DELIVERY = "Atlas delivery";
+const ATLAS_PHASES: Record<string, true> = { [TASKS]: true, [DISCOVERED]: true, [FIXES]: true, [GATES]: true, [DELIVERY]: true };
 
 function todoItem(row: LedgerItem): TodoItem {
   const content = `${row.id}. ${row.title}`;
@@ -24,12 +26,17 @@ function todoItem(row: LedgerItem): TodoItem {
 export function atlasTodoPhases(ledger: ExecutionLedger): TodoPhase[] {
   return [
     { name: TASKS, tasks: ledger.items.map(todoItem) },
+    ...(ledger.discoveries.length ? [{ name: DISCOVERED, tasks: ledger.discoveries.map(todoItem) }] : []),
     ...(ledger.fixes.length ? [{ name: FIXES, tasks: ledger.fixes.map(todoItem) }] : []),
     { name: GATES, tasks: ledger.gates.map(todoItem) },
+    ...(ledger.deliveries.length ? [{ name: DELIVERY, tasks: ledger.deliveries.map(todoItem) }] : []),
   ];
 }
 
-/** Retain unrelated phases at their existing positions, replacing only reserved Atlas phases. */
+/**
+ * Retain unrelated phases at their existing positions, replacing only reserved Atlas phases. A newly appearing
+ * Atlas phase goes before the first later Atlas phase already listed, so discovered work and fixes precede the gates.
+ */
 export function mergeAtlasTodos(current: readonly TodoPhase[], ledger: ExecutionLedger): TodoPhase[] | undefined {
   const atlas = atlasTodoPhases(ledger);
   const seen = new Set<string>();
@@ -45,7 +52,13 @@ export function mergeAtlasTodos(current: readonly TodoPhase[], ledger: Execution
       seen.add(phase.name);
     }
   }
-  for (const phase of atlas) if (!seen.has(phase.name)) next.push(phase);
+  for (const [index, phase] of atlas.entries()) {
+    if (seen.has(phase.name)) continue;
+    const later = atlas.slice(index + 1).map((entry) => entry.name);
+    const position = next.findIndex((entry) => later.includes(entry.name));
+    next.splice(position === -1 ? next.length : position, 0, phase);
+    seen.add(phase.name);
+  }
   return JSON.stringify(next) === JSON.stringify(current) ? undefined : next;
 }
 
@@ -62,9 +75,9 @@ export function syncAtlasTodos(
   return true;
 }
 
-/** Non-view host todo operations succeed when repeated against the already-synced target. */
-export function atlasTodoRefreshCall(action: "start" | "done" | "reopen" | "block" | "fix", row: LedgerItem): string {
-  const op = action === "start" ? "start" : action === "done" ? "done" : action === "block" ? "block" : "unblock";
+/** Non-view host todo operations succeed when repeated against the already-synced target; the row's state picks the op. */
+export function atlasTodoRefreshCall(row: LedgerItem): string {
+  const op = row.status === "in_progress" ? "start" : row.status === "done" ? "done" : row.status === "blocked" ? "block" : "unblock";
   const call = {
     op,
     task: `${row.id}. ${row.title}`,
