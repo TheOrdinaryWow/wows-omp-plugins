@@ -174,7 +174,7 @@ Tell the user distillation is complete and a dedicated planner will formalize it
 
 ### Phase 6 — Dedicated planner handoff
 
-Dispatch `task` with `agent: "ultrabrain"` (if `ultrabrain` is not listed in the task tool description, use `task`). Give it the full insight bundle and require an executable plan with sequencing, dependencies, parallel opportunities, acceptance checks, and explicit gates for open questions. Include: "If `skill://prometheus` is readable, produce the plan in that format; otherwise produce an executable plan." The lead must not pre-write or edit the child's plan. Wait for its output and present it verbatim, prefixed exactly:
+Dispatch `task` with `agent: "ultrabrain"` (if `ultrabrain` is not listed in the task tool description, use `task`). Give it the full insight bundle and require an executable plan with sequencing, dependencies, parallel opportunities, acceptance checks, and explicit gates for open questions. Include: "If `skill://prometheus` is readable, produce the plan in that format: a human TL;DR with one Effort band and a Risk line, the affected user with IS and GAP rows, `## Tasks` rows carrying `Agent:`, `Depends on:`, `Tier:`, `Acceptance:`, `Closes:`, happy and failure QA with evidence paths, and a `Commit:` line, the four `## Final gates` rows, a `## Success criteria` table, and a `Delivery:` line only when the request settles it; otherwise produce an executable plan." The lead must not pre-write or edit the child's plan. Wait for its output and present it verbatim, prefixed exactly:
 
 *Plan derived from hyperplan adversarial review (5 members, 3 rounds).*
 
