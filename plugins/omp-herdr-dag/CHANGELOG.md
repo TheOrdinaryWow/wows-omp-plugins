@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.3...omp-herdr-dag@0.4.4) (2026-10-09)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** describe /dag-pane argument completions ([9e8cc09](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/9e8cc091f625ea60b30bf44a1cead8ce4f0a312c))
+
 ## [0.4.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.2...omp-herdr-dag@0.4.3) (2026-10-08)
 
 

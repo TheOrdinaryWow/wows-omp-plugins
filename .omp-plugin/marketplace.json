@@ -48,7 +48,7 @@
       "name": "omp-herdr-dag",
       "source": "./omp-herdr-dag",
       "description": "Live todo, plan, Atlas DAG and subagent views in a Herdr side pane",
-      "version": "0.4.3",
+      "version": "0.4.4",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -65,7 +65,7 @@
       "name": "omo-prometheus",
       "source": "./omo-prometheus",
       "description": "Port of oh-my-openagent Prometheus planning and Atlas orchestration for OMP",
-      "version": "0.16.0",
+      "version": "0.17.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -123,7 +123,7 @@
       "name": "roadmap",
       "source": "./roadmap",
       "description": "Tool-managed project rounds, stages, TODOs and MADR architecture decisions",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "TheOrdinaryWow"
       },
