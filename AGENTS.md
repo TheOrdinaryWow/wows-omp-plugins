@@ -161,6 +161,26 @@ first usable candidate is native (a judgment API, calibrated confidence), never
 calls a chat-model fallback, and fails open everywhere: a missing native judge
 keeps the requested agent and warns once per session.
 
+## Host prompt text is not a byte channel
+
+The host renders every `task` assignment and batch `context`, and the native
+plan-approval handoff, through `prompt.render` → `prompt.format`
+(`@oh-my-pi/pi-utils` `src/prompt.ts`). Before a model sees the text, it trims
+trailing whitespace, deletes runs of two or more blank lines, compacts Markdown
+table rows (`| A | B |` → `|A|B|`), and trims the whole text. Lines starting
+with ```` ``` ```` or `~~~` toggle a protected region without matching fence
+length or character, so wrapping a document that has its own code blocks in a
+longer fence still exposes the inner blocks. Indentation survives. Tool-call
+arguments that plugin hooks receive (`tool_call` input) are raw.
+
+So no prompt or code may require content to arrive byte-identical through
+those channels, and no prompt may ask a model to compare inline text with a
+file exactly; a model cannot do that reliably anyway. Pass the absolute path
+and let the file be the authority, as F1 and the Momus/Oracle plan reviews do.
+Code that matches host-rendered text compares against `prompt.format` output
+(`inlinesApprovedPlan` in omo-prometheus), and its tests render the real host
+template with a plan containing tables, trailing spaces and blank runs.
+
 ## Persisted plugin state must survive upgrades
 
 Users upgrade plugins while work is in flight, so any state a plugin writes to
