@@ -12,7 +12,7 @@ Keeps architecture decision records (ADRs) in `docs/adr/` as Markdown in the [MA
 omp plugin install adr@wows-omp-plugins
 ```
 
-Requires OMP 18.5.1 or newer and a git work tree. Start a new session after installing. The plugin ships the `adr` skill and a pinned MADR 4.0 template.
+Requires OMP 18.5.1 or newer and a local Git repository. Any `git init` work tree works and no remote is needed; outside a Git repository the commands and tools refuse. Start a new session after installing. The plugin ships the `adr` skill and a pinned MADR 4.0 template.
 
 ## Quick start
 
@@ -80,7 +80,7 @@ The plugin has no settings.
 
 ## Working with other plugins
 
-- **roadmap**: the roadmap plugin requires this plugin. It reads ADRs and links them to stages through this plugin's service contract, and its `/init-project` initializes `docs/adr/` when it is missing. Setting or changing a stage link requires the loaded roadmap plugin and an existing stage; clearing a link does not.
+- **roadmap**: the roadmap plugin requires this plugin. It reads ADRs and links them to stages through this plugin's service contract, and its `/init-project` initializes `docs/adr/` when the directory is absent or empty. Setting or changing a stage link requires the loaded roadmap plugin and an existing stage; clearing a link does not.
 - **omo-prometheus**: Atlas admits the `adr_*` tools during plan execution, alongside the roadmap tools.
 
 ## Without the terminal UI

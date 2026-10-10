@@ -12,7 +12,7 @@
 omp plugin install adr@wows-omp-plugins
 ```
 
-需要 OMP 18.5.1 或更新版本，以及一个 git 工作树。安装后请开启新会话。插件附带 `adr` 技能和固定版本的 MADR 4.0 模板。
+需要 OMP 18.5.1 或更新版本，以及一个本地 Git 仓库。任何 `git init` 出来的工作树都可以，不需要远程仓库；在 Git 仓库之外，命令和工具都会拒绝。安装后请开启新会话。插件附带 `adr` 技能和固定版本的 MADR 4.0 模板。
 
 ## 快速上手
 
@@ -80,7 +80,7 @@ roadmap 插件 0.4.0 或更早版本写入的 ADR（包括其 `docs/adr/README.m
 
 ## 与其他插件配合
 
-- **roadmap**：roadmap 插件依赖本插件。它通过本插件的服务契约读取 ADR、把 ADR 关联到阶段；其 `/init-project` 会在 `docs/adr/` 缺失时初始化它。设置或更改阶段关联需要已加载的 roadmap 插件，且阶段必须存在；清除关联不需要。
+- **roadmap**：roadmap 插件依赖本插件。它通过本插件的服务契约读取 ADR、把 ADR 关联到阶段；`docs/adr/` 不存在或为空时，其 `/init-project` 会初始化它。设置或更改阶段关联需要已加载的 roadmap 插件，且阶段必须存在；清除关联不需要。
 - **omo-prometheus**：执行计划时，Atlas 会与路线图工具一同放行 `adr_*` 工具。
 
 ## 不使用终端界面时
