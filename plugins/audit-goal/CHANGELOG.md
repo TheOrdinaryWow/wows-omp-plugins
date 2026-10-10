@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.2...audit-goal@0.3.3) (2026-10-10)
+
+
+### Bug Fixes
+
+* **audit-goal:** keep loop tools off after an audit ends when the RPC goal controller restores them ([a1f530c](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/a1f530c5fc5d865722c51d6cb4885fb44c8263a0))
+* raise supported OMP floor to 18.5.1 ([217da70](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/217da70c138e3a5bd0ccaa0f7e1b3fb03b7d1b0f))
+
 ## [0.3.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.1...audit-goal@0.3.2) (2026-10-09)
 
 
