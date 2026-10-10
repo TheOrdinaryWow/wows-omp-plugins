@@ -100,7 +100,9 @@ adr: { format: 1 }
 
 roadmap 插件 0.4.0 及更早版本写入的 ADR 文件总是包含全部十个键（在 `format` 和 `id` 之后依次为 `supersedes`、`superseded_by`、`stage`、`status`、`date`、`decision-makers`、`consulted`、`informed`），缺少阶段或后继时写 `null`，格式为 `format: 1` 或 `format: 2`，注释为 `<!-- Managed by the roadmap OMP plugin (format vN). Change it through roadmap_* tools. Format: docs/roadmap/README.md -->`。其索引的前置元数据只有 `format`，生成块为 `<!-- roadmap:generated:adrs -->` … `<!-- /roadmap:generated -->`。
 
-文件的读取方式由托管注释决定，注释中的格式必须与文件自身的 `format` 一致。旧版文件会被透明读取，并视为已初始化。写入只会把涉及的文件改写为本插件的格式；旧版索引会在第一次写入时转换（或在其表格过期时由 `check --fix` 转换），替换约定段落和生成块分隔符，保留 Decisions 章节中的其他文字。未涉及的文件保持原有字节，读取时不会改写任何内容。`adr_status` 和状态快照会报告仍是旧版格式的文件数量。
+文件的读取方式由托管注释决定，注释中的格式必须与文件自身的 `format` 一致。旧版文件会被透明读取，并视为已初始化。写入只会把涉及的文件改写为本插件的格式；旧版索引会在第一次写入时转换（或在其表格过期时由 `check --fix` 转换），替换 roadmap 约定段落（仅当它仍是 roadmap 插件写入的原文时）和生成块分隔符，保留其余所有自行编写的文字。未涉及的文件保持原有字节，读取时不会改写任何内容。`adr_status` 和状态快照会报告仍是旧版格式的文件数量。
+
+转换是单向的。roadmap 插件 0.4.0 及更早版本无法读取转换后的索引或 ADR 文件，因此转换后的文件一旦提交，仍在运行这些版本的克隆或工作树就无法读取 `docs/adr/`。请在第一次写入之前，在每个环境中升级 roadmap 插件并安装本插件。
 
 ## 工具写入文本中的 Markdown
 

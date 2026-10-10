@@ -35,6 +35,9 @@ const MANAGED_LINES: Readonly<Record<string, true>> = {
 const INDEX_TITLE = "# Architecture Decision Records";
 const INDEX_CONVENTIONS =
   "ADRs record significant, hard-to-reverse decisions in the vendored MADR 4.0 format. Files are NNNN-slug.md with ids ADR-NNNN; numbers are monotonic and never reused. Agents change these files only through the adr_* tools: proposed records are created and revised as a whole, while accepted records change only through status transitions, supersession or dated notes under More Information. Confirmation describes how a decision is verified; implementation steps belong to plans. Each file has format: 1 front matter and a managed-by comment; optional fields are omitted when empty. Files written by the roadmap plugin are read as they are and rewritten in this format when a write touches them. The table below is generated: run adr_check with fix: true, or /adr check --fix, when it is stale.";
+/** The conventions paragraph roadmap 0.4.0 and earlier wrote into the ADR index; conversion swaps only this paragraph. */
+const LEGACY_INDEX_CONVENTIONS =
+  "ADRs use the vendored MADR 4.0 body and format: 1 metadata. Files are NNNN-slug.md with ids ADR-NNNN. Create and revise proposed records through roadmap_adr; accepted records change through status transitions, supersession or dated notes under More Information. Confirmation describes verification; implementation steps belong to the plan. ADRs outlive roadmap rounds.";
 
 export interface AdrRepo {
   repoRoot: string;
@@ -636,7 +639,7 @@ export function indexFresh(doc: IndexDoc, adrs: readonly AdrDoc[]): boolean {
 
 /**
  * Renders the marker in this plugin's format. A missing index starts from the canonical text; a legacy roadmap index
- * keeps any authored text in its Decisions section and replaces only the conventions paragraph and the block delimiters.
+ * keeps all authored text and swaps only the roadmap conventions paragraph (when still unedited) and the block delimiters.
  */
 export function renderIndex(doc: IndexDoc | undefined, adrs: readonly AdrDoc[]): string {
   const table = renderAdrTable(adrs);
@@ -646,7 +649,12 @@ export function renderIndex(doc: IndexDoc | undefined, adrs: readonly AdrDoc[]):
     const decisions = markdownHeadings(doc.body, /^## Decisions$/gm)[0]?.index;
     if (decisions === undefined) invalid("Malformed ADR index fixed headings.");
     const bounds = blockBounds(doc.body, "roadmap");
-    body = `${INDEX_TITLE}\n\n${INDEX_CONVENTIONS}\n\n${doc.body.slice(decisions, bounds.start)}${generatedBlock("adr", table)}${doc.body.slice(bounds.end)}`;
+    const preamble = doc.body
+      .slice(0, decisions)
+      .split("\n\n")
+      .map((paragraph) => (paragraph === LEGACY_INDEX_CONVENTIONS ? INDEX_CONVENTIONS : paragraph))
+      .join("\n\n");
+    body = `${preamble}${doc.body.slice(decisions, bounds.start)}${generatedBlock("adr", table)}${doc.body.slice(bounds.end)}`;
   } else body = replaceGenerated(doc.body, "adr", table);
   return frontmatter({ format: ADR_FORMAT, adr: { format: ADR_FORMAT } }, true) + lf(body);
 }

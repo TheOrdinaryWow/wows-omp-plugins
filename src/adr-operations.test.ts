@@ -86,6 +86,31 @@ test("a write converts only the touched files and the index, keeping untouched l
   expect(await check(adrRepo(root))).toEqual([]);
 });
 
+test("converting a legacy index keeps authored preamble text and replaces only the roadmap conventions paragraph", async () => {
+  const legacyParagraph = LEGACY_INDEX.split("\n\n")[2] as string;
+  expect(legacyParagraph.startsWith("ADRs use the vendored MADR 4.0 body")).toBe(true);
+  const intro = "Our team records storage decisions here.";
+  const outro = "Ask the platform group before superseding an accepted record.";
+  const root = await repoFixture({ legacy: true });
+  await writeFile(join(root, "docs/adr/README.md"), LEGACY_INDEX.replace(legacyParagraph, `${intro}\n\n${legacyParagraph}\n\n${outro}`));
+  await createMany(root, "main", [decision]);
+  const index = (await bytes(root))["README.md"] as string;
+  expect(index).toContain(`# Architecture Decision Records\n\n${intro}\n\nADRs record significant, hard-to-reverse decisions`);
+  expect(index).toContain(`\n\n${outro}\n\n## Decisions\n\n<!-- adr:generated:index -->\n`);
+  expect(index).not.toContain(legacyParagraph);
+  expect(index).not.toContain("roadmap_adr");
+  expect(await check(adrRepo(root))).toEqual([]);
+
+  const edited = "ADRs live here; see the team wiki for our review process.";
+  const other = await repoFixture({ legacy: true });
+  await writeFile(join(other, "docs/adr/README.md"), LEGACY_INDEX.replace(legacyParagraph, edited));
+  await createMany(other, "main", [decision]);
+  const kept = (await bytes(other))["README.md"] as string;
+  expect(kept).toContain(`# Architecture Decision Records\n\n${edited}\n\n## Decisions\n\n<!-- adr:generated:index -->\n`);
+  expect(kept).not.toContain("ADRs record significant, hard-to-reverse decisions");
+  expect(await check(adrRepo(other))).toEqual([]);
+});
+
 test("subagents create only proposed ADRs and cannot decide or supersede", async () => {
   const root = await repoFixture({ legacy: true });
   const created = await createMany(root, "sub", [{ ...decision, status: "accepted" }]);

@@ -72,7 +72,9 @@ In a repository without `docs/adr/` management, every tool refuses and tells the
 
 ### Existing roadmap ADRs
 
-ADRs written by the roadmap plugin 0.4.0 or earlier are read as they are, including their `docs/adr/README.md` index, so the repository counts as initialized. Each write rewrites only the files it touches in this plugin's format, and the first write converts the index. Untouched files keep their bytes. ADR numbering continues above the roadmap plugin's ADR counter, which is read but never changed.
+ADRs written by the roadmap plugin 0.4.0 or earlier are read as they are, including their `docs/adr/README.md` index, so the repository counts as initialized. Each write rewrites only the files it touches in this plugin's format, and the first write converts the index, keeping the text you wrote in it. Untouched files keep their bytes. ADR numbering continues above the roadmap plugin's ADR counter, which is read but never changed.
+
+The conversion is one-way: the roadmap plugin 0.4.0 and earlier cannot read converted files. Clones that still run one of those versions must upgrade the roadmap plugin and install this plugin, so upgrade them before the first write.
 
 ## Settings
 
