@@ -1183,7 +1183,7 @@ async function prepare(
       const model: Model = initialize
         ? {
             repo,
-            index: { format: 1, path: join(repo.roadmapDir, "README.md"), title: "", body: "" },
+            index: { format: 2, path: join(repo.roadmapDir, "README.md"), title: "", body: "" },
             rounds: [],
             stages: [],
             todos: [],

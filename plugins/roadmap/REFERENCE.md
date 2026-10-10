@@ -173,7 +173,7 @@ The events are defined in the [omo-prometheus reference](../omo-prometheus/REFER
 
 ## Directory format
 
-The text below is `HOW_THIS_DIRECTORY_WORKS_V2` from `src/documents.ts`. A confirmed format-2 upgrade writes it into the project's `docs/roadmap/README.md`, which is also the initialization marker and generated index. Initialization writes the format-1 version until you adopt format 2.
+The text below is `HOW_THIS_DIRECTORY_WORKS_V2` from `src/documents.ts`. `/init-project` writes it into the project's `docs/roadmap/README.md`, which is also the initialization marker and generated index, and a confirmed format-2 upgrade replaces the format-1 version that earlier releases wrote.
 
 > This directory records structured build rounds, their stages and carry-over TODOs. ADRs in docs/adr/ record decisions and outlive rounds. Plans describe implementation steps and do not live here.
 >

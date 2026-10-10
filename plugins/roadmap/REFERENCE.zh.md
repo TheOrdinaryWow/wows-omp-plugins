@@ -173,7 +173,7 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 
 ## 目录格式
 
-以下是 `src/documents.ts` 中 `HOW_THIS_DIRECTORY_WORKS_V2` 的原文。确认升级到格式 2 后，它会被写入项目的 `docs/roadmap/README.md`，该文件同时是初始化标记和自动生成的索引。在采用格式 2 之前，初始化写入的是格式 1 的版本。
+以下是 `src/documents.ts` 中 `HOW_THIS_DIRECTORY_WORKS_V2` 的原文。`/init-project` 会把它写入项目的 `docs/roadmap/README.md`，该文件同时是初始化标记和自动生成的索引；确认升级到格式 2 时，它会替换更早版本写入的格式 1 版本。
 
 > This directory records structured build rounds, their stages and carry-over TODOs. ADRs in docs/adr/ record decisions and outlive rounds. Plans describe implementation steps and do not live here.
 >

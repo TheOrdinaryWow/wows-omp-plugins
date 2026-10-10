@@ -34,7 +34,7 @@ import {
 import { registerPrometheusContract } from "../plugins/roadmap/src/prometheus.ts";
 import { type PendingClose, RoadmapSession } from "../plugins/roadmap/src/ses.ts";
 import { roadmapStatus } from "../plugins/roadmap/src/state.ts";
-import { adrApi, contractEvents, modelFixture, planFixture, roundFixture, stageFixture } from "./roadmap-fixtures.ts";
+import { adrApi, asFormatOne, contractEvents, modelFixture, planFixture, roundFixture, stageFixture } from "./roadmap-fixtures.ts";
 
 const main: Actor = { sessionId: "main-session", kind: "main" };
 const temporary: string[] = [];
@@ -109,6 +109,8 @@ function found<T>(value: T | undefined): T {
 describe("round goal outcome", () => {
   test("format 1 closes without an outcome and refuses one; format 2 requires it and leaves closed history byte-identical", async () => {
     const repo = await initialized();
+    await asFormatOne(repo);
+    expect((await check(await loadAll(repo))).filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
     const before = await managedBytes(repo);
     refused(await closeRound(repo, main, { expected: await reviewed(repo), dispositions: [], outcome: achieved }), "/roadmap upgrade");

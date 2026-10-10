@@ -80,4 +80,4 @@ Round-level changes always need your command and a confirmed preview.
 
 ## Repository format 2
 
-Planned rounds, target dates and round goal outcomes need repository format 2. In a format-1 repository, roadmap asks whether to upgrade when a session starts; No changes nothing. You can also run `/roadmap upgrade`. After upgrading, **roadmap 0.2.3 and earlier can no longer read the repository**, so update the plugin for anyone sharing it first.
+Planned rounds, target dates and round goal outcomes need repository format 2. `/init-project` creates format-2 repositories; anyone sharing one needs a roadmap release newer than 0.2.3. A repository initialized by an earlier release is format 1: roadmap asks whether to upgrade when a session starts, and No changes nothing. You can also run `/roadmap upgrade`. After upgrading, **roadmap 0.2.3 and earlier can no longer read the repository**, so update the plugin for anyone sharing it first.

@@ -39,7 +39,7 @@ import {
   type StatusMenuChoice,
   type UpgradePurpose,
 } from "../plugins/roadmap/src/ui.ts";
-import { adrApi } from "./roadmap-fixtures.ts";
+import { adrApi, asFormatOne } from "./roadmap-fixtures.ts";
 
 const CHILD_ENV = "ROADMAP_EXTENSION_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
@@ -460,6 +460,7 @@ const CASES: Record<string, string> = {
   pending: "pending-close reminders retain evidence and remain bounded",
   menu: "status-menu stage close gives tool guidance without writing files",
   preflight: "init command preflight rejects existing directories and non-git roots",
+  "init-format-2": "a new repository starts at format 2: entering a session neither asks about nor announces an upgrade",
   "upgrade-prompt":
     "entering a format-1 session asks the one-step upgrade question; No keeps format 1, Yes upgrades, branch and tree do not ask",
   "upgrade-prompt-headless": "without dialogs, entering a format-1 session shows one notice naming /roadmap upgrade and writes nothing",
@@ -468,6 +469,18 @@ const CASES: Record<string, string> = {
     "roadmap_upgrade asks the same question and reports no answer, declined, headless, accepted and already-format-2 outcomes",
   "round-outcome-format-1":
     "format-1 round close offers the upgrade first; cancelling writes nothing and accepting records the goal outcome",
+};
+
+/** Cases about repositories that releases before format-2 initialization wrote; /init-project now writes format 2. */
+const FORMAT_ONE_CASES: Readonly<Record<string, true>> = {
+  "plan-round": true,
+  "plan-stale": true,
+  "planning-headless": true,
+  "upgrade-prompt": true,
+  "upgrade-prompt-headless": true,
+  "upgrade-subagent": true,
+  "upgrade-tool": true,
+  "round-outcome-format-1": true,
 };
 
 async function acceptance(name: string, root: string): Promise<void> {
@@ -1610,7 +1623,7 @@ async function acceptance(name: string, root: string): Promise<void> {
         await command(h, "roadmap", "close-round T001=maybe");
         assert.match(h.messages.at(-1) ?? "", /Invalid round-close disposition "T001=maybe"/);
         assert.equal((await loadAll(repo)).rounds[0]?.status, "active");
-        await command(h, "roadmap", 'close-round T001=wontfix:"Out of scope for launch"');
+        await command(h, "roadmap", 'close-round outcome=achieved:"Launch shipped" T001=wontfix:"Out of scope for launch"');
         assert.match(h.messages.at(-1) ?? "", /Closed and froze R1/);
         const closed = await loadAll(repo);
         assert.equal(closed.rounds[0]?.status, "closed");
@@ -1732,6 +1745,7 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert.match(unknown.reason, /Stage S09 cannot be linked/);
     } else {
       const repo = await initialized(root);
+      if (FORMAT_ONE_CASES[name]) await asFormatOne(repo);
       if (name === "injection") {
         const block = await injection(h);
         assert.match(block, /\[Roadmap status\]/);
@@ -1742,8 +1756,8 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert((await call(h, "roadmap_stage", closeInput)).ok);
         await command(h, "roadmap", "close-round");
         assert.equal((await loadAll(repo)).rounds[0]?.status, "closed");
-        assert.equal((await loadAll(repo)).rounds[0]?.outcome, undefined, "skipping the format-1 upgrade closes without an outcome");
-        assert.deepEqual(h.ui.upgradeCalls, ["round-outcome"]);
+        assert.match((await loadAll(repo)).rounds[0]?.outcome ?? "", /achieved[\s\S]*The round goal was met\./);
+        assert.deepEqual([h.ui.upgradeCalls, h.ui.outcomeCalls], [[], ["R1"]], "a new repository closes without an upgrade question");
         assert.equal(await injection(h), "");
         // ADRs stay available through the adr plugin after the round closes; it protects docs/adr itself.
         const write = h.session.getToolByName("write");
@@ -2127,11 +2141,12 @@ async function acceptance(name: string, root: string): Promise<void> {
                     ...ctx.ui,
                     select: async (title, options) => {
                       dialogs.push({ title, options });
-                      // The second dialog offers the format-2 upgrade for a round outcome; skipping keeps format 1.
+                      // The second dialog asks how the round goal turned out.
                       if (dialogs.length > 1) return typeof options[1] === "string" ? options[1] : undefined;
                       shown.resolve();
                       return picked.promise;
                     },
+                    input: async () => "Launch shipped in part.",
                   },
                 },
                 { sendMessage: () => {} },
@@ -2191,6 +2206,7 @@ async function acceptance(name: string, root: string): Promise<void> {
               await closeRound(repo, other, {
                 expected: { id: round.id, sha256: roundSha256(roundFiles(reviewed, round)) },
                 dispositions: [],
+                outcome: { assessment: "achieved", summary: "Closed by another session." },
               })
             ).ok,
           );
@@ -2586,6 +2602,20 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.match(preparation.reason, /main session/);
         }
         assert.deepEqual((await loadAll(repo)).files, before);
+      } else if (name === "init-format-2") {
+        const model = await loadAll(repo);
+        assert.deepEqual(
+          [model.index, ...model.rounds, ...model.stages, ...model.todos].map((doc) => doc.format),
+          [2, 2, 2, 2],
+          "every file /init-project writes is format 2",
+        );
+        await h.runner.emit({ type: "session_start" });
+        h.setUi();
+        const shown = h.messages.length;
+        await h.runner.emit({ type: "session_switch", reason: "resume", previousSessionFile: undefined });
+        await scheduler.wait(300);
+        assert.deepEqual([h.ui.upgradeCalls, h.messages.length], [[], shown], "a new repository is neither asked nor told to upgrade");
+        assert.deepEqual((await loadAll(repo)).files, model.files);
       } else if (name === "upgrade-prompt") {
         const before = (await loadAll(repo)).files;
         await h.runner.emit({ type: "session_start" });

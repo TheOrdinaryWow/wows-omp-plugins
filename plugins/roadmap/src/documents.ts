@@ -15,7 +15,7 @@ export function managedComment(format: Format): string {
 }
 const MANAGED_COMMENTS: Readonly<Record<string, true>> = { [managedComment(1)]: true, [managedComment(2)]: true };
 
-/** Format-1 repositories keep this text; /init-project writes it, since a new repository starts at format 1. */
+/** Repositories initialized at format 1 keep this text until they upgrade; /init-project now writes format 2. */
 const HOW_THIS_DIRECTORY_WORKS_V1 = `## How this directory works
 
 This directory records structured build rounds, their stages and carry-over TODOs. ADRs in docs/adr/ record decisions and outlive rounds. Plans describe implementation steps and do not live here.

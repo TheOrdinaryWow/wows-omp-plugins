@@ -10,7 +10,9 @@ import { type AdrApi, type AdrRecord, type ContractEvents, resolveStage } from "
 import type { AtlasStagePlan } from "../plugins/roadmap/src/atlas.ts";
 import {
   generatedBlock,
+  loadAll,
   type Model,
+  parseRoadmapIndex,
   type Repo,
   type RoundDoc,
   renderRoadmapIndex,
@@ -213,6 +215,39 @@ export async function diskFixture(): Promise<{ repo: Repo; model: Model; adrs: A
     await writeFile(file.path, file.content);
   }
   return { repo, model, adrs };
+}
+
+/**
+ * Rewrites a repository that /init-project just wrote as releases before format-2 initialization wrote it: every
+ * managed roadmap file at format 1, with the format-1 directory text and generated tables. ADR files stay untouched.
+ */
+export async function asFormatOne(repo: Repo): Promise<void> {
+  const model = await loadAll(repo);
+  if (model.parseErrors?.length) throw new Error(`Cannot rewrite a damaged roadmap: ${JSON.stringify(model.parseErrors)}`);
+  const directoryText = /## How this directory works\n[\s\S]*?(?=## Rounds\n)/;
+  const legacy = parseRoadmapIndex(renderRoadmapIndex({ ...model.index, format: 1, body: "" })).body.match(directoryText)?.[0];
+  if (!legacy) throw new Error("The format-1 directory text was not rendered.");
+  model.index.body = model.index.body.replace(directoryText, () => legacy);
+  model.index.format = 1;
+  for (const doc of [...model.rounds, ...model.stages, ...model.todos]) {
+    if ("target" in doc && doc.target !== null) throw new Error(`${doc.id} has a target date, which format 1 cannot hold.`);
+    doc.format = 1;
+  }
+  for (const round of model.rounds)
+    round.stages = generatedBlock(
+      "stages",
+      renderStageTable(
+        model.stages.filter((stage) => stage.round === round.id),
+        1,
+      ),
+    );
+  const files = [
+    { path: model.index.path, content: renderRoadmapIndex(model.index, model.rounds, model.stages) },
+    ...model.rounds.map((doc) => ({ path: doc.path, content: renderRound(doc, model.stages) })),
+    ...model.stages.map((doc) => ({ path: doc.path, content: renderStage(doc) })),
+    ...model.todos.map((doc) => ({ path: doc.path, content: renderTodo(doc) })),
+  ];
+  for (const file of files) await writeFile(file.path, file.content);
 }
 
 export async function cleanupFixtures(): Promise<void> {

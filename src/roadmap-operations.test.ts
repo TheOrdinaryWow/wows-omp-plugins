@@ -41,6 +41,7 @@ import {
   prepareRoundOpen,
   prepareRoundPlan,
   type Receipt,
+  type RoundCloseInput,
   type RoundInput,
   recordFreeWork,
   type StageInput,
@@ -59,6 +60,7 @@ import {
 
 const main: Actor = { sessionId: "main-session", kind: "main" };
 const sub: Actor = { sessionId: "sub-session", kind: "sub" };
+const achieved: NonNullable<RoundCloseInput["outcome"]> = { assessment: "achieved", summary: "The round goal was met." };
 const temporary: string[] = [];
 const charter: RoundInput = {
   title: "Launch",
@@ -265,7 +267,7 @@ describe("roadmap stage lifecycle and close gate", () => {
       success(await stage(repo, main, { action: "start", id: "S01" }));
       success(await stage(repo, main, evidence()));
       const isRound = scenario.startsWith("round");
-      if (isRound) success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+      if (isRound) success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
       const model = await loadAll(repo);
       const current = isRound ? model.rounds[0] : model.stages[0];
       if (!current) throw new Error("Missing closed document");
@@ -434,7 +436,7 @@ describe("roadmap stage lifecycle and close gate", () => {
     round.goal += "\n\nS03 is reserved for a later round.";
     await writeFile(round.path, renderRound(round, first.stages));
     success(await stage(frozenRepo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-    success(await closeRound(frozenRepo, main, { expected: await reviewedRound(frozenRepo), dispositions: [] }));
+    success(await closeRound(frozenRepo, main, { expected: await reviewedRound(frozenRepo), dispositions: [], outcome: achieved }));
     success(await openRound(frozenRepo, main, { round: { ...charter, title: "Next" }, import_todos: [] }));
     success(await stage(frozenRepo, main, { action: "add", ...stageInput, title: "Second" }));
     success(await stage(frozenRepo, main, { action: "add", ...stageInput, title: "Third" }));
@@ -466,7 +468,7 @@ describe("roadmap stage lifecycle and close gate", () => {
     );
     expect(await managedBytes(repo)).toEqual(before);
     const path = (await loadAll(repo)).stages[0]?.path as string;
-    await writeFile(path, (await readFile(path, "utf8")).replace(/^format: 1$/m, "format: 3"));
+    await writeFile(path, (await readFile(path, "utf8")).replace(/^format: 2$/m, "format: 3"));
     const newer = await managedBytes(repo);
     refused(
       await todo(repo, main, { action: "add", title: "Ignored", severity: "low", source: "S01", trigger: "Later" }),
@@ -726,7 +728,7 @@ describe("roadmap tool-owned body boundaries", () => {
     }
     success(await todo(repo, main, { action: "resolve", id: "T001", reference: "Verified" }));
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
     const closed = await managedBytes(repo);
     for (const field of ["goal", "constraints"] as const) {
       for (const body of headingEscapes) {
@@ -856,7 +858,7 @@ describe("roadmap tool-owned body boundaries", () => {
     const before = await managedBytes(repo);
     for (const reference of ["Documented.\n\n### T999 — False limitation", "```md\nUnfinished example."]) {
       const receipt = refused(
-        await closeRound(repo, main, { expected, dispositions: [{ id: "T001", disposition: "wontfix", reference }] }),
+        await closeRound(repo, main, { expected, dispositions: [{ id: "T001", disposition: "wontfix", reference }], outcome: achieved }),
         reference.startsWith("```") ? "fence" : "heading",
       );
       expect(receipt.hints.join("\n")).toContain("fenced");
@@ -958,6 +960,7 @@ describe("roadmap body allowlist boundaries", () => {
             "## Stages",
             "## Known limitations",
             ...(doc.known_limitations ? ["### T003 — Known limitation"] : []),
+            ...(doc.outcome === undefined ? [] : ["## Outcome", "### Assessment", "### Summary"]),
           ]);
         }
         for (const doc of model.stages) {
@@ -1046,6 +1049,7 @@ describe("roadmap body allowlist boundaries", () => {
         closeRound(repo, main, {
           expected: await reviewedRound(repo),
           dispositions: [{ id: "T003", disposition: "wontfix", reference: body }],
+          outcome: achieved,
         }),
       );
       const opened = await wrote(openRound(repo, main, { round: charterText, import_todos: [] }));
@@ -1100,7 +1104,7 @@ describe("roadmap body allowlist boundaries", () => {
   test("round-open refuses list and HTML goal escapes without changing closed history", async () => {
     const repo = await initialized();
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
     const before = await managedBytes(repo);
     for (const body of rejectedMarkdownBodies) {
       refused(
@@ -1147,6 +1151,7 @@ describe("roadmap body allowlist boundaries", () => {
       await closeRound(repo, main, {
         expected: await reviewedRound(repo),
         dispositions: [{ id: "T001", disposition: "carried", reference: "Next round" }],
+        outcome: achieved,
       }),
     );
     success(await openRound(repo, main, { round: { ...charter, goal: examples }, import_todos: [] }));
@@ -1211,6 +1216,7 @@ describe("roadmap HTML body boundaries", () => {
         "## Principles",
         "## Stages",
         "## Known limitations",
+        ...(round.outcome === undefined ? [] : ["## Outcome"]),
       ]);
     }
     for (const doc of model.stages) {
@@ -1303,7 +1309,7 @@ describe("roadmap HTML body boundaries", () => {
     const entries = await readdir(empty.repoRoot);
     const repo = await initialized();
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
     const before = await managedBytes(repo);
     for (const [opener] of htmlBlocks) {
       for (const field of ["goal", "constraints", "non_goals", "principles"] as const) {
@@ -1376,6 +1382,7 @@ describe("roadmap HTML body boundaries", () => {
             { id: "T001", disposition: "wontfix", reference: `Documented.\n\n${opener}` },
             { id: "T002", disposition: "wontfix", reference: "Later work" },
           ],
+          outcome: achieved,
         }),
         before,
       );
@@ -1461,6 +1468,7 @@ describe("roadmap HTML body boundaries", () => {
             { id: "T001", disposition: "wontfix", reference: inline },
             { id: "T002", disposition: "wontfix", reference: prose },
           ],
+          outcome: achieved,
         }),
       );
       const frozen = await intact(repo);
@@ -1502,7 +1510,7 @@ describe("roadmap and the adr plugin", () => {
   test("round principles must cite existing, readable ADRs through the adr plugin", async () => {
     const repo = await initialized();
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
     const missing = { ...charter, principles: [{ text: "Use an unrecorded choice", adrs: ["ADR-0009"] }] };
     refused(await prepareRoundOpen(repo, main, { round: missing, import_todos: [] }), "ADR ADR-0009 is missing or ambiguous.");
     const path = join(repo.adrDir, "0001-host-choice.md");
@@ -1621,19 +1629,21 @@ describe("round freeze, import and recovery", () => {
     const expected = await reviewedRound(repo);
     success(await todo(repo, main, { action: "add", title: "New concern", severity: "normal", source: "Review", trigger: "Later" }));
     const changed = await managedBytes(repo);
-    const stale = refused(await closeRound(repo, main, { expected, dispositions: [] }), "stale");
+    const stale = refused(await closeRound(repo, main, { expected, dispositions: [], outcome: achieved }), "stale");
     expect(stale.hints).toContain("Run /roadmap close-round again to review the current round and TODOs.");
     expect(await managedBytes(repo)).toEqual(changed);
     expect((await loadAll(repo)).rounds[0]?.status).toBe("active");
     const reviewed = await reviewedRound(repo);
     const other: Actor = { sessionId: "other-main", kind: "main" };
-    success(await closeRound(repo, other, { expected: reviewed, dispositions: [{ id: "T001", disposition: "carried" }] }));
+    success(
+      await closeRound(repo, other, { expected: reviewed, dispositions: [{ id: "T001", disposition: "carried" }], outcome: achieved }),
+    );
     const closed = await managedBytes(repo);
-    refused(await closeRound(repo, main, { expected: reviewed, dispositions: [] }), "stale");
+    refused(await closeRound(repo, main, { expected: reviewed, dispositions: [], outcome: achieved }), "stale");
     expect(await managedBytes(repo)).toEqual(closed);
     success(await openRound(repo, other, { round: { ...charter, title: "Replacement" }, import_todos: [] }));
     const replacement = await managedBytes(repo);
-    refused(await closeRound(repo, main, { expected: reviewed, dispositions: [] }), "stale");
+    refused(await closeRound(repo, main, { expected: reviewed, dispositions: [], outcome: achieved }), "stale");
     expect((await loadAll(repo)).rounds.map((round) => [round.id, round.status]).sort()).toEqual([
       ["R1", "closed"],
       ["R2", "active"],
@@ -1644,7 +1654,7 @@ describe("round freeze, import and recovery", () => {
 
   test("round close collects all disposition kinds, freezes all files, and the next round imports carried TODOs without modifying history", async () => {
     const repo = await initialized();
-    refused(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }), "Every stage");
+    refused(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }), "Every stage");
     refused(await openRound(repo, main, { round: charter, import_todos: [] }), "active round");
     for (const [index, title] of ["Resolved limitation", "Known limitation", "Carry forward"].entries()) {
       success(
@@ -1659,12 +1669,13 @@ describe("round freeze, import and recovery", () => {
       );
     }
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Launch deferred" }));
-    refused(await closeRound(repo, sub, { expected: await reviewedRound(repo), dispositions: [] }), "main session");
+    refused(await closeRound(repo, sub, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }), "main session");
     const before = await managedBytes(repo);
     refused(
       await closeRound(repo, main, {
         expected: await reviewedRound(repo),
         dispositions: [{ id: "T001", disposition: "resolved", reference: "commit abc1234" }],
+        outcome: achieved,
       }),
       "Every open TODO",
     );
@@ -1677,6 +1688,7 @@ describe("round freeze, import and recovery", () => {
           { id: "T002", disposition: "wontfix", reference: "Outside the product boundary" },
           { id: "T003", disposition: "carried" },
         ],
+        outcome: achieved,
       }),
     );
     const closed = await loadAll(repo);
@@ -1755,7 +1767,7 @@ describe("round freeze, import and recovery", () => {
     refused(await applyPrepared(repo, main, preview.prepared), "Unknown preview");
     refused(await prepareInit(repo, main, initInput), "already exists");
     success(await stage(repo, main, { action: "drop", id: "S01", reason: "Prepare a later round" }));
-    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
     const next = await prepareRoundOpen(repo, main, { round: { ...charter, title: "Next" }, import_todos: [] });
     if (!next.ok) throw new Error(next.reason);
     await adrManage(repo, main, { action: "note", id: "ADR-0001", text: "Changed while the preview was visible." });
@@ -1920,10 +1932,10 @@ describe("cancellation after managed writing starts", () => {
         } else if (operation === "round close") {
           success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
           const expected = await reviewedRound(repo);
-          run = () => closeRound(repo, main, { expected, dispositions: [] }, options);
+          run = () => closeRound(repo, main, { expected, dispositions: [], outcome: achieved }, options);
         } else {
           success(await stage(repo, main, { action: "drop", id: "S01", reason: "Deferred" }));
-          success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+          success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
           const preview = await prepareRoundOpen(repo, main, { round: { ...charter, title: "Next" }, import_todos: [] });
           if (!preview.ok) throw new Error(preview.reason);
           run = () => applyPrepared(repo, main, preview.prepared, options);
@@ -2103,7 +2115,7 @@ describe("literal generated delimiters in authored bodies", () => {
     success(await stage(repo, main, { ...evidence("S01", ["DC1"]), delivered: example, deviations: example }));
     model = await intact(repo);
     expect(model.stages.find((doc) => doc.id === "S01")?.outcome?.split(example)).toHaveLength(3);
-    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [] }));
+    success(await closeRound(repo, main, { expected: await reviewedRound(repo), dispositions: [], outcome: achieved }));
     const frozen = await managedBytes(repo);
     for (const round of [
       { ...literalRound, constraints: [example] },
