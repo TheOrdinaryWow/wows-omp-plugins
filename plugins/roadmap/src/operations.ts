@@ -13,6 +13,7 @@ import {
   errorMessage,
   withPendingStages,
 } from "./adr.ts";
+import type { AtlasStagePlan } from "./atlas.ts";
 import { check, checkClosureIntegrity, type Diagnostics } from "./check.ts";
 import {
   DocumentError,
@@ -28,6 +29,8 @@ import {
   parseStage,
   parseTodo,
   type Repo,
+  ROUND_ASSESSMENTS,
+  type RoundAssessment,
   type RoundDoc,
   renderRoadmapIndex,
   renderRound,
@@ -149,6 +152,8 @@ export interface RoundPlanInput {
 export interface RoundCloseInput {
   expected: { id: string; sha256: string };
   dispositions: Array<{ id: string; disposition: "resolved" | "wontfix" | "carried"; reference?: string }>;
+  /** How the round goal turned out; required in format-2 repositories, refused in format 1. */
+  outcome?: { assessment: RoundAssessment; summary: string };
 }
 
 export interface OperationOptions {
@@ -159,6 +164,14 @@ export interface OperationOptions {
 interface MutationOptions extends OperationOptions {
   guard?: (model: Model) => Receipt | undefined;
   onSuccess?: () => void;
+}
+
+export interface StageOptions extends MutationOptions {
+  /**
+   * The Atlas plans bound to the stage, as the tool layer asked omo-prometheus; undefined when nothing answered. Start
+   * shows them in the handoff; close records the unfinished ones as a deviation.
+   */
+  plans?: readonly AtlasStagePlan[];
 }
 
 export interface PreparedOperation {
@@ -716,7 +729,7 @@ function amend(stage: StageDoc, input: StageOperationInput): void {
   stage.amendments = [stage.amendments, entry].filter(Boolean).join("\n\n");
 }
 
-function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: StageOperationInput): void {
+function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: StageOperationInput, plans: readonly AtlasStagePlan[]): void {
   const model = mutation.model;
   const evidence = input.evidence ?? [];
   const current = parseDoneCriteria(stage.done_criteria);
@@ -737,7 +750,28 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
   }
   const delivered = required(input.delivered, "delivered", true);
   assertBody(delivered);
-  if (input.deviations !== undefined) assertBody(input.deviations);
+  let deviations = input.deviations;
+  const unfinished = plans.filter((plan) => plan.status === "unfinished");
+  if (unfinished.length) {
+    // Plan names come from another plugin; keep only text a plain body line accepts.
+    const plain = (value: string) =>
+      value
+        .replace(/[\p{Cc}<>[\]\\|`]/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120);
+    const named = unfinished
+      .map(
+        (plan) =>
+          `${plain(plan.name)} (${plain(plan.planId)}; ${plan.criteria ? `criteria ${plan.criteria.join(", ")}` : "criteria undeclared"})`,
+      )
+      .join("; ");
+    deviations = [deviations, `Closed while linked Atlas plans were unfinished: ${named}.`].filter(Boolean).join("\n\n");
+    mutation.warnings.push(
+      `${stage.id} closed while linked Atlas plans are unfinished: ${named}. The Outcome records this under Deviations.`,
+    );
+  }
+  if (deviations !== undefined) assertBody(deviations);
   const todoDoc = roundTodo(model, activeRound(model));
   const pendingTodos = todoDoc.items.filter((item) => item.status === "open" && item.target === stage.id);
   const todoDispositions = input.todos ?? [];
@@ -790,7 +824,7 @@ function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: St
   }
   stage.outcome = [
     `### Delivered\n\n${delivered}`,
-    `### Deviations\n\n${input.deviations ?? "None."}`,
+    `### Deviations\n\n${deviations ?? "None."}`,
     `### Evidence\n\n${[
       ...evidence.map(
         (item) => `- ${item.criterion} — pass — Verify: ${item.method} → ${item.summary}${item.commit ? ` — commit ${item.commit}` : ""}`,
@@ -881,7 +915,7 @@ async function renumberStage(repo: Repo, actor: Actor, mutation: Mutation, stage
   mutation.remove(oldPath);
 }
 
-export async function stage(repo: Repo, actor: Actor, input: StageOperationInput, options: MutationOptions = {}): Promise<Receipt> {
+export async function stage(repo: Repo, actor: Actor, input: StageOperationInput, options: StageOptions = {}): Promise<Receipt> {
   return mutate(
     repo,
     actor,
@@ -914,7 +948,7 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
           current.started = new Date().toISOString().slice(0, 10);
           mutation.put(current.path, renderStage(current));
         }
-        mutation.handoff = renderHandoff(model, current);
+        mutation.handoff = renderHandoff(model, current, today(), options.plans);
         return `Planning handoff for ${current.id} — ${current.title}.`;
       }
       if (input.action === "edit") {
@@ -948,7 +982,7 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
       } else if (input.action === "close") {
         if (current.status !== "active") throw new Refusal("Only an active stage can close.");
         await checked(model);
-        closeStage(mutation, actor, current, input);
+        closeStage(mutation, actor, current, input, options.plans ?? []);
         return `Closed ${current.id} — ${current.title}; evidence and dispositions recorded.`;
       } else if (input.action === "drop") {
         if (current.status !== "planned" && current.status !== "active")
@@ -1514,6 +1548,12 @@ export async function openRound(repo: Repo, actor: Actor, input: RoundOpenInput,
   return preview.ok ? applyPrepared(repo, actor, preview.prepared, options) : preview;
 }
 
+/** The `/roadmap upgrade` operation without a file preview, for a user's Yes in the one-step upgrade dialog. */
+export async function upgrade(repo: Repo, actor: Actor, options: MutationOptions = {}): Promise<Receipt> {
+  const preview = await prepareUpgrade(repo, actor);
+  return preview.ok ? applyPrepared(repo, actor, preview.prepared, options) : preview;
+}
+
 /** These are excluded from the user disposition dialog: they continue in the target's planned round. */
 export function autoCarryTodos(model: Model, round: RoundDoc): TodoItem[] {
   return roundTodo(model, round).items.filter((item) => {
@@ -1538,6 +1578,23 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
       await checked(model);
       if (model.stages.some((stage) => stage.round === round.id && stage.status !== "closed" && stage.status !== "dropped")) {
         throw new Refusal("Every stage must be closed or dropped before the round can close.");
+      }
+      const outcome = input.outcome;
+      if (model.index.format === 1 && outcome)
+        throw new Refusal("A round outcome needs roadmap format 2; this repository is format 1.", [
+          "Run /roadmap upgrade first, or close the round without an outcome.",
+        ]);
+      if (model.index.format === 2 && !outcome)
+        throw new Refusal(`Closing ${round.id} records how its goal turned out: an outcome assessment and summary.`, [
+          `Assessment is one of ${ROUND_ASSESSMENTS.join(", ")}; /roadmap close-round asks for both, or takes outcome=<assessment>:"<summary>".`,
+        ]);
+      if (outcome) {
+        if (!(ROUND_ASSESSMENTS as readonly string[]).includes(outcome.assessment))
+          throw new Refusal(`Unknown round outcome assessment ${outcome.assessment}; use ${ROUND_ASSESSMENTS.join(", ")}.`);
+        const summary = required(outcome.summary, "round outcome summary", true).trim();
+        assertBody(summary);
+        round.outcome = `### Assessment\n\n${outcome.assessment}\n\n### Summary\n\n${summary}`;
+        promote(model, round);
       }
       const doc = roundTodo(model, round);
       const automatic = autoCarryTodos(model, round);
@@ -1585,7 +1642,7 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
       const content = renderRound(round);
       round.frozen_sha256 = roundSha256({ ...roundFiles(model, round), "README.md": content });
       mutation.put(round.path, content.replace(/^frozen_sha256:.*$/m, `frozen_sha256: "${round.frozen_sha256}"`));
-      return `Closed and froze ${round.id} — ${round.title}.${automatic.length ? ` Automatically carried ${automatic.map((item) => item.id).join(", ")} to their planned rounds, keeping IDs.` : ""} ADR management remains available.`;
+      return `Closed and froze ${round.id} — ${round.title}${outcome ? ` (goal ${outcome.assessment})` : ""}.${automatic.length ? ` Automatically carried ${automatic.map((item) => item.id).join(", ")} to their planned rounds, keeping IDs.` : ""} ADR management remains available.`;
     },
     options,
   );

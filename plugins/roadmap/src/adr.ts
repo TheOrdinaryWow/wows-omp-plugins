@@ -100,7 +100,7 @@ export const ADR_INSTALL_HINT =
 
 const API_METHODS = ["dirState", "load", "initialize", "create", "createMany", "link", "relinkStage", "registerStageResolver"] as const;
 
-interface ContractEvents {
+export interface ContractEvents {
   on(channel: string, listener: (payload: unknown) => void): () => void;
   emit(channel: string, payload: unknown): void;
 }

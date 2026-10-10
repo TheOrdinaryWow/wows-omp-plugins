@@ -2,7 +2,17 @@ import { relative } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import { type Model, overdue, type RoundDoc, type StageDoc, type StageStatus, type TodoItem, today } from "#src/documents.ts";
+import {
+  type Model,
+  overdue,
+  ROUND_ASSESSMENTS,
+  type RoundAssessment,
+  type RoundDoc,
+  type StageDoc,
+  type StageStatus,
+  type TodoItem,
+  today,
+} from "#src/documents.ts";
 import { byId, plannedRoundCounts, roundActual, schedule, stageActual } from "#src/state.ts";
 
 export type OverlapAnswer = "roadmap" | "free" | "unrelated";
@@ -32,6 +42,14 @@ export interface RoundTodoDispositionChoice {
   reference?: string;
 }
 
+export interface RoundOutcomeChoice {
+  assessment: RoundAssessment;
+  summary: string;
+}
+
+/** `upgrade` asks whether to adopt format 2 now; `round-outcome` offers it so a closing format-1 round can record its outcome. */
+export type UpgradePurpose = "upgrade" | "round-outcome";
+
 export interface RoadmapUi {
   /** False when no dialog can be answered (`hasUI === false`); callers then take their non-interactive path. */
   readonly interactive: boolean;
@@ -40,6 +58,10 @@ export interface RoadmapUi {
   /** `on` (YYYY-MM-DD, default today) decides which unfinished targets are overdue. */
   statusMenu(m: Model, on?: string): Promise<StatusMenuChoice | undefined>;
   closeRoundDispositions(todos: TodoItem[]): Promise<RoundTodoDispositionChoice[] | undefined>;
+  /** The round's goal assessment and summary for its Outcome. */
+  roundOutcome(round: RoundDoc): Promise<RoundOutcomeChoice | undefined>;
+  /** The one-step format-2 upgrade question: true writes it, false keeps format 1, undefined is no answer. */
+  upgradePrompt(purpose: UpgradePurpose, signal?: AbortSignal): Promise<boolean | undefined>;
   notify(message: string, level: "info" | "warning" | "error"): void;
 }
 
@@ -66,6 +88,14 @@ export class HeadlessUi implements RoadmapUi {
   }
 
   async closeRoundDispositions(): Promise<undefined> {
+    return undefined;
+  }
+
+  async roundOutcome(): Promise<undefined> {
+    return undefined;
+  }
+
+  async upgradePrompt(): Promise<undefined> {
     return undefined;
   }
 
@@ -97,6 +127,29 @@ const DISPOSITION_OPTIONS: ReadonlyArray<readonly [string, RoundTodoDisposition]
   ["Won't fix", "wontfix"],
   ["Carry to the next round", "carried"],
 ];
+
+const ASSESSMENT_LABELS: Readonly<Record<RoundAssessment, string>> = {
+  achieved: "Achieved: the round goal was met",
+  partial: "Partial: the goal was met in part",
+  not_achieved: "Not achieved: the goal was not met",
+  cancelled: "Cancelled: the goal was abandoned",
+};
+
+const UPGRADE_CONSEQUENCES =
+  "Roadmap plugin 0.2.3 and earlier can no longer read an upgraded repository. Closed rounds and closed stages are not rewritten: only docs/roadmap/README.md changes now, and other files adopt format 2 when a write needs it.";
+
+const UPGRADE_DIALOGS: Readonly<Record<UpgradePurpose, { title: string; yes: string; no: string }>> = {
+  upgrade: {
+    title: `This repository uses roadmap format 1. Upgrade it to format 2 now?\nFormat 2 adds planned rounds, target dates and round goal outcomes. ${UPGRADE_CONSEQUENCES}`,
+    yes: "Yes, upgrade to format 2",
+    no: "No, keep format 1",
+  },
+  "round-outcome": {
+    title: `Recording how the round goal turned out needs roadmap format 2, and this repository uses format 1.\nUpgrade now and record the outcome, or close without one? ${UPGRADE_CONSEQUENCES}`,
+    yes: "Upgrade to format 2 and record the round outcome",
+    no: "Skip: close the round without an outcome",
+  },
+};
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -220,6 +273,23 @@ export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger): Roadma
         result.push(trimmed ? { id: item.id, disposition, reference: trimmed } : { id: item.id, disposition });
       }
       return result;
+    },
+
+    async roundOutcome(round) {
+      const goal = round.goal.replace(/\s+/g, " ").trim();
+      const assessment = await choose(
+        `Close round ${round.id} ${round.title}: how did its goal turn out?\nGoal: ${goal.length > 300 ? `${goal.slice(0, 297)}...` : goal}`,
+        ROUND_ASSESSMENTS.map((value) => [ASSESSMENT_LABELS[value], value] as const),
+      );
+      if (assessment === undefined) return undefined;
+      const summary = await ui.input(`${round.id} outcome summary`, "What was delivered against the goal and what remains");
+      return summary === undefined ? undefined : { assessment, summary: summary.trim() };
+    },
+
+    async upgradePrompt(purpose, signal) {
+      const dialog = UPGRADE_DIALOGS[purpose];
+      const picked = await ui.select(dialog.title, [dialog.yes, dialog.no], signal ? { signal } : undefined);
+      return picked === dialog.yes ? true : picked === dialog.no ? false : undefined;
     },
 
     notify(message, level) {

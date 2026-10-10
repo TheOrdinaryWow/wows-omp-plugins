@@ -5,7 +5,7 @@ export const ROADMAP_STATUS_KIND = "roadmap/status";
 
 /**
  * Sidecar payload (`state` of the plugin-state envelope), version 1. Output-only; never read back.
- * Fields beyond the 0.2.3 set (format, dates, overdue, plannedRounds) are additive; existing keys keep their meaning.
+ * Fields beyond the 0.2.3 set (format, dates, overdue, plannedRounds, stage readiness) are additive; existing keys keep their meaning.
  */
 export interface RoadmapStatusPayload {
   kind: typeof ROADMAP_STATUS_KIND;
@@ -24,6 +24,10 @@ export interface RoadmapStatusPayload {
     started: string | null;
     closed: string | null;
     overdue: boolean;
+    /** Derived readiness (additive): see `stageReadiness`. */
+    dependsOn: string[];
+    blockedBy: string[];
+    startable: boolean;
   }>;
   /** Planned rounds by id: non-dropped stage count and open TODOs stored in or targeting the round. */
   plannedRounds: Array<{ id: string; title: string; target: string | null; overdue: boolean; stageCount: number; openTodos: number }>;
@@ -67,6 +71,17 @@ export function plannedRoundCounts(model: Model, round: string): { stageCount: n
   return { stageCount: ids.size, openTodos };
 }
 
+/**
+ * Derived, never stored: a planned stage of the active round is startable once every dependency is closed, the same rule
+ * stage start enforces. Other stages are neither startable nor blocked.
+ */
+export function stageReadiness(model: Model, stage: StageDoc): { blockedBy: string[]; startable: boolean } {
+  if (stage.status !== "planned" || !model.rounds.some((round) => round.id === stage.round && round.status === "active"))
+    return { blockedBy: [], startable: false };
+  const blockedBy = stage.depends_on.filter((id) => !model.stages.some((other) => other.id === id && other.status === "closed"));
+  return { blockedBy, startable: blockedBy.length === 0 };
+}
+
 export function roadmapStatus(repoRoot: string, model: Model, binding: Binding | undefined, on = today()): RoadmapStatusPayload {
   const round = model.rounds.find((candidate) => candidate.status === "active");
   const byStage: Record<string, number> = {};
@@ -103,6 +118,8 @@ export function roadmapStatus(repoRoot: string, model: Model, binding: Binding |
       started: stage.started ?? null,
       closed: stage.closed ?? null,
       overdue: overdue(stage, on),
+      dependsOn: [...stage.depends_on],
+      ...stageReadiness(model, stage),
     })),
     plannedRounds: model.rounds
       .filter((candidate) => candidate.status === "planned")

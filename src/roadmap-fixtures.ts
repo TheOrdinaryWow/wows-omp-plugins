@@ -6,7 +6,8 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import { type AdrDoc, buildAdrBody, renderAdr, renderIndex } from "../plugins/adr/src/documents.ts";
 import { registerService } from "../plugins/adr/src/service.ts";
-import { type AdrApi, type AdrRecord, resolveStage } from "../plugins/roadmap/src/adr.ts";
+import { type AdrApi, type AdrRecord, type ContractEvents, resolveStage } from "../plugins/roadmap/src/adr.ts";
+import type { AtlasStagePlan } from "../plugins/roadmap/src/atlas.ts";
 import {
   generatedBlock,
   type Model,
@@ -30,6 +31,43 @@ export function adrApi(): AdrApi {
   const { api } = registerService(host, () => {});
   api.registerStageResolver(resolveStage);
   return api;
+}
+
+/** A synchronous pi.events stand-in: listeners run inside emit, like the host bus's handlers before their first await. */
+export function contractEvents(): ContractEvents & { emitted: Array<{ channel: string; payload: unknown }> } {
+  const listeners = new Map<string, Set<(payload: unknown) => void>>();
+  const emitted: Array<{ channel: string; payload: unknown }> = [];
+  return {
+    emitted,
+    on(channel, listener) {
+      const set = listeners.get(channel) ?? new Set();
+      set.add(listener);
+      listeners.set(channel, set);
+      return () => set.delete(listener);
+    },
+    emit(channel, payload) {
+      emitted.push({ channel, payload });
+      for (const listener of [...(listeners.get(channel) ?? [])]) listener(payload);
+    },
+  };
+}
+
+/** An `atlas:plans` entry as omo-prometheus answers it. */
+export function planFixture(overrides: Partial<AtlasStagePlan> = {}): AtlasStagePlan {
+  return {
+    planId: "plan-a",
+    name: "Checkout plan",
+    repoRoot: "/repo",
+    stage: "S01",
+    criteria: ["DC1"],
+    status: "unfinished",
+    done: 1,
+    total: 3,
+    gates: [],
+    deferred: [],
+    directory: "/sessions/atlas/checkout-plan--plan-a",
+    ...overrides,
+  };
 }
 
 export function stageFixture(overrides: Partial<StageDoc> = {}): StageDoc {

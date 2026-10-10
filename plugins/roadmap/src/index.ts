@@ -1,16 +1,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { AdrConnection } from "#src/adr.ts";
+import { requestPlans } from "#src/atlas.ts";
 import { registerCommands } from "#src/commands.ts";
 import { loadAll, loadRepo } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
-import { renderInjection } from "#src/handoff.ts";
+import { renderCloseReminder, renderInjection } from "#src/handoff.ts";
 import { interceptionReason } from "#src/interception.ts";
 import { PluginStatePublisher } from "#src/plugin-state.ts";
 import { registerPrometheusContract } from "#src/prometheus.ts";
 import { RoadmapSession, type UiFactory } from "#src/ses.ts";
 import { roadmapStatus } from "#src/state.ts";
-import { registerTools } from "#src/tools.ts";
+import { registerTools, toolResult, upgradeAfterDialog } from "#src/tools.ts";
 import { createTuiUi } from "#src/ui.ts";
 
 export { discoverRepo } from "#src/git.ts";
@@ -66,11 +67,70 @@ export default function roadmap(pi: ExtensionAPI): void {
       uiFor(ctx).notify(`Roadmap state could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
     }
   }
-  pi.on("session_start", rebuild);
-  pi.on("session_switch", rebuild);
+
+  /** The one-step format-2 question for a format-1 repository; No changes nothing and is asked again next session. */
+  async function offerUpgrade(ctx: ExtensionContext, signal: AbortSignal): Promise<void> {
+    const generation = ses.currentGeneration(ctx);
+    const git = discoverRepo(ctx.cwd);
+    const found = git && (await loadRepo(git.repoRoot));
+    // Without the adr plugin every roadmap command refuses, so there is nothing to offer.
+    const connected = adr.connect(ctx.sessionManager.getSessionId());
+    if (!found || !("api" in connected) || signal.aborted || !ses.isCurrent(ctx, generation)) return;
+    const repo = { ...found, adr: connected.api };
+    const model = await loadAll(repo);
+    if (model.index.format !== 1 || model.parseErrors?.some((issue) => issue.path === model.index.path)) return;
+    if (signal.aborted || !ses.isCurrent(ctx, generation)) return;
+    const ui = uiFor(ctx);
+    if (!ui.interactive) {
+      ui.notify(
+        "This repository uses roadmap format 1. Run /roadmap upgrade to adopt format 2 (planned rounds, target dates, round goal outcomes); roadmap plugin 0.2.3 and earlier can no longer read an upgraded repository, and closed history is not rewritten.",
+        "info",
+      );
+      return;
+    }
+    if ((await ui.upgradePrompt("upgrade", signal)) !== true || signal.aborted) return;
+    const receipt = await upgradeAfterDialog(ses, ctx, repo, generation, signal);
+    pi.sendMessage({
+      customType: "wows-omp-roadmap.upgrade",
+      content: toolResult(receipt)
+        .content.map((part) => part.text)
+        .join("\n"),
+      display: true,
+    });
+    changed(ctx);
+    await commands.refresh(ctx);
+  }
+
+  let offering: AbortController | undefined;
+  /** Entering a session asks again; the dialog runs after the host's awaited session_start/switch handlers return. */
+  function scheduleUpgradeOffer(ctx: ExtensionContext): void {
+    offering?.abort();
+    offering = undefined;
+    if (ctx.agent.kind !== "main") return;
+    const controller = new AbortController();
+    offering = controller;
+    setTimeout(() => {
+      offerUpgrade(ctx, controller.signal)
+        .catch((error) => pi.logger.warn("roadmap could not offer the format-2 upgrade", { error: String(error) }))
+        .finally(() => {
+          if (offering === controller) offering = undefined;
+        });
+    }, 0);
+  }
+
+  pi.on("session_start", async (event, ctx) => {
+    await rebuild(event, ctx);
+    scheduleUpgradeOffer(ctx);
+  });
+  pi.on("session_switch", async (event, ctx) => {
+    await rebuild(event, ctx);
+    scheduleUpgradeOffer(ctx);
+  });
   pi.on("session_branch", rebuild);
   pi.on("session_tree", rebuild);
   pi.on("session_shutdown", async () => {
+    offering?.abort();
+    offering = undefined;
     adr.release();
     await publishing;
     await publisher.flush();
@@ -118,26 +178,11 @@ export default function roadmap(pi: ExtensionAPI): void {
       const pending = ses
         .pendingClose(ctx, repo.repoRoot)
         .filter((item) => model.stages.some((stage) => stage.id === item.stage && stage.status === "active"));
-      if (pending.length) {
-        const latest = pending[pending.length - 1];
-        if (latest) {
-          lines.push(
-            `Plan ${latest.planId.replace(/\s+/g, " ").slice(0, 100)} completed for ${latest.stage}. Call roadmap_stage close with passing done-criterion evidence and TODO dispositions once the main agent has accepted or rejected the stage's proposed ADRs with adr_manage.`,
-          );
-          lines.push("Gate results are evidence candidates; map and verify them against the stage's done criteria:");
-          lines.push(
-            ...latest.gates
-              .slice(0, 4)
-              .map(
-                (gate) =>
-                  `- ${gate.gateId.replace(/\s+/g, " ").slice(0, 40)}: ${gate.verdict.replace(/\s+/g, " ").slice(0, 20)} — ${gate.summary.replace(/\s+/g, " ").slice(0, 180)}`,
-              ),
-          );
-          if (latest.delivery)
-            lines.push(`Delivery (${latest.delivery.mode}): ${latest.delivery.summary.replace(/\s+/g, " ").slice(0, 180)}`);
-          if (latest.gates.length > 4 || pending.length > 1)
-            lines.push("Additional pending-close evidence is retained in this session's Roadmap entries.");
-        }
+      const stage = model.stages.find((candidate) => candidate.id === pending.at(-1)?.stage);
+      if (stage) {
+        // Coverage, drift and triage come from a fresh atlas:plans answer; without omo-prometheus only the completion shows.
+        const plans = requestPlans(pi.events, { sessionId: ctx.sessionManager.getSessionId(), repoRoot: repo.repoRoot, stage: stage.id });
+        lines.push(...renderCloseReminder(stage, pending, plans));
       }
       return { systemPrompt: [...event.systemPrompt, lines.join("\n")] };
     } catch (error) {

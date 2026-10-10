@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import { parseRoadmapIndex, parseStage } from "#src/documents.ts";
+import { parseDoneCriteria, parseRoadmapIndex, parseStage, planningRevision, type StageDoc } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import type { RoadmapSession } from "#src/ses.ts";
 import { TOOL_SOURCE_PATH } from "#src/tools.ts";
@@ -12,14 +12,27 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-interface BoundStage {
+/** A stage as roadmap:binding and roadmap:stage carry it: current criteria in document order and the planning-basis revision. */
+interface ContractStage {
   id: string;
   title: string;
   round: string;
+  criteria: string[];
+  revision: string;
 }
 
-/** Read only the bound stage synchronously: pi.events cannot await a binding answer. */
-function boundStage(repoRoot: string, id: string): BoundStage | undefined {
+function stageFields(stage: StageDoc): ContractStage {
+  return {
+    id: stage.id,
+    title: stage.title,
+    round: stage.round,
+    criteria: parseDoneCriteria(stage.done_criteria).map((criterion) => criterion.id),
+    revision: planningRevision(stage),
+  };
+}
+
+/** Read one stage synchronously: pi.events cannot await an answer. Throws when the roadmap documents are unreadable. */
+function readStage(repoRoot: string, id: string): StageDoc | undefined {
   const roadmapDir = join(repoRoot, "docs/roadmap");
   const indexPath = join(roadmapDir, "README.md");
   parseRoadmapIndex(readFileSync(indexPath, "utf8"), indexPath);
@@ -37,7 +50,7 @@ function boundStage(repoRoot: string, id: string): BoundStage | undefined {
       if (!file.endsWith(".md") || Number(file.split("-")[0]) !== Number(id.slice(1))) continue;
       const path = join(stagesDir, file);
       const stage = parseStage(readFileSync(path, "utf8"), path);
-      if (stage.id === id && stage.status === "active") return { id: stage.id, title: stage.title, round: stage.round };
+      if (stage.id === id) return stage;
     }
   }
   return undefined;
@@ -70,7 +83,7 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
     )
       return;
     let repoRoot: string;
-    let stage: BoundStage | undefined;
+    let stage: ContractStage | undefined;
     try {
       ses.ensure(ctx);
       repoRoot = discoverRepo(ctx.cwd)?.repoRoot ?? resolve(ctx.cwd);
@@ -80,7 +93,8 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
     }
     try {
       const binding = ses.getBinding(repoRoot);
-      stage = binding ? boundStage(repoRoot, binding.stage) : undefined;
+      const bound = binding ? readStage(repoRoot, binding.stage) : undefined;
+      stage = bound?.status === "active" ? stageFields(bound) : undefined;
     } catch (error) {
       // Tool provenance must not depend on readable stage documents; answer without a stage.
       pi.logger.warn("roadmap could not read the bound stage for Prometheus", { error: String(error) });
@@ -91,6 +105,39 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
       requestId: payload.requestId,
       repoRoot,
       toolSourcePath: TOOL_SOURCE_PATH,
+      ...(stage ? { stage } : {}),
+    });
+  });
+
+  // Prometheus asks for a stage's current planning basis on /atlas resume and completion to notice drift.
+  const stageSubscription = pi.events.on("roadmap:stage-request", (payload) => {
+    const ctx = context;
+    if (
+      !ctx ||
+      !object(payload) ||
+      payload.v !== 1 ||
+      payload.sessionId !== ctx.sessionManager.getSessionId() ||
+      typeof payload.requestId !== "string" ||
+      !payload.requestId ||
+      typeof payload.repoRoot !== "string" ||
+      typeof payload.stage !== "string" ||
+      !/^S\d+$/.test(payload.stage)
+    )
+      return;
+    let stage: (ContractStage & { status: StageDoc["status"] }) | undefined;
+    try {
+      if (discoverRepo(ctx.cwd)?.repoRoot !== payload.repoRoot) return;
+      const current = readStage(payload.repoRoot, payload.stage);
+      stage = current ? { ...stageFields(current), status: current.status } : undefined;
+    } catch (error) {
+      // A repository without a roadmap or with unreadable documents answers without a stage.
+      pi.logger.warn("roadmap could not read the requested stage for Prometheus", { error: String(error) });
+    }
+    pi.events.emit("roadmap:stage", {
+      v: 1,
+      sessionId: payload.sessionId,
+      requestId: payload.requestId,
+      repoRoot: payload.repoRoot,
       ...(stage ? { stage } : {}),
     });
   });
@@ -146,6 +193,7 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
   pi.on("session_shutdown", () => {
     context = undefined;
     bindingSubscription();
+    stageSubscription();
     completionSubscription();
   });
 }

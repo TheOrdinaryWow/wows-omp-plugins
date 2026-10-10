@@ -203,11 +203,16 @@ async function finish(repo: Repo, id: string): Promise<void> {
   );
 }
 
+/** Format-2 repositories record the round's goal outcome; format 1 closes without one. */
 async function closeActive(repo: Repo, dispositions: RoundCloseInput["dispositions"]): Promise<Receipt> {
   const model = await loadAll(repo);
   const round = model.rounds.find((candidate) => candidate.status === "active");
   if (!round) throw new Error("No active round");
-  return closeRound(repo, main, { expected: { id: round.id, sha256: roundSha256(roundFiles(model, round)) }, dispositions });
+  return closeRound(repo, main, {
+    expected: { id: round.id, sha256: roundSha256(roundFiles(model, round)) },
+    dispositions,
+    ...(model.index.format === 2 ? { outcome: { assessment: "achieved" as const, summary: "The round goal was met." } } : {}),
+  });
 }
 
 const growthDispositions: RoundCloseInput["dispositions"] = [

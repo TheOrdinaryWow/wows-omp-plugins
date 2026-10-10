@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 
-import type { Model, RoundDoc, StageDoc, StageStatus, TodoItem } from "../plugins/roadmap/src/documents.ts";
+import {
+  type Model,
+  ROUND_ASSESSMENTS,
+  type RoundDoc,
+  type StageDoc,
+  type StageStatus,
+  type TodoItem,
+} from "../plugins/roadmap/src/documents.ts";
 import { createTuiUi, HeadlessUi, NOTICE_TYPE, type RoadmapMessenger, type RoadmapUiContext } from "../plugins/roadmap/src/ui.ts";
 
 type Answer = string | boolean | undefined;
@@ -273,6 +280,58 @@ test("closeRoundDispositions walks every open TODO and collects references", asy
   expect(await createTuiUi(partial.ctx, partial.pi).closeRoundDispositions(items)).toBeUndefined();
   const dismissed = stubUi([undefined]);
   expect(await createTuiUi(dismissed.ctx, dismissed.pi).closeRoundDispositions(items)).toBeUndefined();
+});
+
+test("roundOutcome maps each assessment option and the trimmed summary; dismissing either step answers nothing", async () => {
+  const picks: Array<{ title: string; options: string[] }> = [];
+  const pickAt = (index: number | undefined, summary: string | undefined): RoadmapUiContext =>
+    ({
+      hasUI: true,
+      ui: {
+        select: async (title: string, options: string[]) => {
+          picks.push({ title, options });
+          return index === undefined ? undefined : options[index];
+        },
+        input: async () => summary,
+      },
+    }) as unknown as RoadmapUiContext;
+  const r1 = { ...round("R1", "active"), goal: "Customers can\n\ncheck out" };
+  const answers = [];
+  for (const index of [0, 1, 2, 3]) answers.push(await createTuiUi(pickAt(index, "  Shipped most.  "), stubUi([]).pi).roundOutcome(r1));
+  expect(answers).toEqual(ROUND_ASSESSMENTS.map((assessment) => ({ assessment, summary: "Shipped most." })));
+  expect(picks[0]?.options).toHaveLength(4);
+  expect(picks[0]?.title).toContain("R1");
+  expect(picks[0]?.title).toContain("Customers can check out");
+  expect(await createTuiUi(pickAt(undefined, "x"), stubUi([]).pi).roundOutcome(r1)).toBeUndefined();
+  expect(await createTuiUi(pickAt(0, undefined), stubUi([]).pi).roundOutcome(r1)).toBeUndefined();
+});
+
+test("upgradePrompt is one Yes/No step that states the 0.2.3 incompatibility and forwards cancellation", async () => {
+  for (const purpose of ["upgrade", "round-outcome"] as const) {
+    const seen: Array<{ title: string; options: string[]; signal?: AbortSignal }> = [];
+    const answering = (index: number | undefined): RoadmapUiContext =>
+      ({
+        hasUI: true,
+        ui: {
+          select: async (title: string, options: string[], dialog?: { signal?: AbortSignal }) => {
+            seen.push({ title, options, signal: dialog?.signal });
+            return index === undefined ? undefined : options[index];
+          },
+        },
+      }) as unknown as RoadmapUiContext;
+    const controller = new AbortController();
+    expect(await createTuiUi(answering(0), stubUi([]).pi).upgradePrompt(purpose, controller.signal)).toBe(true);
+    expect(await createTuiUi(answering(1), stubUi([]).pi).upgradePrompt(purpose)).toBe(false);
+    expect(await createTuiUi(answering(undefined), stubUi([]).pi).upgradePrompt(purpose)).toBeUndefined();
+    expect(seen.map((dialog) => dialog.options.length)).toEqual([2, 2, 2]);
+    expect(seen[0]?.title).toContain("0.2.3");
+    expect(seen[0]?.signal).toBe(controller.signal);
+  }
+  const headless = stubUi([], false);
+  const ui = createTuiUi(headless.ctx, headless.pi);
+  expect(await ui.upgradePrompt("upgrade")).toBeUndefined();
+  expect(await ui.roundOutcome(round("R1", "active"))).toBeUndefined();
+  expect(headless.calls).toEqual([]);
 });
 
 test("HeadlessUi returns undefined from every dialog and turns notices into displayed messages", async () => {

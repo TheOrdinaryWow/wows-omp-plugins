@@ -4,18 +4,37 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@o
 
 import type { AdrConnection } from "#src/adr.ts";
 import { check } from "#src/check.ts";
-import { loadAll, loadRepo, type Model, type Repo, roundFiles, roundSha256 } from "#src/documents.ts";
-import { autoCarryTodos, closeRound, type PreparationReceipt, prepareRetarget, prepareRoundDrop, prepareUpgrade } from "#src/operations.ts";
+import {
+  loadAll,
+  loadRepo,
+  type Model,
+  type Repo,
+  ROUND_ASSESSMENTS,
+  type RoundAssessment,
+  roundFiles,
+  roundSha256,
+} from "#src/documents.ts";
+import {
+  autoCarryTodos,
+  closeRound,
+  type PreparationReceipt,
+  prepareRetarget,
+  prepareRoundDrop,
+  prepareUpgrade,
+  type RoundCloseInput,
+} from "#src/operations.ts";
 import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
 import {
   applyPreview,
   awaitConfirmation,
   checkReceipt,
+  planLookup,
   requireRepo,
   resolveOverlap,
   statusReceipt,
   type ToolReceipt,
   toolResult,
+  upgradeAfterDialog,
 } from "#src/tools.ts";
 import type { RoundTodoDispositionChoice } from "#src/ui.ts";
 
@@ -24,9 +43,9 @@ export interface RoadmapCommands {
 }
 
 const CLOSE_ROUND_USAGE =
-  'Usage: /roadmap close-round [<todo>=resolved:<reference> | <todo>=wontfix[:<reason>] | <todo>=carried ...]; quote text with spaces, e.g. T03=wontfix:"out of scope".';
+  'Usage: /roadmap close-round [outcome=<achieved|partial|not_achieved|cancelled>:<summary>] [<todo>=resolved:<reference> | <todo>=wontfix[:<reason>] | <todo>=carried ...]; quote text with spaces, e.g. outcome=partial:"checkout shipped, refunds moved" T03=wontfix:"out of scope". Format-2 repositories need the outcome.';
 const USAGE =
-  "Usage: /roadmap [check [--fix] | upgrade | plan-round [<id>] | new-round | drop-round <id> <reason> | retarget <round-or-stage> <YYYY-MM-DD|none> | close-round [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | confirm <token>]";
+  "Usage: /roadmap [check [--fix] | upgrade | plan-round [<id>] | new-round | drop-round <id> <reason> | retarget <round-or-stage> <YYYY-MM-DD|none> | close-round [outcome=<assessment>:<summary>] [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | confirm <token>]";
 const OVERLAP_ANSWERS: readonly Completion[] = [
   { value: "roadmap", description: "Track this work under the stage" },
   { value: "free", description: "Log it as free work outside the roadmap" },
@@ -41,7 +60,7 @@ const ACTIONS: readonly Completion[] = [
   { value: "new-round", description: "Open the next round, activating the lowest planned round if any" },
   { value: "drop-round ", description: "Drop a planned round with a reason" },
   { value: "retarget ", description: "Set or clear a round or stage target date" },
-  { value: "close-round", description: "Close the active round and dispose its open TODOs" },
+  { value: "close-round", description: "Close the active round with its goal outcome and dispose its open TODOs" },
   { value: "stage ", description: "Show a stage's document and planning handoff" },
   { value: "overlap ", description: "Answer the overlap question for a stage" },
   { value: "confirm ", description: "Apply a pending preview by its token" },
@@ -71,15 +90,26 @@ export function splitArgs(args: string): string[] {
   return words;
 }
 
-/** Parses `/roadmap close-round` disposition arguments; closeRound validates ids and completeness. */
-export function parseRoundDispositions(words: readonly string[]): RoundTodoDispositionChoice[] {
-  return words.map((word) => {
+/** Parses `/roadmap close-round` arguments; closeRound validates TODO ids, completeness and whether the format needs the outcome. */
+export function parseRoundCloseArguments(words: readonly string[]): Pick<RoundCloseInput, "dispositions" | "outcome"> {
+  const dispositions: RoundTodoDispositionChoice[] = [];
+  let outcome: RoundCloseInput["outcome"];
+  for (const word of words) {
+    const assessed = /^outcome=([a-z_]+):([\s\S]*)$/.exec(word);
+    if (assessed) {
+      const summary = assessed[2]?.trim();
+      if (outcome || !(ROUND_ASSESSMENTS as readonly string[]).includes(assessed[1] as string) || !summary)
+        throw new Error(`Invalid or repeated round outcome "${word}". ${CLOSE_ROUND_USAGE}`);
+      outcome = { assessment: assessed[1] as RoundAssessment, summary };
+      continue;
+    }
     const match = /^([^=:\s]+)=(resolved|wontfix|carried)(?::([\s\S]*))?$/.exec(word);
     if (!match?.[1] || !match[2]) throw new Error(`Invalid round-close disposition "${word}". ${CLOSE_ROUND_USAGE}`);
     const disposition = match[2] as RoundTodoDispositionChoice["disposition"];
     const reference = match[3]?.trim();
-    return reference ? { id: match[1], disposition, reference } : { id: match[1], disposition };
-  });
+    dispositions.push(reference ? { id: match[1], disposition, reference } : { id: match[1], disposition });
+  }
+  return outcome ? { dispositions, outcome } : { dispositions };
 }
 
 export function registerCommands(
@@ -248,7 +278,7 @@ export function registerCommands(
         );
       } else if (action === "stage") {
         if (!selectedStage || words.length > 2) throw new Error("Usage: /roadmap stage <id>");
-        show("wows-omp-roadmap.status", await statusReceipt(repo, selectedStage));
+        show("wows-omp-roadmap.status", await statusReceipt(repo, selectedStage, planLookup(pi.events, ctx, repo.repoRoot)));
       } else if (action === "check") {
         if (words.length > 2 || (words[1] && words[1] !== "--fix")) throw new Error("Usage: /roadmap check [--fix]");
         show("wows-omp-roadmap.check", await checkReceipt(repo, words[1] === "--fix"));
@@ -264,6 +294,7 @@ export function registerCommands(
           generation: ses.currentGeneration(ctx),
           stage: stageId,
           intent: intent.join(" "),
+          plans: planLookup(pi.events, ctx, repo.repoRoot),
           ask: async () => answer,
         });
         show("wows-omp-roadmap.overlap", receipt);
@@ -284,8 +315,9 @@ export function registerCommands(
             : "Use the roadmap skill to interview me for the next round's charter: title, goal, constraints, non-goals and principles citing existing ADRs (adr_status lists them; record new decisions with adr_manage first). Review carried TODOs in frozen rounds and agree which to import as new TODO ids. Then call roadmap_round_open with round and import_todos; show the preview and wait for my confirmation before writing.",
         );
       } else if (action === "close-round") {
-        // Typed dispositions answer the per-TODO dialog; the status menu never supplies arguments.
-        let dispositions = !reviewedRound && words.length > 1 ? parseRoundDispositions(words.slice(1)) : undefined;
+        const generation = ses.currentGeneration(ctx);
+        // Typed arguments answer the dialogs; the status menu never supplies arguments.
+        const typed = !reviewedRound && words.length > 1 ? parseRoundCloseArguments(words.slice(1)) : undefined;
         if (!reviewedRound) model = await loadAll(repo);
         const round = model.rounds.find((candidate) => candidate.status === "active");
         if (!round) throw new Error("There is no active round to close.");
@@ -299,6 +331,27 @@ export function registerCommands(
         const todos = model.todos
           .filter((doc) => doc.round === round.id)
           .flatMap((doc) => doc.items.filter((item) => item.status === "open" && !automatic.includes(item)));
+        let outcome = typed?.outcome;
+        let upgradeFirst = false;
+        if (!outcome && ui.interactive) {
+          // A format-1 round records its outcome only after the one-step upgrade; skipping closes without one.
+          if (model.index.format === 1) {
+            const answer = await ui.upgradePrompt("round-outcome");
+            if (answer === undefined) {
+              ui.notify("Round close: no answer available.", "info");
+              return;
+            }
+            upgradeFirst = answer;
+          }
+          if (model.index.format === 2 || upgradeFirst) {
+            outcome = await ui.roundOutcome(round);
+            if (!outcome) {
+              ui.notify("Round close: no answer available.", "info");
+              return;
+            }
+          }
+        }
+        let dispositions = typed?.dispositions.length ? typed.dispositions : undefined;
         if (!dispositions) {
           if (ui.interactive) dispositions = await ui.closeRoundDispositions(todos);
           else if (todos.length) {
@@ -311,7 +364,14 @@ export function registerCommands(
           ui.notify("Round close: no answer available.", "info");
           return;
         }
-        const receipt = await closeRound(repo, actor(ctx), { expected, dispositions });
+        if (!outcome && model.index.format === 2) throw new Error(`Closing ${round.id} records its goal outcome. ${CLOSE_ROUND_USAGE}`);
+        if (upgradeFirst) {
+          // The README is outside the reviewed round directory, so the upgrade leaves `expected` valid.
+          const upgraded = await upgradeAfterDialog(ses, ctx, repo, generation);
+          show("wows-omp-roadmap.upgrade", upgraded);
+          if (!upgraded.ok) return;
+        }
+        const receipt = await closeRound(repo, actor(ctx), { expected, dispositions, ...(outcome ? { outcome } : {}) });
         if (receipt.ok) {
           for (const stage of model.stages.filter((stage) => stage.round === round.id)) ses.clearStage(ctx, repo.repoRoot, stage.id);
           ses.disarm(ctx, repo.repoRoot);

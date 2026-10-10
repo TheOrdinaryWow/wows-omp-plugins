@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { AtlasStore } from "../plugins/omo-prometheus/src/atlas-store.ts";
 import { type AtlasCompleted, RoadmapContract } from "../plugins/omo-prometheus/src/roadmap-contract.ts";
+import { loadAll, planningRevision } from "../plugins/roadmap/src/documents.ts";
 import { discoverRepo } from "../plugins/roadmap/src/git.ts";
 import { type InitInput, initProject } from "../plugins/roadmap/src/operations.ts";
 import type { ToolReceipt } from "../plugins/roadmap/src/tools.ts";
@@ -121,7 +122,10 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     const startReceipt = started.details as ToolReceipt;
     assert(startReceipt.ok, JSON.stringify(started));
     const binding = consumer.requestBinding(sessionId);
-    assert.deepEqual(binding?.stage, { id: "S01", title: "Checkout", round: "R1" });
+    const bound = (await loadAll({ ...git, roadmapDir: join(root, "docs/roadmap"), adrDir: join(root, "docs/adr") })).stages[0];
+    assert(bound);
+    // The binding carries the stage's current criteria and planning-basis revision for the Roadmap criteria line and drift.
+    assert.deepEqual(binding?.stage, { id: "S01", title: "Checkout", round: "R1", criteria: ["DC1"], revision: planningRevision(bound) });
     const provenance = extensionsResult.runtime.getAllTools().find((tool) => tool.name === "roadmap_stage")?.sourceInfo;
     assert.equal(provenance?.source, "extension");
     assert.equal(provenance.path, binding?.toolSourcePath);

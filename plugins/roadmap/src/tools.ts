@@ -3,11 +3,12 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import { ADR_INSTALL_HINT, type AdrApi, type AdrConnection } from "#src/adr.ts";
+import { ADR_INSTALL_HINT, type AdrApi, type AdrConnection, type ContractEvents } from "#src/adr.ts";
+import { type AtlasStagePlan, requestPlans, stageCoverage } from "#src/atlas.ts";
 import { check, type Diagnostics } from "#src/check.ts";
 import { loadAll, loadRepo, type Model, overdue, type Repo, renderRound, renderStage, type StageDoc, today } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
-import { renderHandoff, renderInjection } from "#src/handoff.ts";
+import { planLabel, renderHandoff, renderInjection } from "#src/handoff.ts";
 import { withRepoLock } from "#src/numbering.ts";
 import {
   type Actor,
@@ -20,11 +21,21 @@ import {
   recordFreeWork,
   stage,
   todo,
+  upgrade,
 } from "#src/operations.ts";
 import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
+import { stageReadiness } from "#src/state.ts";
 import type { OverlapAnswer } from "#src/ui.ts";
 
 export type ToolReceipt = Receipt & { answer?: OverlapAnswer; diagnostics?: Diagnostics[]; changedFiles?: string[] };
+
+/** Asks omo-prometheus for the repository's Atlas plans, optionally for one stage; undefined when nothing answered. */
+export type PlanLookup = (stage?: string) => AtlasStagePlan[] | undefined;
+
+export function planLookup(events: ContractEvents, ctx: ExtensionContext, repoRoot: string): PlanLookup {
+  return (stage) =>
+    requestPlans(events, { sessionId: ctx.sessionManager.getSessionId(), repoRoot, ...(stage === undefined ? {} : { stage }) });
+}
 
 /**
  * The Atlas guard admits roadmap tools only from this path, so every tool declares it explicitly: the host
@@ -58,7 +69,7 @@ export async function requireRepo(ctx: ExtensionContext, adr: AdrApi, initialize
   return { ...repo, adr };
 }
 
-export async function statusReceipt(repo: Repo, id?: string): Promise<Receipt> {
+export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup): Promise<Receipt> {
   const model = await loadAll(repo);
   const on = today();
   if (id?.startsWith("R")) {
@@ -74,27 +85,59 @@ export async function statusReceipt(repo: Repo, id?: string): Promise<Receipt> {
   if (id) {
     const current = model.stages.find((candidate) => candidate.id === id);
     if (!current) return { ok: false, reason: `Unknown stage ${id}.`, hints: ["Call roadmap_status for stage ids."] };
-    return { ok: true, summary: renderStage(current), handoff: renderHandoff(model, current), changedFiles: [], warnings: [] };
+    return {
+      ok: true,
+      summary: renderStage(current),
+      handoff: renderHandoff(model, current, on, plans?.(current.id)),
+      changedFiles: [],
+      warnings: [],
+    };
   }
   const open = model.todos.flatMap((doc) => doc.items.filter((item) => item.status === "open"));
+  const readiness = model.stages
+    .filter((current) => current.status === "planned")
+    .flatMap((current) => {
+      const ready = stageReadiness(model, current);
+      if (ready.startable) return [`- ${current.id} startable`];
+      return ready.blockedBy.length ? [`- ${current.id} blocked by ${ready.blockedBy.join(", ")}`] : [];
+    });
+  const summary = [
+    model.index.title,
+    renderInjection(model) || "No active round. ADR management remains available.",
+    "Rounds (target versus actual):",
+    ...model.rounds.map(
+      (round) =>
+        `- ${round.id} [${round.status}] ${round.title} — target ${round.target ?? "none"}; opened ${round.opened ?? "—"}; closed ${round.closed ?? "—"}${overdue(round, on) ? "; overdue" : ""}; ${model.stages.filter((stage) => stage.round === round.id).length} stages`,
+    ),
+    "Stages:",
+    ...model.stages.map(
+      (current) =>
+        `- ${current.id} [${current.status}] ${current.title} (${current.round})${current.target ? ` — target ${current.target}${overdue(current, on) ? "; overdue" : ""}` : ""}; started ${current.started ?? "—"}; closed ${current.closed ?? "—"}${current.depends_on.length ? `; depends on ${current.depends_on.join(", ")}` : ""}`,
+    ),
+  ];
+  if (readiness.length) summary.push("Readiness of planned stages in the active round:", ...readiness);
+  const answered = plans?.();
+  if (answered) {
+    // Plans of unclosed stages only: closed and dropped stages no longer take plan work.
+    const lines = model.stages
+      .filter((current) => current.status === "planned" || current.status === "active")
+      .flatMap((current) => {
+        const bound = answered.filter((plan) => plan.stage === current.id);
+        const drifted = stageCoverage(current, bound).drifted;
+        return bound.map(
+          (plan) =>
+            `- ${current.id} · ${planLabel(plan)} — ${plan.status}, ${plan.done}/${plan.total} rows; ${plan.criteria ? `criteria ${plan.criteria.join(", ")}` : "coverage undeclared"}${drifted.includes(plan) ? `; drift: approved before ${current.id}'s objective, scope, criteria or design constraints changed` : ""}`,
+        );
+      });
+    summary.push("Atlas plans of unclosed stages:", ...(lines.length ? lines : ["- None."]));
+  }
+  summary.push(
+    "Open TODOs by target or trigger:",
+    ...open.map((item) => `- ${item.id} [${item.severity}] ${item.target ?? item.trigger}: ${item.title}`),
+  );
   return {
     ok: true,
-    summary: [
-      model.index.title,
-      renderInjection(model) || "No active round. ADR management remains available.",
-      "Rounds (target versus actual):",
-      ...model.rounds.map(
-        (round) =>
-          `- ${round.id} [${round.status}] ${round.title} — target ${round.target ?? "none"}; opened ${round.opened ?? "—"}; closed ${round.closed ?? "—"}${overdue(round, on) ? "; overdue" : ""}; ${model.stages.filter((stage) => stage.round === round.id).length} stages`,
-      ),
-      "Stages:",
-      ...model.stages.map(
-        (current) =>
-          `- ${current.id} [${current.status}] ${current.title} (${current.round})${current.target ? ` — target ${current.target}${overdue(current, on) ? "; overdue" : ""}` : ""}; started ${current.started ?? "—"}; closed ${current.closed ?? "—"}`,
-      ),
-      "Open TODOs by target or trigger:",
-      ...open.map((item) => `- ${item.id} [${item.severity}] ${item.target ?? item.trigger}: ${item.title}`),
-    ].join("\n"),
+    summary: summary.join("\n"),
     changedFiles: [],
     warnings: (model.parseErrors ?? []).map((issue) => `${issue.path}: ${issue.message}`),
   };
@@ -138,6 +181,8 @@ export interface OverlapRequest {
   stage: string;
   intent: string;
   signal?: AbortSignal;
+  /** Atlas plans for the handoff; omitted when the caller has no event bus to ask. */
+  plans?: PlanLookup;
   /** Asked only when this session is not bound to the stage and has no stored answer for it. */
   ask(stage: StageDoc): Promise<OverlapAnswer | undefined>;
 }
@@ -185,7 +230,7 @@ export async function resolveOverlap(request: OverlapRequest): Promise<ToolRecei
         ok: true,
         summary: `This session is already working in-system on ${candidate.id}.`,
         answer,
-        handoff: renderHandoff(latest, candidate),
+        handoff: renderHandoff(latest, candidate, today(), request.plans?.(candidate.id)),
         changedFiles: [],
         warnings: [],
       };
@@ -210,7 +255,13 @@ export async function resolveOverlap(request: OverlapRequest): Promise<ToolRecei
   let receipt: Receipt;
   if (answer === "free" && !stored)
     receipt = await recordFreeWork(repo, owner, { stage: request.stage, intent: request.intent }, { signal, guard, onSuccess });
-  else if (answer === "roadmap") receipt = await stage(repo, owner, { action: "start", id: current.id }, { signal, guard, onSuccess });
+  else if (answer === "roadmap")
+    receipt = await stage(
+      repo,
+      owner,
+      { action: "start", id: current.id },
+      { signal, guard, onSuccess, plans: request.plans?.(current.id) },
+    );
   else
     receipt = await withRepoLock(repo, async () => {
       const guarded = guard(await loadAll(repo));
@@ -279,6 +330,27 @@ export async function applyPreview(
     onSuccess() {
       if (ses.isCurrent(ctx, generation) && ses.isArmed(ctx, repo.repoRoot, kind)) ses.disarm(ctx, repo.repoRoot);
     },
+  });
+}
+
+/** Writes the `/roadmap upgrade` change after a Yes in the one-step upgrade dialog, unless the asking session changed meanwhile. */
+export function upgradeAfterDialog(
+  ses: RoadmapSession,
+  ctx: ExtensionContext,
+  repo: Repo,
+  generation: number,
+  signal?: AbortSignal,
+): Promise<Receipt> {
+  return upgrade(repo, actor(ctx), {
+    signal,
+    guard: () =>
+      ses.isCurrent(ctx, generation)
+        ? undefined
+        : {
+            ok: false,
+            reason: "The session changed while the upgrade dialog was open; nothing was written.",
+            hints: ["Ask the user again."],
+          },
   });
 }
 
@@ -397,6 +469,7 @@ export function registerTools(
   });
   const roundParameters = z.object({ round: round.optional(), import_todos: z.array(z.string()), activate: z.string().optional() });
   const planParameters = z.object({ id: z.string().optional(), round, target: z.string().optional() });
+  const upgradeParameters = z.object({});
 
   async function run(ctx: ExtensionContext, operation: (repo: Repo, owner: Actor) => Promise<ToolReceipt>, initialize = false) {
     try {
@@ -423,7 +496,7 @@ export function registerTools(
     parameters: statusParameters,
     approval: "read",
     async execute(_id, params: typeof statusParameters.infer, _signal, _onUpdate, ctx) {
-      return run(ctx, (repo) => statusReceipt(repo, params.stage));
+      return run(ctx, (repo) => statusReceipt(repo, params.stage, planLookup(pi.events, ctx, repo.repoRoot)));
     },
   });
   pi.registerTool({
@@ -431,7 +504,7 @@ export function registerTools(
     sourcePath: TOOL_SOURCE_PATH,
     label: "Roadmap stage",
     description:
-      "Manage stage lifecycle. Start or join returns the planning handoff and binds this session. Close requires passing evidence for every done criterion and TODO dispositions, and refuses while ADRs linked to the stage are proposed.",
+      "Manage stage lifecycle. Start or join returns the planning handoff and binds this session. Close requires passing evidence for every done criterion and TODO dispositions, refuses while ADRs linked to the stage are proposed, and records still-unfinished linked Atlas plans under the Outcome's Deviations.",
     parameters: stageParameters,
     approval: "write",
     async execute(_id, params: typeof stageParameters.infer, signal, _onUpdate, ctx) {
@@ -439,6 +512,10 @@ export function registerTools(
       return run(ctx, (repo, owner) =>
         stage(repo, owner, params, {
           signal,
+          plans:
+            params.id && (params.action === "start" || params.action === "close")
+              ? planLookup(pi.events, ctx, repo.repoRoot)(params.id)
+              : undefined,
           onSuccess() {
             if (!params.id || !ses.isCurrent(ctx, generation)) return;
             if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
@@ -497,6 +574,7 @@ export function registerTools(
           stage: params.stage,
           intent: params.intent,
           signal,
+          plans: planLookup(pi.events, ctx, repo.repoRoot),
           ask: (current) => uiFor(ctx).overlap({ stage: current, intent: params.intent }),
         }).finally(() => overlapFlights.delete(key));
         overlapFlights.set(key, flight);
@@ -589,6 +667,41 @@ export function registerTools(
             hints: [],
           };
         return applyPreview(ses, ctx, "plan", repo, owner, generation, prepared.prepared, signal);
+      });
+    },
+  });
+  pi.registerTool({
+    name: "roadmap_upgrade",
+    sourcePath: TOOL_SOURCE_PATH,
+    label: "Roadmap upgrade",
+    description:
+      "Ask the user, in the same one-step dialog shown at session start, whether to upgrade this format-1 repository to roadmap format 2; writes the upgrade only on Yes. Main session only. Without a dialog it refuses: ask the user to run /roadmap upgrade.",
+    parameters: upgradeParameters,
+    approval: "write",
+    async execute(_id, _params: typeof upgradeParameters.infer, signal, _onUpdate, ctx) {
+      if (ctx.agent.kind !== "main")
+        return toolResult({
+          ok: false,
+          reason: "roadmap_upgrade asks the user and is available only in the main session.",
+          hints: ["Report the format-2 need to the main agent instead."],
+        });
+      const generation = ses.currentGeneration(ctx);
+      return run(ctx, async (repo) => {
+        if ((await loadAll(repo)).index.format === 2)
+          return { ok: true, summary: "This repository already uses roadmap format 2.", changedFiles: [], warnings: [] };
+        const ui = uiFor(ctx);
+        if (!ui.interactive)
+          return {
+            ok: false,
+            reason: "No dialog is available to ask about the format-2 upgrade; nothing was written.",
+            hints: ["Ask the user to run /roadmap upgrade."],
+          };
+        const answer = await ui.upgradePrompt("upgrade", signal);
+        if (answer === false)
+          return { ok: true, summary: "The user kept roadmap format 1; nothing was written.", changedFiles: [], warnings: [] };
+        if (answer !== true || signal?.aborted)
+          return { ok: false, reason: "Format upgrade: no answer available or cancelled; nothing was written.", hints: [] };
+        return upgradeAfterDialog(ses, ctx, repo, generation, signal);
       });
     },
   });

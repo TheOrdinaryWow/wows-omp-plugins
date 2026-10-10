@@ -34,8 +34,10 @@ import {
   type OverlapAnswer,
   type OverlapQuestion,
   type RoadmapUi,
+  type RoundOutcomeChoice,
   type RoundTodoDispositionChoice,
   type StatusMenuChoice,
+  type UpgradePurpose,
 } from "../plugins/roadmap/src/ui.ts";
 import { adrApi } from "./roadmap-fixtures.ts";
 
@@ -99,6 +101,11 @@ class ScriptedUi implements RoadmapUi {
   preview?: RoadmapUi["previewConfirm"];
   readonly interactive = true;
   dispositions: RoundTodoDispositionChoice[] | undefined = [];
+  outcome: RoundOutcomeChoice | undefined = { assessment: "achieved", summary: "The round goal was met." };
+  outcomeCalls: string[] = [];
+  /** The scripted answer to the format-2 upgrade question; the default keeps format 1 like a user's No. */
+  upgrade: boolean | undefined = false;
+  upgradeCalls: UpgradePurpose[] = [];
 
   async overlap(q: OverlapQuestion) {
     this.overlapCalls.push(q);
@@ -116,6 +123,16 @@ class ScriptedUi implements RoadmapUi {
 
   async closeRoundDispositions(_todos: Parameters<RoadmapUi["closeRoundDispositions"]>[0]) {
     return this.dispositions;
+  }
+
+  async roundOutcome(round: Parameters<RoadmapUi["roundOutcome"]>[0]) {
+    this.outcomeCalls.push(round.id);
+    return this.outcome;
+  }
+
+  async upgradePrompt(purpose: UpgradePurpose) {
+    this.upgradeCalls.push(purpose);
+    return this.upgrade;
   }
 
   notify(message: string, level: "info" | "warning" | "error") {
@@ -216,6 +233,7 @@ async function createHarness(
     "roadmap_init",
     "roadmap_round_open",
     "roadmap_round_plan",
+    "roadmap_upgrade",
     ...(options.adr === false ? [] : ["adr_status", "adr_manage", "adr_check"]),
   ]) {
     assert(session.getToolByName(name), `Real loader must register ${name}`);
@@ -270,6 +288,15 @@ async function injection(h: Harness): Promise<string> {
     .slice(1)
     .filter((block) => block.startsWith("[Roadmap status]"))
     .join("\n");
+}
+
+/** The session-entry upgrade offer runs after the host's awaited handlers return, so tests poll for its effect. */
+async function until(condition: () => boolean | Promise<boolean>, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (await condition()) return;
+    await scheduler.wait(25);
+  }
+  throw new Error(`Timed out waiting until ${what}`);
 }
 
 function holdOverlap(h: Harness, stageId = "S01") {
@@ -433,11 +460,19 @@ const CASES: Record<string, string> = {
   pending: "pending-close reminders retain evidence and remain bounded",
   menu: "status-menu stage close gives tool guidance without writing files",
   preflight: "init command preflight rejects existing directories and non-git roots",
+  "upgrade-prompt":
+    "entering a format-1 session asks the one-step upgrade question; No keeps format 1, Yes upgrades, branch and tree do not ask",
+  "upgrade-prompt-headless": "without dialogs, entering a format-1 session shows one notice naming /roadmap upgrade and writes nothing",
+  "upgrade-subagent": "subagents are never asked to upgrade and cannot use roadmap_upgrade",
+  "upgrade-tool":
+    "roadmap_upgrade asks the same question and reports no answer, declined, headless, accepted and already-format-2 outcomes",
+  "round-outcome-format-1":
+    "format-1 round close offers the upgrade first; cancelling writes nothing and accepting records the goal outcome",
 };
 
 async function acceptance(name: string, root: string): Promise<void> {
   const h = await createHarness(root, {
-    sub: name === "subagent" || name === "subagent-planning",
+    sub: name === "subagent" || name === "subagent-planning" || name === "upgrade-subagent",
     adr: name !== "adr-absent",
     lsp: name === "interception-lsp-rename",
     editMode:
@@ -1698,6 +1733,8 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert((await call(h, "roadmap_stage", closeInput)).ok);
         await command(h, "roadmap", "close-round");
         assert.equal((await loadAll(repo)).rounds[0]?.status, "closed");
+        assert.equal((await loadAll(repo)).rounds[0]?.outcome, undefined, "skipping the format-1 upgrade closes without an outcome");
+        assert.deepEqual(h.ui.upgradeCalls, ["round-outcome"]);
         assert.equal(await injection(h), "");
         // ADRs stay available through the adr plugin after the round closes; it protects docs/adr itself.
         const write = h.session.getToolByName("write");
@@ -2036,11 +2073,14 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert(started.ok);
         if (name.includes("join")) assert(started.warnings.includes("another session may be working on this stage"));
         const before = await readFile((await loadAll(repo)).stages[0]?.path as string, "utf8");
+        // Entering a session may construct the UI for the format-upgrade offer; only the overlap dialog is under test here.
         let uiCalls = 0;
-        h.setUi(() => {
+        const headless = new HeadlessUi({ sendMessage: () => {} });
+        headless.overlap = async () => {
           uiCalls++;
-          return name.endsWith("headless") ? new HeadlessUi({ sendMessage: () => {} }) : h.ui;
-        });
+          return undefined;
+        };
+        h.setUi(() => (name.endsWith("headless") ? headless : h.ui));
         for (const stored of [false, true]) {
           if (stored) {
             h.session.sessionManager.appendCustomEntry(`${ENTRY_PREFIX}overlap`, {
@@ -2078,6 +2118,8 @@ async function acceptance(name: string, root: string): Promise<void> {
                     ...ctx.ui,
                     select: async (title, options) => {
                       dialogs.push({ title, options });
+                      // The second dialog offers the format-2 upgrade for a round outcome; skipping keeps format 1.
+                      if (dialogs.length > 1) return typeof options[1] === "string" ? options[1] : undefined;
                       shown.resolve();
                       return picked.promise;
                     },
@@ -2121,7 +2163,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             assert.match(h.messages.at(-1) ?? "", /stale/);
             assert.match(h.messages.at(-1) ?? "", /Run \/roadmap close-round again/);
           }
-          assert.equal(dialogs.length, 1);
+          assert.equal(dialogs.length, 2);
         } finally {
           other.setUi();
           other.session.dispose();
@@ -2423,8 +2465,10 @@ async function acceptance(name: string, root: string): Promise<void> {
         };
         await command(h, "roadmap", "close-round");
         assert.deepEqual(offered, [[manual]], "auto-carried TODOs are not offered for a disposition");
+        assert.deepEqual(h.ui.outcomeCalls, ["R1"], "a format-2 round close asks for the goal outcome");
         let model = await loadAll(repo);
         assert.equal(model.rounds.find((round) => round.id === "R1")?.status, "closed");
+        assert.match(model.rounds.find((round) => round.id === "R1")?.outcome ?? "", /achieved/);
         const source = model.todos.find((doc) => doc.round === "R1")?.items.find((item) => item.id === automatic);
         assert.deepEqual([source?.status, source?.reference], ["carried", "R2"]);
         const copy = model.todos.find((doc) => doc.round === "R2")?.items.find((item) => item.id === automatic);
@@ -2471,8 +2515,18 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert(!prompt.includes(later), "auto-carried TODOs are not part of the headless prompt");
         assert.equal((await loadAll(repo)).rounds.find((round) => round.id === "R2")?.status, "active");
         await command(h, "roadmap", `close-round ${imported.id}=wontfix`);
+        assert.match(h.messages.at(-1) ?? "", /outcome=/, "format 2 refuses a headless close without the goal outcome");
+        assert.equal((await loadAll(repo)).rounds.find((round) => round.id === "R2")?.status, "active");
+        await command(h, "roadmap", `close-round outcome=great:"x" ${imported.id}=wontfix`);
+        assert.equal(
+          (await loadAll(repo)).rounds.find((round) => round.id === "R2")?.status,
+          "active",
+          "an unknown assessment closes nothing",
+        );
+        await command(h, "roadmap", `close-round outcome=partial:"Loyalty shipped; invites moved on" ${imported.id}=wontfix`);
         model = await loadAll(repo);
         assert.equal(model.rounds.find((round) => round.id === "R2")?.status, "closed");
+        assert.match(model.rounds.find((round) => round.id === "R2")?.outcome ?? "", /partial[\s\S]*Loyalty shipped; invites moved on/);
         const carried = model.todos.find((doc) => doc.round === "R3")?.items.find((item) => item.id === later);
         assert.deepEqual([carried?.status, carried?.carried_from], ["open", `${later} (R2)`]);
 
@@ -2523,6 +2577,94 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.match(preparation.reason, /main session/);
         }
         assert.deepEqual((await loadAll(repo)).files, before);
+      } else if (name === "upgrade-prompt") {
+        const before = (await loadAll(repo)).files;
+        await h.runner.emit({ type: "session_start" });
+        await until(() => h.ui.upgradeCalls.length === 1, "session start asks");
+        assert.deepEqual(h.ui.upgradeCalls, ["upgrade"]);
+        const leaf = h.session.sessionManager.getLeafId();
+        await h.runner.emit({ type: "session_branch", reason: "fork", previousSessionFile: undefined });
+        await h.runner.emit({ type: "session_tree", oldLeafId: leaf, newLeafId: leaf });
+        await scheduler.wait(300);
+        assert.equal(h.ui.upgradeCalls.length, 1, "branch and tree changes do not ask");
+        assert.deepEqual((await loadAll(repo)).files, before, "No keeps format 1");
+        h.ui.upgrade = true;
+        const shown = h.messages.length;
+        await h.runner.emit({ type: "session_switch", reason: "resume", previousSessionFile: undefined });
+        await until(async () => (await loadAll(repo)).index.format === 2, "Yes writes the upgrade");
+        await until(() => h.messages.length > shown, "the upgrade receipt is shown");
+        assert.deepEqual(h.ui.upgradeCalls, ["upgrade", "upgrade"]);
+        assert.match(h.messages.at(-1) ?? "", /docs\/roadmap\/README\.md/);
+        const upgraded = await loadAll(repo);
+        assert.deepEqual(
+          [...upgraded.rounds, ...upgraded.stages].map((doc) => doc.format),
+          [1, 1],
+          "only the repository marker changes",
+        );
+        assert((await call(h, "roadmap_check", {})).ok);
+        await h.runner.emit({ type: "session_start" });
+        await scheduler.wait(300);
+        assert.equal(h.ui.upgradeCalls.length, 2, "a format-2 repository is not asked");
+      } else if (name === "upgrade-prompt-headless") {
+        h.setUi();
+        const before = (await loadAll(repo)).files;
+        const shown = h.messages.length;
+        await h.runner.emit({ type: "session_start" });
+        await until(() => h.messages.length > shown, "the notice is shown");
+        await scheduler.wait(300);
+        assert.equal(h.messages.length, shown + 1, "one notice per session entry");
+        assert.match(h.messages.at(-1) ?? "", /\/roadmap upgrade/);
+        assert.deepEqual((await loadAll(repo)).files, before);
+        assert.deepEqual(h.ui.upgradeCalls, []);
+      } else if (name === "upgrade-subagent") {
+        const before = (await loadAll(repo)).files;
+        h.ui.upgrade = true;
+        await h.runner.emit({ type: "session_start" });
+        await scheduler.wait(300);
+        const refused = await call(h, "roadmap_upgrade", {});
+        assert(!refused.ok);
+        assert.deepEqual(h.ui.upgradeCalls, []);
+        assert.deepEqual((await loadAll(repo)).files, before);
+      } else if (name === "upgrade-tool") {
+        const before = (await loadAll(repo)).files;
+        h.ui.upgrade = undefined;
+        assert(!(await call(h, "roadmap_upgrade", {})).ok, "no answer writes nothing");
+        h.ui.upgrade = false;
+        const declined = await call(h, "roadmap_upgrade", {});
+        assert(declined.ok && declined.changedFiles.length === 0, JSON.stringify(declined));
+        assert.deepEqual((await loadAll(repo)).files, before);
+        h.setUi();
+        const headless = await call(h, "roadmap_upgrade", {});
+        assert(!headless.ok);
+        assert.match(headless.hints.join("\n"), /\/roadmap upgrade/);
+        h.setUi(() => h.ui);
+        assert.deepEqual((await loadAll(repo)).files, before);
+        h.ui.upgrade = true;
+        const accepted = await call(h, "roadmap_upgrade", {});
+        assert(accepted.ok, JSON.stringify(accepted));
+        assert.deepEqual(accepted.changedFiles, ["docs/roadmap/README.md"]);
+        assert.equal((await loadAll(repo)).index.format, 2);
+        const again = await call(h, "roadmap_upgrade", {});
+        assert(again.ok && again.changedFiles.length === 0);
+        assert.deepEqual(h.ui.upgradeCalls, ["upgrade", "upgrade", "upgrade"]);
+      } else if (name === "round-outcome-format-1") {
+        assert((await call(h, "roadmap_stage", { action: "drop", id: "S01", reason: "Defer" })).ok);
+        const before = (await loadAll(repo)).files;
+        h.ui.upgrade = undefined;
+        await command(h, "roadmap", "close-round");
+        h.ui.upgrade = true;
+        h.ui.outcome = undefined;
+        await command(h, "roadmap", "close-round");
+        assert.deepEqual((await loadAll(repo)).files, before, "a cancelled upgrade or outcome dialog writes nothing");
+        h.ui.outcome = { assessment: "not_achieved", summary: "Checkout slipped to the next round." };
+        await command(h, "roadmap", "close-round");
+        const model = await loadAll(repo);
+        const round = model.rounds[0];
+        assert.deepEqual([model.index.format, round?.format, round?.status], [2, 2, "closed"]);
+        assert.match(round?.outcome ?? "", /not_achieved[\s\S]*Checkout slipped to the next round\./);
+        assert.deepEqual(h.ui.upgradeCalls, ["round-outcome", "round-outcome", "round-outcome"]);
+        assert.deepEqual(h.ui.outcomeCalls, ["R1", "R1"]);
+        assert((await call(h, "roadmap_check", {})).ok);
       } else if (name === "rebuild") {
         assert((await call(h, "roadmap_overlap", { stage: "S01", intent: "Free" })).ok);
         for (const type of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {
