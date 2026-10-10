@@ -22,6 +22,13 @@
 - Reopen and block affect only the named row, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.21.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.20.1...omo-prometheus@0.21.0) (2026-10-10)
+
+
+### Features
+
+* **omo-prometheus:** make Atlas refresh todos and record finished children before moving on ([a9ebcf9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/a9ebcf9fd20f25091a49c265cc3a20d21c45564c))
+
 ## [0.20.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.20.0...omo-prometheus@0.20.1) (2026-10-10)
 
 
