@@ -80,7 +80,7 @@ Planned rounds, target dates and round goal outcomes need repository format 2. I
 
 ### Confirmation
 
-Initialization and every round-level change (planning, opening, upgrading, dropping, retargeting) need an explicit command from you and a confirmed preview. The plugin rechecks the files after you confirm and refuses a stale preview. Cancelling writes nothing.
+Initialization and every round-level change (planning, opening, dropping, retargeting) need an explicit command from you and a confirmed preview. The plugin rechecks the files after you confirm and refuses a stale preview. Cancelling writes nothing. The format-2 upgrade is written only after you answer Yes in its dialog or confirm the `/roadmap upgrade` preview.
 
 ### Commands
 

@@ -193,7 +193,7 @@ You mostly talk to the agent in plain language. Some requests that work well:
 - "This plan is done. Evaluate whether S04 can close against its done criteria; list what is not yet proven and what should be deferred."
 - "Before closing the round, compare the round goal with what the stages delivered and tell me whether it was achieved."
 
-Round-level changes (initialization, planning, opening, upgrading, dropping, retargeting) always need an explicit command from you and a confirmed preview, so the agent can't make them on its own.
+Round-level changes (initialization, planning, opening, dropping, retargeting) always need an explicit command from you and a confirmed preview, so the agent can't make them on its own. The format-2 upgrade is never written without your answer either: it happens only after you say Yes in its dialog or run `/roadmap upgrade`.
 
 ## Repository format 2
 
@@ -202,7 +202,7 @@ Planned rounds, target dates and round goal outcomes need repository format 2. R
 - In a format-1 repository, roadmap asks at every session start or resume whether to upgrade. Yes upgrades immediately. No closes the question and changes nothing. The agent may also ask when its work needs format 2.
 - You can upgrade at any time with `/roadmap upgrade`. Without a dialog (no UI or headless), you get one notice naming that command.
 - After the upgrade, **roadmap 0.2.3 and earlier can no longer read the repository**. Closed history is not rewritten.
-- At round close, format 1 lets you skip the goal outcome; format 2 requires it.
+- At round close in a format-1 repository, the close first offers the upgrade. Skip it and the round closes without a goal outcome; upgrade and you record one. Format 2 always requires it.
 
 If you share the repository with people on an older plugin version, upgrade them first.
 
