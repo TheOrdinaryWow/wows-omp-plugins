@@ -1830,7 +1830,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       .enum(["todo", "duplicate", "wontfix", "report"])
       .optional()
       .describe(
-        "Required for triage: todo = you created a Roadmap TODO with roadmap_todo add (roadmap plugin present); duplicate = already tracked elsewhere; wontfix = deliberately not pursued; report = only listed in the final report (roadmap plugin absent)",
+        "Required for triage: todo = you created a Roadmap TODO with roadmap_todo add (roadmap usable in this repository); duplicate = already tracked elsewhere; wontfix = deliberately not pursued; report = only listed in the final report (no roadmap usable in this repository)",
       ),
   });
   type LedgerParams = {
@@ -1951,7 +1951,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           content: [
             {
               type: "text" as const,
-              text: `Release refused: deferred findings still lack a triage (${untriaged.map((finding) => `${finding.id} ${finding.title}`).join("; ")}). Record each one's disposition with atlas_ledger triage (create a Roadmap TODO with roadmap_todo add first when the roadmap plugin is present), then list every finding with its disposition in the final report.\n\n${ledgerSummary(ledger)}`,
+              text: `Release refused: deferred findings still lack a triage (${untriaged.map((finding) => `${finding.id} ${finding.title}`).join("; ")}). Record each one's disposition with atlas_ledger triage (create a Roadmap TODO with roadmap_todo add first when the roadmap is usable in this repository), then list every finding with its disposition in the final report.\n\n${ledgerSummary(ledger)}`,
             },
           ],
           isError: true,
@@ -2037,8 +2037,9 @@ export default function prometheus(pi: ExtensionAPI): void {
             };
           }
           if (params.action === "triage") {
-            const roadmapPresent = roadmap.binding(ctx.sessionManager.getSessionId()) !== undefined;
-            const finding = triageFinding(ledger, id ?? "", params.disposition, evidence, roadmapPresent);
+            // Asked afresh: a roadmap initialized during execution becomes usable. No answer means no roadmap at all.
+            const binding = roadmap.requestBinding(ctx.sessionManager.getSessionId());
+            const finding = triageFinding(ledger, id ?? "", params.disposition, evidence, binding ? binding.usable : false);
             const remaining = untriagedFindings(ledger).map((entry) => entry.id);
             return {
               content: [

@@ -408,7 +408,7 @@ describe("Prometheus execution ledger", () => {
     expect(ledger.deferred.map((finding) => finding.id)).toEqual(["O1"]);
   });
 
-  test("deferred findings keep stable ids, take one disposition each under the roadmap-presence rules, and persist as version six", () => {
+  test("deferred findings keep stable ids, take one disposition each by whether the roadmap is usable in the repository, and persist as version six", () => {
     const ledger = createLedger("local://example-plan.md", plan);
     const first = addDeferredFinding(ledger, { title: "Importer leaks handles", reason: "outside this change", origin: "T1" });
     const second = addDeferredFinding(ledger, { title: "Flaky clock test", reason: "pre-existing" });
@@ -417,9 +417,9 @@ describe("Prometheus execution ledger", () => {
     expect(renderLedgerSummary(ledger)).toContain("untriaged: O1, O2");
 
     expect(() => triageFinding(ledger, "O9", "wontfix", "no", true)).toThrow("recorded findings: O1, O2");
-    expect(() => triageFinding(ledger, "O1", "todo", "T012", false)).toThrow("roadmap plugin");
+    expect(() => triageFinding(ledger, "O1", "todo", "T012", false)).toThrow("roadmap usable in this repository");
     expect(() => triageFinding(ledger, "O1", "todo", "TODO-12", true)).toThrow("roadmap_todo add");
-    expect(() => triageFinding(ledger, "O1", "report", "", true)).toThrow("without the roadmap plugin");
+    expect(() => triageFinding(ledger, "O1", "report", "", true)).toThrow("without a usable roadmap");
     expect(() => triageFinding(ledger, "O1", "duplicate", " ", true)).toThrow("duplicates");
     expect(() => triageFinding(ledger, "O1", "wontfix", "", true)).toThrow("reason");
     expect(() => triageFinding(ledger, "O1", "later", "x", true)).toThrow("todo, duplicate, wontfix, or report");
@@ -429,6 +429,10 @@ describe("Prometheus execution ledger", () => {
     expect(ledger.deferred[0]?.triage).toMatchObject({ disposition: "todo", reference: "T012" });
     // A re-triage replaces the earlier disposition.
     triageFinding(ledger, "O1", "duplicate", "T007", true);
+    // An older roadmap answers the handshake without saying whether it is usable, which leaves both open.
+    triageFinding(ledger, "O2", "todo", "T013", undefined);
+    triageFinding(ledger, "O2", "report", undefined, undefined);
+    expect(() => triageFinding(ledger, "O2", "todo", "T-13", undefined)).toThrow("roadmap_todo add");
     triageFinding(ledger, "O2", "report", undefined, false);
     expect(ledger.deferred.map((finding) => finding.triage?.disposition)).toEqual(["duplicate", "report"]);
     expect(untriagedFindings(ledger)).toEqual([]);

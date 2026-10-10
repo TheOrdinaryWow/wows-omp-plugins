@@ -186,6 +186,9 @@ async function scenario(name: string, root: string): Promise<void> {
   // Only the criteria scenario models a roadmap that reports criteria and a planning-basis revision.
   const criteria = name === "criteria" ? ["DC1", "DC2", "DC3"] : undefined;
   let revision = REVISION_A;
+  // Whether roadmap_todo can work in the repository: the criteria scenario models a usable roadmap, unbound an installed
+  // roadmap in a repository without one, and the rest an older roadmap release that does not say.
+  const usable = name === "criteria" ? true : name === "unbound" ? false : undefined;
   const responder = () => {
     const unsubscribeBinding = bus.on("roadmap:binding-request", (raw) => {
       const request = raw as { sessionId: string; requestId: string };
@@ -196,6 +199,7 @@ async function scenario(name: string, root: string): Promise<void> {
         repoRoot: root,
         toolSourcePath: ROADMAP_ENTRY,
         ...(stageBound ? { stage: { id: "S01", title: "Checkout", round: "R1", ...(criteria ? { criteria, revision } : {}) } } : {}),
+        ...(usable === undefined ? {} : { usable }),
       });
     });
     const unsubscribeStage = bus.on("roadmap:stage-request", (raw) => {
@@ -510,7 +514,7 @@ async function scenario(name: string, root: string): Promise<void> {
   await finish("F4");
   assert.equal(completionEvents.length, expectsCompletion ? 1 : 0);
   if (criteria) {
-    // Completion never waits for triage, but release does, and the disposition must fit the roadmap's presence.
+    // Completion never waits for triage, but release does, and the disposition must fit whether the roadmap is usable.
     const refused = await tool("atlas_release", { reason: "All rows verified" });
     assert.equal(refused.isError, true);
     assert.deepEqual(refused.details?.untriaged, ["O1"]);
@@ -525,6 +529,19 @@ async function scenario(name: string, root: string): Promise<void> {
       ["F1", "F2", "F3", "F4"].map((gateId) => ({ gateId, verdict: "PASS", summary: `Verified ${gateId} from native output` })),
     );
     assert.deepEqual(plan?.deferred, [{ id: "O1", title: "Legacy importer leaks handles", disposition: "todo", reference: "T001" }]);
+    const released = await tool("atlas_release", { reason: "All rows verified and findings triaged" });
+    assert.notEqual(released.isError, true, JSON.stringify(released));
+    assert(!reference.startsWith("atlas://"));
+  }
+  if (name === "unbound" || name === "late") {
+    // An installed roadmap that cannot record TODOs here leaves report open; an older roadmap that does not say leaves both.
+    await call({ action: "discover", scope: "out", title: "Flaky clock test", evidence: "Outside this change" });
+    const todo = await tool("atlas_ledger", { action: "triage", id: "O1", disposition: "todo", evidence: "T001" });
+    if (name === "unbound") {
+      assert.equal(todo.isError, true);
+      assert.match(todo.content?.[0]?.text ?? "", /roadmap usable in this repository/);
+    } else assert.notEqual(todo.isError, true, JSON.stringify(todo));
+    await call({ action: "triage", id: "O1", disposition: "report" });
     const released = await tool("atlas_release", { reason: "All rows verified and findings triaged" });
     assert.notEqual(released.isError, true, JSON.stringify(released));
     assert(!reference.startsWith("atlas://"));
@@ -610,12 +627,20 @@ if (process.env[CHILD]) {
     expect(contract.binding("a")).toBeUndefined();
     expect(bus.listeners.get("adr:binding")?.size).toBe(0);
   });
-  test("binding stage criteria and revision are optional but validated; a malformed answer is dropped", () => {
+  test("binding stage criteria, revision and usable are optional but validated; a malformed answer is dropped", () => {
     const bus = new ContractEvents();
     const contract = new RoadmapContract(bus);
     let stage: Record<string, unknown> = { id: "S01", title: "Checkout", round: "R1" };
+    let usable: unknown;
     bus.on("roadmap:binding-request", (raw) =>
-      bus.emit("roadmap:binding", { ...(raw as object), v: 1, repoRoot: "/repo", toolSourcePath: ROADMAP_ENTRY, stage }),
+      bus.emit("roadmap:binding", {
+        ...(raw as object),
+        v: 1,
+        repoRoot: "/repo",
+        toolSourcePath: ROADMAP_ENTRY,
+        stage,
+        ...(usable === undefined ? {} : { usable }),
+      }),
     );
     expect(contract.requestBinding("a")?.stage).toEqual({ id: "S01", title: "Checkout", round: "R1" });
     stage = { ...stage, criteria: ["DC1", "DC3"], revision: REVISION_A, extra: true };
@@ -631,6 +656,14 @@ if (process.env[CHILD]) {
       stage = { id: "S01", title: "Checkout", round: "R1", ...malformed };
       expect(contract.requestBinding("a")).toBeUndefined();
     }
+    stage = { id: "S01", title: "Checkout", round: "R1" };
+    expect(contract.requestBinding("a")?.usable).toBeUndefined();
+    for (const value of [true, false]) {
+      usable = value;
+      expect(contract.requestBinding("a")?.usable).toBe(value);
+    }
+    usable = "yes";
+    expect(contract.requestBinding("a")).toBeUndefined();
   });
   test("stage requests accept only the correlated, well-formed answer for the requested stage", () => {
     const bus = new ContractEvents();

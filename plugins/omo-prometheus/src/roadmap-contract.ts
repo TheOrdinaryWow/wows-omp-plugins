@@ -25,6 +25,11 @@ export interface RoadmapBinding {
   toolSourcePath: string;
   /** `criteria` (current DC ids in document order) and `revision` are absent from older roadmap releases. */
   stage?: { id: string; title: string; round: string; criteria?: string[]; revision?: string };
+  /**
+   * Whether roadmap tools, `roadmap_todo` included, can work in this repository now: a Git work tree with an initialized
+   * roadmap and the adr plugin connected. Absent from older roadmap releases, which leave it unknown.
+   */
+  usable?: boolean;
 }
 
 /** `roadmap:stage` answer; `stage` is absent when the repository has no roadmap, the stage is unknown, or it is unreadable. */
@@ -174,7 +179,8 @@ export class RoadmapContract {
         typeof payload.repoRoot !== "string" ||
         !isAbsolute(payload.repoRoot) ||
         typeof payload.toolSourcePath !== "string" ||
-        !isAbsolute(payload.toolSourcePath)
+        !isAbsolute(payload.toolSourcePath) ||
+        (payload.usable !== undefined && typeof payload.usable !== "boolean")
       )
         return;
       if (

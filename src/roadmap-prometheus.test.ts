@@ -115,6 +115,8 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     assert.equal(unbound.stage, undefined);
     assert.equal(unbound.repoRoot, root);
     assert.equal(unbound.toolSourcePath, ROADMAP_ENTRY);
+    // An initialized roadmap in a Git work tree with the adr plugin loaded can record Roadmap TODOs.
+    assert.equal(unbound.usable, true);
     assert.equal(consumer.requestBinding("another-session"), undefined);
     const roadmapTool = session.getToolByName("roadmap_stage");
     assert(roadmapTool && session.getToolByName("atlas_ledger"));
@@ -136,6 +138,7 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     const degraded = consumer.requestBinding(sessionId);
     assert.equal(degraded?.toolSourcePath, ROADMAP_ENTRY);
     assert.equal(degraded.stage, undefined);
+    assert.equal(degraded.usable, false);
     await writeFile(index, indexText);
     const store = new AtlasStore(sessionManager.getSessionDir());
     const plan = await store.create({
@@ -230,6 +233,22 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     assert(deliveryText.includes(`Delivery (${mode}): ${storedDelivery.summary}`));
     assert(deliveryText.includes(`Plan ${deliveryCompletion.planId} completed for S01`));
     for (const gate of completion.gates) assert(deliveryText.includes(`${gate.gateId}: ${gate.verdict} — ${gate.summary}`));
+    // A plan approved before the stage was bound completes for the live-bound stage. atlas:plans lists plans by their
+    // approval's stage, so the reminder counts the completion as a complete plan with undeclared coverage.
+    const late = await store.create({
+      name: "Late binding",
+      content: planContent,
+      cwd: root,
+      sourcePlanPath: "local://late-plan.md",
+      sourceSessionId: sessionId,
+      proposedByToolCallId: "sdk-late-proposal",
+    });
+    eventBus.emit("atlas:completed", { ...completion, planId: late.id });
+    assert.equal(pending().length, 3);
+    const lateInjection = await runner.emitBeforeAgentStart("Close the stage", undefined, ["Host policy"]);
+    const lateText = lateInjection?.systemPrompt?.join("\n") ?? "";
+    assert.match(lateText, new RegExp(`Coverage undeclared: [^\\n]*${late.id}`));
+    assert.match(lateText, /DC1 has no complete plan \(complete plans with undeclared coverage may still supply evidence\)/);
     const reminder = injection?.systemPrompt?.find((block) => block.includes("[Roadmap status]"));
     assert(reminder && reminder.split("\n").length <= 40);
     assert(reminder.length < 6000);

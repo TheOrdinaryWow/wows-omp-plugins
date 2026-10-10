@@ -50,7 +50,7 @@ export interface LedgerItem {
   updatedAt: number;
 }
 
-/** Where a deferred finding went. `todo` and `report` depend on whether the roadmap plugin answered this session's handshake. */
+/** Where a deferred finding went. `todo` and `report` depend on whether the roadmap is usable in the repository. */
 export type TriageDisposition = "todo" | "duplicate" | "wontfix" | "report";
 
 export interface FindingTriage {
@@ -820,15 +820,17 @@ export function untriagedFindings(ledger: ExecutionLedger): DeferredFinding[] {
 }
 
 /**
- * Record (or replace) where a deferred finding went. `todo` names the Roadmap TODO created for it and needs the
- * roadmap handshake; `report` is only for sessions without the roadmap plugin.
+ * Record (or replace) where a deferred finding went. `todo` names the Roadmap TODO created for it and needs a roadmap
+ * usable in this repository; `report` is only for repositories without one. `roadmapUsable` is what this session's
+ * roadmap handshake reports: false also when no roadmap answered, undefined when an older roadmap answered without
+ * saying, which leaves both open.
  */
 export function triageFinding(
   ledger: ExecutionLedger,
   id: string,
   disposition: string | undefined,
   reference: string | undefined,
-  roadmapPresent: boolean,
+  roadmapUsable: boolean | undefined,
 ): DeferredFinding {
   const finding = ledger.deferred.find((entry) => entry.id === id);
   if (!finding) {
@@ -840,18 +842,18 @@ export function triageFinding(
   }
   const text = reference?.trim() ?? "";
   if (disposition === "todo") {
-    if (!roadmapPresent) {
+    if (roadmapUsable === false) {
       throw new Error(
-        "todo needs the roadmap plugin, which did not answer the binding handshake in this session; triage as report, duplicate or wontfix",
+        "todo needs a roadmap usable in this repository (the roadmap and adr plugins, a Git work tree and an initialized roadmap), and this session's roadmap handshake reports none; triage as report, duplicate or wontfix",
       );
     }
     if (!TODO_ID.test(text)) {
       throw new Error("todo requires, in evidence, the id of the Roadmap TODO you created with roadmap_todo add (for example T012)");
     }
   } else if (disposition === "report") {
-    if (roadmapPresent) {
+    if (roadmapUsable === true) {
       throw new Error(
-        "report is only for sessions without the roadmap plugin; create a Roadmap TODO with roadmap_todo add and triage as todo, or record duplicate or wontfix",
+        "report is only for repositories without a usable roadmap, and the roadmap is usable in this repository; create a Roadmap TODO with roadmap_todo add and triage as todo, or record duplicate or wontfix",
       );
     }
   } else if (disposition === "duplicate") {

@@ -111,7 +111,7 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 | `done` | 记录子代理的真实最终结果。LIGHT 行、关口和 P1 随即完成。HEAVY 行只记录实现，仍保持进行中；其验证者的 `PASS` 完成该行，`FAIL` 带着摘要重新打开该行，`INCONCLUSIVE` 不改变任何状态。 |
 | `verify` | 针对实现已记录的 HEAVY 行：绑定一个不同的全新验证者，返回其 `{"verify": …}` 绑定和严格的 `outputSchema`（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`）。再次调用会替换尚未完成的验证者。 |
 | `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），一旦有关口开始或存在修正行即被拒绝；`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
-| `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当本会话的路线图握手有应答时可用。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当没有路线图插件时可用，引用可省略。 |
+| `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当路线图在本仓库中可用时允许。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当本仓库中没有可用的路线图时允许，引用可省略。是否可用取自一次新的路线图绑定回复中的 `usable` 标志；没有回复表示没有路线图，旧版路线图的回复不带这个标志时，`todo` 和 `report` 都接受。 |
 | `fix` | 为否决的关口追加一个 X 行（可选 tier），并只重新打开该关口。 |
 | `block`、`reopen` | 只影响指定的行；依赖它的已完成行保留各自的证明。 |
 
@@ -186,13 +186,13 @@ F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）
 
 安装了 `roadmap` 时，Prometheus 使用独立于 `herdrDag` 的 `pi.events` 契约。所有载荷都带 `v: 1`。请求携带 `sessionId` 和新生成的 `requestId`；只有在请求内同步到达、且会话和请求都匹配的回复才算数，格式不对的回复会被丢弃。没有回复说明路线图插件不存在或版本较旧。
 
-1. 绑定。检查提案时和记录提案时，Prometheus 都会发送 `roadmap:binding-request {v, sessionId, requestId}`，接受带有 `repoRoot`、`toolSourcePath` 以及可选已绑定活动阶段 `{id, title, round, criteria?, revision?}` 的 `roadmap:binding` 回复。`criteria` 是该阶段当前完成标准的编号；`revision` 是路线图计算的规划依据哈希，Prometheus 不解析它。不发送这两个字段的旧版本回复照常接受。
+1. 绑定。检查提案时和记录提案时，Prometheus 都会发送 `roadmap:binding-request {v, sessionId, requestId}`，接受带有 `repoRoot`、`toolSourcePath`、可选已绑定活动阶段 `{id, title, round, criteria?, revision?}` 以及可选布尔值 `usable` 的 `roadmap:binding` 回复。`criteria` 是该阶段当前完成标准的编号；`revision` 是路线图计算的规划依据哈希，Prometheus 不解析它。`usable` 表示路线图工具（包括 `roadmap_todo`）此刻能否在本仓库中工作：Git 工作树中有已初始化的路线图，并已连上 adr 插件。延后发现分诊时会重新询问并以它为准。`criteria`、`revision` 和 `usable` 都不发送的旧版本回复照常接受。
 2. 覆盖声明。绑定阶段带有 `criteria` 时，计划必须有且仅有一行计划级声明，例如 `Roadmap criteria: DC1, DC3`（位于第 0 列，在 `## Tasks`、`## Final gates` 和代码块之外），列出的编号不重复且都是当前完成标准。缺少这一行、写了多行、没有列出标准、格式错误、位置不对或列出其他编号时，`write xd://propose` 调用会在批准对话框打开之前被拒绝，拒绝信息会列出当前编号。没有绑定阶段，或绑定中没有 `criteria` 时，这一行可写可不写，既不校验也不保存。
 3. 存储。提案标记（版本 4）和批准文件（版本 3）记录 `roadmapStage: {repoRoot, id, criteria?, revision?}`：只有针对带标准的绑定作出声明时才记录 `criteria`，绑定带有 `revision` 时就记录它。版本 3 的提案标记以及版本 1、2 的批准文件仍可加载和恢复。
 4. 工具。只有当 `roadmap_*` 工具（包括 `roadmap_upgrade`）的扩展源路径与 `toolSourcePath` 一致时，Atlas 才会放行；拒绝信息会说明是缺少握手，还是工具来自其他来源。在此范围内，计划需要的所有路线图操作都允许。
 5. 计划查询。对于自己的主会话，Prometheus 用 `atlas:plans {v, sessionId, requestId, plans}` 回复 `atlas:plans-request {v, sessionId, requestId, repoRoot, stage?}`，同步读取共享计划存储，不加锁也不写入。每个计划包含 `planId`、`name`、`repoRoot`、`stage`，已记录时还有声明的 `criteria` 和批准时的 `revision`，以及 `status`（`unfinished` 或 `complete`）、`done`、`total`、`gates`（经过验证的关口结论和摘要，完成前为空）、P1 完成后的 `delivery: {mode, summary}`、`deferred`（`id`、`title`，分诊后还有 `disposition` 和 `reference`）和计划包目录 `directory`。只列出批准中记录了该 `repoRoot`（给定 `stage` 时还要求是该阶段）的计划包；无法读取的计划包会被跳过并记录警告，没有会话目录的会话回复空列表。只在完成时才绑定阶段的计划不会列出。
 6. 漂移。用 `/atlas <计划>` 进入计划（或切换到执行过它的会话来恢复）时，以及计划完成时，Prometheus 发送 `roadmap:stage-request {v, sessionId, requestId, repoRoot, stage}`，接受可选 `stage` 中带有 `id`、`title`、`round`、`status`、当前 `criteria` 和 `revision` 的 `roadmap:stage` 回复。该 revision 与批准时不同时，用户会看到一条提示，写明阶段及其当前完成标准；完成时的 `atlas_ledger` 结果也会重复这条提示，供最终报告使用。漂移从不暂停执行；没有记录 revision 的批准不会产生提示。
-7. 完成。在首次使绑定阶段的计划完成的那次执行记录写入之后，Prometheus 发送 `atlas:completed {v:1, sessionId, planId, roadmapStage: {repoRoot, id}, gates, delivery?, at}`，附带经过验证的关口结论和摘要。只有所有行都完成，计划才算完成：`Delivery: pr` 或 `ship` 时，事件在 P1 行之后发送，并带上 `delivery: {mode, summary}`；`direct` 时事件在关口之后发送。批准时没有绑定阶段的计划，使用执行会话在那一刻绑定的阶段。路线图会记录一条待关闭提醒，阶段仍由会话自己评估并关闭。
+7. 完成。在首次使绑定阶段的计划完成的那次执行记录写入之后，Prometheus 发送 `atlas:completed {v:1, sessionId, planId, roadmapStage: {repoRoot, id}, gates, delivery?, at}`，附带经过验证的关口结论和摘要。只有所有行都完成，计划才算完成：`Delivery: pr` 或 `ship` 时，事件在 P1 行之后发送，并带上 `delivery: {mode, summary}`；`direct` 时事件在关口之后发送。批准时没有绑定阶段的计划，使用执行会话在那一刻绑定的阶段；`atlas:plans` 不会列出这种计划，所以路线图的关闭提醒把它的完成计为一个覆盖未声明的已完成计划。路线图会记录一条待关闭提醒，阶段仍由会话自己评估并关闭。
 
 完成事件只在每个生产者实例内去重，所以重启后重新打开并再次完成计划，可能会再次发送。路线图在每个接收会话内按 `planId` 对待关闭条目去重。
 
