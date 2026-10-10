@@ -21,6 +21,13 @@
 - Reopen and block affect only the named row, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.20.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.20.0...omo-prometheus@0.20.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* make command completions distinct and name command arguments ([74a4cc2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/74a4cc2686e61492ba8d3f0210c1b8042b7cf9c7))
+
 ## [0.20.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.19.0...omo-prometheus@0.20.0) (2026-10-10)
 
 

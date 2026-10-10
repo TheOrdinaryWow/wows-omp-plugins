@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.3...audit-goal@0.3.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* make command completions distinct and name command arguments ([74a4cc2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/74a4cc2686e61492ba8d3f0210c1b8042b7cf9c7))
+
 ## [0.3.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.2...audit-goal@0.3.3) (2026-10-10)
 
 
