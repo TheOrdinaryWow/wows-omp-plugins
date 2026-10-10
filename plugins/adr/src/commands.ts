@@ -14,25 +14,27 @@ export interface AdrCommands {
 const USAGE =
   "Usage: /adr [list [status] | show <id> | accept|reject|deprecate <id> | note <id> <text> | new [topic] | supersede <id> [topic] | check [--fix] | init | confirm <token>]";
 
+/** `label` is what the menu shows; actions that take arguments name them so they stay distinguishable from the bare action. */
 interface Completion {
   value: string;
+  label?: string;
   description: string;
 }
 
 const ACTIONS: readonly Completion[] = [
   { value: "list", description: "List ADRs" },
-  { value: "list ", description: "List ADRs with one status" },
-  { value: "show ", description: "Show an ADR's full text and supersession chain" },
-  { value: "accept ", description: "Accept an ADR" },
-  { value: "reject ", description: "Reject an ADR" },
-  { value: "deprecate ", description: "Deprecate an ADR" },
-  { value: "note ", description: "Append a dated note under More Information" },
+  { value: "list ", label: "list <status>", description: "List ADRs with one status" },
+  { value: "show ", label: "show <id>", description: "Show an ADR's full text and supersession chain" },
+  { value: "accept ", label: "accept <id>", description: "Accept an ADR" },
+  { value: "reject ", label: "reject <id>", description: "Reject an ADR" },
+  { value: "deprecate ", label: "deprecate <id>", description: "Deprecate an ADR" },
+  { value: "note ", label: "note <id> <text>", description: "Append a dated note under More Information" },
   { value: "new", description: "Ask the agent to interview you for a new decision" },
-  { value: "supersede ", description: "Ask the agent to interview you for a replacement decision" },
+  { value: "supersede ", label: "supersede <id> [topic]", description: "Ask the agent to interview you for a replacement decision" },
   { value: "check", description: "Check ADR consistency" },
   { value: "check --fix", description: "Check and regenerate the ADR index" },
   { value: "init", description: "Initialize ADR management in this repository" },
-  { value: "confirm ", description: "Apply a held /adr init preview by its token" },
+  { value: "confirm ", label: "confirm <token>", description: "Apply a held /adr init preview by its token" },
 ];
 
 const STATUS_FOR: Readonly<Record<string, "accepted" | "rejected" | "deprecated">> = {
@@ -254,7 +256,7 @@ export function registerCommands(
       }
       const matches = options
         .filter(({ value }) => value.startsWith(prefix))
-        .map(({ value, description }) => ({ value, label: value, description }));
+        .map(({ value, label, description }) => ({ value, label: label ?? value, description }));
       return matches.length ? matches : null;
     },
     handler: adrCommand,

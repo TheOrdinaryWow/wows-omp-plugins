@@ -56,18 +56,20 @@ const ACTIONS: readonly Completion[] = [
   { value: "check --fix", description: "Check documents and regenerate eligible generated blocks" },
   { value: "upgrade", description: "Preview upgrading the repository to the current document format" },
   { value: "plan-round", description: "Interview for a new planned round" },
-  { value: "plan-round ", description: "Revise a planned round's charter" },
+  { value: "plan-round ", label: "plan-round <id>", description: "Revise a planned round's charter" },
   { value: "new-round", description: "Open the next round, activating the lowest planned round if any" },
-  { value: "drop-round ", description: "Drop a planned round with a reason" },
-  { value: "retarget ", description: "Set or clear a round or stage target date" },
+  { value: "drop-round ", label: "drop-round <id> <reason>", description: "Drop a planned round with a reason" },
+  { value: "retarget ", label: "retarget <round-or-stage> <YYYY-MM-DD|none>", description: "Set or clear a round or stage target date" },
   { value: "close-round", description: "Close the active round with its goal outcome and dispose its open TODOs" },
-  { value: "stage ", description: "Show a stage's document and planning handoff" },
-  { value: "overlap ", description: "Answer the overlap question for a stage" },
-  { value: "confirm ", description: "Apply a pending preview by its token" },
+  { value: "stage ", label: "stage <id>", description: "Show a stage's document and planning handoff" },
+  { value: "overlap ", label: "overlap <stage> roadmap|free|unrelated", description: "Answer the overlap question for a stage" },
+  { value: "confirm ", label: "confirm <token>", description: "Apply a pending preview by its token" },
 ];
 
+/** `label` is what the menu shows; actions that take arguments name them so they stay distinguishable from the bare action. */
 interface Completion {
   value: string;
+  label?: string;
   description: string;
 }
 
@@ -404,7 +406,7 @@ export function registerCommands(
       else options = [...ACTIONS];
       const matches = options
         .filter(({ value }) => value.startsWith(prefix))
-        .map(({ value, description }) => ({ value, label: value, description }));
+        .map(({ value, label, description }) => ({ value, label: label ?? value, description }));
       return matches.length ? matches : null;
     },
     handler: roadmapCommand,

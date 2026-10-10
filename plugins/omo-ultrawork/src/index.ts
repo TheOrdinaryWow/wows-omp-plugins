@@ -275,7 +275,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
   });
 
   const toggleCommand = {
-    description: "Toggle persistent ultrawork mode for ordinary user input",
+    description: "[request]: toggle persistent ultrawork mode for ordinary user input; a request is sent under it",
     handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
       const session = mainSession(ctx);
       if (!session) {
@@ -335,7 +335,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
   pi.registerCommand("ulw", toggleCommand);
 
   pi.registerCommand("hyperplan", {
-    description: "Adversarial multi-agent planning: five specialist critics, three rounds, then a planner handoff",
+    description: "<request>: adversarial multi-agent planning with five specialist critics, three rounds, then a planner handoff",
     handler: async (args, ctx) => {
       const request = args.trim();
       if (!request) {
@@ -356,7 +356,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("ulw-research", {
-    description: "Saturation research with a claim graph, verification gates, and a QA-checked deliverable",
+    description: "<request>: saturation research with a claim graph, verification gates, and a QA-checked deliverable",
     handler: async (args, ctx) => {
       const request = args.trim();
       if (!request) {

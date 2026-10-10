@@ -98,25 +98,35 @@ interface AtlasCompletion {
 
 const ATLAS_KEYWORDS: readonly AtlasCompletion[] = [
   { value: "list", label: "list", description: "List this project's Atlas plans" },
-  { value: "show ", label: "show", description: "Show a plan's progress without entering it" },
-  { value: "start ", label: "start", description: "Enter a plan in this session and start executing it" },
-  { value: "resume ", label: "resume", description: "Resume an unfinished plan from its saved progress" },
-  { value: "rename ", label: "rename", description: "Rename a plan by id: rename <id> <new name>" },
-  { value: "delete ", label: "delete", description: "Delete a plan and its evidence by id; --yes skips confirmation" },
+  { value: "show ", label: "show <name-or-id>", description: "Show a plan's progress without entering it" },
+  { value: "start ", label: "start <name-or-id>", description: "Enter a plan in this session and start executing it" },
+  { value: "resume ", label: "resume <name-or-id>", description: "Resume an unfinished plan from its saved progress" },
+  { value: "rename ", label: "rename <id> <new name>", description: "Rename a plan by id" },
+  { value: "delete ", label: "delete <id> [--yes]", description: "Delete a plan and its evidence by id; --yes skips confirmation" },
   { value: "exit", label: "exit", description: "Leave Atlas execution; shared progress is kept" },
 ];
 
 /**
  * `/atlas` argument completions: keywords, then plans by name for name-or-id forms or by id for id-only forms.
- * A bare prefix also offers unfinished plans by name, matching either their name or id.
+ * A bare prefix also offers unfinished plans by name, matching either their name or id. A plan whose name the
+ * command cannot resolve — shared with another plan, or starting with a keyword in bare position — completes to its
+ * id and shows the id in its label, so no two rows look alike and every row runs the plan it shows.
  */
 export function atlasArgumentCompletions(prefix: string, plans: readonly AtlasCompletionPlan[]): AtlasCompletion[] | null {
   const keyword = /^(\S+)\s/.exec(prefix)?.[1];
   const needle = prefix.toLowerCase();
+  const nameCounts = new Map<string, number>();
+  for (const { name } of plans) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
   const byName = (head: string, unfinishedOnly: boolean) =>
     plans
       .filter((plan) => !unfinishedOnly || plan.unfinished)
-      .map(({ id, name }) => ({ value: `${head}${name}`, label: name, description: id }));
+      .map(({ id, name }) => {
+        const firstWord = /^\S+/.exec(name)?.[0] ?? "";
+        const byId = nameCounts.get(name) !== 1 || (!head && ATLAS_KEYWORDS.some((item) => item.value.trim() === firstWord));
+        return byId
+          ? { value: `${head}${id}`, label: `${name} (${id})`, description: id }
+          : { value: `${head}${name}`, label: name, description: id };
+      });
   let options: AtlasCompletion[];
   if (keyword === "show") options = byName("show ", false);
   else if (keyword === "start" || keyword === "resume") options = byName(`${keyword} `, true);
@@ -124,14 +134,19 @@ export function atlasArgumentCompletions(prefix: string, plans: readonly AtlasCo
     const tail = keyword === "rename" ? " " : "";
     options = plans.map(({ id, name }) => ({ value: `${keyword} ${id}${tail}`, label: id, description: name }));
   } else {
-    // Bare plans also match by id, which they carry as their description.
+    // Bare plans also match by name or id, which they carry as their description.
     const matches = [
       ...ATLAS_KEYWORDS.filter((item) => item.value.startsWith(needle)),
-      ...byName("", true).filter((item) => item.value.toLowerCase().startsWith(needle) || item.description.startsWith(needle)),
+      ...byName("", true).filter(
+        (item) =>
+          item.value.toLowerCase().startsWith(needle) || item.label.toLowerCase().startsWith(needle) || item.description.startsWith(needle),
+      ),
     ];
     return matches.length ? matches : null;
   }
-  const matches = options.filter((item) => item.value.toLowerCase().startsWith(needle));
+  // After a keyword, a plan completed to its id is still found by typing its name.
+  const typed = needle.slice((keyword?.length ?? 0) + 1).trimStart();
+  const matches = options.filter((item) => item.value.toLowerCase().startsWith(needle) || item.label.toLowerCase().startsWith(typed));
   return matches.length ? matches : null;
 }
 

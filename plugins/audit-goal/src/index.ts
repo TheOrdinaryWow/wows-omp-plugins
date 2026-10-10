@@ -448,7 +448,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
   };
 
   pi.registerCommand("audit", {
-    description: "Start a goal that audits and repairs until an explicit process conclusion or stop",
+    description: "<target>: start a goal that audits and repairs the target until an explicit process conclusion or stop",
     handler: startAudit,
   });
 

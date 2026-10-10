@@ -1768,7 +1768,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   pi.registerCommand("prometheus", {
-    description: "Toggle Prometheus planning mode (Metis, Momus)",
+    description:
+      "[request]: toggle Prometheus planning mode (Metis, Momus); when entering, a request is sent as the first planning message",
     handler: commandHandler,
   });
 

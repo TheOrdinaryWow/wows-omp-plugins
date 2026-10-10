@@ -2075,6 +2075,12 @@ async function acceptance(name: string, root: string): Promise<void> {
             "overlap ",
             "confirm ",
           ]);
+          const labels =
+            h.runner
+              .getCommand("roadmap")
+              ?.getArgumentCompletions?.("")
+              ?.map((option) => option.label) ?? [];
+          assert.equal(new Set(labels).size, labels.length, `the menu shows every action distinctly: ${labels.join(", ")}`);
           assert.deepEqual(complete("stage S"), ["stage S01"]);
           assert.deepEqual(complete("overlap "), ["overlap S01 "]);
           assert.deepEqual(complete("overlap S01 f"), ["overlap S01 free"]);

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { PrometheusStateV1 } from "../plugins/omo-prometheus/src/prometheus-state.ts";
-import { parseAtlasSubcommand } from "../plugins/omo-prometheus/src/workflow.ts";
+import { atlasArgumentCompletions, parseAtlasSubcommand } from "../plugins/omo-prometheus/src/workflow.ts";
 
 const CHILD = "PROMETHEUS_NON_TUI_SCENARIO";
 const content = `# Non-TUI test
@@ -344,6 +344,33 @@ if (process.env[CHILD]) {
       for (const usage of ["exit now", "list all", "show", "resume", "rename id", "delete a b"]) {
         expect(parseAtlasSubcommand(usage).kind).toBe("usage");
       }
+    });
+
+    test("completions show distinct rows and complete shared or keyword-like names to ids", () => {
+      const plans = [
+        { id: "a--1", name: "Release", unfinished: true },
+        { id: "b--2", name: "Release", unfinished: true },
+        { id: "c--3", name: "list exports", unfinished: true },
+        { id: "d--4", name: "Docs", unfinished: true },
+      ];
+      const bare = atlasArgumentCompletions("", plans) ?? [];
+      expect(new Set(bare.map((item) => item.label)).size).toBe(bare.length);
+      const planRows = bare.filter((item) => plans.some((plan) => plan.id === item.description));
+      expect(planRows.map(({ value, label }) => [value, label])).toEqual([
+        ["a--1", "Release (a--1)"],
+        ["b--2", "Release (b--2)"],
+        ["c--3", "list exports (c--3)"],
+        ["Docs", "Docs"],
+      ]);
+      for (const item of planRows) expect(parseAtlasSubcommand(item.value)).toEqual({ kind: "enter", selector: item.value });
+      expect(atlasArgumentCompletions("show Rel", plans)?.map((item) => item.value)).toEqual(["show a--1", "show b--2"]);
+      expect(atlasArgumentCompletions("start list", plans)?.map((item) => item.value)).toEqual(["start list exports"]);
+      expect(atlasArgumentCompletions("re", plans)?.map((item) => item.label)).toEqual([
+        "resume <name-or-id>",
+        "rename <id> <new name>",
+        "Release (a--1)",
+        "Release (b--2)",
+      ]);
     });
   });
 }

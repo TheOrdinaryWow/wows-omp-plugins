@@ -530,6 +530,14 @@ async function acceptance(name: string, root: string): Promise<void> {
       h.ui.menuChoice = { action: "check-fix" };
       await command(h);
       assert.match(h.messages.at(-1) ?? "", /ADR check passed/);
+      for (const prefix of ["", "l", "list "]) {
+        const labels =
+          h.runner
+            .getCommand("adr")
+            ?.getArgumentCompletions?.(prefix)
+            ?.map((option) => option.label) ?? [];
+        assert.equal(new Set(labels).size, labels.length, `the menu shows every completion distinctly: ${labels.join(", ")}`);
+      }
     } else if (name === "subagent") {
       assert.match(await injection(h), /^ADRs in docs\/adr: 1 proposed\.\nProposed: ADR-0001 Pending choice\./);
       const created = await call(h, "adr_manage", { action: "create", ...decision, status: "accepted" });
