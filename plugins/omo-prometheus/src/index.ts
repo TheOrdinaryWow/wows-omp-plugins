@@ -75,6 +75,7 @@ import {
 import {
   ATLAS_USAGE,
   type AtlasCompletionPlan,
+  assignedRowIds,
   atlasArgumentCompletions,
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
@@ -219,6 +220,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   const deliverySettings = new Map<string, DeliverySetting>();
   const atlasWidgets = new Map<string, boolean>();
   const childEvidence = new ChildEvidence();
+  /** The latest todo refresh call each session still owes after a ledger row changed; cleared by any non-view todo call. */
+  const pendingTodoRefreshes = new Map<string, string>();
   const stores = new Map<string, AtlasStore>();
   const ownerships = new Set<Ownership>();
   const liveModels = new Map<string, AtlasLive>();
@@ -476,7 +479,10 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
-  const ledgerSummary = (ledger: ExecutionLedger): string => {
+  /** `changedId` selects the compact form returned after a row changes; status and refusals keep the full table and proofs. */
+  const ledgerSummary = (ledger: ExecutionLedger, changedId?: string): string => {
+    const summary = renderLedgerSummary(ledger, availableAgents(), changedId);
+    if (changedId !== undefined) return summary;
     const proofs = ledgerRows(ledger).flatMap((row) =>
       row.receipt && row.status === "done"
         ? [
@@ -484,7 +490,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           ]
         : [],
     );
-    return `${renderLedgerSummary(ledger, availableAgents())}${proofs.length ? `\n\nShared verified outputs:\n${proofs.join("\n")}` : ""}`;
+    return `${summary}${proofs.length ? `\n\nShared verified outputs:\n${proofs.join("\n")}` : ""}`;
   };
 
   const localOptions = (ctx: ExtensionContext) => ({
@@ -891,6 +897,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     authorizedActivationCalls.clear();
     // Invalidate in-flight publication synchronously, before any file or UI operation.
     record.phase = "idle";
+    pendingTodoRefreshes.delete(ctx.sessionManager.getSessionId());
     if (expected === "executing") herdrDag.release(ctx.sessionManager.getSessionId(), "exit");
     clearObservation(ctx, ctx.sessionManager.getSessionId());
     record.ownership = undefined;
@@ -2076,7 +2083,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               content: [
                 {
                   type: "text" as const,
-                  text: `${found.id} records in-scope work found during ${item.id}; it can dispatch now and every gate waits for it.\n\n${ledgerSummary(ledger)}`,
+                  text: `${found.id} records in-scope work found during ${item.id}; it can dispatch now and every gate waits for it.\n\n${ledgerSummary(ledger, found.id)}`,
                 },
               ],
               details: { id: found.id, status: found.status, origin: item.id },
@@ -2100,7 +2107,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               content: [
                 {
                   type: "text" as const,
-                  text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.\n\n${ledgerSummary(ledger)}`,
+                  text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.\n\n${ledgerSummary(ledger, fix.id)}`,
                 },
               ],
               details: { id: fix.id, status: fix.status, gate: item.id },
@@ -2207,7 +2214,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             content: [
               {
                 type: "text" as const,
-                text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger)}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
+                text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger, item.id)}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
               },
             ],
             details: { id: item.id, status: item.status, outputSchema: schema },
@@ -2218,13 +2225,15 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (drift) notify(ctx, drift, "warning");
         const gitEvidence = compliance && (await collectComplianceEvidence(compliance));
         if (changedRow) {
+          const refresh = atlasTodoRefreshCall(changedRow);
+          if (pi.getActiveTools().includes("todo")) pendingTodoRefreshes.set(ctx.sessionManager.getSessionId(), refresh);
           return {
             ...result,
             content: [
+              { type: "text" as const, text: refresh },
               ...result.content,
               ...(drift ? [{ type: "text" as const, text: `${drift} Name this in the final report.` }] : []),
               ...(gitEvidence ? [{ type: "text" as const, text: gitEvidence.text }] : []),
-              { type: "text" as const, text: atlasTodoRefreshCall(changedRow) },
             ],
             details: gitEvidence ? { ...result.details, complianceEvidence: gitEvidence } : result.details,
           };
@@ -2573,6 +2582,26 @@ export default function prometheus(pi: ExtensionAPI): void {
     let detail = executionBlockReason(event.toolName, event.input, trusted);
     if (!detail) detail = provenanceBlockReason(event.toolName, trusted);
     if (!detail && nested) detail = provenanceBlockReason(nested.toolName, trusted);
+    // Progress guard: the HUD only redraws on a model-made todo call, and a finished child must be recorded before Atlas moves on.
+    if (!detail && (event.toolName === "task" || event.toolName === "wait" || event.toolName === RELEASE_TOOL)) {
+      const sessionId = ctx.sessionManager.getSessionId();
+      const refresh = pendingTodoRefreshes.get(sessionId);
+      if (refresh && pi.getActiveTools().includes("todo")) {
+        return {
+          block: true,
+          reason: `Atlas progress guard: the todo HUD still shows the rows from before the last ledger change. ${refresh}`,
+        };
+      }
+      const ledger = event.toolName === RELEASE_TOOL ? undefined : await readLedger(ctx, record);
+      const unrecorded = ledger ? childEvidence.unrecordedOutcomes(sessionId, ledger) : [];
+      const replacing = event.toolName === "task" && assignedRowIds(event.input).some((id) => unrecorded.includes(id));
+      if (unrecorded.length && !replacing) {
+        return {
+          block: true,
+          reason: `Atlas progress guard: the child of ${unrecorded.join(", ")} has a final result, but the ledger still shows ${unrecorded.length === 1 ? "that row" : "those rows"} in progress. Record each first: atlas_ledger done with the inspected evidence (a verifier's verdict for a HEAVY row under verification), block with the reason, or reopen; or dispatch a replacement child carrying that row's current atlas_assignment binding.`,
+        };
+      }
+    }
     // Native xdev task dispatch is intercepted again at its inner task boundary.
     if (!detail && event.toolName === "task" && !carriesAtlasAssignment(event.input)) {
       // Unbound read-only research needs no ledger row, yet still requires a valid ledger: a paused plan dispatches nothing.
@@ -2639,6 +2668,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         Array.isArray(details.phases) &&
         details.phases.every(isTodoPhase)
       ) {
+        pendingTodoRefreshes.delete(sessionId);
         const ledger = await readLedger(ctx, record);
         if (!ledger) return undefined;
         // The host todo tool normalizes to one running item; restore parallel Atlas rows before

@@ -136,6 +136,7 @@ F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）
 ## 会话集成
 
 - 待办镜像：Atlas 根据校验过的执行记录，按行的顺序维护会话的待办阶段：`Atlas tasks`、存在时的 `Atlas discovered` 和 `Atlas fixes`、`Atlas final gates`，以及计划需要交付时的 `Atlas delivery`。其他阶段保持不变；请不要手动编辑 Atlas 阶段。
+- 进度守卫：宿主只在模型调用 `todo` 时重绘待办 HUD，所以每个改动了行的 `atlas_ledger` 结果都以需要执行的 `todo` 调用开头，随后给出精简的执行记录（只列出改动行的验收和证据；`status` 显示所有行）。`todo` 可用时，在一次非 view 的 `todo` 调用成功之前，`task`、`wait` 和 `atlas_release` 都会被拒绝；一次调用覆盖之前的所有执行记录改动。另外，某行当前尝试的子代理已有最终结果而该行仍为 `in_progress` 时，`wait` 和不带该行 `atlas_assignment` 绑定的 `task` 调用都会被拒绝，直到 Atlas 用 `done`、`block` 或 `reopen` 记录该行，或者用该行当前的绑定派发替代子代理。两者都只保存在内存中：重启后的会话不带这些状态。
 - 会话标题：Atlas 请 OMP 的标题生成器生成一个以“Atlas”开头的标题，没有结果时命名为 `Atlas: <plan name>`。用 `/rename` 设置的名称永远不会被替换，`PI_NO_TITLE` 会关闭这一功能。
 - 没有 UI 时，裸 `/atlas` 打印计划列表，或打印正在运行的计划及其各行；进入计划失败时，会话保持暂停，直到运行 `/atlas exit`，Atlas 永远不会退化为仅靠提示词的执行。输出以 `wows-omp-omo-prometheus.command-status` 消息送达。在 RPC 中，Atlas 激活时裸 `/atlas` 显示一个摘要，提供 Keep running、View details（只读 `editor` 对话框，显示计划文本）和 Exit；小组件文本行最多每秒发送两次。
 

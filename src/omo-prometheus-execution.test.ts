@@ -251,6 +251,7 @@ async function scenario(name: string, root: string): Promise<void> {
         }),
     },
   } as unknown as ExtensionContext;
+  let activeTools = ["task", "read", "write", "atlas_ledger", "atlas_release"];
   const install = (registerExtension: typeof register = register) => {
     hooks = new Map();
     tools = new Map();
@@ -278,7 +279,7 @@ async function scenario(name: string, root: string): Promise<void> {
       appendEntry: (customType: string, data: unknown) => {
         entries.push({ type: "custom", customType, data });
       },
-      getActiveTools: () => ["task", "read", "write", "atlas_ledger", "atlas_release"],
+      getActiveTools: () => activeTools,
       setActiveTools: async () => {},
       getAllTools: () => [
         {
@@ -288,6 +289,7 @@ async function scenario(name: string, root: string): Promise<void> {
           sourceInfo: { source: "builtin" },
         },
         { name: "write", sourceInfo: { source: "builtin" } },
+        { name: "wait", sourceInfo: { source: "builtin" } },
         ...[...tools.values()].map((tool) => ({
           name: tool.name,
           sourceInfo: { source: "extension", path: fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url)) },
@@ -1055,6 +1057,56 @@ async function scenario(name: string, root: string): Promise<void> {
     await publish(fidelity, "Fidelity");
     ok(await done("F4", "Fidelity"));
     await finish("F1");
+    return;
+  }
+  if (name === "progress-guard") {
+    activeTools = [...activeTools, "todo"];
+    const refreshTodo = (op: string) =>
+      hook("tool_result", {
+        toolName: "todo",
+        toolCallId: `todo-${sequence++}`,
+        isError: false,
+        content: [],
+        details: { op, phases: todoPhases, storage: "session" },
+      });
+    const guarded = async (toolName: string, input: Record<string, unknown> = {}, toolCallId = `guarded-${sequence++}`) => {
+      const result = (await hook("tool_call", { toolName, toolCallId, input })) as { reason?: string } | undefined;
+      return result?.reason;
+    };
+    const started = await call({ action: "start", id: "T1" });
+    ok(await call({ action: "start", id: "T3" }));
+    const startText = started.content.map((part: { text?: string }) => part.text ?? "").join("\n");
+    assert(startText.startsWith("Refresh the todo HUD now"), startText);
+    assert(!startText.includes("| Acceptance |"), "a changed-row result renders the compact ledger");
+    const current = await ledger();
+    const bind = (item: LedgerItem) => ({
+      agent: item.dispatchAgent,
+      task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { [item.id]: item.attempt } })}\nPerform ${item.title}`,
+    });
+    const [first, third] = [await row("T1"), await row("T3")];
+    assert.match((await guarded("task", bind(first))) ?? "", /todo HUD/);
+    assert.match((await guarded("wait")) ?? "", /todo HUD/);
+    await refreshTodo("view");
+    assert.match((await guarded("wait")) ?? "", /todo HUD/);
+    await refreshTodo("start");
+    const dispatched = [];
+    for (const [item, child] of [
+      [first, "FinishedFirst"],
+      [third, "FinishedThird"],
+    ] as const) {
+      const toolCallId = `dispatch-${sequence++}`;
+      const input = bind(item);
+      assert.equal(await guarded("task", input, toolCallId), undefined);
+      dispatched.push({ prepared: { item, current, toolCallId, input, startText }, child });
+    }
+    for (const { prepared, child } of dispatched) await publish(prepared, child);
+    assert.match((await guarded("wait")) ?? "", /T1, T3 has a final result/);
+    assert.match((await guarded("task", { agent: "scout", task: "Read the module layout" })) ?? "", /T1, T3/);
+    ok(await done("T1", "FinishedFirst"));
+    await refreshTodo("done");
+    assert.match((await guarded("wait")) ?? "", /child of T3 has a final result/);
+    assert.equal(await guarded("task", bind(third)), undefined, "a replacement child for the finished row may dispatch");
+    assert.equal(await guarded("wait"), undefined);
     return;
   }
   if (name === "gate-fix") {
@@ -2050,6 +2102,7 @@ if (process.env[CHILD_ENV]) {
       "invalid-ledger",
       "ordering",
       "gate-fix",
+      "progress-guard",
       "untrusted-children",
       "final-native-outcome",
       "reopen-running",

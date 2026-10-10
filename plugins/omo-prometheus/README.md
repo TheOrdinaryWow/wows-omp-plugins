@@ -82,7 +82,7 @@ Atlas tracks the plan in a ledger. A task is done only with proof from its child
 
 Atlas is nudged to continue unfinished work. If the ledger or plan files are missing, damaged or no longer match the approved plan, Atlas pauses until you restore them, or exit with `/atlas exit` and get a changed plan approved.
 
-Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. It follows the host's `task.isolation` settings, except that with `merge: patch` it switches merges to `branch` while it executes so each child's commits survive, and restores your setting on exit. Children commit their own work; Atlas commits only roadmap and ADR documents and work a finished child left uncommitted, through its guarded `atlas_git` tool.
+Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. After every ledger change it must refresh the todo list before it dispatches or waits, and it must record each finished child before it moves on; the plugin refuses the next dispatch until it does. It follows the host's `task.isolation` settings, except that with `merge: patch` it switches merges to `branch` while it executes so each child's commits survive, and restores your setting on exit. Children commit their own work; Atlas commits only roadmap and ADR documents and work a finished child left uncommitted, through its guarded `atlas_git` tool.
 
 In a workspace that is not a Git repository, nobody uses or creates Git: plans say `Commit: none`, delivery is `direct`, children are told not to commit or run `git init`, isolation is not required, and F1 checks the plan without Git history. Run `git init` yourself before planning if you want commits.
 

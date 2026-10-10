@@ -424,12 +424,17 @@ export function isComplete(ledger: ExecutionLedger): boolean {
   );
 }
 
-export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: readonly string[]): string {
+/**
+ * `changedId` renders the compact form returned after a row changes: acceptance and evidence only for that row, so the
+ * result stays short on large plans. `status` renders the full table.
+ */
+export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: readonly string[], changedId?: string): string {
   const cell = (text: string) => text.replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|");
+  const compact = changedId !== undefined;
   const lines = [
     `Plan ledger: ${ledger.planFilePath} (sha256 ${ledger.planSha256})`,
-    "| ID | Status | Tier | Agent | Depends on | Acceptance | Evidence |",
-    "| --- | --- | --- | --- | --- | --- | --- |",
+    compact ? "| ID | Status | Tier | Agent | Depends on |" : "| ID | Status | Tier | Agent | Depends on | Acceptance | Evidence |",
+    compact ? "| --- | --- | --- | --- | --- |" : "| --- | --- | --- | --- | --- | --- | --- |",
   ];
   const notes: string[] = [];
   for (const item of ledgerRows(ledger)) {
@@ -439,9 +444,11 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const owner = dispatch === item.agent ? item.agent : `${item.agent} -> ${dispatch ?? missing}`;
     const verification = verificationStatus(item);
     const status = item.status === "in_progress" && item.receipt ? `${item.status} (verify ${verification})` : item.status;
-    lines.push(
-      `| ${item.id}. ${cell(item.title)} | ${status} | ${item.tier?.toUpperCase() ?? "—"} | ${owner} | ${dependsOn} | ${cell(item.acceptance)} | ${cell(item.evidence ?? "—")} |`,
-    );
+    const row = `| ${item.id}. ${cell(item.title)} | ${status} | ${item.tier?.toUpperCase() ?? "—"} | ${owner} | ${dependsOn} |`;
+    lines.push(compact ? row : `${row} ${cell(item.acceptance)} | ${cell(item.evidence ?? "—")} |`);
+    if (item.id === changedId) {
+      notes.push(`${item.id} acceptance: ${cell(item.acceptance)}`, `${item.id} evidence: ${cell(item.evidence ?? "—")}`);
+    }
     if (item.status === "in_progress" && !item.receipt) {
       notes.push(
         `Assignment for ${item.id}: atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, rows: { [item.id]: item.attempt } })}`,
@@ -475,6 +482,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
   }
   const next = nextDispatchable(ledger).map((item) => item.id);
   lines.push(`Next dispatchable: ${next.join(", ") || "none"}`);
+  if (compact) lines.push("atlas_ledger status lists every row's acceptance and evidence.");
   return lines.join("\n");
 }
 

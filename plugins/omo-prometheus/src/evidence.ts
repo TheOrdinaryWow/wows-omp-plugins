@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import type { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
-import { type ChildReceipt, type ExecutionLedger, type LedgerItem, ledgerRows, planDigest } from "./ledger.ts";
+import { type ChildReceipt, type ExecutionLedger, type LedgerItem, ledgerRows, planDigest, verificationStatus } from "./ledger.ts";
 
 export type ChildVerdict = "PASS" | "FAIL" | "INCONCLUSIVE";
 
@@ -490,6 +490,28 @@ export class ChildEvidence {
           child.assignment.sessionId === sessionId && child.assignment.ledgerId === ledgerId && child.reactivation?.settled !== true,
       )
     );
+  }
+
+  /**
+   * In-progress rows whose current attempt has a final native outcome Atlas has not recorded with atlas_ledger. A row
+   * with another child of that attempt still running (a replacement or a woken child) is still being worked, and a
+   * HEAVY row waiting for `verify` has no child to report. Observation only: it never authenticates completion.
+   */
+  unrecordedOutcomes(sessionId: string, ledger: ExecutionLedger): string[] {
+    const assignments = [...this.#dispatches.values()]
+      .flat()
+      .filter((assignment) => assignment.sessionId === sessionId && assignment.ledgerId === ledger.ledgerId);
+    const running = (assignment: Assignment) =>
+      assignment.finalStatus === undefined ||
+      (assignment.observingSettlement === true && assignment.settled !== true) ||
+      [...this.#reactivations].some((child) => child.assignment === assignment && child.reactivation?.settled !== true);
+    return ledgerRows(ledger).flatMap((row) => {
+      const verifying = verificationStatus(row) === "running";
+      if (row.status !== "in_progress" || (row.receipt && !verifying)) return [];
+      const attempt = verifying ? row.verification?.attempt : row.attempt;
+      const own = assignments.filter((assignment) => assignment.verify === verifying && assignment.rows[row.id] === attempt);
+      return own.length && !own.some(running) ? [row.id] : [];
+    });
   }
 
   /**

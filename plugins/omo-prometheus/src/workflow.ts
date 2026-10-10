@@ -242,6 +242,25 @@ export function carriesAtlasAssignment(input: unknown): boolean {
   return texts.some((text) => typeof text === "string" && /^\s*atlas_assignment:/m.test(text));
 }
 
+/** Row ids named by the parseable `atlas_assignment` bindings of a native task call, verifier bindings included. */
+export function assignedRowIds(input: unknown): string[] {
+  const args = record(input);
+  if (!args) return [];
+  const texts = [args.context, args.task, ...(Array.isArray(args.tasks) ? args.tasks.map((item) => record(item)?.task) : [])];
+  return texts.flatMap((text) =>
+    typeof text !== "string"
+      ? []
+      : [...text.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)].flatMap(([, json]) => {
+          try {
+            const binding = record(JSON.parse(json ?? ""));
+            return Object.keys(record(binding?.verify) ?? record(binding?.rows) ?? {});
+          } catch {
+            return [];
+          }
+        }),
+  );
+}
+
 /**
  * Tools that only read the workspace or the web, plus `yield`, which the host adds to every explicit tool list to
  * return the result. `lsp` is absent: it applies code actions and renames.
