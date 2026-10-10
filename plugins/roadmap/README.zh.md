@@ -2,6 +2,8 @@
 
 [English](README.md) | 简体中文
 
+初次使用？请先阅读[使用指南](GUIDE.zh.md)。
+
 > 位于计划和任务之上的规划层：轮次、阶段和决策都保存在仓库里，不随会话结束而消失。
 
 把项目路线图以 Markdown 形式保存在你的仓库中，由代理通过专用工具维护。它记录构建轮次、每轮中带有可验证完成标准的阶段、延后的 TODO 以及关闭每个阶段时的证据，并把阶段关联到 [adr 插件](../adr/README.zh.md)维护的架构决策。实现计划不放在这里。
@@ -12,14 +14,14 @@
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-需要 OMP 18.5.1 或更高版本、git 工作树以及 `adr` 插件（`omp plugin install adr@wows-omp-plugins`）；安装并启用两者后开启新会话。缺少 adr 插件时，`/roadmap`、`/init-project` 和所有 `roadmap_*` 工具都会拒绝并给出上述安装提示，也不会注入路线图上下文，但对 `docs/roadmap/` 的编辑仍会被阻止。插件附带 `roadmap` 技能。
+需要 OMP 18.5.1 或更高版本、本地 Git 仓库以及 `adr` 插件（`omp plugin install adr@wows-omp-plugins`）；安装并启用两者后开启新会话。任何 `git init` 得到的工作树都可以，不需要远程仓库；在 Git 仓库之外，命令和工具都会拒绝。缺少 adr 插件时，`/roadmap`、`/init-project` 和所有 `roadmap_*` 工具都会拒绝并给出上述安装提示，也不会注入路线图上下文，但对 `docs/roadmap/` 的编辑仍会被阻止。插件附带 `roadmap` 技能。
 
 ## 快速上手
 
 1. 在主会话中运行 `/init-project`。此时 `docs/roadmap/` 必须不存在；`docs/adr/` 可以不存在、为空或已由 adr 插件管理。
 2. 回答代理的访谈：项目描述；第一轮的目标、约束、非目标和原则；已经做出的决策；以及各阶段的目标、范围、完成标准和依赖。
 3. 查看预览并选择 `Write N files`。确认之前不会写入任何内容。
-4. 让代理开始一个阶段。它会拿到包含该阶段目标、范围、标准、TODO 和相关 ADR 的交接内容，并据此规划工作。
+4. 让代理开始一个阶段。它会拿到交接内容，其中包括本轮的目标、约束和非目标，该阶段的目标、范围、标准、TODO 和相关 ADR，前置阶段交付了什么，以及已为它制定的计划，并据此规划工作。
 5. 工作完成后，代理为每条标准提供证据并关闭阶段。本轮所有阶段都关闭或放弃后，运行 `/roadmap close-round`。
 
 随时可以用 `/roadmap` 打开状态菜单。
@@ -42,7 +44,7 @@ omp plugin install roadmap@wows-omp-plugins
 
 ### 推进一个阶段
 
-开始一个阶段会把会话绑定到该阶段，并返回交接内容。如果阶段已经处于活动状态，开始操作会改为加入，并警告可能有其他会话正在处理它。
+开始一个阶段会把会话绑定到该阶段，并返回交接内容。如果阶段已经处于活动状态，开始操作会改为加入，并警告可能有其他会话正在处理它。`roadmap_status` 和每回合的状态会显示哪些计划中的阶段现在就能开始，哪些仍在等待未关闭的依赖。
 
 活动阶段的范围或标准有变化时，用 `amend` 记录并写明原因。之后的工作记入 TODO，决策记入 ADR。
 
@@ -54,13 +56,15 @@ omp plugin install roadmap@wows-omp-plugins
 
 插件只检查证据是否齐全，不检查证据是否属实；代理必须真的运行它所报告的检查。已关闭的阶段永远不会重新打开。需要修正时，新增一个 `follows` 该阶段的新阶段。
 
+一个阶段可以由多个计划共同交付，每个计划负责其中一部分完成标准（见[与其他插件配合](#与其他插件配合)）。其中某个计划尚未完成时也允许关闭阶段：关闭会给出警告，并在 Outcome 的 Deviations 中追加一行，列出未完成的计划及其负责的标准。
+
 ### 自由工作与重叠
 
 路线图之外的工作不需要阶段。当代理发现某个请求与一个未关闭的阶段重叠时，会在每个会话中针对该阶段询问一次：使用路线图、记为自由工作，还是视为无关。记为自由工作只会在该阶段的自由工作日志中加一行，不代表满足了任何标准。
 
 ### 关闭一轮
 
-`/roadmap close-round` 要求所有阶段都已关闭或放弃，并且文档检查没有错误。它会询问你如何处理每个剩余的未关闭 TODO：带引用地 `resolved`、`wontfix`（记入已知限制）或 `carried` 到后续轮次。指向计划中轮次阶段的未关闭 TODO 会自动以相同 ID 移过去。关闭会把该轮目录原地冻结。
+`/roadmap close-round` 要求所有阶段都已关闭或放弃，并且文档检查没有错误。它会询问本轮目标的达成情况（`achieved`、`partial`、`not_achieved` 或 `cancelled`，外加一段总结），并记入该轮的 Outcome；格式 2 的仓库必须填写。在格式 1 的仓库中，它会先提供一步完成的格式 2 升级；跳过则关闭时不记录结果。然后它会询问你如何处理每个剩余的未关闭 TODO：带引用地 `resolved`、`wontfix`（记入已知限制）或 `carried` 到后续轮次。指向计划中轮次阶段的未关闭 TODO 会自动以相同 ID 移过去。关闭会把该轮目录原地冻结。
 
 之后运行 `/roadmap new-round`，它会访谈你以确定下一轮的章程，或激活下一个计划中的轮次，还可以导入早先轮次中顺延的 TODO。
 
@@ -70,7 +74,7 @@ omp plugin install roadmap@wows-omp-plugins
 
 轮次和阶段可以设置可选的 `target` 日期（`YYYY-MM-DD`）。状态视图会把它和实际日期并列显示，并标出超过目标日期仍未完成的工作。目标日期从不阻止任何操作。
 
-计划中的轮次和目标日期需要仓库格式 2。`/roadmap upgrade`，或第一次 `/roadmap plan-round` 的预览，会提供升级。升级之后，**roadmap 0.2.3 及更早版本将无法读取该仓库**。升级只修改根标记；现有文件保持格式 1，直到某次写入需要格式 2 的字段，已关闭的历史永远不会被改写。从不使用这些功能的仓库会逐字节保持格式 1。
+计划中的轮次、目标日期和轮次目标结果需要仓库格式 2。在格式 1 的仓库中，主会话会在你每次进入会话（启动或切换）时询问是否现在升级；选“是”会立即写入升级，选“否”则什么都不改变。没有对话框时，改为显示一条提到 `/roadmap upgrade` 的通知。`/roadmap upgrade`、第一次 `/roadmap plan-round` 的预览和关闭轮次的对话框也会提供升级，代理也可以用 `roadmap_upgrade` 询问你。升级之后，**roadmap 0.2.3 及更早版本将无法读取该仓库**。升级只修改根标记；现有文件保持格式 1，直到某次写入需要格式 2 的字段，已关闭的历史永远不会被改写。从不使用这些功能的仓库会逐字节保持格式 1。
 
 `/roadmap drop-round R2 <reason>` 用于放弃一个不再需要的计划轮次及其阶段，文件作为历史保留。请先移动或解决指向其阶段的 TODO。
 
@@ -93,7 +97,7 @@ omp plugin install roadmap@wows-omp-plugins
 | `/roadmap new-round` | 激活下一个计划轮次；没有计划轮次时新建一轮。 |
 | `/roadmap drop-round <id> <reason>` | 放弃一个计划轮次及其阶段。 |
 | `/roadmap retarget <round-or-stage> <YYYY-MM-DD\|none>` | 设置或清除目标日期（格式 2）。 |
-| `/roadmap close-round [<todo>=<disposition>[:<reference>] …]` | 关闭活动轮次；参数用于直接回答处理对话框，例如 `T001=resolved:abc1234 T002=wontfix:"out of scope" T003=carried`。 |
+| `/roadmap close-round [outcome=<assessment>:<summary>] [<todo>=<disposition>[:<reference>] …]` | 关闭活动轮次；参数用于直接回答对话框，例如 `outcome=partial:"checkout shipped, refunds moved" T001=resolved:abc1234 T002=wontfix:"out of scope" T003=carried`。格式 2 必须提供 outcome。 |
 | `/roadmap overlap <stage> roadmap\|free\|unrelated [intent]` | 回答本会话中的重叠问题。 |
 | `/roadmap confirm <token>` | 在没有对话框可用时，确认一个暂存的预览。 |
 
@@ -107,6 +111,7 @@ omp plugin install roadmap@wows-omp-plugins
 | `roadmap_check` | 文档一致性检查；`fix: true` 重新生成自动生成的区块。 |
 | `roadmap_overlap` | 发起重叠询问。 |
 | `roadmap_init`、`roadmap_round_plan`、`roadmap_round_open` | 写入由 `/init-project`、`/roadmap plan-round` 和 `/roadmap new-round` 准备的预览。 |
+| `roadmap_upgrade` | 用与会话开始时相同的对话框询问你是否升级格式 1 的仓库；只有选“是”才写入。仅限主会话。 |
 
 子代理也可以使用这些工具，但永远不会被询问。ADR 由 adr 插件的 `adr_status`、`adr_manage` 和 `adr_check` 管理。
 
@@ -116,14 +121,16 @@ omp plugin install roadmap@wows-omp-plugins
 
 ## 与其他插件配合
 
-配合 `omo-prometheus` 使用时，在绑定了阶段的情况下提出的计划会记住该阶段。执行期间 Atlas 可以使用路线图工具；计划完成后，会话会收到提醒，把最终关口的结果对应到阶段标准后关闭该阶段。PR/ship 计划在交付完成后才算完成，关闭阶段的提醒会显示其交付模式和摘要；不含交付信息的旧完成事件仍然有效。阶段永远不会被自动关闭。用阶段 ID 调用 `roadmap_status` 可以确认阶段是否处于活动状态；Atlas 计划包中的 `approval.json` 会显示计划是否记录了阶段。
+配合 `omo-prometheus` 使用时，在绑定了阶段的情况下提出的计划会记住该阶段。一个阶段可以由多个计划共同交付：每个计划用一行 `Roadmap criteria: DC1, DC3` 声明自己负责的完成标准，Prometheus 会在你批准之前对照阶段当前的标准检查这一行。roadmap 在生成交接内容、状态视图、关闭提醒或关闭阶段时，都会向 omo-prometheus 查询该阶段的计划；计划记录保存在 Atlas 计划包中，不写入 `docs/roadmap/`。交接内容会列出每个计划的进度、每条标准由已完成计划覆盖、仅由未完成计划覆盖还是无人覆盖，以及漂移：计划获批之后，阶段的目标、范围、标准或设计约束又发生了变化。漂移只是提示，从不暂停工作。
+
+执行期间 Atlas 可以使用路线图工具。计划完成后，会话会收到提醒去评估是否关闭阶段，内容包括作为证据候选的最终关口结果、该阶段所有计划的覆盖情况、未完成和未声明覆盖的计划、漂移，以及尚未分类的范围外发现（Atlas 会把它们登记为路线图 TODO）。PR/ship 计划在交付完成后才算完成，提醒会显示其交付模式和摘要。不含这些字段的旧完成事件和旧批准记录仍然有效。阶段永远不会被自动关闭。没有 omo-prometheus 时，roadmap 不显示任何计划信息。
 
 ## 不使用终端界面时
 
 | 宿主 | 行为 |
 | --- | --- |
 | RPC（`--mode rpc`、`rpc-ui`）和 ACP | 相同的对话框，以 `select`、`input` 和 `editor` 请求发送。ACP 客户端可能只在日志中显示通知。 |
-| 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。裸 `/roadmap` 打印状态和用法。预览会返回一个令牌，但不写入任何内容；用 `/roadmap confirm <token>` 确认。用 `/roadmap overlap` 回答重叠问题，用 `/roadmap close-round` 的参数回答轮次关闭问题。 |
+| 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。裸 `/roadmap` 打印状态和用法。预览会返回一个令牌，但不写入任何内容；用 `/roadmap confirm <token>` 确认。用 `/roadmap overlap` 回答重叠问题，用 `/roadmap close-round` 的参数（包括目标结果）回答轮次关闭问题。进入格式 1 的会话时显示一条提到 `/roadmap upgrade` 的通知，`roadmap_upgrade` 会拒绝。 |
 
 客户端程序可以从状态快照读取路线图状态，见[参考文档](REFERENCE.zh.md#状态快照)。
 

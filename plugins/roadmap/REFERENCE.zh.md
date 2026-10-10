@@ -4,7 +4,9 @@
 
 ## 上下文注入
 
-轮次处于活动状态时，插件每个回合都会读取检出的文档，把有长度上限的状态注入主会话和子代理的上下文，其中包括计划轮次的简要摘要（ID、标题、目标日期和阶段数）。阶段列表最多 12 个，其余的提示用 `roadmap_status` 查看。没有活动轮次时不注入任何内容，自由工作照常进行；`roadmap_status` 仍会列出计划轮次。在已初始化的仓库中，ADR 工具和编辑保护始终可用。
+轮次处于活动状态时，插件每个回合都会读取检出的文档，把有长度上限的状态注入主会话和子代理的上下文，其中包括一行就绪情况（活动轮次中现在就能开始的计划阶段，以及其余阶段在等待的未关闭依赖）和计划轮次的简要摘要（ID、标题、目标日期和阶段数）。阶段列表最多 12 个，其余的提示用 `roadmap_status` 查看。没有活动轮次时不注入任何内容，自由工作照常进行；`roadmap_status` 仍会列出计划轮次。在已初始化的仓库中，ADR 工具和编辑保护始终可用。
+
+路线图需要本地 Git 仓库（任何 `git init` 得到的工作树都可以，不需要远程仓库）。在 Git 仓库之外，所有命令和工具都会拒绝。
 
 重叠问题的回答按阶段和会话保存并复用。如果阶段已经绑定到当前会话，会直接以路线图内工作返回其交接内容，不弹对话框，也不记自由工作，即使在 headless 模式下也是如此。子代理永远不会被询问。
 
@@ -14,14 +16,15 @@
 
 | 工具 | 输入或操作 |
 | --- | --- |
-| `roadmap_status` | 不带参数时返回轮次、目标日期、实际日期、逾期标记、阶段，以及按目标或触发条件分组的未关闭 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
-| `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`。`add` 接受可选的 `round` 和 `target`；`edit` 和 `amend` 也接受 `target`。 |
+| `roadmap_status` | 不带参数时返回轮次、目标日期、实际日期、逾期标记、阶段及其依赖、活动轮次中计划阶段的就绪情况、未关闭阶段的 Atlas 计划（omo-prometheus 有回复时），以及按目标或触发条件分组的未关闭 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
+| `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`。`add` 接受可选的 `round` 和 `target`；`edit` 和 `amend` 也接受 `target`。`start` 和 `close` 会向 omo-prometheus 查询该阶段的 Atlas 计划。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
 | `roadmap_check` | 可选 `fix: true`。只检查文档，不检查代码与文档是否一致。 |
 | `roadmap_overlap` | `stage` 和 `intent`。 |
 | `roadmap_init` | `project`、`round`、初始的 `adrs` 和 `stages`；需要 `/init-project` 授权和已确认的预览。初始 ADR 通过 adr 插件创建（见[通过 adr 插件管理的 ADR](#通过-adr-插件管理的-adr)）。 |
 | `roadmap_round_plan` | `round` 章程、用于修订计划轮次的可选 `id`、可选的 `target`；需要 `/roadmap plan-round [id]` 授权和已确认的预览。 |
 | `roadmap_round_open` | `import_todos` ID，以及可选的 `round` 章程或 `activate` 轮次 ID；需要 `/roadmap new-round` 授权和已确认的预览。存在计划轮次时，激活编号最小的那个。 |
+| `roadmap_upgrade` | 无参数，仅限主会话。在格式 1 的仓库中，打开与进入会话时相同的一步式“是/否”对话框：选“是”写入与 `/roadmap upgrade` 相同的变更（只改 `docs/roadmap/README.md`），选“否”报告保留格式 1 且不写入，没有回答也不写入。格式 2 的仓库会报告已经升级。没有对话框或在子代理中时，它会拒绝并提示 `/roadmap upgrade`。 |
 
 授权来自用户明确运行命令、使主会话进入就绪状态。一次成功的写入会用掉授权；取消或无法获得回答都不构成写入授权。
 
@@ -33,7 +36,7 @@
 | `edit` | 替换计划阶段中提供的字段，包括 `target`。阶段激活后请改用 `amend`。 |
 | `amend` | 向活动阶段追加一条带日期的变更，必须写明 `reason`。`amendments` 可以新增、修改或删除标准，以及增删范围内/范围外条目；`target` 记录日期变化。 |
 | `start` | 要求阶段属于活动轮次、依赖已关闭且没有检查错误；激活并绑定阶段，返回规划交接内容。对已处于活动状态的阶段，则加入而不修改文档。 |
-| `close` | 接受 `id`、`delivered` 摘要、可选的 `deviations`，以及下文所述的 `evidence` 和 `todos`。与该阶段关联的 ADR 仍处于提议状态时拒绝。记录 Outcome（在 `### ADRs` 下包含关联 ADR 的状态）和关闭哈希，并冻结阶段。 |
+| `close` | 接受 `id`、`delivered` 摘要、可选的 `deviations`，以及下文所述的 `evidence` 和 `todos`。与该阶段关联的 ADR 仍处于提议状态时拒绝。记录 Outcome（在 `### ADRs` 下包含关联 ADR 的状态）和关闭哈希，并冻结阶段。关联的 Atlas 计划尚未完成时不会阻止关闭：回执会给出警告，并在 Outcome 的 Deviations 文本后追加一行，列出这些计划（名称、计划 ID、声明的标准）。 |
 | `drop` | 放弃计划中或活动的阶段，必须写明 `reason`；需先解决或移走所有指向它的未关闭 TODO。 |
 | `renumber` | 用 `new_id` 为计划阶段重新编号，并改写可变的引用，包括通过 adr 插件改写 ADR 的阶段关联。如果已关闭的历史中有需要修改的引用，则拒绝。 |
 
@@ -43,7 +46,13 @@
 - `todos`：每个指向该阶段的未关闭 TODO，要么带 `reference` 标为 `resolved`，要么 `moved` 到另一个有效目标（移动后仍保持未关闭）。触发条件可以写成目标 `trigger: <text>`。
 - ADR：关闭时通过 adr 插件读取与该阶段关联的 ADR。只要其中有 `proposed` 的，关闭就会拒绝并列出它们；需先由主会话用 `adr_manage` 接受或拒绝，子代理无法做这些决定。ADR 文件无法解析时关闭也会拒绝，因为其中可能藏有提议中的关联。
 
-交接内容包括目标、范围、完成标准、指向该阶段的 TODO、引用的 ADR、自由工作日志和关闭指引。
+交接内容包括本轮章程（完整的目标、约束、非目标），该阶段的目标、范围和完成标准，omo-prometheus 有回复时该阶段的 Atlas 计划，设计约束、风险、修订记录，直接前置阶段（`depends_on` 和 `follows`：ID、标题、状态和阶段文档；对已关闭的前置阶段，附上其 Outcome 中 Delivered 和 Deviations 的文本，各截断到约 800 个字符），指向该阶段的 TODO、引用的 ADR、自由工作日志和关闭指引。
+
+### 一个阶段的多个计划
+
+一个阶段可以由多个 Atlas 计划共同交付。每个计划用一行 `Roadmap criteria:` 声明自己负责的标准，由 Prometheus 在批准前检查。路线图本身不保存计划记录；它在生成交接内容、`roadmap_status`、关闭提醒或关闭阶段时，用 `atlas:plans-request` 向 omo-prometheus 查询。交接内容中的 Plans for this stage 一节会列出每个计划的状态、进度以及是否声明了覆盖范围，然后逐条列出当前标准：由已完成的计划覆盖、仅由未完成的计划覆盖，或无人覆盖。如果计划记录的规划基准修订号与阶段当前的不同，就标记为漂移：计划获批之后，目标、范围、完成标准或设计约束发生了变化。漂移只是提示。没有 omo-prometheus 时省略这一节。
+
+就绪情况在每次读取时推导，从不保存：活动轮次中的计划阶段在所有依赖都已关闭时可以开始，否则被未关闭的依赖 ID 阻塞。其他阶段既不可开始，也不算被阻塞。
 
 ### TODO 操作
 
@@ -81,6 +90,8 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 ## 轮次关闭与顺延
 
 关闭轮次时，指向计划轮次阶段的未关闭 TODO 会被自动顺延到那些轮次的 TODO 文档中。它们保留相同的 ID 和目标；目标文档记录 `carried_from`，冻结的来源条目变为 `carried` 并引用目标轮次。这些条目不会出现在处理对话框中，也不能再通过 `import_todos` 导入。
+
+关闭轮次时会在该轮的 `## Outcome` 中记录目标结果：`### Assessment`（`achieved`、`partial`、`not_achieved` 或 `cancelled`）和 `### Summary`。格式 2 的仓库没有它就拒绝关闭；格式 1 的仓库拒绝记录结果，因为只有格式 2 的轮次文件才能包含这一节。关闭对话框会询问评估和总结；在格式 1 中会先提供一步完成的升级（选“是”则升级并记录结果，跳过则不记录结果直接关闭）。只有记录了结果时，正在关闭的轮次文件才会变为格式 2。更早关闭或放弃的轮次保持原有字节和冻结哈希。
 
 同一个 ID 可以继续顺延到更后面的轮次（`R1 → R2 → R3`）。`check` 会校验每一跳：恰好有一处不是 `carried`；其余每处都是 `carried`，引用下一轮，并与该条目的 `carried_from` 一致。其他重复 ID 均为错误。
 
@@ -122,11 +133,15 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 
 ## 没有 UI 时
 
-暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO。通知和错误会显示为会话消息。
+暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO，在格式 2 中还要求提供 `outcome=<assessment>:<summary>`。进入格式 1 的会话时显示一条提到 `/roadmap upgrade` 的通知；`roadmap_upgrade` 会拒绝。通知和错误会显示为会话消息。
+
+## 格式 2 升级询问
+
+在已初始化的格式 1 仓库中，主会话每次进入会话（`session_start` 和 `session_switch`；分支和树导航时不问，子代理中也从不问）都会询问一次是否升级。对话框会说明 roadmap 0.2.3 及更早版本将无法读取升级后的仓库，且已关闭的历史不会被改写。选“是”立即写入升级；选“否”关闭对话框，在下次进入会话之前不做任何改变。对话框在宿主的会话启动处理程序返回之后才打开，因此对话框打开期间会话照常可用；关闭会话或进入另一个会话时它会被取消。已是格式 2 或路线图无法读取的仓库不会被询问。
 
 ## 状态快照
 
-主会话会用共享的快照外层结构发布 `roadmap.json`（见[仓库参考文档](../../REFERENCE.zh.md)）。`state` 是根据磁盘文件得出的 `roadmap/status` 负载，版本 1；仓库没有初始化路线图时为 `null`。计划轮次和日期字段是后来新增的，版本号没有改变。
+主会话会用共享的快照外层结构发布 `roadmap.json`（见[仓库参考文档](../../REFERENCE.zh.md)）。`state` 是根据磁盘文件得出的 `roadmap/status` 负载，版本 1；仓库没有初始化路线图时为 `null`。计划轮次、日期和就绪字段是后来新增的，版本号没有改变。
 
 该文件会在会话启动、切换、分支和树导航时，每次 `roadmap_*` 工具调用和 `/roadmap` 命令之后，以及每个代理回合开始时重写，因此也能反映子代理和外部编辑带来的变化。
 
@@ -138,7 +153,7 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 | `project` | 来自 `docs/roadmap/README.md` 的项目标题。 |
 | `activeRound` | `{ id, title, target, opened, overdue }`，或 `null`；日期为字符串或 `null`。 |
 | `plannedRounds` | 按 ID 排序的 `{ id, title, target, overdue, stageCount, openTodos }`；`stageCount` 不含已放弃的阶段，`openTodos` 统计存放在该轮次文档中或指向其阶段的未关闭条目，包括存放在活动轮次文档中的条目。 |
-| `stages` | 每个阶段的 `{ id, title, status, round, target, started, closed, overdue }`。 |
+| `stages` | 每个阶段的 `{ id, title, status, round, target, started, closed, overdue, dependsOn, blockedBy, startable }`。`dependsOn` 列出其 `depends_on` ID；`startable` 和 `blockedBy` 是上文推导的就绪情况（不属于活动轮次计划阶段时为 `false` 和 `[]`）。 |
 | `openTodos` | `{ total, byStage, untargeted }`：所有轮次中未关闭的 TODO 总数、按目标阶段的计数，以及使用触发条件而非目标的数量。 |
 | `boundStage` | 本会话绑定且仍处于活动状态的阶段，否则为 `null`。 |
 
@@ -148,9 +163,12 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 
 事件定义见 [omo-prometheus 参考文档](../omo-prometheus/REFERENCE.zh.md#路线图契约)。在路线图这一侧：
 
-- 路线图会同步回复 `roadmap:binding-request`，附带会话、请求、仓库、受信任的工具来源和可选的已绑定活动阶段。即使无法读取已绑定阶段的文档，它也会回复，只是不带阶段。没有回复表示未安装路线图。
+- 路线图会同步回复 `roadmap:binding-request`，附带会话、请求、仓库、受信任的工具来源和可选的已绑定活动阶段。阶段包含 `id`、`title`、`round`，并新增 `criteria`（按文档顺序排列的当前 DC ID，不含已删除的标准）和 `revision`。即使无法读取已绑定阶段的文档，它也会回复，只是不带阶段。没有回复表示未安装路线图。
+- `revision` 是阶段规划基准的小写 SHA-256 十六进制值，基准为对解析后各节计算的 `JSON.stringify([objective, scope_in, scope_out, done_criteria, design_constraints ?? ""])`（`src/documents.ts` 中的 `planningRevision`）。日期、状态、标题、依赖、风险、修订记录、自由工作日志和 Outcome 都不会改变它。使用方应把它视为不透明值。
+- 路线图会同步回复本会话的 `roadmap:stage-request` `{ v: 1, sessionId, requestId, repoRoot, stage }`，前提是 `repoRoot` 等于会话工作目录所在的 git 工作树根目录，回复为 `roadmap:stage` `{ v: 1, sessionId, requestId, repoRoot, stage? }`。`stage` 为 `{ id, title, round, status, criteria, revision }`，任何状态都会返回；仓库没有路线图、阶段不存在或文档无法读取时不带 `stage`。格式错误的请求不会得到回复。
+- 路线图发送 `atlas:plans-request` `{ v: 1, sessionId, requestId, repoRoot, stage? }`，并读取同步返回的 `atlas:plans`。它只接受针对本会话和本请求 ID 的回复；只要有一个计划条目格式错误，就丢弃整个回复（每个字段都会检查类型：ID、无重复的 `DC` 标准、64 位十六进制修订号、`unfinished` 或 `complete`、`done` 不超过 `total`、关口、交付和延后发现的结构，以及绝对路径的 `directory`）。多余字段会被忽略，其他仓库或阶段的计划会被排除。没有回复表示没有计划信息。
 - Atlas 只放行来源为扩展、且源路径与握手一致的 `roadmap_*` 工具；其他扩展或 MCP 服务器提供的同名工具不会被放行。每个路线图工具都把这个路径（已加载的 `src/index.ts` 的真实路径）显式声明为自己的来源，因此通过符号链接加载的安装（插件市场的默认布局）也能匹配。
-- 收到 `atlas:completed` v1 时，路线图为执行会话保存一条待关闭条目，并在阶段仍处于活动状态时于下一回合加入提醒。会话会收到 `Plan <id> completed for <stage>` 以及可作为证据的关口结果。可选的 `delivery: { mode: "pr" | "ship"; summary: string }` 会检查类型，摘要规范为单行并截断至 180 个字符，随待关闭条目持久化，并在关闭提醒中显示为 `Delivery (<mode>): <summary>`。交付字段无效时拒绝该完成事件；允许省略交付信息，包括此前持久化的 v1 条目。关口载荷不变。既没有提案时绑定、也没有执行会话绑定的计划，不会关联到任何阶段。
+- 收到 `atlas:completed` v1（结构不变）时，路线图为执行会话保存一条待关闭条目，并在阶段仍处于活动状态时于下一回合加入提醒。提醒会写明已完成的计划，把它的关口结果列为证据候选，并根据针对该阶段重新查询的 `atlas:plans` 回复，列出所有计划对各条标准的覆盖情况、未完成的计划、未声明覆盖范围的计划、漂移、尚未分类的延后发现，以及是否每条当前标准都有已完成的计划声明覆盖。提醒有长度上限；没有回复时只显示完成事件本身。可选的 `delivery: { mode: "pr" | "ship"; summary: string }` 会检查类型，摘要规范为单行并截断至 180 个字符，随待关闭条目持久化，并显示为 `Delivery (<mode>): <summary>`。交付字段无效时拒绝该完成事件；允许省略交付信息，包括此前持久化的 v1 条目。既没有提案时绑定、也没有执行会话绑定的计划，不会关联到任何阶段。
 - 待关闭条目在接收会话内按 `planId` 去重。
 
 ## 目录格式
@@ -161,11 +179,11 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 >
 > The root README is the initialization marker and rounds index. Each NN-slug round directory contains its charter README, TODO.md and stages/NN-slug.md. Rounds use R1, R2 and so on in creation order and are never renumbered; stages use S01, TODOs T001 and ADRs ADR-0001. Stage and TODO numbers are global across rounds, monotonic and never reused. ADR files use NNNN-slug.md. Slugs contain lowercase ASCII letters, digits and hyphens.
 >
-> This README carries roadmap: { format: 2 }, the repository format; roadmap plugin 0.2.3 and earlier cannot read a format 2 repository. Every managed file has format: 1 or format: 2 front matter and a managed-by comment naming the same format. Format 1 files keep their bytes until a write needs a format 2 field: a target date, or a planned or dropped round. Front matter and fixed headings are structure. Tool-owned bodies allow plain paragraphs, flat text lists and closed top-level fences, with ordinary punctuation, plain URLs, inline emphasis and same-line code spans; structural Markdown, Markdown links and raw HTML syntax are refused. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages, Known limitations and, for a dropped round, Outcome. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
+> This README carries roadmap: { format: 2 }, the repository format; roadmap plugin 0.2.3 and earlier cannot read a format 2 repository. Every managed file has format: 1 or format: 2 front matter and a managed-by comment naming the same format. Format 1 files keep their bytes until a write needs a format 2 field: a target date, a planned or dropped round, or a round outcome. Front matter and fixed headings are structure. Tool-owned bodies allow plain paragraphs, flat text lists and closed top-level fences, with ordinary punctuation, plain URLs, inline emphasis and same-line code spans; structural Markdown, Markdown links and raw HTML syntax are refused. Stage headings are Objective, Scope (In and Out), Done criteria, optional Design constraints and Risks, Amendments, Free-work log and optional Outcome. Round charters contain Goal, Constraints, Non-goals, Principles, Stages, Known limitations and, for a dropped round or a round closed with its goal outcome, Outcome. TODOs are split into Open and Closed in this round. ADR bodies follow the vendored MADR 4.0 template, using Confirmation for verification and leaving implementation steps to the plan.
 >
 > Agents change managed files through roadmap_* tools. Body text can be edited by a user in an editor; malformed structure must be repaired before tools can write. Generated blocks are marked with `<!-- roadmap:generated:<name> -->` and `<!-- /roadmap:generated -->`. The tools own numbering, metadata, headings and generated indexes.
 >
-> Rounds are planned, active, closed or dropped. A planned round is drafted ahead with its charter, planned stages and TODOs; only the lowest-numbered planned round can be activated, and an unneeded planned round is dropped together with its planned stages. Stages are planned, active, closed or dropped; only stages of the active round start. A stage depends only on stages in its own or an earlier round. Closed stages never reopen; corrective work uses a new stage with follows. Dependencies must be closed before a stage starts. Done criteria state what must pass and how to verify it; closing records evidence, TODO dispositions and ADR dispositions. Open TODOs need severity, source and either an unclosed target stage in the active or a planned round, or a trigger. A planned round's TODO.md holds only TODOs for its own stages or with a trigger. When a round closes, its open TODOs that target a planned round's stage continue in that round's TODO.md with the same ID and a Carried from line, and the original is marked carried to that round. Rounds and stages may carry an optional target date; status views compare it with the actual dates and flag unfinished work past its target. Charter principles cite ADRs rather than restating decisions. Accepted ADRs change through status transitions, supersession and dated append-only notes.
+> Rounds are planned, active, closed or dropped. A planned round is drafted ahead with its charter, planned stages and TODOs; only the lowest-numbered planned round can be activated, and an unneeded planned round is dropped together with its planned stages. Stages are planned, active, closed or dropped; only stages of the active round start. A stage depends only on stages in its own or an earlier round. Closed stages never reopen; corrective work uses a new stage with follows. Dependencies must be closed before a stage starts. Done criteria state what must pass and how to verify it; closing records evidence, TODO dispositions and ADR dispositions. Closing a round records how its goal turned out in Outcome: an assessment (achieved, partial, not_achieved or cancelled) and a summary. Open TODOs need severity, source and either an unclosed target stage in the active or a planned round, or a trigger. A planned round's TODO.md holds only TODOs for its own stages or with a trigger. When a round closes, its open TODOs that target a planned round's stage continue in that round's TODO.md with the same ID and a Carried from line, and the original is marked carried to that round. Rounds and stages may carry an optional target date; status views compare it with the actual dates and flag unfinished work past its target. Charter principles cite ADRs rather than restating decisions. Accepted ADRs change through status transitions, supersession and dated append-only notes.
 >
 > Same-ID carry-over may continue through multiple later rounds: every earlier occurrence is carried to the next round with matching Carried from metadata, and only one occurrence is not carried. These continuations cannot be imported again with import_todos. Moving a TODO out of a planned round to another round leaves a moved record naming a fresh ID; the destination keeps the target and records Carried from with the original ID and round.
 >

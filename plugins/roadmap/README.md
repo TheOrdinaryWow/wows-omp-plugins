@@ -2,6 +2,8 @@
 
 English | [简体中文](README.zh.md)
 
+New to the plugin? Start with the [guide](GUIDE.md).
+
 > The planning layer above your plans and tasks: rounds, stages and decisions that stay in your repository across sessions.
 
 Keeps a project roadmap in your repository as Markdown, maintained by the agent through dedicated tools. It records build rounds, the stages in each round with verifiable done criteria, deferred TODOs and the evidence that closed each stage, and links stages to the architecture decisions the [adr plugin](../adr/README.md) keeps. Implementation plans stay out of it.
@@ -12,14 +14,14 @@ Keeps a project roadmap in your repository as Markdown, maintained by the agent 
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-Requires OMP 18.5.1 or newer, a git work tree and the `adr` plugin (`omp plugin install adr@wows-omp-plugins`); enable both and start a new session after installing. Without the adr plugin, `/roadmap`, `/init-project` and every `roadmap_*` tool refuse with that install hint and no roadmap context is injected, while edits to `docs/roadmap/` stay blocked. The plugin ships the `roadmap` skill.
+Requires OMP 18.5.1 or newer, a local Git repository and the `adr` plugin (`omp plugin install adr@wows-omp-plugins`); enable both and start a new session after installing. Any `git init` work tree works and no remote is needed; outside a Git repository the commands and tools refuse. Without the adr plugin, `/roadmap`, `/init-project` and every `roadmap_*` tool refuse with that install hint and no roadmap context is injected, while edits to `docs/roadmap/` stay blocked. The plugin ships the `roadmap` skill.
 
 ## Quick start
 
 1. Run `/init-project` in the main session. `docs/roadmap/` must not exist yet; `docs/adr/` may be absent, empty or already managed by the adr plugin.
 2. Answer the agent's interview: project description; the first round's goal, constraints, non-goals and principles; decisions already made; and the stages with objectives, scope, done criteria and dependencies.
 3. Review the preview and pick `Write N files`. Nothing is written before you confirm.
-4. Ask the agent to start a stage. It gets a handoff with the stage's objective, scope, criteria, TODOs and relevant ADRs, and plans the work from there.
+4. Ask the agent to start a stage. It gets a handoff with the round's goal, constraints and non-goals, the stage's objective, scope, criteria, TODOs and relevant ADRs, what its predecessor stages delivered, and any plans already made for it, and plans the work from there.
 5. When the work is done, the agent closes the stage with evidence for every criterion. Once every stage in the round is closed or dropped, run `/roadmap close-round`.
 
 `/roadmap` opens a status menu at any time.
@@ -42,7 +44,7 @@ While a round is active, the agent sees a short roadmap status in every turn, in
 
 ### Working on a stage
 
-Starting a stage binds the session to it and returns the handoff. Starting a stage that is already active joins it instead, with a warning that another session may be working on it.
+Starting a stage binds the session to it and returns the handoff. Starting a stage that is already active joins it instead, with a warning that another session may be working on it. `roadmap_status` and the per-turn status show which planned stages can start now and which still wait on unclosed dependencies.
 
 Scope or criterion changes on an active stage are recorded with `amend` and a reason. Later work goes into TODOs and decisions into ADRs through `adr_manage`.
 
@@ -54,13 +56,15 @@ A stage closes only from `active`, and only when:
 
 The plugin checks that the evidence is complete, not that it is true; the agent has to run the checks it reports. A closed stage never reopens. For corrective work, add a new stage that `follows` it.
 
+A stage can be delivered by several plans, each owning some of its done criteria (see [Working with other plugins](#working-with-other-plugins)). Closing it while one of those plans is unfinished is allowed: the close warns and adds a line naming the unfinished plans and their criteria to the Outcome's Deviations.
+
 ### Free work and overlap
 
 Work outside the roadmap does not need a stage. When the agent notices that a request overlaps an unclosed stage, it asks once per stage and session whether to use the roadmap, log the request as free work, or treat it as unrelated. Logging adds one line to the stage's Free-work log and claims nothing about its criteria.
 
 ### Closing a round
 
-`/roadmap close-round` needs every stage closed or dropped and no document errors. It asks you how to dispose of each remaining open TODO: `resolved` with a reference, `wontfix` (recorded under Known limitations) or `carried` to a later round. Open TODOs targeting stages of a planned round move there automatically with the same ID. Closing freezes the round's directory in place.
+`/roadmap close-round` needs every stage closed or dropped and no document errors. It asks how the round's goal turned out (`achieved`, `partial`, `not_achieved` or `cancelled`, plus a summary) and records that in the round's Outcome; format-2 repositories require it. In a format-1 repository it first offers the one-step format-2 upgrade; skip it to close without an outcome. It then asks you how to dispose of each remaining open TODO: `resolved` with a reference, `wontfix` (recorded under Known limitations) or `carried` to a later round. Open TODOs targeting stages of a planned round move there automatically with the same ID. Closing freezes the round's directory in place.
 
 `/roadmap new-round` then interviews you for the next round's charter, or activates the next planned round. It can import carried TODOs from earlier rounds.
 
@@ -70,7 +74,7 @@ Work outside the roadmap does not need a stage. When the agent notices that a re
 
 Rounds and stages can carry an optional `target` date (`YYYY-MM-DD`). Status views show it next to the actual dates and flag unfinished work past its target. Targets never block anything.
 
-Planned rounds and target dates need repository format 2. `/roadmap upgrade`, or the first `/roadmap plan-round` preview, offers the upgrade. After it, **roadmap 0.2.3 and earlier can no longer read the repository**. The upgrade changes only the root marker; existing files keep format 1 until a write needs a format-2 field, and closed history is never rewritten. Repositories that never use these features stay at format 1 byte for byte.
+Planned rounds, target dates and round goal outcomes need repository format 2. In a format-1 repository the main session asks you each time you enter a session (start or switch) whether to upgrade now; Yes writes the upgrade at once, No changes nothing. Without dialogs you get one notice naming `/roadmap upgrade` instead. `/roadmap upgrade`, the first `/roadmap plan-round` preview and the round-close dialog offer it too, and the agent can ask with `roadmap_upgrade`. After it, **roadmap 0.2.3 and earlier can no longer read the repository**. The upgrade changes only the root marker; existing files keep format 1 until a write needs a format-2 field, and closed history is never rewritten. Repositories that never use these features stay at format 1 byte for byte.
 
 `/roadmap drop-round R2 <reason>` drops an unneeded planned round and its stages, keeping the files as history. Move or resolve TODOs targeting its stages first.
 
@@ -93,7 +97,7 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 | `/roadmap new-round` | Activate the next planned round, or create a new one when none is planned. |
 | `/roadmap drop-round <id> <reason>` | Drop a planned round and its stages. |
 | `/roadmap retarget <round-or-stage> <YYYY-MM-DD\|none>` | Set or clear a target date (format 2). |
-| `/roadmap close-round [<todo>=<disposition>[:<reference>] …]` | Close the active round; arguments answer the disposition dialog, e.g. `T001=resolved:abc1234 T002=wontfix:"out of scope" T003=carried`. |
+| `/roadmap close-round [outcome=<assessment>:<summary>] [<todo>=<disposition>[:<reference>] …]` | Close the active round; arguments answer the dialogs, e.g. `outcome=partial:"checkout shipped, refunds moved" T001=resolved:abc1234 T002=wontfix:"out of scope" T003=carried`. Format 2 needs the outcome. |
 | `/roadmap overlap <stage> roadmap\|free\|unrelated [intent]` | Answer the overlap question for this session. |
 | `/roadmap confirm <token>` | Confirm a held preview when no dialog was available. |
 
@@ -107,6 +111,7 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 | `roadmap_check` | Document consistency check; `fix: true` regenerates generated blocks. |
 | `roadmap_overlap` | Ask the overlap question. |
 | `roadmap_init`, `roadmap_round_plan`, `roadmap_round_open` | Write the previews prepared by `/init-project`, `/roadmap plan-round` and `/roadmap new-round`. |
+| `roadmap_upgrade` | Ask you, in the same dialog as at session start, whether to upgrade a format-1 repository; writes only on Yes. Main session only. |
 
 Subagents can use the tools too, but are never prompted. ADRs are managed with the adr plugin's `adr_status`, `adr_manage` and `adr_check`.
 
@@ -116,14 +121,16 @@ The plugin has no settings.
 
 ## Working with other plugins
 
-With `omo-prometheus`, a plan proposed while a stage is bound remembers that stage. During execution Atlas may use the roadmap tools, and when the plan completes the session is reminded to close the stage, mapping the final gate results to the stage's criteria. PR and ship plans complete only after delivery, and the close reminder shows their delivery mode and summary. Older completions without delivery metadata still work. The stage never closes automatically. `roadmap_status` with the stage ID shows whether it is active; the Atlas bundle's `approval.json` shows whether a plan recorded a stage.
+With `omo-prometheus`, a plan proposed while a stage is bound remembers that stage. A stage can be delivered by several plans: each plan declares the done criteria it owns with a `Roadmap criteria: DC1, DC3` line, which Prometheus checks against the stage's current criteria before you approve. Roadmap asks omo-prometheus for the plans of a stage whenever it builds a handoff, a status view, a close reminder or a stage close; plan records stay in the Atlas bundles, not in `docs/roadmap/`. The handoff lists each plan's progress, which criteria complete plans, only unfinished plans or no plan cover, and drift: a plan approved before the stage's objective, scope, criteria or design constraints changed. Drift is a notice and never pauses work.
+
+During execution Atlas may use the roadmap tools. When a plan completes, the session is reminded to evaluate the stage close, with the final gate results as evidence candidates, coverage across every plan for the stage, unfinished and undeclared plans, drift and untriaged out-of-scope findings, which Atlas files as roadmap TODOs. PR and ship plans complete only after delivery, and the reminder shows their delivery mode and summary. Older completions and approvals without these fields still work. The stage never closes automatically. Without omo-prometheus, roadmap shows no plan information.
 
 ## Without the terminal UI
 
 | Host | Behavior |
 | --- | --- |
 | RPC (`--mode rpc`, `rpc-ui`) and ACP | The same dialogs, sent as `select`, `input` and `editor` requests. ACP clients may show notices only in their log. |
-| No UI (`--no-ui`, print, JSON, SDK) | No dialogs. Bare `/roadmap` prints status and usage. Previews return a token without writing anything; confirm with `/roadmap confirm <token>`. Answer overlaps with `/roadmap overlap` and round closing with `/roadmap close-round` arguments. |
+| No UI (`--no-ui`, print, JSON, SDK) | No dialogs. Bare `/roadmap` prints status and usage. Previews return a token without writing anything; confirm with `/roadmap confirm <token>`. Answer overlaps with `/roadmap overlap` and round closing with `/roadmap close-round` arguments, including the goal outcome. Entering a format-1 session shows one notice naming `/roadmap upgrade`, and `roadmap_upgrade` refuses. |
 
 Client programs can read the roadmap status from a state snapshot; see the [reference](REFERENCE.md#state-snapshot).
 
