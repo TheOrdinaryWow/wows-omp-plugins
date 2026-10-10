@@ -21,6 +21,8 @@ import {
   restoreLedger,
   startRow,
   startVerification,
+  triageFinding,
+  untriagedFindings,
   verificationStatus,
 } from "../plugins/omo-prometheus/src/ledger.ts";
 
@@ -261,7 +263,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(5);
+    expect(restored.version).toBe(6);
     expect(restored.fixes).toEqual([]);
     expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -277,7 +279,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(5);
+    expect(restored.version).toBe(6);
     expect(restored.gitBaseline).toBeUndefined();
     expect(restored.fixes.map((row) => row.id)).toEqual(["X1"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -315,7 +317,7 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(5);
+    expect(restored.version).toBe(6);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
   });
 
@@ -403,7 +405,75 @@ describe("Prometheus execution ledger", () => {
     expect(ledger.deferred.map(({ title, origin }) => ({ title, origin }))).toEqual([
       { title: "Legacy importer leaks handles", origin: "T1" },
     ]);
-    expect(renderLedgerSummary(ledger)).toContain("Deferred out-of-scope findings (1; list them in the final report):");
+    expect(ledger.deferred.map((finding) => finding.id)).toEqual(["O1"]);
+  });
+
+  test("deferred findings keep stable ids, take one disposition each under the roadmap-presence rules, and persist as version six", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    const first = addDeferredFinding(ledger, { title: "Importer leaks handles", reason: "outside this change", origin: "T1" });
+    const second = addDeferredFinding(ledger, { title: "Flaky clock test", reason: "pre-existing" });
+    expect([first.id, second.id]).toEqual(["O1", "O2"]);
+    expect(untriagedFindings(ledger).map((finding) => finding.id)).toEqual(["O1", "O2"]);
+    expect(renderLedgerSummary(ledger)).toContain("untriaged: O1, O2");
+
+    expect(() => triageFinding(ledger, "O9", "wontfix", "no", true)).toThrow("recorded findings: O1, O2");
+    expect(() => triageFinding(ledger, "O1", "todo", "T012", false)).toThrow("roadmap plugin");
+    expect(() => triageFinding(ledger, "O1", "todo", "TODO-12", true)).toThrow("roadmap_todo add");
+    expect(() => triageFinding(ledger, "O1", "report", "", true)).toThrow("without the roadmap plugin");
+    expect(() => triageFinding(ledger, "O1", "duplicate", " ", true)).toThrow("duplicates");
+    expect(() => triageFinding(ledger, "O1", "wontfix", "", true)).toThrow("reason");
+    expect(() => triageFinding(ledger, "O1", "later", "x", true)).toThrow("todo, duplicate, wontfix, or report");
+    expect(untriagedFindings(ledger)).toHaveLength(2);
+
+    triageFinding(ledger, "O1", "todo", " T012 ", true);
+    expect(ledger.deferred[0]?.triage).toMatchObject({ disposition: "todo", reference: "T012" });
+    // A re-triage replaces the earlier disposition.
+    triageFinding(ledger, "O1", "duplicate", "T007", true);
+    triageFinding(ledger, "O2", "report", undefined, false);
+    expect(ledger.deferred.map((finding) => finding.triage?.disposition)).toEqual(["duplicate", "report"]);
+    expect(untriagedFindings(ledger)).toEqual([]);
+    expect(addDeferredFinding(ledger, { title: "Late finding", reason: "outside" }).id).toBe("O3");
+
+    const restored = restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256);
+    expect(restored.version).toBe(6);
+    expect(restored.deferred.map((finding) => [finding.id, finding.triage?.disposition])).toEqual([
+      ["O1", "duplicate"],
+      ["O2", "report"],
+      ["O3", undefined],
+    ]);
+    for (const damage of [
+      (copy: typeof ledger) => {
+        if (copy.deferred[1]) copy.deferred[1].id = "O7";
+      },
+      (copy: typeof ledger) => {
+        if (copy.deferred[0]?.triage) copy.deferred[0].triage.disposition = "later" as "todo";
+      },
+      (copy: typeof ledger) => {
+        if (copy.deferred[0]) copy.deferred[0].triage = { disposition: "todo", reference: "not-a-todo", at: 1 };
+      },
+    ]) {
+      const copy = structuredClone(ledger);
+      damage(copy);
+      expect(() => restoreLedger(copy, ledger.planFilePath, plan, ledger.planSha256)).toThrow("deferred finding");
+    }
+  });
+
+  test("a version-five ledger numbers its deferred findings in recorded order and leaves them untriaged", () => {
+    const current = createLedger("local://example-plan.md", plan);
+    addDeferredFinding(current, { title: "First", reason: "outside" });
+    addDeferredFinding(current, { title: "Second", reason: "outside", origin: "T2" });
+    const legacy = {
+      ...structuredClone(current),
+      version: 5,
+      deferred: current.deferred.map(({ id: _id, ...finding }) => finding),
+    };
+    const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
+    expect(restored).toBe(legacy as unknown as typeof restored);
+    expect(restored.version).toBe(6);
+    expect(restored.deferred.map(({ id, title, triage }) => ({ id, title, triage }))).toEqual([
+      { id: "O1", title: "First", triage: undefined },
+      { id: "O2", title: "Second", triage: undefined },
+    ]);
   });
 
   test("a HEAVY row is done only after a fresh verifier passes; a failed verification reopens it with the summary", () => {
@@ -471,7 +541,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, content, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(5);
+    expect(restored.version).toBe(6);
     // Rows approved before tiers existed keep the LIGHT evidence rule, even where the plan text names HEAVY.
     expect([...restored.items, ...restored.fixes].map((row) => row.tier)).toEqual(["light", "light", "light", "light"]);
     expect(restored.delivery).toBe("ship");

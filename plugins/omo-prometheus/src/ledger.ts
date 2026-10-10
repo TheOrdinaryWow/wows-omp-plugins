@@ -50,17 +50,30 @@ export interface LedgerItem {
   updatedAt: number;
 }
 
-/** Out-of-scope finding recorded during execution; it gets no row and is listed in the final report. */
+/** Where a deferred finding went. `todo` and `report` depend on whether the roadmap plugin answered this session's handshake. */
+export type TriageDisposition = "todo" | "duplicate" | "wontfix" | "report";
+
+export interface FindingTriage {
+  disposition: TriageDisposition;
+  /** todo: the Roadmap TODO id; duplicate: what it duplicates; wontfix: the reason; report: an optional note. */
+  reference: string;
+  at: number;
+}
+
+/** Out-of-scope finding recorded during execution; it gets no row, needs a triage before release, and is listed in the final report. */
 export interface DeferredFinding {
+  /** Stable `O1`, `O2`, … in recording order. */
+  id: string;
   title: string;
   reason: string;
   /** Row whose work surfaced it, when one did. */
   origin?: string;
   at: number;
+  triage?: FindingTriage;
 }
 
 export interface ExecutionLedger {
-  version: 5;
+  version: 6;
   ledgerId: string;
   planFilePath: string;
   planSha256: string;
@@ -108,6 +121,9 @@ const ROW = /^- \[([ xX~])\] (T\d+|F[1-4])\. (.+)$/;
 const DELIVERY_LINE = /^Delivery:(.*)$/;
 const AGENT_NAME = /^[A-Za-z0-9_-]+$/;
 const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** A Roadmap TODO id as `roadmap_todo add` assigns it. */
+const TODO_ID = /^T\d{3,}$/;
+const DISPOSITIONS: Record<TriageDisposition, true> = { todo: true, duplicate: true, wontfix: true, report: true };
 const GATES = [
   { id: "F1", title: "Plan compliance review", agent: "momus" },
   { id: "F2", title: "Code quality review", agent: "deep-high" },
@@ -317,7 +333,7 @@ function buildLedger(
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 5,
+    version: 6,
     ledgerId: randomUUID(),
     planFilePath,
     planSha256: planDigest(planContent),
@@ -435,9 +451,17 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
   lines.push(...notes);
   lines.push(`Delivery: ${ledger.delivery}${ledger.deliveries.length ? ` (${ledger.deliveries.map((row) => row.id).join(", ")})` : ""}`);
   if (ledger.deferred.length) {
-    lines.push(`Deferred out-of-scope findings (${ledger.deferred.length}; list them in the final report):`);
+    const untriaged = untriagedFindings(ledger).map((finding) => finding.id);
+    lines.push(
+      `Deferred out-of-scope findings (${ledger.deferred.length}; triage each with atlas_ledger triage and list every one with its disposition in the final report; untriaged: ${untriaged.join(", ") || "none"}):`,
+    );
     for (const finding of ledger.deferred) {
-      lines.push(`- ${cell(finding.title)}: ${cell(finding.reason)}${finding.origin ? ` (from ${finding.origin})` : ""}`);
+      const triage = finding.triage
+        ? `${finding.triage.disposition}${finding.triage.reference ? ` ${cell(finding.triage.reference)}` : ""}`
+        : "untriaged";
+      lines.push(
+        `- ${finding.id}. ${cell(finding.title)}: ${cell(finding.reason)}${finding.origin ? ` (from ${finding.origin})` : ""}; triage: ${triage}`,
+      );
     }
   }
   const next = nextDispatchable(ledger).map((item) => item.id);
@@ -451,6 +475,20 @@ function validAgent(agent: unknown): agent is string {
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function validTriage(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const triage = value as Partial<FindingTriage>;
+  return (
+    typeof triage.disposition === "string" &&
+    Object.hasOwn(DISPOSITIONS, triage.disposition) &&
+    typeof triage.reference === "string" &&
+    (triage.disposition === "report" || nonEmpty(triage.reference)) &&
+    (triage.disposition !== "todo" || TODO_ID.test(triage.reference)) &&
+    Number.isFinite(triage.at)
+  );
 }
 
 function validVerification(value: unknown): boolean {
@@ -473,7 +511,7 @@ function validVerification(value: unknown): boolean {
 export function restoreLedger(data: unknown, planFilePath: string, planContent: string, approvedSha256: string): ExecutionLedger {
   if (!data || typeof data !== "object" || !("version" in data)) throw new Error("Execution ledger is not a versioned object");
   const version = data.version;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) {
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) {
     throw new Error("Unsupported execution ledger version");
   }
   // Validate the complete persisted shape and its approved definition below before returning it.
@@ -481,7 +519,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   if (saved.planFilePath !== planFilePath || saved.planSha256 !== approvedSha256 || planDigest(planContent) !== approvedSha256) {
     throw new Error("Execution ledger or current plan no longer matches the exact approved plan");
   }
-  const legacy = version !== 5;
+  // Before version 5 there were no tiers, discoveries, deferred findings or delivery rows.
+  const legacy = version !== 5 && version !== 6;
   if (
     !Array.isArray(saved.items) ||
     !Array.isArray(saved.gates) ||
@@ -597,16 +636,17 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     }
   }
   if (!legacy) {
-    for (const finding of saved.deferred) {
+    for (const [index, finding] of saved.deferred.entries()) {
       if (
         !finding ||
         typeof finding !== "object" ||
         !nonEmpty(finding.title) ||
         !nonEmpty(finding.reason) ||
         (finding.origin !== undefined && typeof finding.origin !== "string") ||
-        !Number.isFinite(finding.at)
+        !Number.isFinite(finding.at) ||
+        (version === 6 && (finding.id !== `O${index + 1}` || !validTriage(finding.triage)))
       ) {
-        throw new Error("Malformed execution ledger deferred finding");
+        throw new Error(`Malformed execution ledger deferred finding ${version === 6 ? `O${index + 1}` : index + 1}`);
       }
     }
   }
@@ -625,8 +665,10 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     saved.deferred = [];
     saved.delivery = expected.delivery;
     saved.deliveries = deliveries;
-    saved.version = 5;
   }
+  // Version six numbers deferred findings in recording order and adds their triage; earlier findings start untriaged.
+  if (version === 5) for (const [index, finding] of saved.deferred.entries()) finding.id = `O${index + 1}`;
+  saved.version = 6;
   return saved;
 }
 
@@ -751,16 +793,67 @@ export function addDiscoveredRow(
   return row;
 }
 
-/** Record an out-of-scope finding for the final report; it adds no row and nothing waits for it. */
+/** Record an out-of-scope finding as the next `O` id; it adds no row and nothing waits for it, but release waits for its triage. */
 export function addDeferredFinding(ledger: ExecutionLedger, finding: { title: string; reason: string; origin?: string }): DeferredFinding {
   const title = finding.title.trim();
   const reason = finding.reason.trim();
   if (!title || !reason) throw new Error("A deferred finding requires a title and why it is out of scope");
   const origin = finding.origin?.trim() || undefined;
   if (origin !== undefined && !ledgerRows(ledger).some((row) => row.id === origin)) throw new Error(`Unknown ledger row ${origin}`);
-  const entry: DeferredFinding = { title, reason, ...(origin ? { origin } : {}), at: Date.now() };
+  const entry: DeferredFinding = { id: `O${ledger.deferred.length + 1}`, title, reason, ...(origin ? { origin } : {}), at: Date.now() };
   ledger.deferred.push(entry);
   return entry;
+}
+
+/** Deferred findings that still lack a disposition; `atlas_release` refuses while any remain. */
+export function untriagedFindings(ledger: ExecutionLedger): DeferredFinding[] {
+  return ledger.deferred.filter((finding) => finding.triage === undefined);
+}
+
+/**
+ * Record (or replace) where a deferred finding went. `todo` names the Roadmap TODO created for it and needs the
+ * roadmap handshake; `report` is only for sessions without the roadmap plugin.
+ */
+export function triageFinding(
+  ledger: ExecutionLedger,
+  id: string,
+  disposition: string | undefined,
+  reference: string | undefined,
+  roadmapPresent: boolean,
+): DeferredFinding {
+  const finding = ledger.deferred.find((entry) => entry.id === id);
+  if (!finding) {
+    throw new Error(
+      ledger.deferred.length
+        ? `Unknown deferred finding ${id || "(missing id)"}; recorded findings: ${ledger.deferred.map((entry) => entry.id).join(", ")}`
+        : "No deferred findings are recorded",
+    );
+  }
+  const text = reference?.trim() ?? "";
+  if (disposition === "todo") {
+    if (!roadmapPresent) {
+      throw new Error(
+        "todo needs the roadmap plugin, which did not answer the binding handshake in this session; triage as report, duplicate or wontfix",
+      );
+    }
+    if (!TODO_ID.test(text)) {
+      throw new Error("todo requires, in evidence, the id of the Roadmap TODO you created with roadmap_todo add (for example T012)");
+    }
+  } else if (disposition === "report") {
+    if (roadmapPresent) {
+      throw new Error(
+        "report is only for sessions without the roadmap plugin; create a Roadmap TODO with roadmap_todo add and triage as todo, or record duplicate or wontfix",
+      );
+    }
+  } else if (disposition === "duplicate") {
+    if (!text) throw new Error("duplicate requires, in evidence, what the finding duplicates: a TODO id, a row id, or a description");
+  } else if (disposition === "wontfix") {
+    if (!text) throw new Error("wontfix requires the reason in evidence");
+  } else {
+    throw new Error("triage requires disposition todo, duplicate, wontfix, or report");
+  }
+  finding.triage = { disposition, reference: text, at: Date.now() };
+  return finding;
 }
 
 /**

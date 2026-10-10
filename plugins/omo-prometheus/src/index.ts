@@ -58,6 +58,8 @@ import {
   reopenRow,
   startRow,
   startVerification,
+  triageFinding,
+  untriagedFindings,
 } from "./ledger.ts";
 import { writeLedgerAtomic } from "./ledger-store.ts";
 import { PluginStatePublisher } from "./plugin-state.ts";
@@ -1725,19 +1727,21 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   const ledgerParameters = z.object({
     action: z
-      .enum(["status", "start", "done", "verify", "block", "reopen", "fix", "discover"])
+      .enum(["status", "start", "done", "verify", "block", "reopen", "fix", "discover", "triage"])
       .describe(
-        "status shows every row; start, done, block, and reopen change the row named by id; verify binds a fresh verifier to the HEAVY row named by id once its implementation is done; fix appends an X row for the rejecting gate named by id; discover records work found while executing the row named by id: scope in appends a D row, scope out records a deferred finding",
+        "status shows every row; start, done, block, and reopen change the row named by id; verify binds a fresh verifier to the HEAVY row named by id once its implementation is done; fix appends an X row for the rejecting gate named by id; discover records work found while executing the row named by id: scope in appends a D row, scope out records a deferred finding O1, O2, …; triage records the disposition of the deferred finding named by id",
       ),
     id: z
       .string()
       .optional()
-      .describe("Row id such as T3, D1, X1, F2, or P1; required for every action except status and an out-of-scope discover"),
+      .describe(
+        "Row id such as T3, D1, X1, F2, or P1, or a deferred finding id such as O2 for triage; required for every action except status and an out-of-scope discover",
+      ),
     evidence: z
       .string()
       .optional()
       .describe(
-        "Inspected observable evidence; required for done, block, fix (the gate's rejection), and discover (why the finding is in or out of scope). Gate and verifier verdicts are read from native child output, not this text",
+        "Inspected observable evidence; required for done, block, fix (the gate's rejection), and discover (why the finding is in or out of scope). triage: the reference (todo: the Roadmap TODO id; duplicate: what it duplicates; wontfix: the reason; report: optional note). Gate and verifier verdicts are read from native child output, not this text",
       ),
     childAgentId: z
       .string()
@@ -1761,9 +1765,15 @@ export default function prometheus(pi: ExtensionAPI): void {
       .describe(
         "fix and discover: agent that performs the work (default task). verify: the verifier agent (default deep-high, falling back to task). start: the listed agent to dispatch when the row shows unavailable, i.e. neither its requested agent nor a fallback can be spawned; pick the most specific fit for the row's work",
       ),
+    disposition: z
+      .enum(["todo", "duplicate", "wontfix", "report"])
+      .optional()
+      .describe(
+        "Required for triage: todo = you created a Roadmap TODO with roadmap_todo add (roadmap plugin present); duplicate = already tracked elsewhere; wontfix = deliberately not pursued; report = only listed in the final report (roadmap plugin absent)",
+      ),
   });
   type LedgerParams = {
-    action: "status" | "start" | "done" | "verify" | "block" | "reopen" | "fix" | "discover";
+    action: "status" | "start" | "done" | "verify" | "block" | "reopen" | "fix" | "discover" | "triage";
     id?: string;
     evidence?: string;
     childAgentId?: string;
@@ -1772,6 +1782,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     scope?: "in" | "out";
     tier?: "LIGHT" | "HEAVY";
     agent?: string;
+    disposition?: "todo" | "duplicate" | "wontfix" | "report";
   };
 
   pi.registerTool({
@@ -1842,7 +1853,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Release",
     description:
-      "After every delegated plan item and final gate has verified child evidence, request human confirmation to release Atlas. Refused while execution-ledger rows remain unfinished; never releases without confirmation.",
+      "After every delegated plan item and final gate has verified child evidence, request human confirmation to release Atlas. Refused while execution-ledger rows remain unfinished or any deferred finding lacks a triage; never releases without confirmation.",
     parameters: releaseParameters,
     defaultInactive: true,
     loadMode: "essential",
@@ -1873,6 +1884,19 @@ export default function prometheus(pi: ExtensionAPI): void {
           details: {},
         };
       }
+      const untriaged = untriagedFindings(ledger);
+      if (untriaged.length) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Release refused: deferred findings still lack a triage (${untriaged.map((finding) => `${finding.id} ${finding.title}`).join("; ")}). Record each one's disposition with atlas_ledger triage (create a Roadmap TODO with roadmap_todo add first when the roadmap plugin is present), then list every finding with its disposition in the final report.\n\n${ledgerSummary(ledger)}`,
+            },
+          ],
+          isError: true,
+          details: { untriaged: untriaged.map((finding) => finding.id) },
+        };
+      }
       if (!ctx.hasUI) {
         return {
           content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /atlas exit." }],
@@ -1900,6 +1924,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
         await withExecutionLedger(ctx, record, (current) => {
           if (!isComplete(current)) throw new Error("Completion evidence changed while awaiting confirmation; release refused");
+          if (untriagedFindings(current).length) throw new Error("A deferred finding lost its triage while awaiting confirmation");
         });
         if (record.ownership !== ownership) throw new Error("The Atlas attachment changed during confirmation");
         await release(ctx, "human-confirmed completion release", "executing");
@@ -1918,7 +1943,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. A HEAVY row's done records its implementation; verify then binds a distinct fresh verifier child with structured output, and only its PASS completes the row (FAIL reopens it with the verifier's summary). Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Before any gate starts, discover scope in appends a D row every gate waits for; discover scope out records a deferred finding for the final report. P1 delivers after every gate. Reopen/block affect only the named row.",
+      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. A HEAVY row's done records its implementation; verify then binds a distinct fresh verifier child with structured output, and only its PASS completes the row (FAIL reopens it with the verifier's summary). Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Before any gate starts, discover scope in appends a D row every gate waits for; discover scope out records a deferred finding O1, O2, … for the final report, and triage records each one's disposition (atlas_release waits for every triage). P1 delivers after every gate. Reopen/block affect only the named row.",
     parameters: ledgerParameters,
     defaultInactive: true,
     loadMode: "essential",
@@ -1943,10 +1968,24 @@ export default function prometheus(pi: ExtensionAPI): void {
               content: [
                 {
                   type: "text" as const,
-                  text: `Deferred out of scope: ${finding.title}. No row waits for it; list it in the final report.\n\n${ledgerSummary(ledger)}`,
+                  text: `Deferred out of scope as ${finding.id}: ${finding.title}. No row waits for it. Triage it with atlas_ledger triage before release, and list it with its disposition in the final report.\n\n${ledgerSummary(ledger)}`,
                 },
               ],
-              details: { deferred: ledger.deferred.length },
+              details: { id: finding.id, deferred: ledger.deferred.length },
+            };
+          }
+          if (params.action === "triage") {
+            const roadmapPresent = roadmap.binding(ctx.sessionManager.getSessionId()) !== undefined;
+            const finding = triageFinding(ledger, id ?? "", params.disposition, evidence, roadmapPresent);
+            const remaining = untriagedFindings(ledger).map((entry) => entry.id);
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `${finding.id} triaged as ${finding.triage?.disposition}${finding.triage?.reference ? ` (${finding.triage.reference})` : ""}. Untriaged findings: ${remaining.join(", ") || "none"}.\n\n${ledgerSummary(ledger)}`,
+                },
+              ],
+              details: { id: finding.id, triage: finding.triage },
             };
           }
           const item = ledgerRows(ledger).find((entry) => entry.id === id);
