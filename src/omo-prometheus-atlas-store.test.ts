@@ -340,10 +340,10 @@ describe("Atlas shared plan storage", () => {
     });
   });
 
-  test("new approvals use version 2 and validate optional roadmap stage metadata", async () => {
+  test("new approvals use version 3 and validate optional roadmap stage metadata, including declared criteria", async () => {
     await fixture(async (f) => {
       const unbound = JSON.parse(await fs.readFile(path.join(f.plan.directory, "approval.json"), "utf8"));
-      expect(unbound.version).toBe(2);
+      expect(unbound.version).toBe(3);
       expect(unbound).not.toHaveProperty("roadmapStage");
       const options = {
         name: "Bound plan",
@@ -354,21 +354,132 @@ describe("Atlas shared plan storage", () => {
         proposedByToolCallId: "native-proposal",
         availableAgents: ["task"],
       };
-      const roadmapStage = { repoRoot: f.root, id: "S01" };
+      const roadmapStage = { repoRoot: f.root, id: "S01", criteria: ["DC1", "DC3"], revision: "c".repeat(64) };
       const plan = await f.store.create({ ...options, roadmapStage });
       const approvalPath = path.join(plan.directory, "approval.json");
       const approval = JSON.parse(await fs.readFile(approvalPath, "utf8"));
-      expect(approval.version).toBe(2);
+      expect(approval.version).toBe(3);
       expect(approval.roadmapStage).toEqual(roadmapStage);
       expect((await new AtlasStore(f.root).find(plan.id)).roadmapStage).toEqual(roadmapStage);
+      const minimal = await f.store.create({ ...options, roadmapStage: { repoRoot: f.root, id: "S02" } });
+      expect((await new AtlasStore(f.root).find(minimal.id)).roadmapStage).toEqual({ repoRoot: f.root, id: "S02" });
       for (const invalid of [
         { repoRoot: "", id: "S01" },
         { repoRoot: "relative", id: "S01" },
         { repoRoot: f.root, id: "S01-extra" },
+        { repoRoot: f.root, id: "S01", criteria: [] },
+        { repoRoot: f.root, id: "S01", criteria: ["DC1", "DC1"] },
+        { repoRoot: f.root, id: "S01", criteria: ["DC0"] },
+        { repoRoot: f.root, id: "S01", revision: "not-a-sha" },
       ]) {
         await expect(f.store.create({ ...options, roadmapStage: invalid })).rejects.toThrow("Invalid Atlas roadmap stage");
         await fs.writeFile(approvalPath, JSON.stringify({ ...approval, roadmapStage: invalid }));
         await expect(new AtlasStore(f.root).find(plan.id)).rejects.toThrow("Invalid Atlas plan approval");
+      }
+    });
+  });
+
+  test("a bundle approved as version 2 with a roadmap stage resumes and continues without rewriting its approval", async () => {
+    await fixture(async (f) => {
+      const approvalPath = path.join(f.plan.directory, "approval.json");
+      const approval = JSON.parse(await fs.readFile(approvalPath, "utf8"));
+      const previous = `${JSON.stringify({ ...approval, version: 2, roadmapStage: { repoRoot: f.root, id: "S04" } }, null, 2)}\n`;
+      await fs.writeFile(approvalPath, previous);
+      const checkpointPath = path.join(f.plan.directory, "checkpoint.json");
+      const checkpoint = JSON.parse(await fs.readFile(checkpointPath, "utf8"));
+      await fs.writeFile(checkpointPath, JSON.stringify({ ...checkpoint, approvalSha256: planDigest(previous) }));
+      await f.store.acquire(f.plan.id, "session-a");
+      await finish(f, f.store, "session-a", "T1");
+      await f.store.release(f.plan.id, "session-a");
+
+      const upgraded = new AtlasStore(f.root);
+      const resumedPlan = await upgraded.find(f.plan.id);
+      expect(resumedPlan.roadmapStage).toEqual({ repoRoot: f.root, id: "S04" });
+      await upgraded.acquire(f.plan.id, "session-b");
+      const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
+      expect(resumed.items[0]?.status).toBe("done");
+      await finish(f, upgraded, "session-b", "T3");
+      expect(await fs.readFile(approvalPath, "utf8")).toBe(previous);
+      expect(JSON.parse(await fs.readFile(checkpointPath, "utf8")).approvalSha256).toBe(planDigest(previous));
+      // Its coverage is undeclared, so the plans answer lists the stage without criteria or revision.
+      const [listed] = upgraded.stagePlans(f.root, "S04", () => {});
+      expect(listed?.planId).toBe(f.plan.id);
+      expect(listed).not.toHaveProperty("criteria");
+      expect(listed).not.toHaveProperty("revision");
+      expect(listed?.done).toBe(2);
+    });
+  });
+
+  test("the synchronous plans answer lists only matching stage bundles and skips invalid ones", async () => {
+    await fixture(async (f) => {
+      const options = {
+        cwd: f.root,
+        content,
+        sourcePlanPath: "local://PLAN.md",
+        sourceSessionId: "session-a",
+        proposedByToolCallId: "native-proposal",
+        availableAgents: ["deep-low", "task"],
+      };
+      const revision = "d".repeat(64);
+      const done = await f.store.create({
+        ...options,
+        name: "Checkout core",
+        roadmapStage: { repoRoot: f.root, id: "S01", criteria: ["DC1"], revision },
+      });
+      const other = await f.store.create({ ...options, name: "Billing", roadmapStage: { repoRoot: f.root, id: "S02" } });
+      const foreign = await f.store.create({
+        ...options,
+        name: "Foreign",
+        roadmapStage: { repoRoot: path.join(f.root, "other-repo"), id: "S01" },
+      });
+      const broken = await f.store.create({ ...options, name: "Broken", roadmapStage: { repoRoot: f.root, id: "S01" } });
+      await fs.writeFile(broken.ledgerPath, "{damaged");
+
+      const fixtureFor = (plan: AtlasPlan): Fixture => ({ ...f, plan });
+      await f.store.acquire(done.id, "session-a");
+      for (const id of ["T1", "T2", "T3", "F1", "F2", "F3", "F4"]) await finish(fixtureFor(done), f.store, "session-a", id);
+      await f.store.transaction(done.id, "session-a", (ledger) => {
+        addDeferredFinding(ledger, { title: "Importer leaks handles", reason: "outside" });
+        triageFinding(ledger, "O1", "todo", "T004", true);
+        addDeferredFinding(ledger, { title: "Flaky clock", reason: "pre-existing" });
+      });
+      await f.store.release(done.id, "session-a");
+      await f.store.rename(done.id, "Checkout core v2");
+
+      const warnings: string[] = [];
+      const reader = new AtlasStore(f.root);
+      const stageOne = reader.stagePlans(f.root, "S01", (planId) => warnings.push(planId));
+      expect(warnings).toEqual([broken.id]);
+      expect(stageOne).toEqual([
+        {
+          planId: done.id,
+          name: "Checkout core v2",
+          repoRoot: f.root,
+          stage: "S01",
+          criteria: ["DC1"],
+          revision,
+          status: "complete",
+          done: 7,
+          total: 7,
+          gates: ["F1", "F2", "F3", "F4"].map((gateId) => ({ gateId, verdict: "PASS", summary: "Verified the acceptance criteria" })),
+          deferred: [
+            { id: "O1", title: "Importer leaks handles", disposition: "todo", reference: "T004" },
+            { id: "O2", title: "Flaky clock" },
+          ],
+          directory: done.directory,
+        },
+      ]);
+      expect(reader.stagePlans(f.root, undefined, () => {}).map((plan) => plan.planId)).toEqual([other.id, done.id]);
+      expect(reader.stagePlans(path.join(f.root, "other-repo"), undefined, () => {}).map((plan) => plan.planId)).toEqual([foreign.id]);
+      expect(reader.stagePlans(f.root, "S09", () => {})).toEqual([]);
+      // The unbound fixture plan is never listed, and an empty session directory answers with no plans.
+      expect(reader.stagePlans(f.root, undefined, () => {}).some((plan) => plan.planId === f.plan.id)).toBe(false);
+      const empty = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "atlas-empty-")));
+      try {
+        expect(new AtlasStore(empty).stagePlans(f.root, undefined, () => warnings.push("empty"))).toEqual([]);
+        expect(warnings).toEqual([broken.id]);
+      } finally {
+        await fs.rm(empty, { recursive: true, force: true });
       }
     });
   });

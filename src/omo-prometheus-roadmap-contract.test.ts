@@ -8,12 +8,19 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { AdrContract } from "../plugins/omo-prometheus/src/adr-contract.ts";
-import { type ExecutionLedger, isComplete, ledgerRows } from "../plugins/omo-prometheus/src/ledger.ts";
-import { type AtlasCompleted, RoadmapContract } from "../plugins/omo-prometheus/src/roadmap-contract.ts";
+import { type ExecutionLedger, isComplete, ledgerRows, parsePlanChecklist } from "../plugins/omo-prometheus/src/ledger.ts";
+import {
+  type AtlasCompleted,
+  type AtlasStagePlan,
+  checkRoadmapCriteria,
+  RoadmapContract,
+} from "../plugins/omo-prometheus/src/roadmap-contract.ts";
 import { executionBlockReason, executionToolSourceBlockReason } from "../plugins/omo-prometheus/src/workflow.ts";
 
 const CHILD = "PROMETHEUS_ROADMAP_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
+const REVISION_A = "a".repeat(64);
+const REVISION_B = "b".repeat(64);
 const PROMETHEUS_ENTRY = fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url));
 const ROADMAP_ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
 const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
@@ -54,7 +61,8 @@ class ContractEvents {
 
 interface Result {
   isError?: boolean;
-  details?: { ledger?: ExecutionLedger; outputSchema?: Record<string, unknown> };
+  content?: Array<{ type: string; text?: string }>;
+  details?: { ledger?: ExecutionLedger; outputSchema?: Record<string, unknown>; untriaged?: string[] };
 }
 type Hook = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown | Promise<unknown>;
 interface RegisteredTool {
@@ -79,9 +87,17 @@ async function scenario(name: string, root: string): Promise<void> {
     join(root, ".omp/plugin-overrides.json"),
     JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { herdrDag: false, atlasWidget: false } } }),
   );
-  // A `pr` delivery plan completes only once its P1 row is done.
-  const planContent = name === "delivered" ? content.replace("## Tasks", "Delivery: pr\n\n## Tasks") : content;
-  await writeFile(join(artifacts, "local/bound-plan.md"), planContent);
+  // A `pr` delivery plan completes only once its P1 row is done. A roadmap without criteria ignores a coverage line.
+  const planContent =
+    name === "delivered"
+      ? content.replace("## Tasks", "Delivery: pr\n\n## Tasks")
+      : name === "bound"
+        ? content.replace("## Tasks", "Roadmap criteria: DC9\n\n## Tasks")
+        : name === "criteria"
+          ? content.replace("## Tasks", "Roadmap criteria: DC1, DC3\n\n## Tasks")
+          : content;
+  const planFile = join(artifacts, "local/bound-plan.md");
+  await writeFile(planFile, planContent);
   const sessionId = "bound-session";
   const entries: Array<{ type: string; customType?: string; data?: Record<string, unknown> }> = [];
   const sessionManager = {
@@ -160,10 +176,18 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.notEqual(result.isError, true, JSON.stringify(result));
     return result;
   };
+  const tool = async (toolName: string, params: Record<string, unknown>) => {
+    const registered = tools.get(toolName);
+    assert(registered);
+    return await registered.execute(crypto.randomUUID(), params, undefined, undefined, ctx);
+  };
   // The responder reads the live flag so a stage started during execution changes later answers.
-  let stageBound = name === "bound" || name === "restored" || name === "delivered";
-  const responder = () =>
-    bus.on("roadmap:binding-request", (raw) => {
+  let stageBound = name === "bound" || name === "restored" || name === "delivered" || name === "criteria";
+  // Only the criteria scenario models a roadmap that reports criteria and a planning-basis revision.
+  const criteria = name === "criteria" ? ["DC1", "DC2", "DC3"] : undefined;
+  let revision = REVISION_A;
+  const responder = () => {
+    const unsubscribeBinding = bus.on("roadmap:binding-request", (raw) => {
       const request = raw as { sessionId: string; requestId: string };
       requestCount++;
       bus.emit("roadmap:binding", {
@@ -171,13 +195,61 @@ async function scenario(name: string, root: string): Promise<void> {
         v: 1,
         repoRoot: root,
         toolSourcePath: ROADMAP_ENTRY,
-        ...(stageBound ? { stage: { id: "S01", title: "Checkout", round: "R1" } } : {}),
+        ...(stageBound ? { stage: { id: "S01", title: "Checkout", round: "R1", ...(criteria ? { criteria, revision } : {}) } } : {}),
       });
     });
+    const unsubscribeStage = bus.on("roadmap:stage-request", (raw) => {
+      const request = raw as { sessionId: string; requestId: string; repoRoot: string; stage: string };
+      if (!criteria) return;
+      bus.emit("roadmap:stage", {
+        v: 1,
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        repoRoot: request.repoRoot,
+        stage: { id: request.stage, title: "Checkout", round: "R1", status: "active", criteria, revision },
+      });
+    });
+    return () => {
+      unsubscribeBinding();
+      unsubscribeStage();
+    };
+  };
   const bound = stageBound;
+  const expectedStage = criteria
+    ? { repoRoot: root, id: "S01", criteria: ["DC1", "DC3"], revision: REVISION_A }
+    : bound
+      ? { repoRoot: root, id: "S01" }
+      : undefined;
   install();
   if (name !== "absent" && name !== "legacy" && name !== "lazy" && name !== "adr") responder();
+  // Only sessions this process has seen answer plan queries.
+  if (name === "criteria") await hook("session_start");
   await commands.get("prometheus")?.("", ctx);
+  const propose = {
+    toolName: "write",
+    toolCallId: "proposal-check",
+    input: { path: "xd://propose", content: JSON.stringify({ title: "bound" }) },
+  };
+  if (criteria) {
+    // Each refusal arrives before the approval overlay and names what the planner must fix.
+    const refusals: Array<[string, string[]]> = [
+      [content, ["S01", "DC1, DC2, DC3"]],
+      [content.replace("## Tasks", "Roadmap criteria: DC1, DC1\n\n## Tasks"), ["DC1, DC2, DC3"]],
+      [content.replace("## Tasks", "Roadmap criteria: DC1, DC7\n\n## Tasks"), ["DC7", "DC1, DC2, DC3"]],
+      [content.replace("## Tasks", "Roadmap criteria:\n\n## Tasks"), ["DC1, DC2, DC3"]],
+      [content.replace("## Tasks", "Roadmap criteria: DC1\nRoadmap criteria: DC2\n\n## Tasks"), ["DC1, DC2, DC3"]],
+      [content.replace("  - Agent: task", "  - Agent: task\nRoadmap criteria: DC1"), ["DC1, DC2, DC3"]],
+    ];
+    for (const [plan, named] of refusals) {
+      await writeFile(planFile, plan);
+      const refused = (await hook("tool_call", propose)) as { block?: boolean; reason?: string } | undefined;
+      assert.equal(refused?.block, true, plan);
+      for (const text of named) assert(refused?.reason?.includes(text), String(refused?.reason));
+    }
+    await writeFile(planFile, planContent);
+  }
+  assert.equal(await hook("tool_call", propose), undefined);
+  requestCount = 0;
   const restore = name === "restored" || name === "legacy";
   mode = restore;
   await hook("tool_result", {
@@ -188,9 +260,16 @@ async function scenario(name: string, root: string): Promise<void> {
     content: [{ type: "text", text: restore ? "Plan proposal submitted" : "Plan approved at local://bound-plan.md" }],
   });
   const proposalState = entries.filter((entry) => entry.customType === "wows-omp-omo-prometheus.state").at(-1)?.data;
-  assert.deepEqual(proposalState?.roadmapStage, bound ? { repoRoot: root, id: "S01" } : undefined);
+  assert.deepEqual(proposalState?.roadmapStage, expectedStage);
   if (restore) {
     if (name === "legacy") for (const entry of entries) if (entry.data) delete entry.data.roadmapStage;
+    if (name === "restored") {
+      // A marker written before criteria existed still resumes.
+      const markerPath = join(artifacts, "local/prometheus/bound.proposal.json");
+      const marker = JSON.parse(await readFile(markerPath, "utf8"));
+      assert.equal(marker.version, 4);
+      await writeFile(markerPath, JSON.stringify({ ...marker, version: 3 }));
+    }
     await hook("session_shutdown");
     install();
     mode = false;
@@ -209,9 +288,56 @@ async function scenario(name: string, root: string): Promise<void> {
   const directory = join(sessionDir, "atlas", planId);
   const ledgerPath = join(directory, "ledger.json");
   const approval = JSON.parse(await readFile(join(directory, "approval.json"), "utf8"));
-  assert.equal(approval.version, 2);
-  assert.deepEqual(approval.roadmapStage, bound ? { repoRoot: root, id: "S01" } : undefined);
+  assert.equal(approval.version, 3);
+  assert.deepEqual(approval.roadmapStage, expectedStage);
   if (!bound) assert(!Object.hasOwn(approval, "roadmapStage"));
+  const plansAnswers: Array<{ requestId: string; plans: AtlasStagePlan[] }> = [];
+  const askPlans = (request: Record<string, unknown>) => {
+    const requestId = crypto.randomUUID();
+    const start = plansAnswers.length;
+    bus.emit("atlas:plans-request", { v: 1, sessionId, requestId, repoRoot: root, ...request });
+    return plansAnswers.slice(start).filter((answer) => answer.requestId === requestId);
+  };
+  bus.on("atlas:plans", (raw) => plansAnswers.push(raw as { requestId: string; plans: AtlasStagePlan[] }));
+  const driftNotices = () => notices.filter((notice) => notice.includes("S01")).length;
+  if (criteria) {
+    const [answer] = askPlans({ stage: "S01" });
+    assert.deepEqual(answer?.plans, [
+      {
+        planId,
+        name: "bound",
+        repoRoot: root,
+        stage: "S01",
+        criteria: ["DC1", "DC3"],
+        revision: REVISION_A,
+        status: "unfinished",
+        done: 0,
+        total: 5,
+        gates: [],
+        deferred: [],
+        directory,
+      },
+    ]);
+    assert.deepEqual(
+      askPlans({})[0]?.plans.map((plan) => plan.planId),
+      [planId],
+    );
+    assert.deepEqual(askPlans({ stage: "S02" })[0]?.plans, []);
+    assert.deepEqual(askPlans({ repoRoot: join(root, "elsewhere") })[0]?.plans, []);
+    assert.equal(askPlans({ sessionId: "another-session" }).length, 0);
+    assert.equal(askPlans({ v: 2 }).length, 0);
+
+    await call({ action: "discover", scope: "out", title: "Legacy importer leaks handles", evidence: "Outside this change" });
+    // An unchanged stage resumes without a notice; a changed planning basis resumes with one, and Atlas keeps executing.
+    for (const next of [REVISION_A, REVISION_B]) {
+      revision = next;
+      await commands.get("atlas")?.("exit", ctx);
+      assert(!reference.startsWith("atlas://"), notices.join("\n"));
+      await commands.get("atlas")?.(planId, ctx);
+      assert(reference.startsWith("atlas://"), notices.join("\n"));
+      assert.equal(driftNotices(), next === REVISION_A ? 0 : 1, notices.join("\n"));
+    }
+  }
   const completionEvents: AtlasCompleted[] = [];
   bus.on("atlas:completed", (raw) => {
     assert(isComplete(JSON.parse(readFileSync(ledgerPath, "utf8")) as ExecutionLedger), "Event must follow the durable ledger write");
@@ -344,13 +470,21 @@ async function scenario(name: string, root: string): Promise<void> {
       details: { results: [{ id: childAgentId, index: 0, exitCode: 0, aborted: false }] },
       content: [{ type: "text", text: "Native task finished" }],
     });
-    await call({ action: "done", id, childAgentId, evidence: "Caller inspection, not the gate summary" });
+    return await call({ action: "done", id, childAgentId, evidence: "Caller inspection, not the gate summary" });
   };
   for (const id of ["T1", "F1", "F2", "F3"]) {
     await finish(id);
     assert.equal(completionEvents.length, 0);
   }
-  await finish("F4");
+  const completed = await finish("F4");
+  if (criteria) {
+    // Completion repeats the drift notice to the user and in the result Atlas reports from.
+    assert.equal(driftNotices(), 2, notices.join("\n"));
+    assert(
+      completed.content?.some((part) => part.text?.includes("S01")),
+      JSON.stringify(completed.content),
+    );
+  }
   if (name === "delivered") {
     // Every gate passed, yet the stage hears nothing until the pull request exists.
     assert.equal(completionEvents.length, 0);
@@ -375,6 +509,26 @@ async function scenario(name: string, root: string): Promise<void> {
   await call({ action: "reopen", id: "F4", evidence: "Recheck the gate" });
   await finish("F4");
   assert.equal(completionEvents.length, expectsCompletion ? 1 : 0);
+  if (criteria) {
+    // Completion never waits for triage, but release does, and the disposition must fit the roadmap's presence.
+    const refused = await tool("atlas_release", { reason: "All rows verified" });
+    assert.equal(refused.isError, true);
+    assert.deepEqual(refused.details?.untriaged, ["O1"]);
+    assert.equal((await tool("atlas_ledger", { action: "triage", id: "O1", disposition: "report" })).isError, true);
+    await call({ action: "triage", id: "O1", disposition: "todo", evidence: "T001" });
+    const [answer] = askPlans({ stage: "S01" });
+    const plan = answer?.plans[0];
+    assert.equal(plan?.status, "complete");
+    assert.equal(plan?.done, 5);
+    assert.deepEqual(
+      plan?.gates,
+      ["F1", "F2", "F3", "F4"].map((gateId) => ({ gateId, verdict: "PASS", summary: `Verified ${gateId} from native output` })),
+    );
+    assert.deepEqual(plan?.deferred, [{ id: "O1", title: "Legacy importer leaks handles", disposition: "todo", reference: "T001" }]);
+    const released = await tool("atlas_release", { reason: "All rows verified and findings triaged" });
+    assert.notEqual(released.isError, true, JSON.stringify(released));
+    assert(!reference.startsWith("atlas://"));
+  }
   await hook("session_shutdown");
   console.log(`PROMETHEUS_ROADMAP_OK ${name}`);
 }
@@ -456,6 +610,114 @@ if (process.env[CHILD]) {
     expect(contract.binding("a")).toBeUndefined();
     expect(bus.listeners.get("adr:binding")?.size).toBe(0);
   });
+  test("binding stage criteria and revision are optional but validated; a malformed answer is dropped", () => {
+    const bus = new ContractEvents();
+    const contract = new RoadmapContract(bus);
+    let stage: Record<string, unknown> = { id: "S01", title: "Checkout", round: "R1" };
+    bus.on("roadmap:binding-request", (raw) =>
+      bus.emit("roadmap:binding", { ...(raw as object), v: 1, repoRoot: "/repo", toolSourcePath: ROADMAP_ENTRY, stage }),
+    );
+    expect(contract.requestBinding("a")?.stage).toEqual({ id: "S01", title: "Checkout", round: "R1" });
+    stage = { ...stage, criteria: ["DC1", "DC3"], revision: REVISION_A, extra: true };
+    expect(contract.requestBinding("a")?.stage?.criteria).toEqual(["DC1", "DC3"]);
+    expect(contract.requestBinding("a")?.stage?.revision).toBe(REVISION_A);
+    for (const malformed of [
+      { criteria: ["DC1", "DC1"] },
+      { criteria: ["AC1"] },
+      { criteria: "DC1" },
+      { revision: "ABC" },
+      { revision: REVISION_A.toUpperCase() },
+    ]) {
+      stage = { id: "S01", title: "Checkout", round: "R1", ...malformed };
+      expect(contract.requestBinding("a")).toBeUndefined();
+    }
+  });
+  test("stage requests accept only the correlated, well-formed answer for the requested stage", () => {
+    const bus = new ContractEvents();
+    const contract = new RoadmapContract(bus);
+    const valid = { id: "S03", title: "Billing", round: "R2", status: "active" as const, criteria: ["DC1"], revision: REVISION_B };
+    let answers: Array<Record<string, unknown>> = [];
+    bus.on("roadmap:stage-request", (raw) => {
+      const { stage, ...request } = raw as { sessionId: string; requestId: string; repoRoot: string; stage: string };
+      expect(stage).toBe("S03");
+      for (const answer of answers) bus.emit("roadmap:stage", { v: 1, ...request, ...answer });
+    });
+    expect(contract.requestStage("a", "/repo", "S03")).toBeUndefined();
+    answers = [{ stage: valid }];
+    expect(contract.requestStage("a", "/repo", "S03")?.stage).toEqual(valid);
+    answers = [{}];
+    const absent = contract.requestStage("a", "/repo", "S03");
+    expect(absent).toBeDefined();
+    expect(absent?.stage).toBeUndefined();
+    for (const wrong of [
+      { sessionId: "b", stage: valid },
+      { requestId: "other", stage: valid },
+      { repoRoot: "/elsewhere", stage: valid },
+      { stage: { ...valid, id: "S04" } },
+      { stage: { ...valid, status: "archived" } },
+      { stage: { ...valid, criteria: ["DC1", "DC1"] } },
+      { stage: { ...valid, revision: "short" } },
+      { stage: { ...valid, title: " " } },
+    ]) {
+      answers = [wrong];
+      expect(contract.requestStage("a", "/repo", "S03")).toBeUndefined();
+    }
+    expect(bus.listeners.get("roadmap:stage")?.size).toBe(0);
+  });
+  test("plans requests are answered synchronously only when well formed and owned, and never throw", () => {
+    const bus = new ContractEvents();
+    const contract = new RoadmapContract(bus);
+    const answers: unknown[] = [];
+    const warnings: unknown[] = [];
+    bus.on("atlas:plans", (raw) => answers.push(raw));
+    const requests: unknown[] = [];
+    contract.answerPlans(
+      (request) => {
+        requests.push(request);
+        if (request.sessionId === "boom") throw new Error("store unreadable");
+        return request.sessionId === "mine" ? [] : undefined;
+      },
+      (error) => warnings.push(error),
+    );
+    bus.emit("atlas:plans-request", { v: 1, sessionId: "mine", requestId: "r1", repoRoot: "/repo", stage: "S01", extra: 1 });
+    expect(answers).toEqual([{ v: 1, sessionId: "mine", requestId: "r1", plans: [] }]);
+    expect(requests).toEqual([{ v: 1, sessionId: "mine", requestId: "r1", repoRoot: "/repo", stage: "S01" }]);
+    bus.emit("atlas:plans-request", { v: 1, sessionId: "theirs", requestId: "r2", repoRoot: "/repo" });
+    for (const malformed of [
+      { v: 2, sessionId: "mine", requestId: "r3", repoRoot: "/repo" },
+      { v: 1, sessionId: "mine", requestId: "", repoRoot: "/repo" },
+      { v: 1, sessionId: "mine", requestId: "r4", repoRoot: "relative" },
+      { v: 1, sessionId: "mine", requestId: "r5", repoRoot: "/repo", stage: "03" },
+      null,
+    ])
+      bus.emit("atlas:plans-request", malformed);
+    expect(() => bus.emit("atlas:plans-request", { v: 1, sessionId: "boom", requestId: "r6", repoRoot: "/repo" })).not.toThrow();
+    expect(answers).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+  });
+  test("a plan's Roadmap criteria line must name current, unique criteria once at plan level", () => {
+    const plan = (lines: string) =>
+      `# Plan\n\n${lines}\n## Tasks\n- [ ] T1. Work\n  - Agent: task\n  - Depends on: none\n  - Acceptance: works\n`;
+    const check = (text: string) => checkRoadmapCriteria(parsePlanChecklist(text).roadmapCriteria, { id: "S03", criteria: ["DC1", "DC2"] });
+    expect(check(plan("Roadmap criteria: DC2,DC1\n"))).toEqual({ criteria: ["DC2", "DC1"] });
+    for (const [lines, named] of [
+      ["", "DC1, DC2"],
+      ["Roadmap criteria:\n", "DC1, DC2"],
+      ["Roadmap criteria: DC1, DC1\n", "DC1"],
+      ["Roadmap criteria: DC1, DC9\n", "DC9"],
+      ["Roadmap criteria: DC1, criterion two\n", "criterion two"],
+      ["Roadmap criteria: DC1\nRoadmap criteria: DC2\n", "DC1, DC2"],
+      ["```\nRoadmap criteria: DC1\n```\n", "DC1, DC2"],
+    ]) {
+      const result = check(plan(lines as string));
+      expect("error" in result && result.error.includes(named as string)).toBe(true);
+    }
+    // A line inside a task body is still task text for the ledger, but never counts as the declaration.
+    const nested = plan("").replace("  - Agent: task", "  - Agent: task\nRoadmap criteria: DC1");
+    expect(parsePlanChecklist(nested).errors).toEqual(parsePlanChecklist(plan("")).errors);
+    expect("error" in check(nested)).toBe(true);
+    expect("error" in checkRoadmapCriteria([], { id: "S03", criteria: [] })).toBe(true);
+  });
   test("Atlas guards admit only extension tools from the handshake-declared roadmap runtime", () => {
     const trusted = { roadmap: ROADMAP_ENTRY };
     expect(executionBlockReason("roadmap_stage", {})).toBeTruthy();
@@ -530,7 +792,7 @@ if (process.env[CHILD]) {
     ] as const)
       expect(executionBlockReason(toolName, input, trusted)).toBeTruthy();
   });
-  for (const name of ["bound", "absent", "unbound", "late", "restored", "legacy", "lazy", "delivered", "adr"]) {
+  for (const name of ["bound", "absent", "unbound", "late", "restored", "legacy", "lazy", "delivered", "adr", "criteria"]) {
     test(`Prometheus roadmap contract: ${name}`, async () => {
       const home = await realpath(await mkdtemp(join(tmpdir(), "prometheus-roadmap-")));
       try {

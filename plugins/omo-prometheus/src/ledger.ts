@@ -119,6 +119,7 @@ export function planDigest(content: string): string {
 
 const ROW = /^- \[([ xX~])\] (T\d+|F[1-4])\. (.+)$/;
 const DELIVERY_LINE = /^Delivery:(.*)$/;
+const ROADMAP_CRITERIA_LINE = /^Roadmap criteria:(.*)$/;
 const AGENT_NAME = /^[A-Za-z0-9_-]+$/;
 const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 /** A Roadmap TODO id as `roadmap_todo add` assigns it. */
@@ -150,6 +151,11 @@ export interface ParsedPlan {
   items: ParsedItem[];
   gates: ParsedItem[];
   delivery: Delivery;
+  /**
+   * Every `Roadmap criteria:` line at column 0 outside code fences. Only a bound stage with criteria validates them, so
+   * they never add grammar errors; a line inside a plan section stays task text, as before the line existed.
+   */
+  roadmapCriteria: Array<{ line: number; value: string; planLevel: boolean }>;
   errors: string[];
 }
 
@@ -168,6 +174,7 @@ export function parsePlanChecklist(
   const errors: string[] = [];
   const deliveryLines: { line: number; value: string }[] = [];
   const deliveryErrors: string[] = [];
+  const roadmapCriteria: ParsedPlan["roadmapCriteria"] = [];
   const field = legacy
     ? /^\s+(?:-\s*)?(Agent|Depends on|Acceptance):\s*(.*?)\s*$/i
     : /^\s+(?:-\s*)?(Agent|Depends on|Acceptance|Tier):\s*(.*?)\s*$/i;
@@ -243,6 +250,8 @@ export function parsePlanChecklist(
       else deliveryLines.push({ line: index + 1, value: (deliveryLine[1] ?? "").trim() });
       continue;
     }
+    const criteriaLine = ROADMAP_CRITERIA_LINE.exec(line);
+    if (criteriaLine) roadmapCriteria.push({ line: index + 1, value: (criteriaLine[1] ?? "").trim(), planLevel: !section });
     if (!section) continue;
     if (/^- \[/.test(line)) {
       finishTask();
@@ -310,7 +319,7 @@ export function parsePlanChecklist(
     if (deliveryErrors.length) delivery = "direct";
     for (const item of items) item.tier = "light";
   } else errors.push(...deliveryErrors);
-  return { items, gates, delivery, errors };
+  return { items, gates, delivery, roadmapCriteria, errors };
 }
 
 function buildLedger(

@@ -33,7 +33,7 @@ import {
 import { AtlasPlanReferences, atlasPlanUrl } from "./atlas-plan-url.ts";
 import { applyAtlasModel, exposeAtlasApprovalTier, registerAtlasModelRole, restoreApprovalTiers } from "./atlas-role.ts";
 import { findPlanSessions } from "./atlas-sessions.ts";
-import { type AtlasPlan, type AtlasPlanDetail, AtlasStore } from "./atlas-store.ts";
+import { type AtlasPlan, type AtlasPlanDetail, AtlasStore, deliveryResult, gateResults } from "./atlas-store.ts";
 import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
@@ -64,7 +64,14 @@ import {
 import { writeLedgerAtomic } from "./ledger-store.ts";
 import { PluginStatePublisher } from "./plugin-state.ts";
 import { prometheusState } from "./prometheus-state.ts";
-import { type AtlasCompleted, isRoadmapStage, RoadmapContract, type RoadmapStage } from "./roadmap-contract.ts";
+import {
+  type AtlasCompleted,
+  checkRoadmapCriteria,
+  isRoadmapStage,
+  RoadmapContract,
+  type RoadmapStage,
+  type RoadmapStageAnswer,
+} from "./roadmap-contract.ts";
 import {
   ATLAS_USAGE,
   type AtlasCompletionPlan,
@@ -510,6 +517,45 @@ export default function prometheus(pi: ExtensionAPI): void {
       stores.set(root, store);
     }
     return store;
+  };
+
+  /** Main sessions whose live id may receive `atlas:plans`, keyed by session manager so a session switch follows along. */
+  const plansSessions = new Map<object, ExtensionContext>();
+  roadmap.answerPlans(
+    (request) => {
+      const ctx = [...plansSessions.values()].find((candidate) => candidate.sessionManager.getSessionId() === request.sessionId);
+      if (!ctx) return undefined;
+      const sessionDir = ctx.sessionManager.getSessionDir();
+      // An in-memory session has no shared plan store, hence no plans.
+      if (!sessionDir) return [];
+      const root = path.resolve(sessionDir);
+      let store = stores.get(root);
+      if (!store) {
+        store = new AtlasStore(root);
+        stores.set(root, store);
+      }
+      return store.stagePlans(request.repoRoot, request.stage, (planId, error) =>
+        pi.logger.warn("Atlas skipped an unreadable plan bundle in its roadmap plans answer", { planId, error: errorMessage(error) }),
+      );
+    },
+    (error) => pi.logger.warn("Atlas could not answer a roadmap plans request", { error: errorMessage(error) }),
+  );
+
+  /** Notice only, never a pause: the bound stage's planning basis changed after this plan was approved. */
+  const stageDriftNotice = (ctx: ExtensionContext, plan: AtlasPlan): string | undefined => {
+    const approved = plan.roadmapStage;
+    if (!approved?.revision) return undefined;
+    let answer: RoadmapStageAnswer | undefined;
+    try {
+      answer = roadmap.requestStage(ctx.sessionManager.getSessionId(), approved.repoRoot, approved.id);
+    } catch (error) {
+      pi.logger.warn("Atlas could not ask the roadmap plugin for its stage", { error: errorMessage(error) });
+      return undefined;
+    }
+    const current = answer?.stage;
+    if (!current || current.revision === approved.revision) return undefined;
+    const retired = approved.criteria?.filter((id) => !current.criteria.includes(id)) ?? [];
+    return `Roadmap stage ${approved.id} (${current.title}) changed after plan ${plan.name} was approved: its objective, scope, done criteria or design constraints differ. Atlas continues; re-check the plan against the stage's current done criteria (${current.criteria.join(", ") || "none"})${retired.length ? `, where the declared ${retired.join(", ")} no longer appear` : ""}.`;
   };
 
   const clearObservation = (ctx: ExtensionContext, sessionId: string): void => {
@@ -1179,12 +1225,14 @@ export default function prometheus(pi: ExtensionAPI): void {
         ctx,
         `Atlas entered ${plan.name} (${plan.id}). Shared completed rows and evidence are retained. /atlas shows the plan; /atlas exit leaves Atlas.${modelNotice}`,
       );
+      const drift = stageDriftNotice(ctx, plan);
+      if (drift) commandNotice(ctx, drift, "warning");
       await refreshAtlasCompletions(ctx);
       if (autoStart) {
         pi.sendMessage(
           {
             customType: ATLAS_START_TYPE,
-            content: `Execute the approved plan ${plan.name} (${plan.id}) now. Check \`${LEDGER_TOOL}\` status, then dispatch every ready row to its assigned agent.`,
+            content: `Execute the approved plan ${plan.name} (${plan.id}) now. Check \`${LEDGER_TOOL}\` status, then dispatch every ready row to its assigned agent.${drift ? `\n${drift}` : ""}`,
             display: true,
           },
           { triggerTurn: true, deliverAs: "followUp" },
@@ -1266,6 +1314,8 @@ export default function prometheus(pi: ExtensionAPI): void {
         } else if (!restored.ledgerError) {
           retitleSession(ctx, target.plan);
           commandNotice(ctx, `Atlas resumed ${target.plan.name} in this session. Send a message to continue; /atlas exit leaves Atlas.`);
+          const drift = stageDriftNotice(ctx, target.plan);
+          if (drift) commandNotice(ctx, drift, "warning");
         }
         return undefined;
       }
@@ -1497,9 +1547,20 @@ export default function prometheus(pi: ExtensionAPI): void {
       // The host resolves the plan itself and reports a missing file.
       return undefined;
     }
-    const { errors } = parsePlanChecklist(content, availableAgents());
-    if (!errors.length) return undefined;
-    return `Prometheus refused this proposal: ${planUrl} does not follow the plan grammar Atlas executes (${errors.join("; ")}). Rewrite it with \`## Tasks\` (sequential T rows with Agent, Depends on and Acceptance) and \`## Final gates\` (exactly F1–F4 with their required titles), then propose again.`;
+    const { errors, roadmapCriteria } = parsePlanChecklist(content, availableAgents());
+    const reasons: string[] = [];
+    if (errors.length) {
+      reasons.push(
+        `Prometheus refused this proposal: ${planUrl} does not follow the plan grammar Atlas executes (${errors.join("; ")}). Rewrite it with \`## Tasks\` (sequential T rows with Agent, Depends on and Acceptance) and \`## Final gates\` (exactly F1–F4 with their required titles), then propose again.`,
+      );
+    }
+    // Coverage is declared before approval only against a roadmap that reports the stage's current criteria.
+    const stage = roadmap.requestBinding(ctx.sessionManager.getSessionId())?.stage;
+    const coverage = stage?.criteria ? checkRoadmapCriteria(roadmapCriteria, { id: stage.id, criteria: stage.criteria }) : undefined;
+    if (coverage && "error" in coverage) {
+      reasons.push(`Prometheus refused this proposal: in ${planUrl}, ${coverage.error} Then propose again.`);
+    }
+    return reasons.length ? reasons.join("\n") : undefined;
   };
 
   const planningBlock = async (ctx: ExtensionContext): Promise<string> => {
@@ -1955,6 +2016,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const ownership = record.ownership;
       let changedRow: LedgerItem | undefined;
       let completion: Omit<AtlasCompleted, "v" | "at"> | undefined;
+      let completedPlan: AtlasPlan | undefined;
       let compliance: { cwd: string; baseline?: string; since: number } | undefined;
       try {
         const result = await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
@@ -2110,37 +2172,23 @@ export default function prometheus(pi: ExtensionAPI): void {
               }
             }
             const completedNow = !wasComplete && isComplete(ledger);
+            if (completedNow) completedPlan = plan;
             // A plan proposed before its stage was started has no approved stage; the executing session's live binding stands in.
             const liveStage = completedNow && !plan.roadmapStage ? roadmap.requestBinding(ctx.sessionManager.getSessionId()) : undefined;
-            const roadmapStage =
-              plan.roadmapStage ?? (liveStage?.stage ? { repoRoot: liveStage.repoRoot, id: liveStage.stage.id } : undefined);
+            const approvedStage = plan.roadmapStage;
+            const roadmapStage = approvedStage
+              ? { repoRoot: approvedStage.repoRoot, id: approvedStage.id }
+              : liveStage?.stage
+                ? { repoRoot: liveStage.repoRoot, id: liveStage.stage.id }
+                : undefined;
             if (completedNow && roadmapStage) {
-              const gates = await Promise.all(
-                ledger.gates.map(async (gate) => {
-                  if (!gate.receipt) throw new Error(`Missing verified gate receipt for ${gate.id}`);
-                  const output = JSON.parse(
-                    await fs.readFile(path.join(plan.directory, "evidence", `${gate.receipt.receiptId}.md`), "utf8"),
-                  ) as { gateId: string; verdict: string; summary: string };
-                  return { gateId: output.gateId, verdict: output.verdict, summary: output.summary };
-                }),
-              );
-              const delivered = ledger.deliveries[0];
-              const prefix = delivered?.receipt ? `${path.join(plan.directory, "evidence", `${delivered.receipt.receiptId}.md`)}: ` : "";
+              const delivery = deliveryResult(ledger, plan.directory);
               completion = {
                 sessionId: ctx.sessionManager.getSessionId(),
                 planId: plan.id,
                 roadmapStage,
-                gates,
-                ...(ledger.delivery !== "direct" && delivered
-                  ? {
-                      delivery: {
-                        mode: ledger.delivery,
-                        summary: delivered.evidence?.startsWith(prefix)
-                          ? delivered.evidence.slice(prefix.length)
-                          : (delivered.evidence ?? ""),
-                      },
-                    }
-                  : {}),
+                gates: gateResults(ledger, plan.directory),
+                ...(delivery ? { delivery } : {}),
               };
             }
           } else {
@@ -2164,12 +2212,15 @@ export default function prometheus(pi: ExtensionAPI): void {
           };
         });
         if (completion) roadmap.emitCompleted(completion);
+        const drift = completedPlan && stageDriftNotice(ctx, completedPlan);
+        if (drift) notify(ctx, drift, "warning");
         const gitEvidence = compliance && (await collectComplianceEvidence(compliance));
         if (changedRow) {
           return {
             ...result,
             content: [
               ...result.content,
+              ...(drift ? [{ type: "text" as const, text: `${drift} Name this in the final report.` }] : []),
               ...(gitEvidence ? [{ type: "text" as const, text: gitEvidence.text }] : []),
               { type: "text" as const, text: atlasTodoRefreshCall(changedRow) },
             ],
@@ -2292,7 +2343,8 @@ export default function prometheus(pi: ExtensionAPI): void {
         };
         // A present but invalid plugin marker must pause this handoff, not silently become ordinary execution.
         if (
-          marker.version !== 3 ||
+          // Version 4 adds the stage's declared criteria and revision; version 3 markers still resume without them.
+          (marker.version !== 3 && marker.version !== 4) ||
           typeof marker.planFilePath !== "string" ||
           !planReferencesMatch(marker.planFilePath, reference) ||
           typeof marker.proposedByToolCallId !== "string" ||
@@ -2628,12 +2680,21 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.ledgerPath = undefined;
     record.planSha256 = undefined;
     const binding = roadmap.requestBinding(sessionId);
-    record.roadmapStage = binding?.stage ? { repoRoot: binding.repoRoot, id: binding.stage.id } : undefined;
+    const bound = binding?.stage;
+    record.roadmapStage =
+      binding && bound ? { repoRoot: binding.repoRoot, id: bound.id, ...(bound.revision ? { revision: bound.revision } : {}) } : undefined;
     try {
-      record.planSha256 = planDigest(await fs.readFile(resolveLocalUrlToPath(proposedPath, localOptions(ctx)), "utf8"));
+      const content = await fs.readFile(resolveLocalUrlToPath(proposedPath, localOptions(ctx)), "utf8");
+      record.planSha256 = planDigest(content);
+      // The tool_call guard already refused a missing or invalid line; an older roadmap without criteria leaves coverage undeclared.
+      if (record.roadmapStage && bound?.criteria) {
+        const coverage = checkRoadmapCriteria(parsePlanChecklist(content).roadmapCriteria, { id: bound.id, criteria: bound.criteria });
+        if ("criteria" in coverage) record.roadmapStage.criteria = coverage.criteria;
+        else pi.logger.warn("prometheus stored the proposal without declared roadmap criteria", { error: coverage.error });
+      }
       const markerFile = resolveLocalUrlToPath(prometheusArtifactUrl(proposedPath), localOptions(ctx));
       await writeLedgerAtomic(markerFile, {
-        version: 3,
+        version: 4,
         planFilePath: proposedPath,
         planSha256: record.planSha256,
         proposedByToolCallId: event.toolCallId,
@@ -2745,13 +2806,16 @@ export default function prometheus(pi: ExtensionAPI): void {
     publishState(ctx);
   };
 
-  const registerRole = (ctx: ExtensionContext): void => {
+  /** Registers the atlas model role and lets this main session answer roadmap plan queries. */
+  const attachSession = (ctx: ExtensionContext): void => {
     const live = mainSession(ctx);
-    if (live) registerAtlasModelRole(live.settings);
+    if (!live) return;
+    registerAtlasModelRole(live.settings);
+    plansSessions.set(ctx.sessionManager, ctx);
   };
 
   pi.on("session_start", async (_event, ctx) => {
-    registerRole(ctx);
+    attachSession(ctx);
     await loadPlanningSettings(ctx);
     await recoverSession(ctx);
     herdrDag.announce(ctx.sessionManager.getSessionId());
@@ -2759,7 +2823,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   pi.on("session_switch", async (event, ctx) => {
-    registerRole(ctx);
+    attachSession(ctx);
     await loadPlanningSettings(ctx);
     await recoverSession(ctx, event.reason === "new", true);
     herdrDag.announce(ctx.sessionManager.getSessionId());
@@ -2781,6 +2845,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       restoreIsolationMerge(live);
     }
     const sessionId = ctx.sessionManager.getSessionId();
+    plansSessions.delete(ctx.sessionManager);
     herdrDag.release(sessionId, "shutdown");
     clearObservation(ctx, sessionId);
     const record = records.get(sessionId);

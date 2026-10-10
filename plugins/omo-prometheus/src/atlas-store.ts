@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { closeSync, constants, type Dirent, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { hostname } from "node:os";
 import * as path from "node:path";
@@ -29,7 +29,7 @@ import {
   verificationStatus,
 } from "./ledger.ts";
 import { withLedgerLock, writeLedgerAtomic } from "./ledger-store.ts";
-import { isRoadmapStage, type RoadmapStage } from "./roadmap-contract.ts";
+import { type AtlasStagePlan, isRoadmapStage, type RoadmapStage } from "./roadmap-contract.ts";
 
 export interface AtlasPlan {
   id: string;
@@ -92,8 +92,9 @@ export interface AtlasPlanDetail {
   deferred?: DeferredFinding[];
 }
 
+/** Version 3 adds the stage's declared `criteria` and `revision`; versions 1 and 2 load unchanged and are never rewritten. */
 interface Approval {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   id: string;
   name: string;
   cwd: string;
@@ -192,6 +193,80 @@ async function regularFile(file: string): Promise<string> {
 
 async function jsonFile(file: string): Promise<unknown> {
   return JSON.parse(await regularFile(file));
+}
+
+/** Synchronous twin of `regularFile`, for answers that must complete inside an event emit. */
+function regularFileSync(file: string): string {
+  const handle = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (!fstatSync(handle).isFile()) throw new Error(`Atlas storage is not a regular file: ${file}`);
+    return readFileSync(handle, "utf8");
+  } finally {
+    closeSync(handle);
+  }
+}
+
+function directorySync(file: string): void {
+  const stat = lstatSync(file);
+  if (stat.isSymbolicLink()) throw new Error(`Atlas storage directory is a symlink: ${file}`);
+  if (!stat.isDirectory()) throw new Error(`Atlas storage is not a directory: ${file}`);
+}
+
+function parseApproval(raw: string, id: string): Approval {
+  const data: unknown = JSON.parse(raw);
+  if (data === null || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid Atlas plan approval");
+  const saved = data as Partial<Approval>;
+  if (
+    (saved.version !== 1 && saved.version !== 2 && saved.version !== 3) ||
+    saved.id !== id ||
+    typeof saved.name !== "string" ||
+    !validName(saved.name) ||
+    typeof saved.cwd !== "string" ||
+    !path.isAbsolute(saved.cwd) ||
+    path.resolve(saved.cwd) !== saved.cwd ||
+    typeof saved.planSha256 !== "string" ||
+    !HEX.test(saved.planSha256) ||
+    [saved.sourcePlanPath, saved.sourceSessionId, saved.proposedByToolCallId].some((field) => typeof field !== "string" || !field.trim()) ||
+    (saved.roadmapStage !== undefined && !isRoadmapStage(saved.roadmapStage))
+  )
+    throw new Error("Invalid Atlas plan approval");
+  return saved as Approval;
+}
+
+/** The user's display name from `label.json`. */
+function parseLabel(label: unknown): string {
+  if (
+    label === null ||
+    typeof label !== "object" ||
+    Array.isArray(label) ||
+    !("version" in label) ||
+    label.version !== 1 ||
+    !("name" in label) ||
+    typeof label.name !== "string" ||
+    !validName(label.name)
+  )
+    throw new Error("Invalid Atlas display name");
+  return label.name;
+}
+
+/** Verdicts of a complete plan's final gates, read from the gate outputs archived in its bundle `directory`. */
+export function gateResults(ledger: ExecutionLedger, directory: string): Array<{ gateId: string; verdict: string; summary: string }> {
+  return ledger.gates.map((gate) => {
+    if (!gate.receipt) throw new Error(`Missing verified gate receipt for ${gate.id}`);
+    const output = regularFileSync(path.join(directory, "evidence", `${gate.receipt.receiptId}.md`));
+    validateGateOutput(output, ledger, gate);
+    const result = JSON.parse(output) as { gateId: string; verdict: string; summary: string };
+    return { gateId: result.gateId, verdict: result.verdict, summary: result.summary };
+  });
+}
+
+/** A `pr` or `ship` plan's delivery once P1 is done: its inspected evidence without the archived-output path prefix. */
+export function deliveryResult(ledger: ExecutionLedger, directory: string): { mode: "pr" | "ship"; summary: string } | undefined {
+  const delivered = ledger.deliveries[0];
+  if (ledger.delivery === "direct" || delivered?.status !== "done" || !delivered.receipt) return undefined;
+  const prefix = `${path.join(directory, "evidence", `${delivered.receipt.receiptId}.md`)}: `;
+  const evidence = delivered.evidence ?? "";
+  return { mode: ledger.delivery, summary: evidence.startsWith(prefix) ? evidence.slice(prefix.length) : evidence };
 }
 
 async function directory(file: string): Promise<void> {
@@ -388,28 +463,8 @@ export class AtlasStore {
     if (!(await this.#base())) throw new Error("Atlas shared plan storage is missing");
     const base = path.join(this.#root, id);
     await directory(base);
-    const approvalPath = path.join(base, "approval.json");
-    const raw = await regularFile(approvalPath);
-    const data: unknown = JSON.parse(raw);
-    if (data === null || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid Atlas plan approval");
-    const saved = data as Partial<Approval>;
-    if (
-      (saved.version !== 1 && saved.version !== 2) ||
-      saved.id !== id ||
-      typeof saved.name !== "string" ||
-      !validName(saved.name) ||
-      typeof saved.cwd !== "string" ||
-      !path.isAbsolute(saved.cwd) ||
-      path.resolve(saved.cwd) !== saved.cwd ||
-      typeof saved.planSha256 !== "string" ||
-      !HEX.test(saved.planSha256) ||
-      [saved.sourcePlanPath, saved.sourceSessionId, saved.proposedByToolCallId].some(
-        (field) => typeof field !== "string" || !field.trim(),
-      ) ||
-      (saved.roadmapStage !== undefined && !isRoadmapStage(saved.roadmapStage))
-    )
-      throw new Error("Invalid Atlas plan approval");
-    const approval = saved as Approval;
+    const raw = await regularFile(path.join(base, "approval.json"));
+    const approval = parseApproval(raw, id);
     const planFilePath = path.join(base, "plan.md");
     if (planDigest(await regularFile(planFilePath)) !== approval.planSha256) throw new Error("Atlas plan differs from its exact approval");
     const checkpoint = await jsonFile(path.join(base, "checkpoint.json"));
@@ -423,19 +478,7 @@ export class AtlasStore {
     await directory(path.join(base, "evidence"));
     let name = approval.name;
     try {
-      const label = await jsonFile(path.join(base, "label.json"));
-      if (
-        label === null ||
-        typeof label !== "object" ||
-        Array.isArray(label) ||
-        !("version" in label) ||
-        label.version !== 1 ||
-        !("name" in label) ||
-        typeof label.name !== "string" ||
-        !validName(label.name)
-      )
-        throw new Error("Invalid Atlas display name");
-      name = label.name;
+      name = parseLabel(await jsonFile(path.join(base, "label.json")));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -497,7 +540,7 @@ export class AtlasStore {
       const planFilePath = path.join(final, "plan.md");
       const ledger = createLedger(planFilePath, options.content, options.availableAgents, gitBaseline);
       const approval: Approval = {
-        version: 2,
+        version: 3,
         id,
         name: options.name,
         cwd: options.cwd,
@@ -540,6 +583,82 @@ export class AtlasStore {
       await fs.rm(stage, { recursive: true, force: true });
       throw error;
     }
+  }
+
+  /**
+   * Every approved plan whose approval records a roadmap stage in `repoRoot` (and `stage` when given), for the
+   * `atlas:plans` answer. Synchronous, lock-free and read-only because the answer must arrive inside the request emit;
+   * an unreadable or invalid bundle is skipped and reported through `warn`.
+   */
+  stagePlans(repoRoot: string, stage: string | undefined, warn: (planId: string, error: unknown) => void): AtlasStagePlan[] {
+    let entries: Dirent[];
+    try {
+      const sessionDir = path.dirname(this.#root);
+      directorySync(sessionDir);
+      if (realpathSync(sessionDir) !== sessionDir) throw new Error("Atlas session directory contains a symlink");
+      directorySync(this.#root);
+      entries = readdirSync(this.#root, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") warn("(store)", error);
+      return [];
+    }
+    const plans: AtlasStagePlan[] = [];
+    for (const entry of entries) {
+      if (!ID.test(entry.name)) continue;
+      try {
+        const plan = this.#stagePlan(entry.name, repoRoot, stage);
+        if (plan) plans.push(plan);
+      } catch (error) {
+        warn(entry.name, error);
+      }
+    }
+    return plans.sort((a, b) => a.name.localeCompare(b.name) || a.planId.localeCompare(b.planId));
+  }
+
+  #stagePlan(id: string, repoRoot: string, stage: string | undefined): AtlasStagePlan | undefined {
+    const base = path.join(this.#root, id);
+    directorySync(base);
+    const raw = regularFileSync(path.join(base, "approval.json"));
+    const approval = parseApproval(raw, id);
+    const bound = approval.roadmapStage;
+    if (!bound || bound.repoRoot !== repoRoot || (stage !== undefined && bound.id !== stage)) return undefined;
+    const planFilePath = path.join(base, "plan.md");
+    const content = regularFileSync(planFilePath);
+    if (planDigest(content) !== approval.planSha256) throw new Error("Atlas plan differs from its exact approval");
+    const data: unknown = JSON.parse(regularFileSync(path.join(base, "ledger.json")));
+    const ledger = restoreLedger(data, planFilePath, content, approval.planSha256);
+    if (data !== ledger) throw new Error("Atlas shared ledger must use a receipt-bearing version");
+    validateCheckpoint(JSON.parse(regularFileSync(path.join(base, "checkpoint.json"))), ledger, planDigest(raw));
+    let name = approval.name;
+    try {
+      name = parseLabel(JSON.parse(regularFileSync(path.join(base, "label.json"))));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const rows = ledgerRows(ledger);
+    const complete = isComplete(ledger);
+    const delivery = deliveryResult(ledger, base);
+    return {
+      planId: id,
+      name,
+      repoRoot: bound.repoRoot,
+      stage: bound.id,
+      ...(bound.criteria ? { criteria: [...bound.criteria] } : {}),
+      ...(bound.revision ? { revision: bound.revision } : {}),
+      status: complete ? "complete" : "unfinished",
+      done: rows.filter((row) => row.status === "done").length,
+      total: rows.length,
+      gates: complete ? gateResults(ledger, base) : [],
+      ...(delivery ? { delivery } : {}),
+      deferred: ledger.deferred.map((finding) => ({
+        id: finding.id,
+        title: finding.title,
+        ...(finding.triage
+          ? { disposition: finding.triage.disposition, ...(finding.triage.reference ? { reference: finding.triage.reference } : {}) }
+          : {}),
+      })),
+      directory: base,
+    };
   }
 
   async list(): Promise<AtlasPlan[]> {
