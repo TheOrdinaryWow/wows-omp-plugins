@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.5.0...omp-herdr-dag@0.6.0) (2026-10-10)
+
+
+### Features
+
+* **omp-herdr-dag:** follow final task results and host completion estimates on task cards ([b97231b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/b97231b6412ba5a7c22902688ddfe52e7f7379d6))
+
+
+### Bug Fixes
+
+* raise supported OMP floor to 18.5.1 ([217da70](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/217da70c138e3a5bd0ccaa0f7e1b3fb03b7d1b0f))
+
 ## [0.5.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.4.5...omp-herdr-dag@0.5.0) (2026-10-09)
 
 

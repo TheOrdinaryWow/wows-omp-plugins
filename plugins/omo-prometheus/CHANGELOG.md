@@ -21,6 +21,23 @@
 - Reopen and block affect only the named row, serialize ledger updates with atomic file replacement, and reopen historical completions lacking proof on resume.
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 
+## [0.20.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.19.0...omo-prometheus@0.20.0) (2026-10-10)
+
+
+### Features
+
+* **omo-prometheus:** declare roadmap criteria per plan, answer atlas:plans and notice stage drift ([80bfe90](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/80bfe9058df210d3f818335998d370fef421de18))
+* **omo-prometheus:** let Atlas use adr plugin tools through their own provenance handshake ([792b691](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/792b6913bc8ed50477c9cf6dcc19698c52b41b64))
+* **omo-prometheus:** number deferred findings and require their triage before atlas_release ([bc38756](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/bc387567ae816f3bf1046a571c8b25c17e743a97))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** judge batch children by their own results and drop pre-18.5 host fallbacks ([be8f0a5](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/be8f0a5e6fd534c148b43ac5490a17ab176ad36a))
+* **omo-prometheus:** keep Git out of planning and execution in workspaces without a repository ([3a0894b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/3a0894b31c8e18962c5bb4ab0fc732c2ef22c46f))
+* **omo-prometheus:** triage deferred findings by whether the roadmap is usable in the repository ([636adc8](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/636adc89a1d4faa374d12aa30f709646fd1d976e))
+* raise supported OMP floor to 18.5.1 ([217da70](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/217da70c138e3a5bd0ccaa0f7e1b3fb03b7d1b0f))
+
 ## [0.19.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.18.0...omo-prometheus@0.19.0) (2026-10-09)
 
 

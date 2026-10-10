@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.4.0...roadmap@0.5.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **roadmap:** require the adr plugin and manage ADRs through its service instead of roadmap_adr
+
+### Features
+
+* **roadmap:** require the adr plugin and manage ADRs through its service instead of roadmap_adr ([c4989fb](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c4989fb5edccc632523b7ee324159173305aba05))
+* **roadmap:** track multi-plan stage coverage, readiness, round goal outcomes and a format-2 upgrade prompt ([db82adc](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/db82adca89f4daf1cd07a3d6cc46a84e033e081d))
+
+
+### Bug Fixes
+
+* raise supported OMP floor to 18.5.1 ([217da70](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/217da70c138e3a5bd0ccaa0f7e1b3fb03b7d1b0f))
+* **roadmap:** report roadmap usability to Atlas and count late-bound plan completions in the close reminder ([fb26ac6](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/fb26ac6bcd47f44ba9cdea5c79d948741a6398bb))
+* **roadmap:** write the format-2 upgrade with the round close and tell the user when the adr plugin is missing ([d2f5281](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/d2f5281c246d54f2f7ee5559fd7a47dbc6592a53))
+
 ## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.3.2...roadmap@0.4.0) (2026-10-09)
 
 
