@@ -79,8 +79,8 @@ Prometheus 根据会话 `task` 工具列出的代理制定计划，Momus 也按�
 
 ```text
 plan.md          exact approved plan
-approval.json    source approval, workspace and plan identity
-ledger.json      row progress (version 5), plus the workspace's Git HEAD at approval
+approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
+ledger.json      row progress and deferred findings (version 6), plus the workspace's Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
@@ -92,7 +92,7 @@ Atlas 持有计划期间，会话的计划引用是 `atlas://<plan-id>/plan.md`�
 
 ## 执行记录
 
-执行记录保存每一行的验收标准、依赖、状态、请求的代理与实际使用的代理、tier、尝试和证据回执，以及计划的 SHA-256、交付方式和为最终报告记录的范围外发现。各行按以下顺序排列：
+执行记录保存每一行的验收标准、依赖、状态、请求的代理与实际使用的代理、tier、尝试和证据回执，以及计划的 SHA-256、交付方式和范围外发现（按记录顺序编号为 `O1`、`O2`……，分诊后附带处置）。各行按以下顺序排列：
 
 | 行 | 来源 | 等待 |
 | --- | --- | --- |
@@ -106,21 +106,22 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 
 | 操作 | 效果 |
 | --- | --- |
-| `status` | 所有行、范围外发现、交付方式和可派发的行。 |
+| `status` | 所有行、带编号和分诊结果的范围外发现、交付方式和可派发的行。 |
 | `start` | 预留一个前置条件已完成的开放行并返回尝试绑定；关口还会得到 `outputSchema`，HEAVY 行会得到上一次验证失败。 |
 | `done` | 记录子代理的真实最终结果。LIGHT 行、关口和 P1 随即完成。HEAVY 行只记录实现，仍保持进行中；其验证者的 `PASS` 完成该行，`FAIL` 带着摘要重新打开该行，`INCONCLUSIVE` 不改变任何状态。 |
 | `verify` | 针对实现已记录的 HEAVY 行：绑定一个不同的全新验证者，返回其 `{"verify": …}` 绑定和严格的 `outputSchema`（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`）。再次调用会替换尚未完成的验证者。 |
-| `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），一旦有关口开始或存在修正行即被拒绝；`scope: "out"` 记录一条不建行的范围外发现，任何时候都可以。 |
+| `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），一旦有关口开始或存在修正行即被拒绝；`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
+| `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当本会话的路线图握手有应答时可用。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当没有路线图插件时可用，引用可省略。 |
 | `fix` | 为否决的关口追加一个 X 行（可选 tier），并只重新打开该关口。 |
 | `block`、`reopen` | 只影响指定的行；依赖它的已完成行保留各自的证明。 |
 
-只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执，并且需要你明确确认。
+只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执、每条范围外发现都已分诊（拒绝时会列出未分诊的发现），并且需要你明确确认。计划完成和 `atlas:completed` 从不等待分诊。
 
 子代理的输出会被复制到 `evidence/` 并按摘要重新校验，因此删除原会话后，已验证的进度仍然保留。只保存子代理自己的输出（不含它链接的文件），未通过的验证者输出也不归档。某行的证明丢失或被改动时，该行会重新打开，旧的会话分支也无法回滚共享进度。恢复时，HEAVY 行保留已记录的实现，只丢弃尚未完成的验证者绑定。
 
 继续执行的消息是一条隐藏的 `<atlas-continuation>`，其中包含执行记录摘要；你每发一条消息最多发送八次，连续两次没有进展时，循环停止并通知你。
 
-旧版本写入的执行记录会在加载时升级，并保留已验证的进度：版本 5 之前各行均为 LIGHT，发现行和范围外发现为空，交付方式取自计划中的 `Delivery:` 行，没有则为 `direct`；版本 1 的检查点升级到版本 2；版本 4 之前没有记录 Git 基线，所以 F1 以最早记录的行开始时间推定。把执行记录存放在会话内的旧版本计划不会迁移，需要重新批准。`prometheus_ledger` 和 `prometheus_release` 已改名为 `atlas_ledger` 和 `atlas_release`，不保留别名。
+旧版本写入的执行记录会在加载时升级，并保留已验证的进度：版本 6 之前的范围外发现按记录顺序获得 `O1`、`O2`……编号，且尚未分诊；版本 5 之前各行均为 LIGHT，发现行和范围外发现为空，交付方式取自计划中的 `Delivery:` 行，没有则为 `direct`；版本 1 的检查点升级到版本 2；版本 4 之前没有记录 Git 基线，所以 F1 以最早记录的行开始时间推定。版本 1 和 2 的批准文件原样加载、从不改写，因为检查点绑定了它们的原始字节。把执行记录存放在会话内的旧版本计划不会迁移，需要重新批准。`prometheus_ledger` 和 `prometheus_release` 已改名为 `atlas_ledger` 和 `atlas_release`，不保留别名。
 
 `timeline.jsonl` 只用于展示：时间线缺失或损坏都不影响批准、所有权、回执或进度。旧版本的计划包显示从执行记录推导出的历史，推导出的事件从不写回。崩溃导致截断的最后一行，以及未知的未来事件类型或版本都会被忽略。
 
@@ -183,12 +184,15 @@ F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）
 
 ## 路线图契约
 
-安装了 `roadmap` 时，Prometheus 使用一个独立于 `herdrDag` 的 `pi.events` 契约：
+安装了 `roadmap` 时，Prometheus 使用独立于 `herdrDag` 的 `pi.events` 契约。所有载荷都带 `v: 1`。请求携带 `sessionId` 和新生成的 `requestId`；只有在请求内同步到达、且会话和请求都匹配的回复才算数，格式不对的回复会被丢弃。没有回复说明路线图插件不存在或版本较旧。
 
-1. 提出计划时，发送 `roadmap:binding-request {v:1, sessionId, requestId}`，只接受与该会话和请求匹配的同步 `roadmap:binding` 回复，其中包含 `repoRoot`、`toolSourcePath` 以及可选的已绑定活动阶段。
-2. 新的计划包写入版本 2 的批准文件，带可选的 `roadmapStage: {repoRoot, id}`；版本 1 的批准仍可恢复，不会改写，也不要求重新批准。
-3. 只有当 `roadmap_*` 工具的扩展源路径与 `toolSourcePath` 一致时，Atlas 才会放行；拒绝信息会说明是缺少握手，还是工具来自其他来源。在此范围内，计划需要的所有路线图操作都允许。
-4. 在首次使绑定阶段的计划完成的那次执行记录写入之后，Prometheus 发送 `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, delivery?, at}`，附带经过验证的关口结论和摘要。只有所有行都完成，计划才算完成：`Delivery: pr` 或 `ship` 时，事件在 P1 行之后发送，并带上 `delivery: {mode, summary}`；`direct` 时事件在关口之后发送。批准时没有绑定阶段的计划，使用执行会话在那一刻绑定的阶段。路线图会记录一条待关闭提醒，阶段仍由会话自己关闭。
+1. 绑定。检查提案时和记录提案时，Prometheus 都会发送 `roadmap:binding-request {v, sessionId, requestId}`，接受带有 `repoRoot`、`toolSourcePath` 以及可选已绑定活动阶段 `{id, title, round, criteria?, revision?}` 的 `roadmap:binding` 回复。`criteria` 是该阶段当前完成标准的编号；`revision` 是路线图计算的规划依据哈希，Prometheus 不解析它。不发送这两个字段的旧版本回复照常接受。
+2. 覆盖声明。绑定阶段带有 `criteria` 时，计划必须有且仅有一行计划级声明，例如 `Roadmap criteria: DC1, DC3`（位于第 0 列，在 `## Tasks`、`## Final gates` 和代码块之外），列出的编号不重复且都是当前完成标准。缺少这一行、写了多行、没有列出标准、格式错误、位置不对或列出其他编号时，`write xd://propose` 调用会在批准对话框打开之前被拒绝，拒绝信息会列出当前编号。没有绑定阶段，或绑定中没有 `criteria` 时，这一行可写可不写，既不校验也不保存。
+3. 存储。提案标记（版本 4）和批准文件（版本 3）记录 `roadmapStage: {repoRoot, id, criteria?, revision?}`：只有针对带标准的绑定作出声明时才记录 `criteria`，绑定带有 `revision` 时就记录它。版本 3 的提案标记以及版本 1、2 的批准文件仍可加载和恢复。
+4. 工具。只有当 `roadmap_*` 工具（包括 `roadmap_upgrade`）的扩展源路径与 `toolSourcePath` 一致时，Atlas 才会放行；拒绝信息会说明是缺少握手，还是工具来自其他来源。在此范围内，计划需要的所有路线图操作都允许。
+5. 计划查询。对于自己的主会话，Prometheus 用 `atlas:plans {v, sessionId, requestId, plans}` 回复 `atlas:plans-request {v, sessionId, requestId, repoRoot, stage?}`，同步读取共享计划存储，不加锁也不写入。每个计划包含 `planId`、`name`、`repoRoot`、`stage`，已记录时还有声明的 `criteria` 和批准时的 `revision`，以及 `status`（`unfinished` 或 `complete`）、`done`、`total`、`gates`（经过验证的关口结论和摘要，完成前为空）、P1 完成后的 `delivery: {mode, summary}`、`deferred`（`id`、`title`，分诊后还有 `disposition` 和 `reference`）和计划包目录 `directory`。只列出批准中记录了该 `repoRoot`（给定 `stage` 时还要求是该阶段）的计划包；无法读取的计划包会被跳过并记录警告，没有会话目录的会话回复空列表。只在完成时才绑定阶段的计划不会列出。
+6. 漂移。用 `/atlas <计划>` 进入计划（或切换到执行过它的会话来恢复）时，以及计划完成时，Prometheus 发送 `roadmap:stage-request {v, sessionId, requestId, repoRoot, stage}`，接受可选 `stage` 中带有 `id`、`title`、`round`、`status`、当前 `criteria` 和 `revision` 的 `roadmap:stage` 回复。该 revision 与批准时不同时，用户会看到一条提示，写明阶段及其当前完成标准；完成时的 `atlas_ledger` 结果也会重复这条提示，供最终报告使用。漂移从不暂停执行；没有记录 revision 的批准不会产生提示。
+7. 完成。在首次使绑定阶段的计划完成的那次执行记录写入之后，Prometheus 发送 `atlas:completed {v:1, sessionId, planId, roadmapStage: {repoRoot, id}, gates, delivery?, at}`，附带经过验证的关口结论和摘要。只有所有行都完成，计划才算完成：`Delivery: pr` 或 `ship` 时，事件在 P1 行之后发送，并带上 `delivery: {mode, summary}`；`direct` 时事件在关口之后发送。批准时没有绑定阶段的计划，使用执行会话在那一刻绑定的阶段。路线图会记录一条待关闭提醒，阶段仍由会话自己评估并关闭。
 
 完成事件只在每个生产者实例内去重，所以重启后重新打开并再次完成计划，可能会再次发送。路线图在每个接收会话内按 `planId` 对待关闭条目去重。
 

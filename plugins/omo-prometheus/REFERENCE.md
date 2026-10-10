@@ -79,8 +79,8 @@ Native approval creates a bundle at `ctx.sessionManager.getSessionDir()/atlas/<p
 
 ```text
 plan.md          exact approved plan
-approval.json    source approval, workspace and plan identity
-ledger.json      row progress (version 5), plus the workspace's Git HEAD at approval
+approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
+ledger.json      row progress and deferred findings (version 6), plus the workspace's Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
@@ -92,7 +92,7 @@ While Atlas owns a plan, the session's plan reference is `atlas://<plan-id>/plan
 
 ## Ledger
 
-The ledger tracks each row's acceptance criteria, dependencies, status, requested and resolved agent, tier, attempt and evidence receipt, plus the plan's SHA-256, its delivery mode, and the out-of-scope findings for the final report. Rows come in this order:
+The ledger tracks each row's acceptance criteria, dependencies, status, requested and resolved agent, tier, attempt and evidence receipt, plus the plan's SHA-256, its delivery mode, and the out-of-scope findings (`O1`, `O2`, … in recorded order, each with its triage once recorded). Rows come in this order:
 
 | Rows | Origin | Waits for |
 | --- | --- | --- |
@@ -106,21 +106,22 @@ Atlas drives it with `atlas_ledger`:
 
 | Action | Effect |
 | --- | --- |
-| `status` | Every row, deferred findings, delivery mode and dispatchable rows. |
+| `status` | Every row, deferred findings with their ids and triage, delivery mode and dispatchable rows. |
 | `start` | Reserves an open row whose prerequisites are done and returns its attempt binding; gates also get their `outputSchema`, a HEAVY row its last verification failure. |
 | `done` | Records the child's real final result. LIGHT rows, gates and P1 finish. A HEAVY row records its implementation and stays in progress; its verifier's `PASS` finishes it, `FAIL` reopens it with the summary, `INCONCLUSIVE` changes nothing. |
 | `verify` | HEAVY row with a recorded implementation: binds a distinct fresh verifier and returns its `{"verify": …}` binding and strict `outputSchema` (`rowId`, `planSha256`, `attempt`, `verdict`, `summary`, `evidence`). A second call replaces an unfinished verifier. |
-| `discover` | `scope: "in"` appends a D row (title, acceptance, reason, optional agent and tier), refused once a gate has started or a fix row exists; `scope: "out"` records a deferred finding with no row, at any time. |
+| `discover` | `scope: "in"` appends a D row (title, acceptance, reason, optional agent and tier), refused once a gate has started or a fix row exists; `scope: "out"` records the next deferred finding `O<n>` with no row, at any time. |
+| `triage` | Records where the deferred finding named by `id` went, with the reference in `evidence`; a later triage replaces it. `todo`: the Roadmap TODO id (`T` and at least three digits), only when the roadmap handshake answered in this session. `duplicate`: what it duplicates. `wontfix`: the reason. `report`: only when the roadmap plugin is absent; the reference is optional. |
 | `fix` | Appends an X row (optional tier) for the rejecting gate and reopens only that gate. |
 | `block`, `reopen` | Affect only the named row; completed dependents keep their proof. |
 
-A row is done only with proof from the child's real final result; a failed, foreign or still-running child, or a hand-written reference, cannot complete work. A HEAVY row also needs a passing receipt from a different child created after verification started. Verification status (`pending`, `running`, `passed`, `failed`) is derived, never stored. `atlas_release` needs a valid receipt for every row, the verifier receipts of HEAVY rows, and your explicit confirmation.
+A row is done only with proof from the child's real final result; a failed, foreign or still-running child, or a hand-written reference, cannot complete work. A HEAVY row also needs a passing receipt from a different child created after verification started. Verification status (`pending`, `running`, `passed`, `failed`) is derived, never stored. `atlas_release` needs a valid receipt for every row, the verifier receipts of HEAVY rows, a triage for every deferred finding (it names the untriaged ones), and your explicit confirmation. Plan completion and `atlas:completed` never wait for triage.
 
 Child outputs are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the original session. Only the child's own output is kept (not linked files), and a failing verifier's output is not archived. A row whose proof goes missing or changes reopens, and an old session branch cannot roll shared progress back. On resume, a HEAVY row keeps its recorded implementation and drops only an unfinished verifier binding.
 
 Continuation is a hidden `<atlas-continuation>` message with the ledger summary, sent at most eight times per message from you; two in a row without progress stop the loop and notify you.
 
-Ledgers from earlier releases are upgraded on load, keeping verified progress: before version 5 rows are LIGHT, discoveries and deferred findings start empty, and delivery comes from the plan's `Delivery:` line, else `direct`; version 1 checkpoints become version 2; before version 4 there is no recorded Git baseline, so F1 dates one from the earliest row start. Plans from releases that kept the ledger inside the session are not migrated and need fresh approval. `prometheus_ledger` and `prometheus_release` became `atlas_ledger` and `atlas_release`, with no aliases.
+Ledgers from earlier releases are upgraded on load, keeping verified progress: before version 6 deferred findings get ids `O1`, `O2`, … in recorded order and start untriaged; before version 5 rows are LIGHT, discoveries and deferred findings start empty, and delivery comes from the plan's `Delivery:` line, else `direct`; version 1 checkpoints become version 2; before version 4 there is no recorded Git baseline, so F1 dates one from the earliest row start. Approvals of versions 1 and 2 load unchanged and are never rewritten, because the checkpoint binds their exact bytes. Plans from releases that kept the ledger inside the session are not migrated and need fresh approval. `prometheus_ledger` and `prometheus_release` became `atlas_ledger` and `atlas_release`, with no aliases.
 
 `timeline.jsonl` is display-only: a missing or damaged timeline never affects approval, ownership, receipts or progress. Bundles from earlier releases show history derived from their ledger, never written back. A crash-truncated final line and unknown future event kinds or versions are ignored.
 
@@ -183,12 +184,15 @@ Startup order does not matter. Unsupported versions and unknown sessions are ign
 
 ## Roadmap contract
 
-With `roadmap` installed, Prometheus uses a `pi.events` contract independent of `herdrDag`:
+With `roadmap` installed, Prometheus uses `pi.events` contracts independent of `herdrDag`. Every payload has `v: 1`. A request carries `sessionId` and a fresh `requestId`; an answer counts only when it arrives synchronously inside the request, for the same session and request, and a malformed answer is dropped. No answer means the roadmap plugin is absent or older.
 
-1. At proposal time it emits `roadmap:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `roadmap:binding` reply for that session and request, carrying `repoRoot`, `toolSourcePath` and an optional bound active stage.
-2. New bundles write approval version 2 with optional `roadmapStage: {repoRoot, id}`; version 1 approvals still resume without rewriting or fresh approval.
-3. Atlas admits `roadmap_*` tools only from the extension source path equal to `toolSourcePath`; a refusal says whether the handshake is missing or the tool comes from another source. Within that boundary every roadmap action the plan needs is allowed.
-4. After the ledger write that first completes a stage-bound plan, Prometheus emits `atlas:completed {v:1, sessionId, planId, roadmapStage, gates, delivery?, at}` with verified gate verdicts and summaries. A plan is complete only when every row is done: with `Delivery: pr` or `ship` the event follows P1 and carries `delivery: {mode, summary}`; with `direct` it follows the gates. A plan approved without a stage uses the stage bound in the executing session at that moment. Roadmap records a pending-close reminder; the session still closes the stage itself.
+1. Binding. When Prometheus checks a proposal and again when it records it, it emits `roadmap:binding-request {v, sessionId, requestId}` and accepts a `roadmap:binding` reply carrying `repoRoot`, `toolSourcePath` and an optional bound active stage `{id, title, round, criteria?, revision?}`. `criteria` lists the stage's current done-criterion ids; `revision` is roadmap's opaque planning-basis hash. Replies from releases that send neither are accepted.
+2. Coverage. When the bound stage lists `criteria`, the plan needs exactly one plan-level line such as `Roadmap criteria: DC1, DC3` (column 0, outside `## Tasks`, `## Final gates` and code fences) naming unique ids that are all current criteria. The `write xd://propose` call is refused before the approval dialog opens when the line is missing, repeated, empty, malformed, misplaced or names another id; the refusal lists the current ids. Without a bound stage, or when the binding has no `criteria`, the line is optional and is neither validated nor stored.
+3. Storage. The proposal marker (version 4) and the approval (version 3) record `roadmapStage: {repoRoot, id, criteria?, revision?}`: `criteria` only when declared against a binding that listed criteria, `revision` whenever the binding carried one. Version 3 markers and version 1 and 2 approvals still load and resume.
+4. Tools. Atlas admits `roadmap_*` tools, `roadmap_upgrade` included, only from the extension source path equal to `toolSourcePath`; a refusal says whether the handshake is missing or the tool comes from another source. Within that boundary every roadmap action the plan needs is allowed.
+5. Plans. Prometheus answers `atlas:plans-request {v, sessionId, requestId, repoRoot, stage?}` for its own main sessions with `atlas:plans {v, sessionId, requestId, plans}`, read synchronously from the shared plan store with no locks or writes. Each plan has `planId`, `name`, `repoRoot`, `stage`, the declared `criteria` and approval `revision` when recorded, `status` (`unfinished` or `complete`), `done`, `total`, `gates` (verified verdicts and summaries, empty until complete), `delivery: {mode, summary}` once P1 is done, `deferred` (`id`, `title`, and `disposition` and `reference` once triaged) and the bundle `directory`. Only bundles whose approval records a stage in that `repoRoot` (and that stage, when given) are listed; unreadable bundles are skipped with a warning, and a session without a session directory answers with no plans. Plans bound to a stage only at completion are not listed.
+6. Drift. When a plan is entered with `/atlas <plan>` (or resumed by switching to its session) and when it completes, Prometheus emits `roadmap:stage-request {v, sessionId, requestId, repoRoot, stage}` and accepts a `roadmap:stage` answer whose optional `stage` carries `id`, `title`, `round`, `status`, current `criteria` and `revision`. When that revision differs from the approval's, the user sees a notice naming the stage and its current criteria, and the completing `atlas_ledger` result repeats it for the final report. Drift never pauses execution; approvals without a revision get no notice.
+7. Completion. After the ledger write that first completes a stage-bound plan, Prometheus emits `atlas:completed {v:1, sessionId, planId, roadmapStage: {repoRoot, id}, gates, delivery?, at}` with verified gate verdicts and summaries. A plan is complete only when every row is done: with `Delivery: pr` or `ship` the event follows P1 and carries `delivery: {mode, summary}`; with `direct` it follows the gates. A plan approved without a stage uses the stage bound in the executing session at that moment. Roadmap records a pending-close reminder; the session still evaluates and closes the stage itself.
 
 Completion events are deduplicated per producer instance only, so a restart followed by reopening and recompleting a plan can emit again. Roadmap deduplicates pending-close entries by `planId` per receiving session.
 

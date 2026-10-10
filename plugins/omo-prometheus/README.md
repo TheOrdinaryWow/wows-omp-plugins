@@ -72,11 +72,13 @@ Every plan ends with two machine-readable sections. Tasks are checkbox rows numb
 
 Prometheus assigns each task the most specific agent your `task` tool offers, preferring `omo-toolkit` agents. If one is missing at execution time, Atlas tries its fallbacks, then the best fit from the live list, without asking you to re-approve.
 
+A plan for a bound [roadmap](#working-with-other-plugins) stage also carries one plan-level line naming the stage's done criteria it delivers, such as `Roadmap criteria: DC1, DC3`. While the roadmap plugin reports the stage's criteria, Prometheus refuses, before you are asked to approve, a proposal whose line is missing, repeated, empty or names an id that is not a current criterion. Criteria a plan does not list stay open for another plan.
+
 ### Execution
 
 After approval the main session becomes Atlas. Atlas does not edit files itself: the plugin blocks implementation tools (`bash`, `eval`, `edit`, file writes and so on) in the parent session, so every task goes to a child agent through `task`.
 
-Atlas tracks the plan in a ledger. A task is done only with proof from its child's actual final result, never from a ticked box in the plan file. Tasks run in dependency order, and a dependency cycle is rejected before anything runs. A HEAVY task (security, migrations, public API, data-loss risk and similar) also needs a second, fresh child to verify it. A defect a child finds inside the change's reach becomes a discovered task (`D1`, `D2`, …) before the final gates; one outside it goes into the final report. See the [reference](REFERENCE.md#ledger) for the contracts.
+Atlas tracks the plan in a ledger. A task is done only with proof from its child's actual final result, never from a ticked box in the plan file. Tasks run in dependency order, and a dependency cycle is rejected before anything runs. A HEAVY task (security, migrations, public API, data-loss risk and similar) also needs a second, fresh child to verify it. A defect a child finds inside the change's reach becomes a discovered task (`D1`, `D2`, …) before the final gates. One outside it becomes a deferred finding (`O1`, `O2`, …) that Atlas triages: a Roadmap TODO it files, a duplicate, won't fix, or, without the roadmap plugin, report only. The final report lists every finding with its disposition for you to review, and Atlas cannot be released while one is untriaged. See the [reference](REFERENCE.md#ledger) for the contracts.
 
 Atlas is nudged to continue unfinished work. If the ledger or plan files are missing, damaged or no longer match the approved plan, Atlas pauses until you restore them, or exit with `/atlas exit` and get a changed plan approved.
 
@@ -185,7 +187,7 @@ User settings merge with project overrides. Settings are read at session start, 
 - `omo-toolkit`: plans prefer its category agents, and gates F2, F3 and F4 run on `deep-high` and `deep-low`.
 - `judge-dispatch`: does not reroute anything while a plan executes, and never reroutes `metis`, `momus` or `oracle`.
 - `omp-herdr-dag`: shows Atlas tasks, discovered tasks, fixes, gates and delivery as a live dependency graph.
-- `roadmap`: a plan proposed while a roadmap stage is bound remembers that stage. Atlas may use the roadmap tools, and when the plan completes (after delivery, for `pr` and `ship`) the session is reminded to close the stage with the gate evidence. It never closes the stage itself.
+- `roadmap`: a plan proposed while a roadmap stage is bound remembers that stage and the criteria it declares. A stage may be delivered by several plans; the roadmap plugin asks Atlas which plans exist for a stage, what they cover and how far they got. Atlas may use the roadmap tools and files a Roadmap TODO for each deferred finding. If the stage's objective, scope, criteria or design constraints change after approval, `/atlas <plan>` and plan completion show a notice; execution never pauses for it. When the plan completes (after delivery, for `pr` and `ship`) the session is reminded to evaluate the stage close: the stage closes only when every current criterion has passing evidence from some plan, and never by itself.
 - `adr`: Atlas may use the ADR tools, with or without `roadmap`. ADR acceptance, rejection and supersession are Atlas's own `adr_manage` steps, never a child's; a stage with proposed ADRs cannot close until they are disposed of.
 - [Magic Context](https://github.com/cortexkit/magic-context): its `ctx_*` tools stay available to Atlas.
 
