@@ -422,7 +422,7 @@ const CASES: Record<string, string> = {
     ),
   ),
   "adr-absent":
-    "without the adr plugin, roadmap tools and commands refuse with an install hint, injection is off and docs/roadmap stays protected",
+    "without the adr plugin, roadmap tools and commands refuse with an install hint, each turn notes why roadmap context is missing, the user is told once and docs/roadmap stays protected",
   "adr-close": "stage close refuses while linked ADRs are proposed and succeeds after adr_manage accepts them, recording their statuses",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
@@ -1660,7 +1660,16 @@ async function acceptance(name: string, root: string): Promise<void> {
       // The repository was initialized with the adr plugin; this session loads roadmap without it.
       const repo = await initialized(root);
       const before = (await loadAll(repo)).files;
-      assert.equal(await injection(h), "");
+      // Each turn says why roadmap context is missing; the user hears the install hint once per session.
+      const note = await injection(h);
+      assert.match(note, /adr plugin, which is not loaded/);
+      assert.match(note, /omp plugin install adr@wows-omp-plugins/);
+      assert.equal(note.split("\n").length, 1);
+      assert.equal(await injection(h), note);
+      assert.deepEqual(
+        h.ui.notifications.filter((notice) => /omp plugin install adr/.test(notice.message)).map((notice) => notice.level),
+        ["warning"],
+      );
       for (const [toolName, input] of [
         ["roadmap_status", {}],
         ["roadmap_stage", { action: "start", id: "S01" }],
@@ -2656,14 +2665,21 @@ async function acceptance(name: string, root: string): Promise<void> {
         h.ui.outcome = undefined;
         await command(h, "roadmap", "close-round");
         assert.deepEqual((await loadAll(repo)).files, before, "a cancelled upgrade or outcome dialog writes nothing");
+        // A refused close must not leave the upgrade behind: the README stays format 1 and the round stays active.
+        for (const summary of ["", "Shipped | slipped"]) {
+          h.ui.outcome = { assessment: "partial", summary };
+          await command(h, "roadmap", "close-round");
+          assert.deepEqual((await loadAll(repo)).files, before, `a refused outcome ${JSON.stringify(summary)} writes nothing`);
+        }
         h.ui.outcome = { assessment: "not_achieved", summary: "Checkout slipped to the next round." };
         await command(h, "roadmap", "close-round");
         const model = await loadAll(repo);
         const round = model.rounds[0];
         assert.deepEqual([model.index.format, round?.format, round?.status], [2, 2, "closed"]);
         assert.match(round?.outcome ?? "", /not_achieved[\s\S]*Checkout slipped to the next round\./);
-        assert.deepEqual(h.ui.upgradeCalls, ["round-outcome", "round-outcome", "round-outcome"]);
-        assert.deepEqual(h.ui.outcomeCalls, ["R1", "R1"]);
+        // Every attempt after a refusal still offers the format-1 choice, including closing without an outcome.
+        assert.deepEqual(h.ui.upgradeCalls, Array(5).fill("round-outcome"));
+        assert.deepEqual(h.ui.outcomeCalls, ["R1", "R1", "R1", "R1"]);
         assert((await call(h, "roadmap_check", {})).ok);
       } else if (name === "rebuild") {
         assert((await call(h, "roadmap_overlap", { stage: "S01", intent: "Free" })).ok);

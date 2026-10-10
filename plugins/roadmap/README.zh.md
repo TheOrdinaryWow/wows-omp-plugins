@@ -14,7 +14,7 @@
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-需要 OMP 18.5.1 或更高版本、本地 Git 仓库以及 `adr` 插件（`omp plugin install adr@wows-omp-plugins`）；安装并启用两者后开启新会话。任何 `git init` 得到的工作树都可以，不需要远程仓库；在 Git 仓库之外，命令和工具都会拒绝。缺少 adr 插件时，`/roadmap`、`/init-project` 和所有 `roadmap_*` 工具都会拒绝并给出上述安装提示，也不会注入路线图上下文，但对 `docs/roadmap/` 的编辑仍会被阻止。插件附带 `roadmap` 技能。
+需要 OMP 18.5.1 或更高版本、本地 Git 仓库以及 `adr` 插件（`omp plugin install adr@wows-omp-plugins`）；安装并启用两者后开启新会话。任何 `git init` 得到的工作树都可以，不需要远程仓库；在 Git 仓库之外，命令和工具都会拒绝。缺少 adr 插件时，`/roadmap`、`/init-project` 和所有 `roadmap_*` 工具都会拒绝并给出上述安装提示，但对 `docs/roadmap/` 的编辑仍会被阻止。在已有路线图的仓库中，主会话还会在每个会话中显示一次该提示，并且每回合的路线图上下文会换成一行说明：安装 adr 插件之前路线图不可用。插件附带 `roadmap` 技能。
 
 ## 快速上手
 
@@ -64,7 +64,7 @@ omp plugin install roadmap@wows-omp-plugins
 
 ### 关闭一轮
 
-`/roadmap close-round` 要求所有阶段都已关闭或放弃，并且文档检查没有错误。它会询问本轮目标的达成情况（`achieved`、`partial`、`not_achieved` 或 `cancelled`，外加一段总结），并记入该轮的 Outcome；格式 2 的仓库必须填写。在格式 1 的仓库中，它会先提供一步完成的格式 2 升级；跳过则关闭时不记录结果。然后它会询问你如何处理每个剩余的未关闭 TODO：带引用地 `resolved`、`wontfix`（记入已知限制）或 `carried` 到后续轮次。指向计划中轮次阶段的未关闭 TODO 会自动以相同 ID 移过去。关闭会把该轮目录原地冻结。
+`/roadmap close-round` 要求所有阶段都已关闭或放弃，并且文档检查没有错误。它会询问本轮目标的达成情况（`achieved`、`partial`、`not_achieved` 或 `cancelled`，外加一段总结），并记入该轮的 Outcome；格式 2 的仓库必须填写。在格式 1 的仓库中，它会先提供一步完成的格式 2 升级；跳过则关闭时不记录结果。升级与关闭一并写入，因此关闭被拒绝时仓库仍是格式 1，下次还会再次提供这个选择。然后它会询问你如何处理每个剩余的未关闭 TODO：带引用地 `resolved`、`wontfix`（记入已知限制）或 `carried` 到后续轮次。指向计划中轮次阶段的未关闭 TODO 会自动以相同 ID 移过去。关闭会把该轮目录原地冻结。
 
 之后运行 `/roadmap new-round`，它会访谈你以确定下一轮的章程，或激活下一个计划中的轮次，还可以导入早先轮次中顺延的 TODO。
 

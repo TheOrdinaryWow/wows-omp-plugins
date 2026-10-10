@@ -14,7 +14,7 @@ Keeps a project roadmap in your repository as Markdown, maintained by the agent 
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-Requires OMP 18.5.1 or newer, a local Git repository and the `adr` plugin (`omp plugin install adr@wows-omp-plugins`); enable both and start a new session after installing. Any `git init` work tree works and no remote is needed; outside a Git repository the commands and tools refuse. Without the adr plugin, `/roadmap`, `/init-project` and every `roadmap_*` tool refuse with that install hint and no roadmap context is injected, while edits to `docs/roadmap/` stay blocked. The plugin ships the `roadmap` skill.
+Requires OMP 18.5.1 or newer, a local Git repository and the `adr` plugin (`omp plugin install adr@wows-omp-plugins`); enable both and start a new session after installing. Any `git init` work tree works and no remote is needed; outside a Git repository the commands and tools refuse. Without the adr plugin, `/roadmap`, `/init-project` and every `roadmap_*` tool refuse with that install hint, while edits to `docs/roadmap/` stay blocked. In a repository with a roadmap, the main session also shows the hint once per session, and each turn's roadmap context is replaced by one line saying roadmap is unavailable until the adr plugin is installed. The plugin ships the `roadmap` skill.
 
 ## Quick start
 
@@ -64,7 +64,7 @@ Work outside the roadmap does not need a stage. When the agent notices that a re
 
 ### Closing a round
 
-`/roadmap close-round` needs every stage closed or dropped and no document errors. It asks how the round's goal turned out (`achieved`, `partial`, `not_achieved` or `cancelled`, plus a summary) and records that in the round's Outcome; format-2 repositories require it. In a format-1 repository it first offers the one-step format-2 upgrade; skip it to close without an outcome. It then asks you how to dispose of each remaining open TODO: `resolved` with a reference, `wontfix` (recorded under Known limitations) or `carried` to a later round. Open TODOs targeting stages of a planned round move there automatically with the same ID. Closing freezes the round's directory in place.
+`/roadmap close-round` needs every stage closed or dropped and no document errors. It asks how the round's goal turned out (`achieved`, `partial`, `not_achieved` or `cancelled`, plus a summary) and records that in the round's Outcome; format-2 repositories require it. In a format-1 repository it first offers the one-step format-2 upgrade; skip it to close without an outcome. The upgrade is written together with the close, so a refused close leaves the repository at format 1 and offers the choice again. It then asks you how to dispose of each remaining open TODO: `resolved` with a reference, `wontfix` (recorded under Known limitations) or `carried` to a later round. Open TODOs targeting stages of a planned round move there automatically with the same ID. Closing freezes the round's directory in place.
 
 `/roadmap new-round` then interviews you for the next round's charter, or activates the next planned round. It can import carried TODOs from earlier rounds.
 

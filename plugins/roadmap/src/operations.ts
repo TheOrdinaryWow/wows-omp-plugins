@@ -154,6 +154,8 @@ export interface RoundCloseInput {
   dispositions: Array<{ id: string; disposition: "resolved" | "wontfix" | "carried"; reference?: string }>;
   /** How the round goal turned out; required in format-2 repositories, refused in format 1. */
   outcome?: { assessment: RoundAssessment; summary: string };
+  /** The user's Yes to the format-2 upgrade; a format-1 repository is upgraded in the same write, so a refused close changes nothing. */
+  upgrade?: boolean;
 }
 
 export interface OperationOptions {
@@ -1564,7 +1566,7 @@ export function autoCarryTodos(model: Model, round: RoundDoc): TodoItem[] {
   });
 }
 
-export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInput, options: OperationOptions = {}): Promise<Receipt> {
+export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInput, options: MutationOptions = {}): Promise<Receipt> {
   return mutate(
     repo,
     actor,
@@ -1579,6 +1581,8 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
       if (model.stages.some((stage) => stage.round === round.id && stage.status !== "closed" && stage.status !== "dropped")) {
         throw new Refusal("Every stage must be closed or dropped before the round can close.");
       }
+      const upgraded = input.upgrade === true && model.index.format === 1;
+      if (upgraded) upgradeRoadmapIndex(model.index);
       const outcome = input.outcome;
       if (model.index.format === 1 && outcome)
         throw new Refusal("A round outcome needs roadmap format 2; this repository is format 1.", [
@@ -1642,7 +1646,7 @@ export async function closeRound(repo: Repo, actor: Actor, input: RoundCloseInpu
       const content = renderRound(round);
       round.frozen_sha256 = roundSha256({ ...roundFiles(model, round), "README.md": content });
       mutation.put(round.path, content.replace(/^frozen_sha256:.*$/m, `frozen_sha256: "${round.frozen_sha256}"`));
-      return `Closed and froze ${round.id} — ${round.title}${outcome ? ` (goal ${outcome.assessment})` : ""}.${automatic.length ? ` Automatically carried ${automatic.map((item) => item.id).join(", ")} to their planned rounds, keeping IDs.` : ""} ADR management remains available.`;
+      return `${upgraded ? "Upgraded the repository to roadmap format 2. " : ""}Closed and froze ${round.id} — ${round.title}${outcome ? ` (goal ${outcome.assessment})` : ""}.${automatic.length ? ` Automatically carried ${automatic.map((item) => item.id).join(", ")} to their planned rounds, keeping IDs.` : ""} ADR management remains available.`;
     },
     options,
   );

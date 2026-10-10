@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import { AdrConnection } from "#src/adr.ts";
+import { ADR_INSTALL_HINT, AdrConnection } from "#src/adr.ts";
 import { requestPlans } from "#src/atlas.ts";
 import { registerCommands } from "#src/commands.ts";
 import { loadAll, loadRepo } from "#src/documents.ts";
@@ -159,10 +159,13 @@ export default function roadmap(pi: ExtensionAPI): void {
     }
   });
 
+  /** The session whose user was already told that roadmap needs the adr plugin. */
+  let adrHintSession: string | undefined;
   pi.on("before_agent_start", async (event, ctx) => {
     ses.ensure(ctx);
-    // Without the adr plugin every roadmap tool and command refuses, so turns get no roadmap context.
-    const connected = "api" in adr.connect(ctx.sessionManager.getSessionId());
+    // Without the adr plugin every roadmap tool and command refuses, so turns get only a note saying why.
+    const sessionId = ctx.sessionManager.getSessionId();
+    const connection = adr.connect(sessionId);
     try {
       const repo = await loadRepo(ctx.cwd);
       if (!repo) return;
@@ -170,8 +173,16 @@ export default function roadmap(pi: ExtensionAPI): void {
       const notice = ses.validateBinding(ctx, repo.repoRoot, model);
       // Subagents and external edits change files without this session's tools; resync once per turn.
       changed(ctx);
-      const block = connected ? renderInjection(model, ses.getBinding(repo.repoRoot)) : "";
       await commands.refresh(ctx);
+      if (!("api" in connection)) {
+        if (ctx.agent.kind === "main" && adrHintSession !== sessionId) {
+          adrHintSession = sessionId;
+          uiFor(ctx).notify(`${connection.reason} ${ADR_INSTALL_HINT}`, "warning");
+        }
+        const unavailable = `[Roadmap status] ${connection.reason} Roadmap tools and context are unavailable in this session. ${ADR_INSTALL_HINT}`;
+        return { systemPrompt: [...event.systemPrompt, unavailable] };
+      }
+      const block = renderInjection(model, ses.getBinding(repo.repoRoot));
       if (!block) return;
       const lines = [block];
       if (notice) lines.push(notice);

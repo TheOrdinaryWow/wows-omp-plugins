@@ -28,13 +28,13 @@ import {
   applyPreview,
   awaitConfirmation,
   checkReceipt,
+  dialogGuard,
   planLookup,
   requireRepo,
   resolveOverlap,
   statusReceipt,
   type ToolReceipt,
   toolResult,
-  upgradeAfterDialog,
 } from "#src/tools.ts";
 import type { RoundTodoDispositionChoice } from "#src/ui.ts";
 
@@ -365,13 +365,13 @@ export function registerCommands(
           return;
         }
         if (!outcome && model.index.format === 2) throw new Error(`Closing ${round.id} records its goal outcome. ${CLOSE_ROUND_USAGE}`);
-        if (upgradeFirst) {
-          // The README is outside the reviewed round directory, so the upgrade leaves `expected` valid.
-          const upgraded = await upgradeAfterDialog(ses, ctx, repo, generation);
-          show("wows-omp-roadmap.upgrade", upgraded);
-          if (!upgraded.ok) return;
-        }
-        const receipt = await closeRound(repo, actor(ctx), { expected, dispositions, ...(outcome ? { outcome } : {}) });
+        // The README is outside the reviewed round directory, so upgrading in the same write leaves `expected` valid.
+        const receipt = await closeRound(
+          repo,
+          actor(ctx),
+          { expected, dispositions, ...(outcome ? { outcome } : {}), ...(upgradeFirst ? { upgrade: true } : {}) },
+          upgradeFirst ? { guard: dialogGuard(ses, ctx, generation) } : {},
+        );
         if (receipt.ok) {
           for (const stage of model.stages.filter((stage) => stage.round === round.id)) ses.clearStage(ctx, repo.repoRoot, stage.id);
           ses.disarm(ctx, repo.repoRoot);

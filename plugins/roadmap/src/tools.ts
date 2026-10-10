@@ -333,6 +333,18 @@ export async function applyPreview(
   });
 }
 
+/** Refuses a write a dialog answered once the asking session has changed meanwhile. */
+export function dialogGuard(ses: RoadmapSession, ctx: ExtensionContext, generation: number): () => Receipt | undefined {
+  return () =>
+    ses.isCurrent(ctx, generation)
+      ? undefined
+      : {
+          ok: false,
+          reason: "The session changed while the upgrade dialog was open; nothing was written.",
+          hints: ["Ask the user again."],
+        };
+}
+
 /** Writes the `/roadmap upgrade` change after a Yes in the one-step upgrade dialog, unless the asking session changed meanwhile. */
 export function upgradeAfterDialog(
   ses: RoadmapSession,
@@ -341,17 +353,7 @@ export function upgradeAfterDialog(
   generation: number,
   signal?: AbortSignal,
 ): Promise<Receipt> {
-  return upgrade(repo, actor(ctx), {
-    signal,
-    guard: () =>
-      ses.isCurrent(ctx, generation)
-        ? undefined
-        : {
-            ok: false,
-            reason: "The session changed while the upgrade dialog was open; nothing was written.",
-            hints: ["Ask the user again."],
-          },
-  });
+  return upgrade(repo, actor(ctx), { signal, guard: dialogGuard(ses, ctx, generation) });
 }
 
 export function registerTools(

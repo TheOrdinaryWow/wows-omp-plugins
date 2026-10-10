@@ -62,7 +62,7 @@
 
 ### 通过 adr 插件管理的 ADR
 
-ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_check`、`/adr`）管理；路线图从不解析或写入 `docs/adr/`。它在会话开始时并在之后按需为自己的会话请求 adr 服务（`adr:binding-request` v1，见 adr 插件 REFERENCE 的“Service contract”），并注册一个接受仓库路线图中任意阶段的阶段解析器，使 `adr_manage` 能把 ADR 关联到阶段。会话关闭和重建时会注销该解析器。
+ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_check`、`/adr`）管理；路线图从不解析或写入 `docs/adr/`。它在会话开始时并在之后按需为自己的会话请求 adr 服务（`adr:binding-request` v1，见 adr 插件 REFERENCE 的“Service contract”），并注册一个接受仓库路线图中任意阶段的阶段解析器，使 `adr_manage` 能把 ADR 关联到阶段。会话关闭和重建时会注销该解析器。如果仓库有路线图，而回合开始时仍无法绑定该服务，这一回合注入的只是一行 `[Roadmap status]`，写明原因和安装提示；主会话还会在每个会话中用同样的原因和提示通知用户一次。
 
 - 轮次原则（`/init-project`、`/roadmap plan-round`、`/roadmap new-round`）必须引用 adr 插件报告的 ADR。ADR 文件无法读取或 `docs/adr/` 未初始化时会拒绝并给出指引。
 - `/init-project` 用 adr 插件 `createMany` 的试运行预览初始 ADR（`docs/adr/` 不存在或为空时一并初始化，已受管理时追加），在同一预览中展示 ADR 文件，确认后先创建它们，再写入任何路线图文件。初始 ADR 的 `id` 是别名，原则和阶段文本可以引用；它不能与已有 ADR 的 ID 相同。初始 ADR 的 `stage` 指向初始阶段的别名。
@@ -91,7 +91,7 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 
 关闭轮次时，指向计划轮次阶段的未关闭 TODO 会被自动顺延到那些轮次的 TODO 文档中。它们保留相同的 ID 和目标；目标文档记录 `carried_from`，冻结的来源条目变为 `carried` 并引用目标轮次。这些条目不会出现在处理对话框中，也不能再通过 `import_todos` 导入。
 
-关闭轮次时会在该轮的 `## Outcome` 中记录目标结果：`### Assessment`（`achieved`、`partial`、`not_achieved` 或 `cancelled`）和 `### Summary`。格式 2 的仓库没有它就拒绝关闭；格式 1 的仓库拒绝记录结果，因为只有格式 2 的轮次文件才能包含这一节。关闭对话框会询问评估和总结；在格式 1 中会先提供一步完成的升级（选“是”则升级并记录结果，跳过则不记录结果直接关闭）。只有记录了结果时，正在关闭的轮次文件才会变为格式 2。更早关闭或放弃的轮次保持原有字节和冻结哈希。
+关闭轮次时会在该轮的 `## Outcome` 中记录目标结果：`### Assessment`（`achieved`、`partial`、`not_achieved` 或 `cancelled`）和 `### Summary`。格式 2 的仓库没有它就拒绝关闭；格式 1 的仓库拒绝记录结果，因为只有格式 2 的轮次文件才能包含这一节。关闭对话框会询问评估和总结；在格式 1 中会先提供一步完成的升级（选“是”则升级并记录结果，跳过则不记录结果直接关闭）。升级属于关闭本身的写入，并经过相同的结果、TODO 和过期校验，因此关闭被拒绝时不写入任何内容，仓库仍是格式 1。只有记录了结果时，正在关闭的轮次文件才会变为格式 2。更早关闭或放弃的轮次保持原有字节和冻结哈希。
 
 同一个 ID 可以继续顺延到更后面的轮次（`R1 → R2 → R3`）。`check` 会校验每一跳：恰好有一处不是 `carried`；其余每处都是 `carried`，引用下一轮，并与该条目的 `carried_from` 一致。其他重复 ID 均为错误。
 
