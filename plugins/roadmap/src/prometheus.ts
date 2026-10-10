@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
+import { requestAdr } from "#src/adr.ts";
 import { parseDoneCriteria, parseRoadmapIndex, parseStage, planningRevision, type StageDoc } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import type { RoadmapSession } from "#src/ses.ts";
@@ -56,6 +57,17 @@ function readStage(repoRoot: string, id: string): StageDoc | undefined {
   return undefined;
 }
 
+/** requireRepo's initialization test, synchronously: docs/roadmap/README.md exists and parses as a roadmap index. */
+function roadmapInitialized(repoRoot: string): boolean {
+  const indexPath = join(repoRoot, "docs/roadmap/README.md");
+  try {
+    parseRoadmapIndex(readFileSync(indexPath, "utf8"), indexPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession): void {
   let context: ExtensionContext | undefined;
   const capture = (_event: unknown, ctx: ExtensionContext): void => {
@@ -83,10 +95,14 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
     )
       return;
     let repoRoot: string;
+    let usable: boolean;
     let stage: ContractStage | undefined;
     try {
       ses.ensure(ctx);
-      repoRoot = discoverRepo(ctx.cwd)?.repoRoot ?? resolve(ctx.cwd);
+      const git = discoverRepo(ctx.cwd);
+      repoRoot = git?.repoRoot ?? resolve(ctx.cwd);
+      // Every roadmap tool, roadmap_todo included, needs a Git work tree, an initialized roadmap and the adr service.
+      usable = git !== null && roadmapInitialized(repoRoot) && "api" in requestAdr(pi.events, payload.sessionId);
     } catch (error) {
       pi.logger.warn("roadmap could not answer the Prometheus binding request", { error: String(error) });
       return;
@@ -105,6 +121,7 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
       requestId: payload.requestId,
       repoRoot,
       toolSourcePath: TOOL_SOURCE_PATH,
+      usable,
       ...(stage ? { stage } : {}),
     });
   });

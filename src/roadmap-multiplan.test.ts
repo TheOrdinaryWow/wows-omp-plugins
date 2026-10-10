@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -475,6 +475,31 @@ describe("planning handoff and close reminder", () => {
     expect(alone).toHaveLength(3);
     expect(alone.join("\n")).toContain("p-done");
   });
+
+  test("the close reminder counts a completion that atlas:plans does not list as a complete plan with undeclared coverage", () => {
+    const { current } = activeModel();
+    const completion = (planId: string, stage = "S02"): PendingClose => ({
+      v: 1,
+      repoRoot: "/repo",
+      stage,
+      at: "2026-10-08T00:00:00.000Z",
+      planId,
+      gates: [{ gateId: "F1", verdict: "PASS", summary: "ok" }],
+    });
+    const open = planFixture({ planId: "p-open", name: "Second", stage: "S02", criteria: ["DC2"], revision: planningRevision(current) });
+    // Approved before S02 was bound, p-late completed for the stage the executing session had bound; the answer omits it.
+    const text = renderCloseReminder(current, [completion("p-other", "S09"), completion("p-late")], [open]).join("\n");
+    expect(text).toContain("Criteria coverage across 2 plans");
+    expect(text).toContain("Coverage undeclared: p-late.");
+    expect(text).not.toContain("p-other");
+    const verdict = found(text.split("\n").find((line) => line.startsWith("Not ready by declarations")));
+    expect(verdict).toContain("DC1, DC2, DC3 have no complete plan");
+    expect(verdict).toContain("(complete plans with undeclared coverage may still supply evidence)");
+    // A plan the answer lists keeps its reported coverage and status.
+    const listed = renderCloseReminder(current, [completion("p-open")], [open]).join("\n");
+    expect(listed).not.toContain("Coverage undeclared");
+    expect(found(listed.split("\n").at(-1))).not.toContain("undeclared coverage");
+  });
 });
 
 describe("roadmap:binding and roadmap:stage answers", () => {
@@ -508,7 +533,7 @@ describe("roadmap:binding and roadmap:stage answers", () => {
       off();
       return answers;
     };
-    return { ses, ctx, ask, sessionId };
+    return { ses, ctx, ask, sessionId, events };
   }
 
   test("stage requests answer the current planning basis and validate requests", async () => {
@@ -568,5 +593,36 @@ describe("roadmap:binding and roadmap:stage answers", () => {
     const after = found(binding());
     expect(after.criteria).toEqual(["DC1"]);
     expect(after.revision).not.toBe(before.revision);
+  });
+
+  test("the binding answer says whether the roadmap is usable in the repository: Git, an initialized roadmap and the adr plugin", async () => {
+    const usable = (cwd: string, adr: boolean): unknown => {
+      const { ask, sessionId, events } = contract(cwd);
+      if (adr)
+        events.on("adr:binding-request", (raw) =>
+          events.emit("adr:binding", { ...(raw as object), v: 1, toolSourcePath: "/plugins/adr/src/index.ts", api: adrApi() }),
+        );
+      const [answer] = ask("roadmap:binding-request", "roadmap:binding", { v: 1, sessionId, requestId: "u1" });
+      return (answer as { usable?: unknown } | undefined)?.usable;
+    };
+    const repo = await initialized();
+    expect(usable(repo.repoRoot, true)).toBe(true);
+    // roadmap_todo refuses without the adr plugin, so the roadmap is not usable either.
+    expect(usable(repo.repoRoot, false)).toBe(false);
+    const index = join(repo.roadmapDir, "README.md");
+    const text = await readFile(index, "utf8");
+    await writeFile(index, "not a roadmap");
+    expect(usable(repo.repoRoot, true)).toBe(false);
+    await writeFile(index, text);
+    const uninitialized = await mkdtemp(join(tmpdir(), "roadmap-uninitialized-"));
+    temporary.push(uninitialized);
+    if ((await Bun.spawn(["git", "init", "-q", uninitialized]).exited) !== 0) throw new Error("git init failed");
+    expect(usable(uninitialized, true)).toBe(false);
+    // A roadmap index outside a Git work tree is still unusable: roadmap tools refuse without Git.
+    const plain = await mkdtemp(join(tmpdir(), "roadmap-no-git-"));
+    temporary.push(plain);
+    await mkdir(join(plain, "docs/roadmap"), { recursive: true });
+    await writeFile(join(plain, "docs/roadmap/README.md"), text);
+    expect(usable(plain, true)).toBe(false);
   });
 });

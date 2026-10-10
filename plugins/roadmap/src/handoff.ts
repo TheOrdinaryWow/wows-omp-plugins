@@ -286,9 +286,17 @@ export function renderCloseReminder(
   // The completion stored its delivery summary already collapsed and bounded.
   if (latest.delivery) lines.push(`Delivery (${latest.delivery.mode}): ${latest.delivery.summary}`);
   if (plans) {
+    // atlas:plans lists plans by their approval's stage, so a plan approved before the stage was bound, which completed
+    // for the stage the executing session had bound, is missing; its completion counts as complete, coverage undeclared.
+    const unlisted = [
+      ...new Set(
+        pending.filter((item) => item.stage === stage.id && !plans.some((plan) => plan.planId === item.planId)).map((item) => item.planId),
+      ),
+    ];
     const coverage = stageCoverage(stage, plans);
+    const total = plans.length + unlisted.length;
     lines.push(
-      `Criteria coverage across ${plans.length} plan${plans.length === 1 ? "" : "s"}: ${capped(
+      `Criteria coverage across ${total} plan${total === 1 ? "" : "s"}: ${capped(
         coverage.criteria.map(
           (entry) => `${entry.id} ${entry.complete.length ? "complete" : entry.unfinished.length ? "unfinished only" : "uncovered"}`,
         ),
@@ -304,7 +312,8 @@ export function renderCloseReminder(
       lines.push(
         `Unfinished plans: ${list(coverage.unfinished, (plan) => ` ${plan.done}/${plan.total} rows, ${plan.criteria ? `criteria ${plan.criteria.join(" ")}` : "coverage undeclared"}`)}.`,
       );
-    if (coverage.undeclared.length) lines.push(`Coverage undeclared: ${list(coverage.undeclared, () => "")}.`);
+    const undeclared = [...coverage.undeclared.map((plan) => planLabel(plan)), ...unlisted.map((planId) => oneLine(planId, 80))];
+    if (undeclared.length) lines.push(`Coverage undeclared: ${capped(undeclared, REMINDER_CAP)}.`);
     if (coverage.drifted.length)
       lines.push(
         `Drift: ${list(coverage.drifted, () => "")} approved before ${stage.id}'s objective, scope, criteria or design constraints changed; re-check against the current stage.`,
@@ -321,7 +330,7 @@ export function renderCloseReminder(
       !missing.length
         ? `Ready to evaluate the close: a complete plan declares every current criterion of ${stage.id}; verify each with passing evidence.`
         : `Not ready by declarations: ${capped(missing, STAGE_CAP)} ${missing.length === 1 ? "has" : "have"} no complete plan${
-            coverage.undeclared.some((plan) => plan.status === "complete")
+            unlisted.length || coverage.undeclared.some((plan) => plan.status === "complete")
               ? " (complete plans with undeclared coverage may still supply evidence)"
               : ""
           }.`,
