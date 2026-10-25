@@ -1,8 +1,26 @@
-import { type Component, type Theme, type TUI, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import {
+  type Component,
+  col,
+  compact,
+  type DescribeContext,
+  elapsed,
+  keyed,
+  type NativeChild,
+  type NativeNode,
+  row,
+  span,
+  type Theme,
+  type TUI,
+  text,
+  truncateToWidth,
+  visibleWidth,
+} from "@oh-my-pi/pi-tui";
+import { Memo } from "@oh-my-pi/pi-tui/native/memo";
+import type { TspSpan } from "@oh-my-pi/pi-tui/native/node";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 
 import type { AtlasLive, AtlasLiveSnapshot } from "./atlas-live.ts";
-import { formatElapsed, progressBar, rowMark, singleLine } from "./atlas-menu.ts";
+import { formatElapsed, progressBar, progressNode, rowMark, singleLine } from "./atlas-menu.ts";
 
 /** Header plus row lines; the overflow notice takes the last row slot only when it hides two or more rows. */
 const MAX_LINES = 6;
@@ -41,6 +59,7 @@ export function atlasWidgetLines({ detail, rows, runningChildren }: AtlasLiveSna
 export class AtlasStatusWidget implements Component {
   #snapshot: AtlasLiveSnapshot;
   #unsubscribe: () => void;
+  readonly #native = new Memo();
 
   constructor(
     readonly live: AtlasLive,
@@ -97,5 +116,64 @@ export class AtlasStatusWidget implements Component {
     });
     if (listed.length < active.length) lines.push(t.fg("dim", `+${active.length - listed.length} more in progress`));
     return [title, ...lines].map((line) => truncateToWidth(line, Math.max(1, width)));
+  }
+
+  /**
+   * The same summary as native nodes in the dock. Snapshots arrive every second while a row runs; the node changes
+   * only when the ledger detail, the running count or a running row's child does, and Tern clocks the timers.
+   */
+  describe(_cx: DescribeContext): NativeNode {
+    const { detail, rows, runningChildren } = this.#snapshot;
+    const active = detail.rows.filter((item) => item.status === "in_progress");
+    return this.#native.get([detail, runningChildren, ...active.map((item) => rows.get(item.id))], () => {
+      const gates = detail.rows.filter((item) => /^F[1-4]$/.test(item.id));
+      const passed = gates.filter((item) => item.status === "done").length;
+      const head = row(
+        compact<NativeChild>([
+          text([span(detail.plan.name, "strong accent")], { truncate: "end", lines: 1 }),
+          progressNode(detail.done, detail.total, true),
+          text([span(`${runningChildren} running`, "muted")]),
+          gates.length > 0 && text([span(`gates ${passed}/${gates.length}`, "muted")]),
+        ]),
+        { gap: "md", align: "center" },
+      );
+      const now = Date.now();
+      const slots = MAX_LINES - 1;
+      const listed = active.length > slots ? active.slice(0, slots - 1) : active;
+      const lines = listed.map((item) => {
+        const current = rows.get(item.id);
+        const child = current?.attempt === item.attempt ? current : undefined;
+        const progress = child?.progress;
+        const activity: TspSpan[] = item.verification?.status === "running" ? [span("verify ", "accent")] : [];
+        if (item.verification?.status === "pending") activity.push(span("awaiting verification", "dim"));
+        else if (!child) activity.push(span("waiting for child", "dim"));
+        else if (progress?.currentTool) {
+          activity.push(span(progress.currentTool, "code"));
+          if (progress.currentToolArgs) activity.push(span(` ${singleLine(progress.currentToolArgs)}`, "dim"));
+        } else if (progress?.lastIntent) activity.push(span(singleLine(progress.lastIntent)));
+        else activity.push(span(child.status === "started" || child.status === "running" ? "running" : `child ${child.status}`, "dim"));
+        return keyed(
+          row(
+            compact<NativeChild>([
+              text([span(item.id, "accent"), span(` ${item.agent}`, "muted")]),
+              item.startedAt !== undefined && elapsed(now - item.startedAt),
+              text(activity, { truncate: "end", lines: 1, grow: 1 }),
+              progress && text([span(`${formatNumber(progress.tokens)} tok · $${progress.cost.toFixed(2)}`, "dim")]),
+            ]),
+            { gap: "sm", align: "center" },
+          ),
+          item.id,
+        );
+      });
+      const hidden = active.length - listed.length;
+      return col(
+        compact<NativeChild>([
+          keyed(head, "head"),
+          ...lines,
+          hidden > 0 && keyed(text([span(`+${hidden} more in progress`, "dim")]), "more"),
+        ]),
+        { gap: "xs", role: "omp.atlas.widget" },
+      );
+    });
   }
 }

@@ -1,14 +1,29 @@
 import {
   type Component,
+  col,
+  compact,
+  type DescribeContext,
+  elapsed as elapsedNode,
   getMarkdownTheme,
   getSelectListTheme,
+  item as itemNode,
+  keyed,
+  kv,
   Markdown,
   matchesKey,
+  md,
+  type NativeChild,
+  type NativeNode,
+  type NativeUiEvent,
+  node,
   padding,
   routeSgrMouseInput,
+  row as rowNode,
   type SgrMouseEvent,
+  span,
   type Theme,
   type TUI,
+  text,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -28,9 +43,12 @@ import {
   topBorder,
 } from "@oh-my-pi/pi-tui/chrome";
 import { type SelectItem, SelectList, type SelectListRenderItemContext } from "@oh-my-pi/pi-tui/components/select-list";
+import { Memo } from "@oh-my-pi/pi-tui/native/memo";
+import { leafKey, type NativeScroll, type TspSpan } from "@oh-my-pi/pi-tui/native/node";
+import { actionBar, actionButton, actionHint, hintsRow, itemIndex, selectList } from "@oh-my-pi/pi-tui/native/overlay";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 
-import type { AtlasLive, AtlasLiveSnapshot } from "./atlas-live.ts";
+import type { AtlasLive, AtlasLiveRow, AtlasLiveSnapshot } from "./atlas-live.ts";
 import type { AtlasPlanDetail, AtlasRowDetail } from "./atlas-store.ts";
 import type { AtlasEvent } from "./atlas-timeline.ts";
 
@@ -54,6 +72,22 @@ const PREVIEW_ROWS = 10;
 const BAR_WIDTH = 10;
 /** Rows per wheel notch, as in the host's fullscreen plan review. */
 const WHEEL_ROWS = 3;
+/** Tern shows both consoles as large glass sheets; it styles the `omp.overlay.*` roles itself. */
+const MENU_OVERLAY: NonNullable<Component["nativeOverlay"]> = {
+  role: "omp.overlay.omoPrometheus.dispatch",
+  size: "lg",
+  anchor: "center",
+  head: TITLE,
+};
+const PLAN_OVERLAY_ROLE = "omp.overlay.omoPrometheus.plan";
+const VIEW_TABS = [
+  { id: "row", label: "Row" },
+  { id: "timeline", label: "Timeline" },
+];
+/** Menu buttons that act on the highlighted plan, as their keys do. */
+const MENU_PLAN_ACTIONS: readonly string[] = ["start", "resume", "inspect", "delete", "rename"] satisfies AtlasMenuAction["kind"][];
+const EMPTY_TEXT = "No plans in this view; press Tab for All";
+const NO_MATCH_TEXT = "No plans match the search";
 
 /** Why a plan cannot be started or resumed from here; undefined when it can. */
 export function dispatchBlock(detail: AtlasPlanDetail, kind: AtlasDispatch, displayOnly: boolean): string | undefined {
@@ -135,6 +169,38 @@ export function singleLine(text: string): string {
 const ROW_STATUS: Record<string, string> = { open: "Not started", in_progress: "In progress", done: "Done", blocked: "Blocked" };
 const TEXT_MARK: Record<string, string> = { open: "[ ]", in_progress: "[~]", done: "[x]", blocked: "[!]" };
 
+/** Native counterparts of the row marks: one tone and icon per ledger status, and the checklist state it reads as. */
+const ROW_TONE: Record<string, "accent" | "success" | "error" | "muted"> = {
+  open: "muted",
+  in_progress: "accent",
+  done: "success",
+  blocked: "error",
+};
+const ROW_ICON: Record<string, string> = { open: "circle", in_progress: "clock", done: "check", blocked: "x-circle" };
+const ROW_CHECK: Record<string, "pending" | "active" | "done" | "blocked"> = {
+  open: "pending",
+  in_progress: "active",
+  done: "done",
+  blocked: "blocked",
+};
+
+/** A plan's progress as a native bar, green once every row is done; inside a row it takes the free width. */
+export function progressNode(done: number, total: number, inRow = false): NativeNode {
+  return node("progress", {
+    value: total ? done / total : 0,
+    label: total ? `${done}/${total}` : "—",
+    tone: total && done === total ? "success" : "accent",
+    ...(inRow ? { grow: 1, min: { w: "12ch" } } : {}),
+  });
+}
+
+/** A row's evidence without the archive path the row already names. */
+function evidenceSummary(item: AtlasRowDetail): string | undefined {
+  return item.outputPath && item.evidence?.startsWith(`${item.outputPath}: `)
+    ? item.evidence.slice(item.outputPath.length + 2)
+    : item.evidence;
+}
+
 /** One line per plan for dialog-free hosts: name, id, status and workspace. */
 export function atlasPlanList(details: readonly AtlasPlanDetail[]): string {
   if (!details.length) return "No shared approved plans are available.";
@@ -162,13 +228,18 @@ export function atlasPlanText(detail: AtlasPlanDetail): string {
   return lines.join("\n");
 }
 
-/** Native OMP panel chrome (same frame as the ask/hook selector) around a host SelectList. */
+/**
+ * Native OMP panel chrome (same frame as the ask/hook selector) around a host SelectList. In Tern it describes a
+ * glass sheet instead: filter tabs, the search, the plan list, the highlighted plan's rows and buttons for its keys.
+ */
 export class AtlasMenu extends OverlayPanel {
+  readonly nativeOverlay = MENU_OVERLAY;
   readonly #list: SelectList;
   readonly #details: Map<string, AtlasPlanDetail>;
   readonly #header = new PanelRows();
   readonly #preview = new PanelRows();
   readonly #footer = new PanelRows();
+  readonly #native = new Memo();
   #filter: AtlasFilter;
   #message = "";
 
@@ -186,8 +257,8 @@ export class AtlasMenu extends OverlayPanel {
     this.#filter = filter;
     this.#list = new SelectList(this.#items(), LIST_ROWS, getSelectListTheme(), {
       search: "always",
-      emptyText: "No plans in this view; press Tab for All",
-      noMatchText: "No plans match the search",
+      emptyText: EMPTY_TEXT,
+      noMatchText: NO_MATCH_TEXT,
       renderItem: (context) => [this.#renderPlanRow(context)],
       statusText: ({ query, visibleCount, totalCount }) =>
         `  ${query ? `Search: ${query}` : "Type to search"}  ${this.theme.fg("dim", `${visibleCount}/${totalCount}`)}`,
@@ -296,11 +367,15 @@ export class AtlasMenu extends OverlayPanel {
     if (selected) this.#act(kind, selected.value);
   }
 
+  #setFilter(filter: AtlasFilter): void {
+    this.#filter = filter;
+    this.#message = "";
+    this.#list.setItems(this.#items());
+  }
+
   handleInput(key: string): void {
     if (matchesKey(key, "tab")) {
-      this.#filter = this.#filter === "unfinished" ? "all" : "unfinished";
-      this.#message = "";
-      this.#list.setItems(this.#items());
+      this.#setFilter(this.#filter === "unfinished" ? "all" : "unfinished");
     } else if (matchesKey(key, "space") || key === " " || key === "I" || matchesKey(key, "shift+i")) {
       this.#actOnSelected("inspect");
     } else if (key === "R" || matchesKey(key, "shift+r")) {
@@ -320,11 +395,126 @@ export class AtlasMenu extends OverlayPanel {
     this.#syncRows(width);
     return super.render(width);
   }
+
+  /** Pointer actions in Tern run the key paths: tabs switch the filter, a click highlights, a double-click opens. */
+  handleNativeEvent(event: NativeUiEvent): void {
+    if (event.type === "action") {
+      if (event.act === "cancel") this.#act("cancel");
+      else if (MENU_PLAN_ACTIONS.includes(event.act)) this.#actOnSelected(event.act as AtlasMenuAction["kind"]);
+    } else if (event.type === "select" || event.type === "activate") {
+      const key = leafKey(event.key);
+      if (key === "filter") {
+        const filter = FILTERS.find((value) => value === event.item);
+        if (filter && filter !== this.#filter) this.#setFilter(filter);
+      } else if (key === "plans" && this.#details.has(event.item)) {
+        this.#message = "";
+        this.#list.setSelectedValue(event.item);
+        if (event.type === "activate") this.#actOnSelected("inspect");
+      }
+    }
+    this.tui.requestRender();
+  }
+
+  override describe(_cx: DescribeContext): NativeNode {
+    const { items, selected, query } = this.#list.pickerView();
+    return this.#native.get([this.#filter, this.#message, items, selected, query], () => this.#describe(items, selected, query));
+  }
+
+  /** The sheet is the frame (titled by `nativeOverlay`): a borderless column. */
+  #describe(items: readonly SelectItem[], selected: string | null, query: string): NativeNode {
+    const search: TspSpan[] = query.trim() ? [span("Search ", "muted"), span(query, "strong")] : [span("Type to search", "muted")];
+    const head = rowNode(
+      [
+        node("tabs", { items: FILTERS.map((id) => ({ id, label: FILTER_LABELS[id] })), active: this.#filter }, undefined, "filter"),
+        rowNode([text(search), text([span(`${items.length}/${this.#items().length}`, "dim")])], { gap: "sm", align: "center" }),
+      ],
+      { gap: "md", align: "center", justify: "between" },
+    );
+    const notice = this.#message
+      ? text([span(this.#message, "warning")], { wrap: "word" })
+      : this.#filter === "all"
+        ? text([span("Display only; press Tab for Unfinished to start or resume", "muted")], { wrap: "word" })
+        : undefined;
+    const plans = selectList(
+      "plans",
+      items.map((entry) => this.#describePlan(entry)),
+      { selected, filter: query.trim() || undefined, empty: query.trim() ? NO_MATCH_TEXT : EMPTY_TEXT, max: { lines: LIST_ROWS } },
+    );
+    const actions = actionBar([
+      actionButton("Start", "start", { keys: "enter", tone: "accent" }),
+      actionButton("Resume", "resume", { keys: "shift+r" }),
+      actionButton("Details", "inspect", { keys: "space" }),
+      actionButton("Rename", "rename", { keys: "shift+n" }),
+      actionButton("Delete", "delete", { keys: "delete", tone: "error" }),
+      null,
+      actionButton("Close", "cancel", { keys: "escape" }),
+    ]);
+    return col(
+      compact<NativeChild>([
+        keyed(head, "head"),
+        notice && keyed(notice, "notice"),
+        plans,
+        node("rule", undefined, undefined, "divider"),
+        keyed(this.#describePreview(selected), "preview"),
+        actions,
+      ]),
+      { gap: "md" },
+    );
+  }
+
+  /** One plan: name, short status in its tone, and the done/total count the TUI bar shows. */
+  #describePlan(entry: SelectItem): NativeNode {
+    const detail = this.#details.get(entry.value);
+    if (!detail) return itemNode(entry.value, { label: entry.label });
+    const tone = statusColor(detail);
+    return itemNode(entry.value, {
+      label: detail.plan.name,
+      detail: [span(shortStatus(detail), tone)],
+      value: detail.total ? `${detail.done}/${detail.total}` : "—",
+      tone,
+    });
+  }
+
+  /** The highlighted plan: where it runs, why it cannot, its progress and its first rows as a checklist. */
+  #describePreview(selected: string | null): NativeNode {
+    const detail = selected === null ? undefined : this.#details.get(selected);
+    if (!detail) return text([span("No plan selected", "muted")]);
+    const flagged = detail.status.startsWith("Invalid") || detail.status.includes("Different workspace") || detail.inUse;
+    const hidden = detail.rows.length - PREVIEW_ROWS;
+    const checklist = node("checklist", {
+      mode: "full",
+      phases: [
+        {
+          id: "rows",
+          title: "Rows",
+          items: detail.rows.slice(0, PREVIEW_ROWS).map((item) => ({
+            id: item.id,
+            text: [span(item.id, "muted"), span(` ${item.title}`)],
+            status: ROW_CHECK[item.status] ?? "pending",
+          })),
+        },
+      ],
+    });
+    return col(
+      compact<NativeChild>([
+        rowNode([text([span(detail.plan.name, "strong accent")]), text([span(detail.plan.id, "dim")])], { gap: "sm", align: "baseline" }),
+        text([span(detail.plan.cwd || "Workspace unavailable", "muted")]),
+        flagged && text([span(detail.status, statusColor(detail))], { wrap: "word" }),
+        progressNode(detail.done, detail.total),
+        detail.rows.length ? checklist : text([span("No plan rows", "muted")]),
+        hidden > 0 && text([span(`+${hidden} more ${hidden === 1 ? "row" : "rows"}; open Details for all of them`, "muted")]),
+      ]),
+      { gap: "sm", role: "omp.atlas.preview" },
+    );
+  }
 }
+
+/** An archived child output being read for the plan view, kept unstyled so both renderers can present it. */
+type ChildOutput = { state: "loading" } | { state: "loaded"; text: string } | { state: "failed"; error: string };
 
 /**
  * Fullscreen plan inspector: summary, a row sidebar, and the selected row's acceptance, evidence and
- * (on demand) its archived native child output.
+ * (on demand) its archived native child output. In Tern it describes the same as a large glass sheet.
  */
 export class AtlasPlanView implements Component {
   #selected = 0;
@@ -333,7 +523,7 @@ export class AtlasPlanView implements Component {
   #timelineScroll = 0;
   #timelineCache?: { events: readonly AtlasEvent[]; width: number; lines: string[] };
   #expanded = new Set<string>();
-  #outputs = new Map<string, string>();
+  #outputs = new Map<string, ChildOutput>();
   #markdown = new Map<string, Markdown>();
   #message = "";
   #bodyRows = 1;
@@ -344,6 +534,12 @@ export class AtlasPlanView implements Component {
   #liveSnapshot?: AtlasLiveSnapshot;
   #unsubscribe?: () => void;
   #timeline = false;
+  /** The last scroll key, forwarded to Tern's scroller (see `NativeNode.scroll`). */
+  #nativeScroll?: NativeScroll;
+  #nativeOverlay?: { name: string; props: NonNullable<Component["nativeOverlay"]> };
+  readonly #nativeRoot = new Memo();
+  readonly #nativeSidebar = new Memo();
+  readonly #nativeBody = new Memo();
 
   constructor(
     detail: AtlasPlanDetail,
@@ -417,17 +613,30 @@ export class AtlasPlanView implements Component {
     if (this.#expanded.delete(item.id)) return;
     this.#expanded.add(item.id);
     if (this.#outputs.has(file)) return;
-    this.#outputs.set(file, this.theme.fg("dim", "Loading..."));
+    this.#outputs.set(file, { state: "loading" });
     this.readOutput(file).then(
-      (text) => {
-        this.#outputs.set(file, text.trimEnd() || this.theme.fg("dim", "(empty output)"));
+      (content) => {
+        this.#outputs.set(file, { state: "loaded", text: content.trimEnd() });
         this.tui.requestRender();
       },
       (error: unknown) => {
-        this.#outputs.set(file, this.theme.fg("error", `Cannot read output: ${error instanceof Error ? error.message : String(error)}`));
+        this.#outputs.set(file, { state: "failed", error: error instanceof Error ? error.message : String(error) });
         this.tui.requestRender();
       },
     );
+  }
+
+  #outputText(file: string): string {
+    const output = this.#outputs.get(file);
+    if (!output) return "";
+    if (output.state === "loading") return this.theme.fg("dim", "Loading...");
+    if (output.state === "failed") return this.theme.fg("error", `Cannot read output: ${output.error}`);
+    return output.text || this.theme.fg("dim", "(empty output)");
+  }
+
+  /** Tern owns the scrolling natively; a scroll key moves its scroller instead of the painted offset. */
+  #scrollNative(by: NativeScroll["by"]): void {
+    this.#nativeScroll = { by, n: (this.#nativeScroll?.n ?? 0) + 1 };
   }
 
   #dispatch(kind: AtlasDispatch): void {
@@ -456,21 +665,33 @@ export class AtlasPlanView implements Component {
       this.done("back");
     } else if (matchesKey(key, "tab")) this.#timeline = !this.#timeline;
     else if (matchesKey(key, "up")) {
-      if (this.#timeline) this.#scrollBy(-1);
-      else this.#select(this.#selected - 1);
+      if (this.#timeline) {
+        this.#scrollBy(-1);
+        this.#scrollNative("line-up");
+      } else this.#select(this.#selected - 1);
     } else if (matchesKey(key, "down")) {
-      if (this.#timeline) this.#scrollBy(1);
-      else this.#select(this.#selected + 1);
+      if (this.#timeline) {
+        this.#scrollBy(1);
+        this.#scrollNative("line-down");
+      } else this.#select(this.#selected + 1);
     } else if (matchesKey(key, "home")) {
-      if (this.#timeline) this.#timelineScroll = 0;
-      else this.#select(0);
+      if (this.#timeline) {
+        this.#timelineScroll = 0;
+        this.#scrollNative("start");
+      } else this.#select(0);
     } else if (matchesKey(key, "end")) {
       // Render clamps to the last page.
-      if (this.#timeline) this.#timelineScroll = Number.MAX_SAFE_INTEGER;
-      else this.#select(this.detail.rows.length - 1);
-    } else if (matchesKey(key, "pageDown")) this.#scrollBy(Math.max(1, this.#bodyRows - 2));
-    else if (matchesKey(key, "pageUp")) this.#scrollBy(-Math.max(1, this.#bodyRows - 2));
-    else if (!this.#timeline && (matchesKey(key, "space") || key === " " || matchesKey(key, "right"))) this.#toggleOutput();
+      if (this.#timeline) {
+        this.#timelineScroll = Number.MAX_SAFE_INTEGER;
+        this.#scrollNative("end");
+      } else this.#select(this.detail.rows.length - 1);
+    } else if (matchesKey(key, "pageDown")) {
+      this.#scrollBy(Math.max(1, this.#bodyRows - 2));
+      this.#scrollNative("page-down");
+    } else if (matchesKey(key, "pageUp")) {
+      this.#scrollBy(-Math.max(1, this.#bodyRows - 2));
+      this.#scrollNative("page-up");
+    } else if (!this.#timeline && (matchesKey(key, "space") || key === " " || matchesKey(key, "right"))) this.#toggleOutput();
     else if (this.mode === "active") {
       if (key === "X" || matchesKey(key, "shift+x")) {
         this.dispose();
@@ -621,10 +842,7 @@ export class AtlasPlanView implements Component {
       else lines.push(t.fg("dim", `Child ${live.status}; waiting for the ledger to record the result`));
     }
     lines.push("", t.bold("Evidence"));
-    const summary =
-      item.outputPath && item.evidence?.startsWith(`${item.outputPath}: `)
-        ? item.evidence.slice(item.outputPath.length + 2)
-        : item.evidence;
+    const summary = evidenceSummary(item);
     if (summary) markdown(summary);
     else lines.push(t.fg("dim", item.status === "done" ? "No evidence summary" : "No evidence yet"));
     if (item.receipt) {
@@ -636,7 +854,7 @@ export class AtlasPlanView implements Component {
       lines.push("");
       if (this.#expanded.has(item.id)) {
         lines.push(`${t.bold("Child output")}  ${t.fg("dim", item.outputPath)}`);
-        wrap(this.#outputs.get(item.outputPath) ?? "");
+        wrap(this.#outputText(item.outputPath));
       } else {
         lines.push(t.fg("dim", `Press Space to show the archived child output (${item.outputPath})`));
       }
@@ -674,10 +892,10 @@ export class AtlasPlanView implements Component {
       .join("  ");
     const status =
       this.mode === "active" ? t.fg("accent", "Active in this session") : t.fg(statusColor(this.detail), shortStatus(this.detail));
-    const running = this.#liveSnapshot?.runningChildren ?? this.detail.rows.filter((item) => item.status === "in_progress").length;
+    const running = this.#running();
     const summary = `${status}  ${progressBar(t, this.detail.done, this.detail.total)} ${counts}  ${running} running · ${formatElapsed(this.detail.startedAt, this.#liveSnapshot?.at ?? Date.now())}  ${tally}`;
     const origin = t.fg("dim", `${this.detail.plan.id}  ${this.detail.plan.cwd || "Workspace unavailable"}`);
-    const notice = this.#message || (this.mode === "display" ? "Display only; start or resume from the Unfinished filter" : "");
+    const notice = this.#notice();
     const header = [summary, origin, ...(notice ? [t.fg("warning", notice)] : [])];
 
     this.#bodyRows = Math.max(3, height - 2 - header.length - 2 - hints.length);
@@ -714,5 +932,333 @@ export class AtlasPlanView implements Component {
       ...hints.map((line) => row(line, width)),
       bottomBorder(width),
     ];
+  }
+
+  #running(): number {
+    return this.#liveSnapshot?.runningChildren ?? this.detail.rows.filter((item) => item.status === "in_progress").length;
+  }
+
+  #notice(): string {
+    return this.#message || (this.mode === "display" ? "Display only; start or resume from the Unfinished filter" : "");
+  }
+
+  /** The native sheet, titled by the plan's name. */
+  get nativeOverlay(): NonNullable<Component["nativeOverlay"]> {
+    const name = this.detail.plan.name;
+    if (this.#nativeOverlay?.name !== name)
+      this.#nativeOverlay = { name, props: { role: PLAN_OVERLAY_ROLE, size: "lg", anchor: "center", head: name } };
+    return this.#nativeOverlay.props;
+  }
+
+  /**
+   * Live refreshes arrive every second while a row runs. The description changes only when the ledger detail, the
+   * selection, the view or the selected row's live child does; Tern clocks the elapsed counters itself.
+   */
+  describe(_cx: DescribeContext): NativeNode {
+    const item = this.#row();
+    // The child of a running row's current attempt, once it has reported.
+    const current = item?.status === "in_progress" ? this.#liveSnapshot?.rows.get(item.id) : undefined;
+    const live = current && current.attempt === item?.attempt ? current : undefined;
+    const output = item?.outputPath ? this.#outputs.get(item.outputPath) : undefined;
+    const expanded = item ? this.#expanded.has(item.id) : false;
+    const sidebar = this.#nativeSidebar.get([this.detail.rows, this.#selected], () => this.#describeSidebar());
+    const body = this.#nativeBody.get([this.detail, this.#timeline, item, expanded, output, live, this.#nativeScroll], () =>
+      this.#describeBody(item, live),
+    );
+    const notice = this.#notice();
+    const running = this.#running();
+    return this.#nativeRoot.get([this.detail, this.mode, this.#timeline, notice, running, sidebar, body], () =>
+      this.#describeRoot(notice, running, sidebar, body),
+    );
+  }
+
+  /** Pointer actions in Tern run the key paths: the buttons, the Row/Timeline tabs, a row click and the output disclosure. */
+  handleNativeEvent(event: NativeUiEvent): void {
+    this.#message = "";
+    if (event.type === "action") {
+      if (event.act === "back" || (event.act === "exit" && this.mode === "active")) {
+        this.dispose();
+        this.done(event.act);
+      } else if ((event.act === "start" || event.act === "resume") && this.mode !== "active") this.#dispatch(event.act);
+    } else if (event.type === "select" || event.type === "activate") {
+      const key = leafKey(event.key);
+      if (key === "view") this.#timeline = event.item === "timeline";
+      else if (key === "rows") {
+        const index = itemIndex(event.item, "r");
+        if (index >= 0 && index < this.detail.rows.length) {
+          this.#select(index);
+          this.#timeline = false;
+        }
+      }
+    } else if (event.type === "toggle" && leafKey(event.key) === "output") {
+      const item = this.#row();
+      if (item && this.#expanded.has(item.id) === event.collapsed) this.#toggleOutput();
+    }
+    this.tui.requestRender();
+  }
+
+  /** The sheet is the frame (titled by `nativeOverlay`): tools, summary, the row sidebar beside the body, key hints. */
+  #describeRoot(notice: string, running: number, sidebar: NativeNode, body: NativeNode): NativeNode {
+    const { detail } = this;
+    const buttons =
+      this.mode === "active"
+        ? [actionButton("Exit Atlas", "exit", { keys: "shift+x", tone: "error" }), actionButton("Back", "back", { keys: "escape" })]
+        : [
+            actionButton("Start", "start", { keys: "enter", tone: "accent" }),
+            actionButton("Resume", "resume", { keys: "shift+r" }),
+            actionButton("Back", "back", { keys: "escape" }),
+          ];
+    const tools = rowNode(
+      [node("tabs", { items: VIEW_TABS, active: this.#timeline ? "timeline" : "row" }, undefined, "view"), actionBar(buttons)],
+      { gap: "md", align: "center", justify: "between" },
+    );
+    const tally: TspSpan[] = [];
+    for (const status of ["done", "in_progress", "blocked", "open"] as const) {
+      const count = detail.rows.filter((item) => item.status === status).length;
+      if (!count) continue;
+      if (tally.length) tally.push(span(" · ", "dim"));
+      tally.push(span(`${count} ${ROW_STATUS[status]?.toLowerCase()}`, ROW_TONE[status]));
+    }
+    const status = this.mode === "active" ? span("Active in this session", "accent") : span(shortStatus(detail), statusColor(detail));
+    const summary = rowNode(
+      compact<NativeChild>([
+        text([status]),
+        progressNode(detail.done, detail.total, true),
+        text([span(`${running} running`, "muted")]),
+        detail.startedAt !== undefined && elapsedNode(Date.now() - detail.startedAt),
+        tally.length > 0 && text(tally),
+      ]),
+      { gap: "md", align: "center", wrap: true },
+    );
+    const origin = text([span(`${detail.plan.id} · ${detail.plan.cwd || "Workspace unavailable"}`, "dim")], {
+      truncate: "middle",
+      lines: 1,
+    });
+    const hints = hintsRow([
+      actionHint(["tui.select.up", "tui.select.down"], this.#timeline ? "scroll" : "row"),
+      this.#timeline ? undefined : { keys: ["space"], label: "child output" },
+      { keys: ["tab"], label: this.#timeline ? "row" : "timeline" },
+      { keys: ["pageUp", "pageDown"], label: "scroll" },
+    ]);
+    return col(
+      compact<NativeChild>([
+        keyed(tools, "tools"),
+        keyed(summary, "summary"),
+        keyed(origin, "origin"),
+        notice ? keyed(text([span(notice, "warning")], { wrap: "word" }), "notice") : undefined,
+        keyed(rowNode([sidebar, body], { gap: "lg", align: "start" }), "split"),
+        hints,
+      ]),
+      { gap: "md" },
+    );
+  }
+
+  /** Every ledger row, toned and marked by its status; a click selects it. */
+  #describeSidebar(): NativeNode {
+    const items = this.detail.rows.map((item, index) =>
+      itemNode(`r${index}`, {
+        label: [span(item.id, "muted"), span(` ${item.title}`)],
+        icon: ROW_ICON[item.status],
+        tone: ROW_TONE[item.status],
+      }),
+    );
+    const list = selectList("rows", items, {
+      selected: items.length ? `r${this.#selected}` : null,
+      empty: "No plan rows",
+      role: "omp.atlas.rows",
+    });
+    return node("col", { max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
+  }
+
+  #describeBody(item: AtlasRowDetail | undefined, live: AtlasLiveRow | undefined): NativeNode {
+    const children = this.#timeline
+      ? this.#describeTimeline()
+      : item
+        ? this.#describeRow(item, live)
+        : [text([span("No row selected", "muted")])];
+    const body = node("col", { grow: 1, gap: "md", role: "omp.atlas.body" }, children, "body");
+    return this.#nativeScroll ? { ...body, scroll: this.#nativeScroll } : body;
+  }
+
+  /** The selected row: its fields, the live child while it runs, evidence, the archived output and acceptance. */
+  #describeRow(item: AtlasRowDetail, live: AtlasLiveRow | undefined): NativeChild[] {
+    const status: TspSpan[] = [span(ROW_STATUS[item.status] ?? item.status, ROW_TONE[item.status])];
+    if (item.attempt) status.push(span(` · attempt ${item.attempt.slice(0, 8)}`, "dim"));
+    const verification = item.verification;
+    const fields = kv([
+      ["Status", status],
+      ["Agent", item.agent],
+      ["Tier", item.tier?.toUpperCase()],
+      [
+        "Verify",
+        verification
+          ? [span(verification.status), ...(verification.summary ? [span(` · ${singleLine(verification.summary)}`, "dim")] : [])]
+          : undefined,
+      ],
+      ["Origin", item.origin ? [span(item.origin), ...(item.reason ? [span(` · ${singleLine(item.reason)}`, "dim")] : [])] : undefined],
+      ["Depends", item.dependsOn.length ? item.dependsOn.join(", ") : "—"],
+      ["Updated", formatTime(item.updatedAt)],
+    ]);
+    const summary = evidenceSummary(item);
+    const receipt = item.receipt
+      ? kv([
+          ["Child", [span(item.receipt.childAgentId, "dim")]],
+          ["Session", [span(item.receipt.sessionId, "dim")]],
+          ["Captured", [span(formatTime(item.receipt.capturedAt), "dim")]],
+        ])
+      : undefined;
+    const evidence = col(
+      compact<NativeChild>([
+        text([span("Evidence", "strong")]),
+        summary ? md(summary) : text([span(item.status === "done" ? "No evidence summary" : "No evidence yet", "muted")]),
+        receipt,
+      ]),
+      { gap: "sm" },
+    );
+    return compact<NativeChild>([
+      keyed(text([span(`${item.id} ${item.title}`, "strong accent")], { wrap: "word" }), "title"),
+      fields && keyed(fields, "fields"),
+      item.status === "in_progress" && keyed(this.#describeLive(item, live), "live"),
+      keyed(evidence, "evidence"),
+      item.outputPath ? this.#describeOutput(item.id, item.outputPath) : undefined,
+      keyed(col([text([span("Acceptance", "strong")]), md(item.acceptance)], { gap: "sm" }), "acceptance"),
+    ]);
+  }
+
+  /** A running row's child: its clock, current tool, model and usage, and the newest tools and output. */
+  #describeLive(item: AtlasRowDetail, live: AtlasLiveRow | undefined): NativeNode {
+    const progress = live?.progress;
+    const now = Date.now();
+    const children: NativeChild[] = [
+      rowNode(compact<NativeChild>([text([span("Live", "strong")]), item.startedAt !== undefined && elapsedNode(now - item.startedAt)]), {
+        gap: "sm",
+        align: "center",
+      }),
+    ];
+    if (progress?.currentTool) {
+      const started = progress.currentToolStartMs;
+      children.push(
+        rowNode(compact<NativeChild>([text([span(progress.currentTool, "code")]), started !== undefined && elapsedNode(now - started)]), {
+          gap: "sm",
+          align: "center",
+        }),
+      );
+      // Arguments can be a whole file body; the first lines identify the call.
+      if (progress.currentToolArgs)
+        children.push(text([span(singleLine(progress.currentToolArgs), "dim")], { wrap: "word", lines: 3, truncate: "end" }));
+    }
+    const context =
+      progress && (progress.contextTokens !== undefined || progress.contextWindow !== undefined)
+        ? `${progress.contextTokens === undefined ? "?" : formatNumber(progress.contextTokens)}/${progress.contextWindow === undefined ? "?" : formatNumber(progress.contextWindow)} tokens`
+        : undefined;
+    const fields = kv([
+      ["Child", live?.childAgentId ?? item.childAgentId ?? "—"],
+      ["State", live?.status],
+      [
+        "Model",
+        progress
+          ? `${progress.resolvedModel ?? "—"}${progress.resolvedThinkingLevel ? ` · ${progress.resolvedThinkingLevel}` : ""}`
+          : undefined,
+      ],
+      ["Intent", progress?.lastIntent ? singleLine(progress.lastIntent) : undefined],
+      [
+        "Usage",
+        progress ? `${progress.toolCount} tools · ${progress.requests} requests · ${formatNumber(progress.tokens)} tokens` : undefined,
+      ],
+      ["Context", context],
+      ["Cost", progress ? `$${progress.cost.toFixed(4)}` : undefined],
+      [
+        "Retry",
+        progress?.retryState
+          ? [
+              span(
+                `${progress.retryState.attempt}/${progress.retryState.maxAttempts} · ${singleLine(progress.retryState.errorMessage)}`,
+                "warning",
+              ),
+            ]
+          : undefined,
+      ],
+      ["Failure", progress?.retryFailure ? [span(singleLine(progress.retryFailure.errorMessage), "error")] : undefined],
+    ]);
+    if (fields) children.push(fields);
+    // The host keeps both lists newest first.
+    if (progress?.recentTools.length) {
+      children.push(
+        col(
+          [
+            text([span("Recent tools", "muted")]),
+            ...progress.recentTools
+              .slice(0, 3)
+              .map((tool) => text([span(tool.tool, "code"), span(` ${singleLine(tool.args)}`, "dim")], { truncate: "end", lines: 1 })),
+          ],
+          { gap: "xs" },
+        ),
+      );
+    }
+    if (progress?.recentOutput.length) {
+      children.push(
+        col(
+          [
+            text([span("Recent output", "muted")]),
+            ...progress.recentOutput
+              .slice(0, 4)
+              .reverse()
+              .map((output) => text(output, { wrap: "word" })),
+          ],
+          { gap: "xs" },
+        ),
+      );
+    }
+    if (!progress) {
+      const waiting = !live
+        ? "Waiting for the child to start"
+        : live.status === "started" || live.status === "running"
+          ? "No progress reported by this child yet"
+          : `Child ${live.status}; waiting for the ledger to record the result`;
+      children.push(text([span(waiting, "muted")], { wrap: "word" }));
+    }
+    return col(children, { gap: "sm", role: "omp.atlas.live" });
+  }
+
+  /** The archived child output as a disclosure; opening it reads the archive, as Space does. */
+  #describeOutput(id: string, file: string): NativeNode {
+    const expanded = this.#expanded.has(id);
+    const output = this.#outputs.get(file);
+    let body: NativeChild[] = [];
+    if (expanded && output?.state === "loading") body = [text([span("Loading...", "muted")])];
+    else if (expanded && output?.state === "failed")
+      body = [text([span(`Cannot read output: ${output.error}`, "error")], { wrap: "word" })];
+    else if (expanded && output?.state === "loaded") body = [output.text ? md(output.text) : text([span("(empty output)", "muted")])];
+    return node(
+      "section",
+      { head: [span("Child output", "strong"), span(` ${file}`, "dim")], collapsible: true, collapsed: !expanded },
+      body,
+      "output",
+    );
+  }
+
+  /** Newest first, as the TUI timeline; entries keep their keys as new events arrive on top. */
+  #describeTimeline(): NativeChild[] {
+    const events = this.detail.timeline;
+    if (!events.length) return [text([span("No recorded activity", "muted")])];
+    const entries: NativeChild[] = [];
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index] as AtlasEvent;
+      const head = rowNode(
+        compact<NativeChild>([
+          text([span(formatTime(event.at), "dim")]),
+          text([span(event.kind.replaceAll("_", " "), event.derived ? "muted" : undefined)]),
+          event.row ? text([span(event.row, "accent")]) : undefined,
+          event.derived && node("badge", { text: "derived", tone: "muted" }),
+        ]),
+        { gap: "sm", align: "baseline", wrap: true },
+      );
+      // Evidence details repeat the archive path the row body already shows; two lines identify the event.
+      const detail = event.detail
+        ? text([span(singleLine(event.detail).replace(/^\/\S+\.md: /, ""), "muted")], { wrap: "word", lines: 2, truncate: "end" })
+        : undefined;
+      entries.push(keyed(col(compact<NativeChild>([head, detail]), { gap: "xs" }), `e${index}`));
+    }
+    return entries;
   }
 }

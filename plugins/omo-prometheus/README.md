@@ -144,6 +144,8 @@ Starting a plan in a non-empty session asks whether to use a new session or this
 
 While Atlas is active, bare `/atlas` opens a live, read-only view with each row's status, running children with their model, current tool and usage, and a timeline (Tab). Shift+X exits Atlas, Esc closes the view. Disable the widget above the editor with `atlasWidget`.
 
+In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation. Click a plan or row to highlight it, double-click a plan to open its view, and use the Unfinished/All and Row/Timeline tabs and the buttons, which do what their keys do; the keys keep working. The widget shows a native progress bar.
+
 ### Continuing in another session
 
 Plans and their evidence live in your OMP session directory, outside any one session. Session A can stop partway and session B continue with `/atlas <name>`, as long as both share the session directory and workspace. Shift+R or `/atlas resume` returns to a session that already ran the plan, in Atlas mode, and waits for your next message.

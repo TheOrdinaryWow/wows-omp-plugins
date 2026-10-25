@@ -12,6 +12,7 @@ import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { isNativeRendering } from "@oh-my-pi/pi-tui";
 
 import { AdrContract } from "./adr-contract.ts";
 import { parseLegalAgentNames } from "./agents.ts";
@@ -127,6 +128,11 @@ const PLAN_MODE_DISABLED =
 const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_PLAN_REFERENCE = "local://PLAN.md";
 const PACKAGE_NAME = "wows-omp-plugin-omo-prometheus";
+/** Plain terminals paint the plan view over the whole screen; Tern shows these overlays as large glass sheets. */
+const CONSOLE_OVERLAY = {
+  overlay: true,
+  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true },
+} as const;
 const NON_GIT_PLANNING =
   '<workspace git="none">This workspace is not a Git repository, and this workflow never uses or creates one. Plan without Git: write `Delivery: direct`, give every task `Commit: none (workspace is not a Git repository)`, assign no git, commit or `git init` work, and prove each task by its observed behavior rather than a diff. If the user wants Git, they initialize it themselves before planning.</workspace>';
 const NON_GIT_EXECUTION =
@@ -1139,21 +1145,18 @@ export default function prometheus(pi: ExtensionAPI): void {
   const openPlanView = async (ctx: ExtensionContext, detail: AtlasPlanDetail, mode: AtlasPlanViewMode): Promise<AtlasPlanViewAction> => {
     let view: AtlasPlanView | undefined;
     try {
-      return await ctx.ui.custom<AtlasPlanViewAction>(
-        (tui, theme, _keys, done) => {
-          view = new AtlasPlanView(
-            detail,
-            mode,
-            theme,
-            tui,
-            (file) => fs.readFile(file, "utf8"),
-            done,
-            mode === "active" ? liveModels.get(ctx.sessionManager.getSessionId()) : undefined,
-          );
-          return view;
-        },
-        { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
-      );
+      return await ctx.ui.custom<AtlasPlanViewAction>((tui, theme, _keys, done) => {
+        view = new AtlasPlanView(
+          detail,
+          mode,
+          theme,
+          tui,
+          (file) => fs.readFile(file, "utf8"),
+          done,
+          mode === "active" ? liveModels.get(ctx.sessionManager.getSessionId()) : undefined,
+        );
+        return view;
+      }, CONSOLE_OVERLAY);
     } finally {
       view?.dispose();
     }
@@ -1429,6 +1432,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       const options = { selectedId, message };
       const action = await ctx.ui.custom<AtlasMenuAction>(
         (tui, theme, _keys, done) => new AtlasMenu(details, filter, query, theme, tui, done, options),
+        // A plain terminal shows the menu in place of the editor; Tern floats it as a sheet like the plan view.
+        isNativeRendering() ? CONSOLE_OVERLAY : undefined,
       );
       filter = action.filter;
       query = action.query;
