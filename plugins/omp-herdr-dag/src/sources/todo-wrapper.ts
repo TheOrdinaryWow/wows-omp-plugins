@@ -26,10 +26,15 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
     edges: Type.Optional(Type.Array(Type.Object({ task: Type.String(), after: Type.Array(Type.String()) }))),
   });
   const renderer = toolRenderers.todo;
-  if (!renderer?.renderCall || !renderer.renderResult) throw new Error("The native todo renderer is unavailable.");
+  if (!renderer?.renderCall || !renderer.renderResult || !renderer.describeCall || !renderer.describeResult)
+    throw new Error("The native todo renderer is unavailable.");
+  type Definition = ToolDefinition<typeof parameters>;
   // The host's generic renderer interface permits undefined; the native todo renderer always returns a component.
-  const renderCall = renderer.renderCall as NonNullable<ToolDefinition<typeof parameters>["renderCall"]>;
-  const renderResult = renderer.renderResult as NonNullable<ToolDefinition<typeof parameters>["renderResult"]>;
+  const renderCall = renderer.renderCall as NonNullable<Definition["renderCall"]>;
+  const renderResult = renderer.renderResult as NonNullable<Definition["renderResult"]>;
+  // Tern draws a tool card from the tool's own describe hooks and, for an override of a built-in, never falls back to the native ones.
+  const describeCall = renderer.describeCall.bind(renderer) as NonNullable<Definition["describeCall"]>;
+  const describeResult = renderer.describeResult.bind(renderer) as NonNullable<Definition["describeResult"]>;
   let warnedMissingInvoke = false;
   const definition = {
     name: "todo",
@@ -43,6 +48,9 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
     loadMode: "discoverable" as const,
     renderCall,
     renderResult,
+    describeCall,
+    describeResult,
+    mergeCallAndResult: renderer.mergeCallAndResult,
     async execute(
       _toolCallId: string,
       params: Record<string, unknown>,

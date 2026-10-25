@@ -115,6 +115,9 @@ async function hostCheck(root: string): Promise<void> {
       concurrency?: string;
       lenientArgValidation?: boolean;
       renderResult?: ToolDefinition["renderResult"];
+      describeCall?: ToolDefinition["describeCall"];
+      describeResult?: ToolDefinition["describeResult"];
+      mergeCallAndResult?: boolean;
     };
     assert.equal(tool.approval, "read");
     assert.equal(properties.concurrency, "exclusive");
@@ -149,6 +152,13 @@ async function hostCheck(root: string): Promise<void> {
     const nativeRender = toolRenderers.todo?.renderResult?.(initialized, options, tui.theme, input)?.render(100);
     assert.deepEqual(actualRender, nativeRender);
     assert(actualRender.join("\n").includes("A"));
+    // Tern draws the tool card from the tool's own describe hooks; an extension override of a built-in gets no fallback.
+    assert(properties.describeCall && properties.describeResult);
+    assert.equal(properties.mergeCallAndResult, toolRenderers.todo?.mergeCallAndResult);
+    assert.deepEqual(properties.describeCall(input, options), toolRenderers.todo?.describeCall?.(input, options));
+    const actualView = properties.describeResult(initialized, options, input);
+    assert(actualView);
+    assert.deepEqual(actualView, toolRenderers.todo?.describeResult?.(initialized, options, input));
     const repaired = await call("omitted", { list: [{ phase: "Next", items: ["C", "D"] }], edges: [{ task: "D", after: ["C"] }] });
     assert(!repaired.isError);
     assert.equal(repaired.details.op, "init");
