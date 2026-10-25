@@ -1,14 +1,27 @@
 import {
   type Component,
+  code,
+  col,
   extractPrintableText,
   getMarkdownTheme,
+  item,
+  keyed,
+  kv,
   Markdown,
   matchesKey,
+  md,
+  type NativeChild,
+  type NativeNode,
+  type NativeUiEvent,
+  row as nativeRow,
+  node,
   padding,
   routeSgrMouseInput,
   type SgrMouseEvent,
+  span,
   type Theme,
   type TUI,
+  text,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -23,6 +36,8 @@ import {
   splitRow,
   topBorder,
 } from "@oh-my-pi/pi-tui/chrome";
+import { leafKey } from "@oh-my-pi/pi-tui/native/node";
+import { actionBar, actionButton, escCloseButton, hintsRow, itemIndex, selectList } from "@oh-my-pi/pi-tui/native/overlay";
 
 import { type AdrRecord, type AdrStatus, STATUSES } from "#src/documents.ts";
 
@@ -89,6 +104,51 @@ function statusMarks(theme: Theme): Record<AdrStatus, string> {
     STATUSES.map((status, index) => [status, (raw[index] ?? "") + padding(width - visibleWidth(raw[index] ?? ""))]),
   ) as Record<AdrStatus, string>;
 }
+
+/** Native tone per status, the same meaning the terminal colors carry. */
+const STATUS_TONE: Record<AdrStatus, "warning" | "success" | "error" | "muted"> = {
+  proposed: "warning",
+  accepted: "success",
+  rejected: "error",
+  deprecated: "muted",
+  superseded: "muted",
+};
+
+const capitalize = (word: string): string => `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}`;
+
+/** Natively the terminal scrolls the body; PgUp/PgDn still reach the program, which forwards them as a scroll request. */
+type BodyScroll = { by: "page-up" | "page-down"; n: number };
+
+/**
+ * `detailText` split into its metadata fields (minus the title and status rows the views show
+ * themselves) and the MADR body without its title heading.
+ */
+function detailParts(detail: string): { fields: Array<readonly [string, string]>; body: string } {
+  // detailText: a metadata block (first line repeats the title), a blank line, then the MADR body.
+  const split = detail.indexOf("\n\n");
+  const meta = (split < 0 ? detail : detail.slice(0, split))
+    .split("\n")
+    .slice(1)
+    .filter((line) => !line.startsWith("Status: "));
+  const fields = meta.map((line) => {
+    const colon = line.indexOf(": ");
+    return colon > 0 ? ([line.slice(0, colon), line.slice(colon + 2)] as const) : (["", line] as const);
+  });
+  return { fields, body: split < 0 ? "" : detail.slice(split + 2).replace(/^# [^\n]*\n+/, "") };
+}
+
+/** Fixed footer hints of the native views; buttons carry the per-decision keys. */
+const CONSOLE_HINTS = hintsRow([
+  { keys: ["up", "down"], label: "select" },
+  { keys: ["pageUp", "pageDown"], label: "scroll" },
+  { keys: ["tab", "shift+tab"], label: "filter" },
+  { keys: ["escape"], label: "clear search / close" },
+]);
+const PREVIEW_HINTS = hintsRow([
+  { keys: ["up", "down"], label: "select" },
+  { keys: ["pageUp", "pageDown"], label: "scroll" },
+  { keys: ["enter"], label: "choose" },
+]);
 
 export function hintLines(hints: readonly string[], width: number): string[] {
   const lines: string[] = [];
@@ -215,6 +275,10 @@ export class AdrConsole implements Component {
   #query: string;
   #selectedId: string | undefined;
   #message: ConsoleMessage | undefined;
+  #scroll: BodyScroll | undefined;
+  #nativeHead: { title: string; props: NonNullable<Component["nativeOverlay"]> } | undefined;
+  #native: { sig: string; message: ConsoleMessage | undefined; node: NativeNode } | undefined;
+  readonly #nativeBodies = new Map<string, NativeNode>();
 
   constructor(
     readonly entries: readonly ConsoleEntry[],
@@ -295,6 +359,22 @@ export class AdrConsole implements Component {
     this.#finish({ kind: "action", action, id: entry.record.id });
   }
 
+  #escape(): void {
+    if (this.#query) this.#query = "";
+    else this.#finish({ kind: "close" });
+  }
+
+  #enter(): void {
+    const entry = this.#current().entry;
+    if (entry) this.#finish({ kind: "decide", id: entry.record.id });
+    else if (!this.entries.length) this.#finish({ kind: "action", action: "new" });
+  }
+
+  #page(by: BodyScroll["by"]): void {
+    this.#frame.scrollBy(by === "page-down" ? this.#frame.pageRows() : -this.#frame.pageRows());
+    this.#scroll = { by, n: (this.#scroll?.n ?? 0) + 1 };
+  }
+
   handleInput(key: string): void {
     // Checked before anything else: pointer motion must not clear the notice or act as a key.
     if (
@@ -309,30 +389,25 @@ export class AdrConsole implements Component {
     this.#message = undefined;
     const letter = shiftLetter(key);
     const global = GLOBAL_KEYS.find(([key]) => key === letter);
-    if (matchesKey(key, "escape")) {
-      if (this.#query) this.#query = "";
-      else this.#finish({ kind: "close" });
-    } else if (matchesKey(key, "shift+tab")) this.#cycle(-1);
+    if (matchesKey(key, "escape")) this.#escape();
+    else if (matchesKey(key, "shift+tab")) this.#cycle(-1);
     else if (matchesKey(key, "tab")) this.#cycle(1);
     else if (matchesKey(key, "up")) this.#select(this.#current().index - 1);
     else if (matchesKey(key, "down")) this.#select(this.#current().index + 1);
     else if (matchesKey(key, "home")) this.#select(0);
     else if (matchesKey(key, "end")) this.#select(Number.MAX_SAFE_INTEGER);
-    else if (matchesKey(key, "pageDown")) this.#frame.scrollBy(this.#frame.pageRows());
-    else if (matchesKey(key, "pageUp")) this.#frame.scrollBy(-this.#frame.pageRows());
-    else if (matchesKey(key, "enter")) {
-      const entry = this.#current().entry;
-      if (entry) this.#finish({ kind: "decide", id: entry.record.id });
-      else if (!this.entries.length) this.#finish({ kind: "action", action: "new" });
-    } else if (global) this.#finish({ kind: "action", action: global[1] });
+    else if (matchesKey(key, "pageDown")) this.#page("page-down");
+    else if (matchesKey(key, "pageUp")) this.#page("page-up");
+    else if (matchesKey(key, "enter")) this.#enter();
+    else if (global) this.#finish({ kind: "action", action: global[1] });
     else if (letter) this.#decision(letter);
     else if (matchesKey(key, "backspace")) {
       this.#query = this.#query.slice(0, -1);
       this.#frame.scroll = 0;
     } else {
-      const text = extractPrintableText(key);
-      if (text !== undefined && (this.#query || text.trim())) {
-        this.#query += text;
+      const typed = extractPrintableText(key);
+      if (typed !== undefined && (this.#query || typed.trim())) {
+        this.#query += typed;
         this.#frame.scroll = 0;
       }
     }
@@ -398,18 +473,7 @@ export class AdrConsole implements Component {
       ),
       "",
     );
-    // detailText: a metadata block (first line repeats the title), a blank line, then the MADR body.
-    const split = entry.detail.indexOf("\n\n");
-    // The status row above already shows the status, and the MADR body opens with the title as a heading.
-    const meta = (split < 0 ? entry.detail : entry.detail.slice(0, split))
-      .split("\n")
-      .slice(1)
-      .filter((line) => !line.startsWith("Status: "));
-    const body = split < 0 ? "" : entry.detail.slice(split + 2).replace(/^# [^\n]*\n+/, "");
-    const fields = meta.map((line) => {
-      const colon = line.indexOf(": ");
-      return colon > 0 ? ([line.slice(0, colon), line.slice(colon + 2)] as const) : (["", line] as const);
-    });
+    const { fields, body } = detailParts(entry.detail);
     const labelWidth = Math.max(0, ...fields.map(([label]) => label.length)) + 2;
     for (const [label, value] of fields) {
       if (width < labelWidth + 20) {
@@ -447,17 +511,21 @@ export class AdrConsole implements Component {
     ];
   }
 
-  render(width: number): readonly string[] {
-    const visible = this.#visible();
-    const { entry } = this.#current(visible);
-    const sidebarWidth = sidebarWidthFor(width);
-    const records = this.entries.map((item) => item.record);
+  #summary(): string {
+    const records = this.entries.map((entry) => entry.record);
     const summary = STATUSES.map((status) => [status, records.filter((record) => record.status === status).length] as const)
       .filter(([, count]) => count > 0)
       .map(([status, count]) => `${count} ${status}`)
       .join(", ");
+    return summary || "no ADRs yet";
+  }
+
+  render(width: number): readonly string[] {
+    const visible = this.#visible();
+    const { entry } = this.#current(visible);
+    const sidebarWidth = sidebarWidthFor(width);
     return this.#frame.render(width, terminalRows(this.tui), {
-      title: `${PLUGIN} · ${summary || "no ADRs yet"}`,
+      title: `${PLUGIN} · ${this.#summary()}`,
       header: this.#header(Math.max(1, width - 4)),
       sidebarWidth,
       sidebar: (rows) => this.#sidebar(sidebarWidth, rows, visible),
@@ -465,6 +533,151 @@ export class AdrConsole implements Component {
       message: this.#message,
       hints: this.#hints(entry),
     });
+  }
+
+  /** In Tern the console is a large glass sheet titled like the terminal frame. */
+  get nativeOverlay(): NonNullable<Component["nativeOverlay"]> {
+    const title = `${PLUGIN} · ${this.#summary()}`;
+    if (this.#nativeHead?.title !== title)
+      this.#nativeHead = { title, props: { role: "omp.overlay.adr.console", size: "lg", anchor: "center", head: title } };
+    return this.#nativeHead.props;
+  }
+
+  /** Filter tabs, search and tools; the ADR list beside the selected decision; its actions, the message and key hints. */
+  describe(): NativeNode {
+    const visible = this.#visible();
+    const { entry } = this.#current(visible);
+    const sig = [this.#filter ?? "", this.#query, entry?.record.id ?? "", this.#scroll?.n ?? 0].join("\n");
+    if (this.#native?.sig === sig && this.#native.message === this.#message) return this.#native.node;
+
+    const filters = this.#filters();
+    const count = (status: AdrStatus | undefined) =>
+      status ? this.entries.filter((candidate) => candidate.record.status === status).length : this.entries.length;
+    const tabs = node(
+      "tabs",
+      {
+        items: filters.map((status) => ({ id: status ?? "all", label: `${status ? capitalize(status) : "All"} ${count(status)}` })),
+        active: this.#filter ?? "all",
+      },
+      undefined,
+      "filter",
+    );
+    const search = text(this.#query ? [span("Search ", "muted"), span(this.#query, "strong")] : [span("Type to search", "dim")], {
+      role: "omp.adr.search",
+      grow: 1,
+      truncate: "end",
+      lines: 1,
+    });
+    const tools = actionBar(
+      [
+        ...GLOBAL_KEYS.map(([key, action, label]) =>
+          actionButton(capitalize(label), action, { keys: `shift+${key.toLowerCase()}` as never }),
+        ),
+        escCloseButton(),
+      ],
+      "tools",
+    );
+    const list = selectList(
+      "adrs",
+      visible.map(({ record }) =>
+        item(record.id, {
+          label: record.title,
+          detail: [span(`${record.id} · `, "muted"), span(record.status, STATUS_TONE[record.status])],
+        }),
+      ),
+      {
+        selected: entry?.record.id ?? null,
+        empty: this.entries.length
+          ? "No ADRs match; Esc clears the search, a tab changes the filter"
+          : "No ADRs yet; choose New decision to start one",
+        role: "omp.adr.list",
+      },
+    );
+    const body: NativeNode = {
+      ...node("col", { role: "omp.adr.body", grow: 1, gap: "sm" }, [this.#describeBody(entry)], "body"),
+      ...(this.#scroll ? { scroll: this.#scroll } : {}),
+    };
+    const sidebar = node("col", { max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
+    const decisions = entry
+      ? actionBar(
+          [
+            actionButton("Decide…", "decide", { keys: "enter", tone: "accent" }),
+            ...DECISION_KEYS.filter(([, action]) => entry.offered.includes(action)).map(([key, action]) =>
+              actionButton(capitalize(action), action, { keys: `shift+${key.toLowerCase()}` as never }),
+            ),
+          ],
+          "decisions",
+        )
+      : undefined;
+    const message = this.#message;
+    const children: NativeChild[] = [
+      keyed(nativeRow([tabs, search, tools], { gap: "md", align: "center", wrap: true }), "head"),
+      keyed(nativeRow([sidebar, body], { gap: "lg", align: "start" }), "split"),
+    ];
+    if (decisions) children.push(decisions);
+    if (message)
+      children.push(keyed(text(message.text, { tone: message.level === "error" ? "error" : "warning", wrap: "word" }), "message"));
+    children.push(CONSOLE_HINTS);
+    const described = col(children, { gap: "md" });
+    this.#native = { sig, message, node: described };
+    return described;
+  }
+
+  /** The decision as the terminal frame shows it: id and title, status and dates, metadata, then the MADR body. */
+  #describeBody(entry: ConsoleEntry | undefined): NativeNode {
+    if (!entry) return text([span("No ADR selected", "dim")]);
+    const { record } = entry;
+    const cached = this.#nativeBodies.get(record.id);
+    if (cached) return cached;
+    const { fields, body } = detailParts(entry.detail);
+    const where = [
+      record.date,
+      record.stage ? `stage ${record.stage}` : "",
+      record.superseded_by ? `superseded by ${record.superseded_by}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const children: NativeNode[] = [
+      text([span(`${record.id}  `, "muted"), span(record.title, "strong accent")], { wrap: "word" }),
+      text([span(record.status, STATUS_TONE[record.status]), ...(where ? [span(`  ${where}`, "dim")] : [])]),
+    ];
+    const meta = kv(fields);
+    if (meta) children.push(meta);
+    if (body.trim()) children.push(md(body));
+    const described = col(children, { gap: "sm" });
+    this.#nativeBodies.set(record.id, described);
+    return described;
+  }
+
+  /** Clicks run the key paths: tabs filter, list rows select (double-click decides), buttons act like their keys. */
+  handleNativeEvent(event: NativeUiEvent): void {
+    if (event.type === "action") {
+      const global = GLOBAL_KEYS.find(([, action]) => action === event.act);
+      const decision = DECISION_KEYS.find(([, action]) => action === event.act);
+      if (event.act !== "close" && event.act !== "decide" && !global && !decision) return;
+      this.#message = undefined;
+      if (event.act === "close") this.#escape();
+      else if (event.act === "decide") this.#enter();
+      else if (global) this.#finish({ kind: "action", action: global[1] });
+      else if (decision) this.#decision(decision[0]);
+    } else if (event.type === "select" || event.type === "activate") {
+      const leaf = leafKey(event.key);
+      if (leaf === "filter") {
+        const filters = this.#filters();
+        const index = filters.findIndex((status) => (status ?? "all") === event.item);
+        if (index < 0) return;
+        this.#message = undefined;
+        this.#filter = filters[index];
+        this.#frame.scroll = 0;
+      } else if (leaf === "adrs") {
+        const index = this.#visible().findIndex((candidate) => candidate.record.id === event.item);
+        if (index < 0) return;
+        this.#message = undefined;
+        this.#select(index);
+        if (event.type === "activate") this.#enter();
+      } else return;
+    } else return;
+    this.tui.requestRender();
   }
 }
 
@@ -480,6 +693,16 @@ export class AdrPreview implements Component {
   /** Row 0 writes, rows 1..n are files, the last row cancels. */
   #selected: number;
   #message: ConsoleMessage | undefined;
+  #scroll: BodyScroll | undefined;
+  #native: { selected: number; message: ConsoleMessage | undefined; scroll: number; node: NativeNode } | undefined;
+  readonly #nativeBodies = new Map<number, NativeNode>();
+  /** In Tern the preview is a large glass sheet titled like the terminal frame. */
+  readonly nativeOverlay: NonNullable<Component["nativeOverlay"]> = {
+    role: "omp.overlay.adr.preview",
+    size: "lg",
+    anchor: "center",
+    head: `${PLUGIN} · write preview`,
+  };
 
   constructor(
     readonly title: string,
@@ -504,6 +727,17 @@ export class AdrPreview implements Component {
     this.#frame.scroll = 0;
   }
 
+  #enter(): void {
+    if (this.#selected === 0) this.done(true);
+    else if (this.#selected === this.#cancelRow) this.done(false);
+    else this.#message = { text: "Press Shift+W to write every file, or Esc to cancel", level: "info" };
+  }
+
+  #page(by: BodyScroll["by"]): void {
+    this.#frame.scrollBy(by === "page-down" ? this.#frame.pageRows() : -this.#frame.pageRows());
+    this.#scroll = { by, n: (this.#scroll?.n ?? 0) + 1 };
+  }
+
   handleInput(key: string): void {
     if (
       routeSgrMouseInput(key, (event) => {
@@ -521,13 +755,9 @@ export class AdrPreview implements Component {
     else if (matchesKey(key, "down")) this.#select(this.#selected + 1);
     else if (matchesKey(key, "home")) this.#select(0);
     else if (matchesKey(key, "end")) this.#select(this.#cancelRow);
-    else if (matchesKey(key, "pageDown")) this.#frame.scrollBy(this.#frame.pageRows());
-    else if (matchesKey(key, "pageUp")) this.#frame.scrollBy(-this.#frame.pageRows());
-    else if (matchesKey(key, "enter")) {
-      if (this.#selected === 0) this.done(true);
-      else if (this.#selected === this.#cancelRow) this.done(false);
-      else this.#message = { text: "Press Shift+W to write every file, or Esc to cancel", level: "info" };
-    }
+    else if (matchesKey(key, "pageDown")) this.#page("page-down");
+    else if (matchesKey(key, "pageUp")) this.#page("page-up");
+    else if (matchesKey(key, "enter")) this.#enter();
     this.tui.requestRender();
   }
 
@@ -553,7 +783,7 @@ export class AdrPreview implements Component {
     if (!file) {
       const lines = wrapTextWithAnsi(t.bold(this.title), width);
       lines.push("", ...wrapTextWithAnsi(t.fg("muted", "Files to write:"), width));
-      for (const item of this.files) lines.push(...wrapTextWithAnsi(`  ${item.path}`, width));
+      for (const entry of this.files) lines.push(...wrapTextWithAnsi(`  ${entry.path}`, width));
       lines.push(
         "",
         ...wrapTextWithAnsi(t.fg("dim", "Nothing is written until you choose Write. Select a file to read it before deciding."), width),
@@ -594,5 +824,87 @@ export class AdrPreview implements Component {
         rawKeyHint("escape", "cancel"),
       ],
     });
+  }
+
+  /** Write, the files and Cancel as a list beside the selected file; buttons for Write all and Cancel, then the hints. */
+  describe(): NativeNode {
+    const scroll = this.#scroll?.n ?? 0;
+    const memo = this.#native;
+    if (memo?.selected === this.#selected && memo.message === this.#message && memo.scroll === scroll) return memo.node;
+    const count = `${this.files.length} file${this.files.length === 1 ? "" : "s"}`;
+    const rows = selectList(
+      "rows",
+      [
+        item("r0", { label: [span(`Write ${count}`, "success")] }),
+        ...this.files.map((file, index) => item(`r${index + 1}`, { label: [span(file.path, "path")] })),
+        item(`r${this.#cancelRow}`, { label: [span("Cancel", "error")] }),
+      ],
+      { selected: `r${this.#selected}`, role: "omp.adr.preview.rows" },
+    );
+    const body: NativeNode = {
+      ...node("col", { role: "omp.adr.preview.body", grow: 1, gap: "sm" }, [this.#describeBody()], "body"),
+      ...(this.#scroll ? { scroll: this.#scroll } : {}),
+    };
+    const children: NativeChild[] = [
+      keyed(text([span(this.title, "strong")], { wrap: "word" }), "title"),
+      keyed(nativeRow([node("col", { max: { w: "32ch" }, shrink: 0 }, [rows], "sidebar"), body], { gap: "lg", align: "start" }), "split"),
+      actionBar([
+        actionButton(`Write ${count}`, "write", { keys: "shift+w", tone: "accent" }),
+        actionButton("Cancel", "cancel", { keys: "escape" }),
+      ]),
+    ];
+    const message = this.#message;
+    if (message)
+      children.push(keyed(text(message.text, { tone: message.level === "error" ? "error" : "warning", wrap: "word" }), "message"));
+    children.push(PREVIEW_HINTS);
+    const described = col(children, { gap: "md" });
+    this.#native = { selected: this.#selected, message, scroll, node: described };
+    return described;
+  }
+
+  /** The selected file (Markdown rendered, front matter as YAML, anything else as code), or the summary on Write and Cancel. */
+  #describeBody(): NativeNode {
+    const file = this.files[this.#selected - 1];
+    const index = file ? this.#selected : 0;
+    const cached = this.#nativeBodies.get(index);
+    if (cached) return cached;
+    let described: NativeNode;
+    if (!file) {
+      described = col(
+        [
+          text([span("Files to write:", "muted")]),
+          ...this.files.map((entry) => text([span(entry.path, "path")])),
+          text([span("Nothing is written until you choose Write. Select a file to read it before deciding.", "dim")], { wrap: "word" }),
+        ],
+        { gap: "sm" },
+      );
+    } else if (/\.md$/i.test(file.path)) {
+      const front = /^---\n[\s\S]*?\n---\n/.exec(file.content)?.[0] ?? "";
+      const yaml = front.slice(4, -4).trim();
+      described = col(
+        [text([span(file.path, "path strong")]), ...(yaml ? [code(yaml, { lang: "yaml" })] : []), md(file.content.slice(front.length))],
+        { gap: "sm" },
+      );
+    } else {
+      described = col([text([span(file.path, "path strong")]), code(file.content.replace(/\n$/, ""), { path: file.path })], { gap: "sm" });
+    }
+    this.#nativeBodies.set(index, described);
+    return described;
+  }
+
+  /** Clicks run the key paths: a row selects (double-click chooses it like Enter), the buttons write or cancel. */
+  handleNativeEvent(event: NativeUiEvent): void {
+    if (event.type === "action") {
+      if (event.act === "write") this.done(true);
+      else if (event.act === "cancel") this.done(false);
+      return;
+    }
+    if ((event.type !== "select" && event.type !== "activate") || leafKey(event.key) !== "rows") return;
+    const index = itemIndex(event.item, "r");
+    if (index < 0 || index > this.#cancelRow) return;
+    this.#message = undefined;
+    this.#select(index);
+    if (event.type === "activate") this.#enter();
+    this.tui.requestRender();
   }
 }

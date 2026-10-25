@@ -87,6 +87,8 @@ Accepting, rejecting, deprecating, adding a note and running the check reopen th
 
 The `/adr init` preview uses the same layout: the files on the left, the selected file on the right. Shift+W writes every file, Esc declines.
 
+In [Tern](https://docs.stencil.so/tern/), the console and the preview open as native sheets instead: click a status tab to filter, click an ADR or file to select it (double-click to choose it), and use the buttons for the same actions as the keys. The keys keep working.
+
 ### Agent tools
 
 | Tool | Purpose |
