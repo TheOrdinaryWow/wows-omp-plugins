@@ -79,8 +79,14 @@ test("the console is a large glass sheet listing ADRs with status tones and the 
   const root = component.describe();
   expect(listItems(root, "adrs").map((row) => row.key)).toEqual(["ADR-0001", "ADR-0002", "ADR-0003"]);
   expect(props(byKey(root, "adrs")).selected).toBe("ADR-0001");
-  const tones = listItems(root, "adrs").map((row) => (props(row).detail as Array<{ s?: string }>).at(-1)?.s);
-  expect(tones).toEqual(["success", "warning", "muted"]);
+  // Items are single truncating lines: the title alone, the status as a toned icon.
+  const rows = listItems(root, "adrs").map((row) => props(row));
+  expect(rows.map((row) => row.tone)).toEqual(["success", "warning", "muted"]);
+  expect(rows.map((row) => [row.label, row.detail])).toEqual([
+    ["Decision ADR-0001", undefined],
+    ["Decision ADR-0002", undefined],
+    ["Cache reads", undefined],
+  ]);
   expect(props(byKey(root, "filter")).active).toBe("all");
   expect(markdown(root).join("\n")).toMatch(/Why ADR-0001/);
   // Offered decisions only, plus the global tools and close.

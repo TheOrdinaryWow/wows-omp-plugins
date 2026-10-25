@@ -105,13 +105,20 @@ function statusMarks(theme: Theme): Record<AdrStatus, string> {
   ) as Record<AdrStatus, string>;
 }
 
-/** Native tone per status, the same meaning the terminal colors carry. */
+/** Native tone and icon per status, the same meaning the terminal colors and glyphs carry. */
 const STATUS_TONE: Record<AdrStatus, "warning" | "success" | "error" | "muted"> = {
   proposed: "warning",
   accepted: "success",
   rejected: "error",
   deprecated: "muted",
   superseded: "muted",
+};
+const STATUS_ICON: Record<AdrStatus, string> = {
+  proposed: "clock",
+  accepted: "check",
+  rejected: "x",
+  deprecated: "minus",
+  superseded: "forward",
 };
 
 const capitalize = (word: string): string => `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}`;
@@ -580,9 +587,12 @@ export class AdrConsole implements Component {
     const list = selectList(
       "adrs",
       visible.map(({ record }) =>
+        // Items are one line that truncates, so the status rides on the toned icon and the id in the tooltip.
         item(record.id, {
           label: record.title,
-          detail: [span(`${record.id} · `, "muted"), span(record.status, STATUS_TONE[record.status])],
+          icon: STATUS_ICON[record.status],
+          tone: STATUS_TONE[record.status],
+          title: `${record.id} · ${record.status}`,
         }),
       ),
       {
@@ -835,9 +845,18 @@ export class AdrPreview implements Component {
     const rows = selectList(
       "rows",
       [
-        item("r0", { label: [span(`Write ${count}`, "success")] }),
-        ...this.files.map((file, index) => item(`r${index + 1}`, { label: [span(file.path, "path")] })),
-        item(`r${this.#cancelRow}`, { label: [span("Cancel", "error")] }),
+        item("r0", { label: `Write ${count}`, icon: "save", tone: "success" }),
+        // The file name first: a long path would truncate it away; the directory follows dim and gives way first.
+        ...this.files.map((file, index) => {
+          const slash = file.path.lastIndexOf("/");
+          return item(`r${index + 1}`, {
+            label: [span(file.path.slice(slash + 1), "path")],
+            detail: slash > 0 ? file.path.slice(0, slash) : undefined,
+            icon: /\.md$/i.test(file.path) ? "markdown" : "file",
+            title: file.path,
+          });
+        }),
+        item(`r${this.#cancelRow}`, { label: "Cancel", icon: "x", tone: "error" }),
       ],
       { selected: `r${this.#selected}`, role: "omp.adr.preview.rows" },
     );
