@@ -228,6 +228,33 @@ calls a chat-model fallback. Automatic routing fails open: a missing native judg
 keeps the requested agent and warns once per session. A pin that cannot apply
 must instead refuse the call; never run a pinned task on the agent's own model.
 
+## Tern native rendering
+
+In Tern, omp speaks the Tern Surface Protocol and asks each component for
+`describe(cx)` instead of `render()`; a component without it shows up as raw
+TUI rows. The adr, roadmap and omo-prometheus consoles therefore keep
+`render()` for plain terminals and add `describe()`, `nativeOverlay`
+(`size: "lg"`, role `omp.overlay.<plugin>.<view>`, a glass sheet like the
+host's plan review) and `handleNativeEvent`, whose clicks run the same code as
+the matching keys. Verified by hand on Tern 0.9.5:
+
+- `leafKey`, `rootToggleExpanded` and other `native/node` values are type-only
+  at the `@oh-my-pi/pi-tui` root (`export type *`); import them from
+  `@oh-my-pi/pi-tui/native/node`.
+- A list `item` is one line: label, then a dim inline `detail` that truncates
+  in a 32ch sidebar. Put status in tone and icon, extra facts in the `title`
+  tooltip, and file names before their directories.
+- An editor-replacing `ctx.ui.custom` gets no sheet; `/atlas` mounts as a
+  fullscreen overlay when `isNativeRendering()` is true.
+- To look at it, run `tern serve --control /tmp/t.sock --out DIR`, then drive
+  it with `tern ctl --control /tmp/t.sock type|key|click X Y|shot NAME`; shot
+  PNGs are at twice the click coordinates. `PI_TUI_TSP_RECORD=file.jsonl omp`
+  records every frame.
+
+On macOS `TMPDIR` is under the `/var` symlink, so Atlas refuses the temporary
+session directories in `src/omo-prometheus-execution.test.ts`; run the suite
+with `TMPDIR=$(realpath "$TMPDIR") bun run test`.
+
 ## Host prompt text is not a byte channel
 
 The host renders every `task` assignment and batch `context`, and the native
