@@ -141,14 +141,16 @@ test("console describes the sections, the toned item list with badges and the se
   expect(selectedLabel(root)).toMatch(/S05/);
   const s05 = list.find((entry) => plain(props(entry).label).includes("S05")) as NativeNode;
   expect(props(s05).tone).toBe("accent");
-  // Overdue and the Atlas coverage of its criteria, which one plan covers incompletely and one drifted.
-  expect(plain(props(s05).value)).toMatch(/overdue/);
-  expect(plain(props(s05).value)).toMatch(/1\/2 covered/);
-  expect(plain(props(s05).value)).toMatch(/drift/);
+  // Items stay one line: the overdue mark rides in the label, the rest (coverage, readiness) in the tooltip.
+  for (const entry of list) expect(props(entry).detail).toBeUndefined();
+  expect(plain(props(s05).label)).toContain(theme.status.warning);
+  expect(props(s05).title).toMatch(/overdue/);
+  expect(props(s05).title).toMatch(/1\/2 criteria covered/);
+  expect(props(s05).title).toMatch(/drift/);
   const s04 = list.find((entry) => plain(props(entry).label).includes("S04")) as NativeNode;
   expect(props(s04).tone).toBe("success");
   const s06 = list.find((entry) => plain(props(entry).label).includes("S06")) as NativeNode;
-  expect(plain(props(s06).detail)).toMatch(/blocked by S05/);
+  expect(props(s06).title).toMatch(/blocked by S05/);
 
   const body = plain(byKey(root, "body").node);
   expect(body).toMatch(/S05 — Payment provider integration/);
@@ -280,7 +282,11 @@ test("preview describes a glass sheet listing repo-relative files between Write 
   const labels = items(root).map((entry) => plain(props(entry).label));
   expect(labels).toHaveLength(4);
   expect(labels[0]).toMatch(/Write 2 files/);
-  expect(labels.slice(1, 3)).toEqual(["docs/roadmap/R3/README.md", "docs/roadmap/R3/notes.txt"]);
+  // The file name leads; the directory follows as detail and the full path is the tooltip.
+  expect(labels.slice(1, 3)).toEqual(["README.md", "notes.txt"]);
+  const files = items(root).slice(1, 3);
+  expect(files.map((entry) => plain(props(entry).detail))).toEqual(["docs/roadmap/R3", "docs/roadmap/R3"]);
+  expect(props(files[1] as NativeNode).title).toMatch(/^docs\/roadmap\/R3\/notes\.txt/);
   expect(labels[3]).toMatch(/Cancel/);
   expect(plain(byKey(root, "body").node)).toMatch(/docs\/roadmap\/R3\/README\.md/);
 

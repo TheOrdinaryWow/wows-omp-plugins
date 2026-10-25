@@ -1175,55 +1175,69 @@ export class RoadmapConsole extends SplitPane {
     return [keyed(textNode(spans(this.#search())), "search")];
   }
 
-  /** Atlas plan coverage of a stage's done criteria as list badges; nothing without an answer from omo-prometheus. */
-  #coverageBadges(stage: StageDoc): Run[] {
+  /** Atlas plan coverage of a stage's done criteria; nothing without an answer from omo-prometheus. */
+  #coverageNotes(stage: StageDoc): string[] {
     const plans = this.#stagePlans(stage.id);
     if (!plans?.length) return [];
     let coverage: StageCoverage;
     try {
       coverage = stageCoverage(stage, plans);
     } catch {
-      return [ink("coverage unavailable", "error")];
+      return ["coverage unavailable"];
     }
     const total = coverage.criteria.length;
     const covered = coverage.criteria.filter((entry) => entry.complete.length).length;
-    return [
-      ...(total ? [ink(`${covered}/${total} covered`, covered === total ? "success" : "warning")] : []),
-      ...(coverage.drifted.length ? [ink("drift", "warning")] : []),
-    ];
+    return [...(total ? [`${covered}/${total} criteria covered`] : []), ...(coverage.drifted.length ? ["plan drift"] : [])];
   }
 
-  /** One line under a row's title: a planned stage's readiness, a round's progress, a TODO's severity and target. */
-  #itemDetail(entry: Entry): Run[] | undefined {
+  /**
+   * A row's state beyond its title: status, a planned stage's readiness, a round's progress, a TODO's severity and
+   * target, overdue and Atlas plan coverage. The detail pane shows all of it in full.
+   */
+  #itemNotes(entry: Entry): string[] {
+    const late = this.#late(entry) ? ["overdue"] : [];
     if (entry.kind === "stage") {
-      if (entry.stage.status !== "planned") return undefined;
-      const readiness = stageReadiness(this.model, entry.stage);
-      if (readiness.startable) return [ink("ready to start", "success")];
-      return readiness.blockedBy.length ? [ink(`blocked by ${readiness.blockedBy.join(", ")}`, "warning")] : undefined;
+      const readiness = entry.stage.status === "planned" ? stageReadiness(this.model, entry.stage) : undefined;
+      return [
+        entry.stage.status,
+        ...(readiness?.startable
+          ? ["ready to start"]
+          : readiness?.blockedBy.length
+            ? [`blocked by ${readiness.blockedBy.join(", ")}`]
+            : []),
+        ...late,
+        ...this.#coverageNotes(entry.stage),
+      ];
     }
     if (entry.kind === "round") {
       const stages = this.model.stages.filter((stage) => stage.round === entry.id);
       const settled = stages.filter((stage) => stage.status === "closed" || stage.status === "dropped").length;
       return [
-        ink(`${settled}/${plural(stages.length, "stage")} settled`, "dim"),
-        ...(entry.round === this.#nextPlanned ? [ink(" · next to activate", "dim")] : []),
+        entry.round.status,
+        `${settled}/${plural(stages.length, "stage")} settled`,
+        ...(entry.round === this.#nextPlanned ? ["next to activate"] : []),
+        ...late,
       ];
     }
     const where = entry.todo.target ?? (entry.todo.trigger ? `trigger: ${singleLine(entry.todo.trigger)}` : undefined);
-    return [ink(`${entry.todo.severity ?? "normal"}${where ? ` · ${where}` : ""}`, "dim")];
+    return [`${entry.todo.severity ?? "normal"} severity`, ...(where ? [where] : [])];
   }
 
+  /**
+   * Native items are one line that truncates at the end: the label is the status glyph, an overdue mark, the id and
+   * the title, the row tone carries the status, and the rest rides in the tooltip.
+   */
   protected describeItems(): NativeNode[] {
-    return this.#visible.map((entry, index) => {
-      const badges = [
-        ...(this.#late(entry) ? [ink("overdue", "warning")] : []),
-        ...(entry.kind === "stage" ? this.#coverageBadges(entry.stage) : []),
-      ];
-      const detail = this.#itemDetail(entry);
-      return item(`i${index}`, {
-        label: spans([this.#markRun(entry), " ", ink(entry.id, "muted"), ` ${singleLine(entry.title)}`]),
-        ...(detail ? { detail: spans(detail) } : {}),
-        ...(badges.length ? { value: spans(badges.flatMap((badge, at) => (at ? [" ", badge] : [badge]))) } : {}),
+    return this.#visible.map((entry, index) =>
+      item(`i${index}`, {
+        label: spans([
+          this.#markRun(entry),
+          ...(this.#late(entry) ? [" ", ink(this.theme.status.warning, "warning")] : []),
+          " ",
+          ink(entry.id, "muted"),
+          ` ${singleLine(entry.title)}`,
+        ]),
+        title: [`${entry.id} ${singleLine(entry.title)}`, ...this.#itemNotes(entry)].join(" · "),
         tone:
           entry.kind === "stage"
             ? STATUS_TONES[entry.stage.status]
@@ -1234,8 +1248,8 @@ export class RoadmapConsole extends SplitPane {
                 : entry.todo.severity === "low"
                   ? "muted"
                   : "warning",
-      });
-    });
+      }),
+    );
   }
 
   protected describeBody(): NativeNode {
@@ -1435,9 +1449,15 @@ export class PreviewView extends SplitPane {
     const t = this.theme;
     return [
       item("i0", { label: [span(t.status.success, "success"), span(` ${this.#writeLabel()}`)], tone: "success" }),
-      ...this.#paths.map((path, at) =>
-        item(`i${at + 1}`, { label: [span(path, "path")], detail: [span(plural(this.#lines(at), "line"), "dim")] }),
-      ),
+      // The file name first: a long path would truncate it away; the directory follows dim and gives way first.
+      ...this.#paths.map((path, at) => {
+        const slash = path.lastIndexOf("/");
+        return item(`i${at + 1}`, {
+          label: [span(path.slice(slash + 1), "path")],
+          ...(slash > 0 ? { detail: [span(path.slice(0, slash), "dim")] } : {}),
+          title: `${path} · ${plural(this.#lines(at), "line")}`,
+        });
+      }),
       item(`i${this.count() - 1}`, { label: [span(t.status.error, "error"), span(" Cancel")], tone: "error" }),
     ];
   }
