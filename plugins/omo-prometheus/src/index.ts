@@ -75,6 +75,7 @@ import {
   type RoadmapStageAnswer,
 } from "./roadmap-contract.ts";
 import { forceStructuredResults, restoreStructuredResults } from "./structured-results.ts";
+import { activateCard, gitCard, ledgerCard, ledgerCardRow, ledgerProgress, registerMessageTitle, releaseCard } from "./tool-cards.ts";
 import {
   ATLAS_USAGE,
   type AtlasCompletionPlan,
@@ -118,6 +119,7 @@ const RELEASE_TOOL = "atlas_release";
 const LEDGER_TOOL = "atlas_ledger";
 const GIT_TOOL = "atlas_git";
 const STATE_ENTRY = "wows-omp-omo-prometheus.state";
+const COMMAND_STATUS_TYPE = "wows-omp-omo-prometheus.command-status";
 const ATLAS_START_TYPE = "wows-omp-omo-prometheus.atlas-start";
 const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
 const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
@@ -340,7 +342,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return;
     }
     pi.sendMessage({
-      customType: "wows-omp-omo-prometheus.command-status",
+      customType: COMMAND_STATUS_TYPE,
       content: message,
       display: true,
       attribution: "agent",
@@ -1921,6 +1923,9 @@ export default function prometheus(pi: ExtensionAPI): void {
     disposition?: "todo" | "duplicate" | "wontfix" | "report";
   };
 
+  registerMessageTitle(pi, COMMAND_STATUS_TYPE, "Prometheus");
+  registerMessageTitle(pi, ATLAS_START_TYPE, "Atlas");
+
   pi.registerTool({
     name: ACTIVATE_TOOL,
     sourcePath: RUNTIME_SOURCE_PATH,
@@ -1928,6 +1933,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     description:
       "Activate Prometheus only after the immediately preceding native ask result records explicit option-index consent for the fixed Prometheus question.",
     parameters: activateParameters,
+    ...activateCard,
     defaultInactive: true,
     loadMode: "essential",
     approval: "read",
@@ -1991,6 +1997,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     description:
       "After every delegated plan item and final gate has verified child evidence, request human confirmation to release Atlas. Refused while execution-ledger rows remain unfinished or any deferred finding lacks a triage; never releases without confirmation.",
     parameters: releaseParameters,
+    ...releaseCard,
     defaultInactive: true,
     loadMode: "essential",
     approval: "read",
@@ -2081,6 +2088,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     description:
       "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. A HEAVY row's done records its implementation; verify then binds a distinct fresh verifier child with structured output, and only its PASS completes the row (FAIL reopens it with the verifier's summary). Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Before any gate starts, discover scope in appends a D row every gate waits for; discover scope out records a deferred finding O1, O2, … for the final report, and triage records each one's disposition (atlas_release waits for every triage). P1 delivers after every gate. Reopen/block affect only the named row.",
     parameters: ledgerParameters,
+    ...ledgerCard,
     defaultInactive: true,
     loadMode: "essential",
     approval: "read",
@@ -2108,7 +2116,12 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `Deferred out of scope as ${finding.id}: ${finding.title}. No row waits for it. Triage it with atlas_ledger triage before release, and list it with its disposition in the final report.\n\n${ledgerSummary(ledger)}`,
                 },
               ],
-              details: { id: finding.id, deferred: ledger.deferred.length },
+              details: {
+                id: finding.id,
+                deferred: ledger.deferred.length,
+                finding: { id: finding.id, title: finding.title },
+                progress: ledgerProgress(ledger),
+              },
             };
           }
           if (params.action === "triage") {
@@ -2123,7 +2136,12 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `${finding.id} triaged as ${finding.triage?.disposition}${finding.triage?.reference ? ` (${finding.triage.reference})` : ""}. Untriaged findings: ${remaining.join(", ") || "none"}.\n\n${ledgerSummary(ledger)}`,
                 },
               ],
-              details: { id: finding.id, triage: finding.triage },
+              details: {
+                id: finding.id,
+                triage: finding.triage,
+                finding: { id: finding.id, title: finding.title, disposition: finding.triage?.disposition },
+                progress: ledgerProgress(ledger),
+              },
             };
           }
           const item = ledgerRows(ledger).find((entry) => entry.id === id);
@@ -2153,7 +2171,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `${found.id} records in-scope work found during ${item.id}; it can dispatch now and every gate waits for it.\n\n${ledgerSummary(ledger, found.id)}`,
                 },
               ],
-              details: { id: found.id, status: found.status, origin: item.id },
+              details: { id: found.id, status: found.status, origin: item.id, row: ledgerCardRow(found), progress: ledgerProgress(ledger) },
             };
           }
           if (params.action === "fix") {
@@ -2177,7 +2195,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.\n\n${ledgerSummary(ledger, fix.id)}`,
                 },
               ],
-              details: { id: fix.id, status: fix.status, gate: item.id },
+              details: { id: fix.id, status: fix.status, gate: item.id, row: ledgerCardRow(fix), progress: ledgerProgress(ledger) },
             };
           }
           if (params.action === "start") {
@@ -2284,7 +2302,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                 text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger, item.id)}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
               },
             ],
-            details: { id: item.id, status: item.status, outputSchema: schema },
+            details: { id: item.id, status: item.status, outputSchema: schema, row: ledgerCardRow(item), progress: ledgerProgress(ledger) },
           };
         });
         if (completion) roadmap.emitCompleted(completion);
@@ -2335,6 +2353,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     description:
       "Git for the Atlas main session only; there is no shell. status, diff, log and show inspect the repository. commit stages and commits exactly the files named in paths (no directories, no globs) with your message; it is refused while any bound child task is still running. Commit roadmap documents you changed, and finished child work a child left uncommitted. Hooks run; a failed hook leaves the files staged.",
     parameters: gitParameters,
+    ...gitCard,
     defaultInactive: true,
     loadMode: "essential",
     approval: (args: unknown) =>
@@ -2362,7 +2381,11 @@ export default function prometheus(pi: ExtensionAPI): void {
         }
       }
       const result = await runAtlasGit(ctx.cwd, params, signal);
-      return { content: [{ type: "text" as const, text: result.text }], isError: !result.ok, details: {} };
+      return {
+        content: [{ type: "text" as const, text: result.text }],
+        isError: !result.ok,
+        details: { action: params.action, ...(result.commit ? { commit: result.commit } : {}) },
+      };
     },
   });
 

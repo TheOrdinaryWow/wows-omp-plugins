@@ -144,7 +144,7 @@ Atlas Dispatch 列出当前工作区中未完成的计划；按 Tab 显示所有
 
 Atlas 激活时，裸 `/atlas` 打开一个实时只读视图，显示每一行的状态、正在运行的子代理及其模型、当前工具和用量，按 Tab 可查看时间线。Shift+X 退出 Atlas，Esc 关闭视图。编辑器上方的小组件可以通过 `atlasWidget` 关闭。
 
-在 Tern 中，Atlas Dispatch 和计划视图会以原生面板浮在对话上方。单击计划或行即可选中，双击计划打开它的视图；Unfinished/All 与 Row/Timeline 标签页和各个按钮的作用与对应按键相同，按键也照常可用。编辑器上方的小组件显示为原生进度条。
+在 Tern 中，Atlas Dispatch 和计划视图会以原生面板浮在对话上方。单击计划或行即可选中，双击计划打开它的视图；Unfinished/All 与 Row/Timeline 标签页和各个按钮的作用与对应按键相同，按键也照常可用。编辑器上方的小组件显示为原生进度条。Atlas 和 Prometheus 的工具调用显示为原生卡片（`atlas_ledger` 调用会显示变更的行、它的状态和计划进度，给模型的指引默认折叠，展开卡片即可查看），插件消息的标题为“Atlas”或“Prometheus”。
 
 ### 在另一个会话中继续
 

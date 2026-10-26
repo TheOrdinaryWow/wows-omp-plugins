@@ -22,6 +22,8 @@ export interface AtlasGitParams {
 export interface AtlasGitResult {
   ok: boolean;
   text: string;
+  /** A successful commit's hash and subject. */
+  commit?: { sha: string; subject: string };
 }
 
 const OUTPUT_LIMIT = 60_000;
@@ -97,6 +99,7 @@ export async function runAtlasGit(cwd: string, params: AtlasGitParams, signal?: 
     }
   }
   const outputs: string[] = [];
+  let commit: AtlasGitResult["commit"];
   for (const [index, args] of commands.entries()) {
     const { code, output } = await runGit(cwd, args, signal);
     if (output) outputs.push(output);
@@ -104,8 +107,13 @@ export async function runAtlasGit(cwd: string, params: AtlasGitParams, signal?: 
       const staged = params.action === "commit" && index === 1 ? "\nThe named files stay staged; nothing was committed." : "";
       return { ok: false, text: `${truncate(outputs.join("\n"))}\ngit ${args.join(" ")} exited with ${code}.${staged}` };
     }
+    if (params.action === "commit" && index === 2) {
+      // The final `log --format=%H%n%s` names the commit just made.
+      const [sha = "", subject = ""] = output.split("\n");
+      if (sha) commit = { sha, subject };
+    }
   }
-  return { ok: true, text: truncate(outputs.join("\n")) || "(no output)" };
+  return { ok: true, text: truncate(outputs.join("\n")) || "(no output)", ...(commit ? { commit } : {}) };
 }
 
 function truncate(text: string): string {

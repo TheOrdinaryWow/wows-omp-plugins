@@ -147,6 +147,7 @@ async function scenario(name: string, root: string): Promise<void> {
       events: bus,
       zod: z,
       on: (type: string, handler: Hook) => hooks.set(type, handler),
+      registerMessageRenderer() {},
       registerTool: (tool: RegisteredTool) => tools.set(tool.name, tool),
       registerCommand: (command: string, spec: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
         commands.set(command, spec.handler),

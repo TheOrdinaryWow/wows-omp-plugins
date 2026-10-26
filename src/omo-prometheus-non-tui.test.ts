@@ -142,6 +142,7 @@ async function scenario(name: "rpc" | "headless", root: string): Promise<void> {
     events: new EventBus(),
     zod: z,
     on: (event: string, handler: Hook) => hooks.set(event, handler),
+    registerMessageRenderer() {},
     registerTool: (tool: Tool) => tools.set(tool.name, tool),
     registerCommand: (command: string, spec: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
       commands.set(command, spec.handler),

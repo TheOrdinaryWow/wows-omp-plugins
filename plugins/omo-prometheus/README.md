@@ -144,7 +144,7 @@ Starting a plan in a non-empty session asks whether to use a new session or this
 
 While Atlas is active, bare `/atlas` opens a live, read-only view with each row's status, running children with their model, current tool and usage, and a timeline (Tab). Shift+X exits Atlas, Esc closes the view. Disable the widget above the editor with `atlasWidget`.
 
-In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation. Click a plan or row to highlight it, double-click a plan to open its view, and use the Unfinished/All and Row/Timeline tabs and the buttons, which do what their keys do; the keys keep working. The widget shows a native progress bar.
+In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation. Click a plan or row to highlight it, double-click a plan to open its view, and use the Unfinished/All and Row/Timeline tabs and the buttons, which do what their keys do; the keys keep working. The widget shows a native progress bar. Atlas and Prometheus tool calls appear as native cards (an `atlas_ledger` call shows the changed row, its status and plan progress, with the model's guidance folded until you expand the card), and plugin messages are titled "Atlas" or "Prometheus".
 
 ### Continuing in another session
 

@@ -270,6 +270,7 @@ async function scenario(name: string, root: string): Promise<void> {
         commands.set(name, spec.handler);
         if (spec.getArgumentCompletions) completions.set(name, spec.getArgumentCompletions);
       },
+      registerMessageRenderer() {},
       registerTool: (tool: RegisteredTool) => {
         tools.set(tool.name, tool);
       },
