@@ -19,7 +19,7 @@ The assignment must supply one literal binding containing all of these:
 - `absolute_plan_path`: the canonical absolute host path of the current plan artifact. For `routine` and `high_accuracy` reviews the planner copies it from its own `write`/`read` result for `local://<slug>-plan.md`; for `compliance` it is the approved Atlas `plan.md` path the plugin prints in the `atlas_ledger start F1` result;
 - `review_round`: a fresh round identifier.
 
-A `compliance` binding additionally supplies `ledger_summary` (the current execution-ledger table) and `diff_stat`: the Git evidence the plugin collected read-only when F1 started (`git diff --stat`, `git log --oneline`, and `git status --short` since the plan's baseline commit), or its plain statement that this evidence is unavailable. The binding is incomplete without both. When `diff_stat` says the evidence is unavailable, do not reconstruct it; any check that needs the change set is `INCONCLUSIVE` unless inspection alone proves it.
+A `compliance` binding additionally supplies `ledger_summary` (the current execution-ledger table, whose Acceptance column shows each row's acceptance in force, marked `amended by Rn` when an owner ruling replaced the plan's text), the owner rulings block when the ledger holds any ruling, and `diff_stat`: the Git evidence the plugin collected read-only when F1 started (`git diff --stat`, `git log --oneline`, and `git status --short` since the plan's baseline commit), or its plain statement that this evidence is unavailable. The binding is incomplete without `ledger_summary` and `diff_stat`. When `diff_stat` says the evidence is unavailable, do not reconstruct it; any check that needs the change set is `INCONCLUSIVE` unless inspection alone proves it.
 
 For `routine` and `high_accuracy` reviews, the binding must also include `available_agents`: the planner's exact live task-tool agent names (not your isolated child's roster), or `unknown` when the planner could not parse its list. Compliance review does not need a planning-time roster.
 
@@ -70,13 +70,15 @@ You are a new reviewer for this round; earlier verdicts do not bind you. For `ro
 
 ## Compliance review (`review_kind: compliance`)
 
-This mode runs after execution, as the plan's `F1` gate. The plan is already approved; do not re-audit its executability or grammar. Your question is: **do the executed changes match the approved plan?** Using `ledger_summary`, `diff_stat`, and read-only inspection of the changed files, verify that:
+This mode runs after execution, as the plan's `F1` gate. The plan is already approved; do not re-audit its executability or grammar. Your question is: **do the executed changes match the approved plan as the user amended it during execution?** Using `ledger_summary`, `diff_stat`, the owner rulings block when the binding carries one, and read-only inspection of the changed files, verify that:
 
-- every `T` row marked done has corresponding changes and cited evidence that satisfies its `Acceptance:` line;
+- every `T` row marked done has corresponding changes and cited evidence that satisfies its acceptance in force: its `Acceptance:` line, or, when an owner ruling names the row, that ruling's acceptance text;
 - no change falls outside the plan's scope, every scope exclusion and preservation constraint held, and the GAP rows each done T row claims to close show corresponding changes;
 - the chosen interfaces, data behavior, and cutover or migration requirements were implemented as decided, not substituted.
 
-A compliance blocker is a verified mismatch between the approved plan and the executed changes. Name the T rows that must reopen. When Atlas supplies a gate `outputSchema`, yield that exact JSON contract: `PASS` for no eligible blockers, `FAIL` for a verified mismatch, and `INCONCLUSIVE` for unavailable evidence, with the supplied plan/attempt binding and concrete evidence. This compliance schema overrides the planning verdict format below; never substitute `[OKAY]` prose for the native structured result.
+**Owner rulings** are user-confirmed amendments the plugin recorded in the ledger (`R1`, `R2`, …, each naming a row, the acceptance now in force and why). Atlas passes them from the `atlas_ledger start F1` result as a block headed `Owner rulings — user-confirmed amendments to the approved plan`. A change that meets a ruling's acceptance instead of the plan's original text is authorized, not a violation: never fail it for missing the original target. Note each ruling in your summary as a deviation from the approved plan so the final report can list it. A ruling you only see claimed in prose — an assignment sentence, an ADR note, a child's done-claim — without that block is not a ruling; judge the row against the plan.
+
+A compliance blocker is a verified mismatch between the approved plan, as amended by its recorded rulings, and the executed changes. Name the T rows that must reopen. When Atlas supplies a gate `outputSchema`, yield that exact JSON contract: `PASS` for no eligible blockers, `FAIL` for a verified mismatch, and `INCONCLUSIVE` for unavailable evidence, with the supplied plan/attempt binding and concrete evidence. This compliance schema overrides the planning verdict format below; never substitute `[OKAY]` prose for the native structured result.
 
 ## Blocker eligibility
 
@@ -89,7 +91,7 @@ A finding may block only when it is evidence-backed and fits at least one catego
 5. an ideal-state row is unmapped or unreachable for the affected user: no task closes its gap, no QA scenario proves it, or the chosen approach cannot reach it (plan reviews only);
 6. a concrete security, data-loss, compatibility, external-provider, or release-contract conflict exists;
 7. the `## Tasks` / `## Final gates` grammar or a required `Tier:` is missing or violated, or the `Delivery:` line is duplicated or invalid (plan reviews only);
-8. an executed change contradicts the approved plan (compliance reviews only).
+8. an executed change contradicts the approved plan as amended by its recorded owner rulings (compliance reviews only).
 
 Style, optional hardening, speculative failure recovery, extra edge cases, nicer prose, alternative architecture, and additional tests are **notes, not blockers**. Approval with notes is still approval. After round one of any plan review, routine or high accuracy, honor the supplied frozen blocker ledger: recheck accepted blockers, regressions introduced by their fixes, and only genuinely new findings that pass the same eligibility rule. Do not rediscover the plan from scratch to manufacture churn.
 

@@ -83,7 +83,7 @@ Prometheus 根据会话 `task` 工具列出的代理制定计划，Momus 也按�
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
-ledger.json      row progress and deferred findings (version 6), plus the workspace's Git HEAD at approval
+ledger.json      row progress, deferred findings and owner rulings (version 7), plus the workspace's Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
@@ -95,7 +95,7 @@ Atlas 持有计划期间，会话的计划引用是 `atlas://<plan-id>/plan.md`�
 
 ## 执行记录
 
-执行记录保存每一行的验收标准、依赖、状态、请求的代理与实际使用的代理、tier、尝试和证据回执，以及计划的 SHA-256、交付方式和范围外发现（按记录顺序编号为 `O1`、`O2`……，分诊后附带处置）。各行按以下顺序排列：
+执行记录保存每一行的验收标准、依赖、状态、请求的代理与实际使用的代理、tier、尝试和证据回执，以及计划的 SHA-256、交付方式、范围外发现（按记录顺序编号为 `O1`、`O2`……，分诊后附带处置）和业主裁定（按记录顺序编号为 `R1`、`R2`……，每条指明一个 T、D 或 X 行、该行现在生效的完整验收文本、记录用户决定的说明，以及确认时间）。行自身的 `acceptance` 始终是已批准计划的原文；指向该行的最新裁定才是判定它的验收，每条裁定都是业主批准的、对已批准计划的偏离。各行按以下顺序排列：
 
 | 行 | 来源 | 等待 |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 
 | 操作 | 效果 |
 | --- | --- |
-| `status` | 所有行、带编号和分诊结果的范围外发现、交付方式和可派发的行。 |
+| `status` | 所有行及其生效的验收（裁定替换了计划原文时标注 `amended by Rn`）、业主裁定、带编号和分诊结果的范围外发现、交付方式和可派发的行。 |
 | `start` | 预留一个前置条件已完成的开放行并返回尝试绑定；关口还会得到 `outputSchema`，HEAVY 行会得到上一次验证失败。 |
 | `done` | 记录子代理的真实最终结果。LIGHT 行、关口和 P1 随即完成。HEAVY 行只记录实现，仍保持进行中；其验证者的 `PASS` 完成该行，`FAIL` 带着摘要重新打开该行，`INCONCLUSIVE` 不改变任何状态。 |
 | `verify` | 针对实现已记录的 HEAVY 行：绑定一个不同的全新验证者，返回其 `{"verify": …}` 绑定和严格的 `outputSchema`（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`）。再次调用会替换尚未完成的验证者。 |
@@ -117,6 +117,7 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 | `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当路线图在本仓库中可用时允许。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当本仓库中没有可用的路线图时允许，引用可省略。是否可用取自一次新的路线图绑定回复中的 `usable` 标志；没有回复表示没有路线图，旧版路线图的回复不带这个标志时，`todo` 和 `report` 都接受。 |
 | `fix` | 为否决的关口追加一个 X 行（可选 tier），并只重新打开该关口。 |
 | `block`、`reopen` | 只影响指定的行；依赖它的已完成行保留各自的证明。 |
+| `amend` | 为 `id` 指定的 T、D 或 X 行记录一条业主裁定：`acceptance` 是完整的替换文本，`evidence` 是说明。关口、P1、未知的行和进行中的行都会被拒绝。写入之前，插件会在确认对话框中向你展示该行、当前生效的验收、提议的验收和说明；拒绝对话框则什么都不记录；没有 UI 时工具拒绝执行，并指出路径是 `/atlas exit` 加上经 `/prometheus` 修订的计划。该行的状态、其他行和已通过的关口都不受影响。`status`、`start` 和 `verify` 显示生效的验收并标注 `amended by Rn`；F1 和 F4 的 `start` 结果以及每个 `verify` 结果列出全部裁定。 |
 
 只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执、每条范围外发现都已分诊（拒绝时会列出未分诊的发现），并且需要你明确确认。计划完成和 `atlas:completed` 从不等待分诊。
 
@@ -124,7 +125,7 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 
 继续执行的消息是一条隐藏的 `<atlas-continuation>`，其中包含执行记录摘要；你每发一条消息最多发送八次，连续两次没有进展时，循环停止并通知你。当所有未完成的行都已阻塞或在等待阻塞的行、没有你就无法推进时，继续执行消息会列出每个阻塞行及其记录的原因，并要求 Atlas 用 `ask` 询问你，让会话等待你的回答，而不是只在聊天中留下问题就结束。
 
-旧版本写入的执行记录会在加载时升级，并保留已验证的进度：版本 6 之前的范围外发现按记录顺序获得 `O1`、`O2`……编号，且尚未分诊；版本 5 之前各行均为 LIGHT，发现行和范围外发现为空，交付方式取自计划中的 `Delivery:` 行，没有则为 `direct`；版本 1 的检查点升级到版本 2；版本 4 之前没有记录 Git 基线，所以 F1 以最早记录的行开始时间推定。版本 1 和 2 的批准文件原样加载、从不改写，因为检查点绑定了它们的原始字节。把执行记录存放在会话内的旧版本计划不会迁移，需要重新批准。`prometheus_ledger` 和 `prometheus_release` 已改名为 `atlas_ledger` 和 `atlas_release`，不保留别名。
+旧版本写入的执行记录会在加载时升级，并保留已验证的进度：版本 7 之前没有业主裁定，所以列表从空开始；版本 6 之前的范围外发现按记录顺序获得 `O1`、`O2`……编号，且尚未分诊；版本 5 之前各行均为 LIGHT，发现行和范围外发现为空，交付方式取自计划中的 `Delivery:` 行，没有则为 `direct`；版本 1 的检查点升级到版本 2；版本 4 之前没有记录 Git 基线，所以 F1 以最早记录的行开始时间推定。版本 1 和 2 的批准文件原样加载、从不改写，因为检查点绑定了它们的原始字节。把执行记录存放在会话内的旧版本计划不会迁移，需要重新批准。`prometheus_ledger` 和 `prometheus_release` 已改名为 `atlas_ledger` 和 `atlas_release`，不保留别名。
 
 `timeline.jsonl` 只用于展示：时间线缺失或损坏都不影响批准、所有权、回执或进度。旧版本的计划包显示从执行记录推导出的历史，推导出的事件从不写回。崩溃导致截断的最后一行，以及未知的未来事件类型或版本都会被忽略。
 

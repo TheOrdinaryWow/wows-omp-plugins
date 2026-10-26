@@ -1845,8 +1845,20 @@ async function scenario(name: string, root: string): Promise<void> {
   }
 
   if (name === "heavy-verify" || name === "heavy-verify-fail") {
+    // A ruling recorded before the row starts reaches both the implementation child and its verifier.
+    if (name === "heavy-verify") {
+      ok(
+        await call({
+          action: "amend",
+          id: "T1",
+          acceptance: "prerequisite p95 latency stays under 250 ms",
+          evidence: "The user relaxed the ceiling",
+        }),
+      );
+    }
     const prepared = await prepare("T1");
     assert.match(prepared.startText ?? "", /T1 is HEAVY/);
+    if (name === "heavy-verify") assert.match(prepared.startText ?? "", /T1 acceptance was amended by R1/);
     await publish(prepared, "Implementer");
     ok(await done("T1", "Implementer"));
     let current = await row("T1");
@@ -1869,6 +1881,12 @@ async function scenario(name: string, root: string): Promise<void> {
     const planSha256 = (await ledger()).planSha256;
     const marker = `atlas_assignment: ${JSON.stringify({ planSha256, verify: { T1: attempt } })}`;
     assert(started.content.some((part) => part.text?.includes(marker)));
+    if (name === "heavy-verify") {
+      assert.match(
+        started.content.map((part) => part.text ?? "").join("\n"),
+        /Owner rulings — user-confirmed amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed the ceiling/,
+      );
+    }
     const input = {
       agent: current.verification?.dispatchAgent,
       task: `${marker}\nVerify T1 adversarially and report; never fix.`,
@@ -2059,6 +2077,78 @@ async function scenario(name: string, root: string): Promise<void> {
     await prepare("F1");
     refused(await discover({ ...defect, id: "T2", scope: "in" }));
     ok(await discover({ scope: "out", id: "F1", title: "Unrelated flaky test", evidence: "Outside this change" }));
+    return;
+  }
+  if (name === "amend") {
+    const text = (result: Result) => result.content.map((part) => part.text ?? "").join("\n");
+    const amend = (params: Record<string, unknown>) => call({ action: "amend", ...params });
+    const ruling = {
+      id: "T1",
+      acceptance: "prerequisite p95 latency stays under 250 ms",
+      evidence: "The user relaxed the 200 ms ceiling after three attempts measured 230–240 ms",
+    };
+    // Gates, delivery rows, unknown rows, empty texts and a row whose child is working are refused before any dialog opens.
+    refused(await amend({ ...ruling, id: "F1" }));
+    refused(await amend({ ...ruling, id: "T9" }));
+    refused(await amend({ ...ruling, acceptance: " " }));
+    refused(await amend({ ...ruling, evidence: "" }));
+    const attempt = await prepare("T1");
+    refused(await amend(ruling));
+    assert.equal(confirmations, 0);
+    ok(await call({ action: "block", id: "T1", evidence: "The 200 ms ceiling is unreachable; asked the user" }));
+    // The child of the discarded attempt finishes against the old acceptance; its result is stale and settles the dispatch.
+    await publish(attempt, "StaleCeiling");
+    refused(await done("T1", "StaleCeiling"));
+    // Without a dialog nothing is recorded, and the refusal names the re-plan path.
+    interactive = false;
+    const noDialog = await amend(ruling);
+    refused(noDialog);
+    assert.match(text(noDialog), /\/atlas exit.*\/prometheus/);
+    interactive = true;
+    // A declined dialog records nothing either.
+    confirmAnswer = false;
+    const declined = await amend(ruling);
+    refused(declined);
+    assert.match(text(declined), /declined/);
+    assert.equal(confirmations, 1);
+    assert.deepEqual((await ledger()).rulings, []);
+    confirmAnswer = true;
+    const recorded = await amend(ruling);
+    ok(recorded);
+    assert.equal(confirmations, 2);
+    assert.match(confirmTitles.at(-1) ?? "", /Amend the acceptance of T1/);
+    assert.deepEqual(
+      (await ledger()).rulings.map((entry) => [entry.id, entry.rowId, entry.acceptance]),
+      [["R1", "T1", ruling.acceptance]],
+    );
+    // The row keeps the approved plan's text and its status; the result shows the acceptance now in force.
+    assert.equal((await row("T1")).acceptance, "prerequisite behavior is observed");
+    assert.equal((await row("T1")).status, "blocked");
+    assert.match(text(recorded), /T1 acceptance: prerequisite p95 latency stays under 250 ms \(amended by R1\)/);
+    ok(await call({ action: "reopen", id: "T1" }));
+    const restarted = await prepare("T1");
+    assert.match(restarted.startText ?? "", /T1 acceptance was amended by R1/);
+    assert.match(restarted.startText ?? "", /T1 acceptance: prerequisite p95 latency stays under 250 ms \(amended by R1\)/);
+    assert.match(text(await call({ action: "status" })), /Owner rulings — user-confirmed amendments to the approved plan \(1;/);
+    await publish(restarted, "Relaxed");
+    ok(await done("T1", "Relaxed"));
+    // The ruling is part of the shared bundle, so it survives a session restart.
+    await reload();
+    ok(await call({ action: "status" }));
+    assert.equal((await ledger()).version, 7);
+    assert.deepEqual(
+      (await ledger()).rulings.map((entry) => entry.id),
+      ["R1"],
+    );
+    assert.equal((await row("T1")).status, "done");
+    await finish("T2");
+    await finish("T3");
+    // F1 and F4 judge against the plan plus every ruling; F2 and F3 need none.
+    const rulings =
+      /Owner rulings — user-confirmed amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed/;
+    assert.match((await prepare("F1")).startText ?? "", rulings);
+    assert.doesNotMatch((await prepare("F2")).startText ?? "", /Owner rulings/);
+    assert.match((await prepare("F4")).startText ?? "", rulings);
     return;
   }
   await tasksDone();
@@ -2278,6 +2368,7 @@ if (process.env[CHILD_ENV]) {
       "non-git-workspace",
       "atlas-git",
       "discover",
+      "amend",
       "context-row-shape",
     ]) {
       // Each scenario runs in its own process with a private HOME, so scenarios share no state.

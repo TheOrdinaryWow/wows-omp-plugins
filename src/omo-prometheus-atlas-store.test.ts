@@ -11,8 +11,10 @@ import { collectComplianceEvidence } from "../plugins/omo-prometheus/src/git-evi
 import {
   addDeferredFinding,
   addFixRow,
+  amendAcceptance,
   type ChildReceipt,
   type ExecutionLedger,
+  effectiveAcceptance,
   type LedgerItem,
   ledgerRows,
   planDigest,
@@ -484,7 +486,7 @@ describe("Atlas shared plan storage", () => {
     });
   });
 
-  test("a bundle written by the previous ledger version keeps its progress and continues after upgrade", async () => {
+  test("a bundle written by ledger version two keeps its progress and continues after upgrade", async () => {
     await fixture(async (f) => {
       const approvalPath = path.join(f.plan.directory, "approval.json");
       const approval = JSON.parse(await fs.readFile(approvalPath, "utf8"));
@@ -509,7 +511,7 @@ describe("Atlas shared plan storage", () => {
       await finish(f, upgraded, "session-b", "T2");
       await finish(f, upgraded, "session-b", "F4");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(6);
+      expect(saved.version).toBe(7);
       expect(saved.fixes).toEqual([]);
       expect(saved.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
@@ -530,12 +532,12 @@ describe("Atlas shared plan storage", () => {
       expect((await upgraded.details(f.root)).find((detail) => detail.plan.id === f.plan.id)?.done).toBe(2);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(6);
+      expect(resumed.version).toBe(7);
       expect(resumed.gitBaseline).toBeUndefined();
       expect(ledgerRows(resumed).map((row) => row.status)).toEqual(["done", "open", "done", "open", "open", "open", "open"]);
       await finish(f, upgraded, "session-b", "T2");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(6);
+      expect(saved.version).toBe(7);
       expect(saved.items.map((row) => row.status)).toEqual(["done", "done", "done"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
       expect(saved.items[1]?.receipt?.sessionId).toBe("session-b");
@@ -1153,7 +1155,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.rows.map((row) => row.tier)).toEqual(["light", "light", "light", undefined, undefined, undefined, undefined]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(6);
+      expect(resumed.version).toBe(7);
       expect(ledgerRows(resumed).map((row) => `${row.id}:${row.status}`)).toEqual([
         "T1:done",
         "T2:open",
@@ -1167,7 +1169,7 @@ describe("Atlas shared plan storage", () => {
       // LIGHT rows still finish on their own child's evidence, and the plan completes after its gates.
       for (const id of ["T2", "F1", "F2", "F3", "F4"]) await finish(f, upgraded, "session-b", id);
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(6);
+      expect(saved.version).toBe(7);
       expect(saved.deliveries).toEqual([]);
       expect(saved.discoveries).toEqual([]);
       expect(JSON.parse(await fs.readFile(path.join(f.plan.directory, "checkpoint.json"), "utf8")).version).toBe(2);
@@ -1221,7 +1223,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.deferred?.map((finding) => finding.id)).toEqual(["O1", "O2"]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(6);
+      expect(resumed.version).toBe(7);
       expect(resumed.items[0]?.status).toBe("done");
       expect(untriagedFindings(resumed).map((finding) => finding.id)).toEqual(["O1", "O2"]);
       // Reading alone never rewrites the previous-format bundle.
@@ -1231,13 +1233,81 @@ describe("Atlas shared plan storage", () => {
       await upgraded.transaction(f.plan.id, "session-b", (ledger) => triageFinding(ledger, "O2", "wontfix", "Tracked upstream", true));
       await finish(f, upgraded, "session-b", "T3");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(6);
+      expect(saved.version).toBe(7);
       expect(saved.deferred.map(({ id, title, triage }) => [id, title, triage?.disposition])).toEqual([
         ["O1", "Importer leaks handles", undefined],
         ["O2", "Flaky clock test", "wontfix"],
       ]);
       expect(saved.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
+    });
+  });
+
+  test("a bundle written by the previous ledger version (six) resumes as version seven without rulings, and a recorded ruling survives resume", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      await finish(f, f.store, "session-a", "T1");
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => {
+        addDeferredFinding(ledger, { title: "Flaky clock test", reason: "pre-existing" });
+      });
+      await f.store.release(f.plan.id, "session-a");
+      const current = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      // Version six persisted no rulings.
+      const { rulings: _rulings, ...six } = current;
+      await fs.writeFile(f.plan.ledgerPath, JSON.stringify({ ...six, version: 6 }));
+      const checkpointPath = path.join(f.plan.directory, "checkpoint.json");
+      const checkpointBefore = await fs.readFile(checkpointPath, "utf8");
+
+      const upgraded = new AtlasStore(f.root);
+      const detail = (await upgraded.details(f.root)).find((entry) => entry.plan.id === f.plan.id);
+      expect(detail?.done).toBe(1);
+      expect(detail?.rulings).toEqual([]);
+      await upgraded.acquire(f.plan.id, "session-b");
+      const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
+      expect(resumed.version).toBe(7);
+      expect(resumed.rulings).toEqual([]);
+      expect(resumed.items[0]?.status).toBe("done");
+      expect(resumed.deferred.map((finding) => finding.id)).toEqual(["O1"]);
+      // Reading alone never rewrites the previous-format bundle.
+      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(6);
+      expect(await fs.readFile(checkpointPath, "utf8")).toBe(checkpointBefore);
+
+      // A ruling on the upgraded bundle persists as version seven; the checkpoint binds attempts, not acceptance.
+      await upgraded.transaction(f.plan.id, "session-b", (ledger) => {
+        const t3 = ledger.items[2] as LedgerItem;
+        reopenRow(ledger, t3.id, "Blocked: the measured result misses the plan's ceiling");
+        t3.status = "blocked";
+        amendAcceptance(ledger, t3.id, "independent result within the relaxed tolerance", "The user relaxed the tolerance");
+      });
+      const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      expect(saved.version).toBe(7);
+      expect(saved.rulings).toMatchObject([{ id: "R1", rowId: "T3", acceptance: "independent result within the relaxed tolerance" }]);
+      expect(saved.items[2]?.acceptance).toBe("independent result is verified");
+      expect(await fs.readFile(checkpointPath, "utf8")).toBe(checkpointBefore);
+      expect((await upgraded.details(f.root)).find((entry) => entry.plan.id === f.plan.id)?.rulings?.map((ruling) => ruling.id)).toEqual([
+        "R1",
+      ]);
+      await upgraded.release(f.plan.id, "session-b");
+
+      const again = new AtlasStore(f.root);
+      await again.acquire(f.plan.id, "session-c");
+      const back = await again.transaction(
+        f.plan.id,
+        "session-c",
+        (ledger) => ({
+          rulings: structuredClone(ledger.rulings),
+          effective: effectiveAcceptance(ledger, ledger.items[2] as LedgerItem).text,
+        }),
+        { resume: true },
+      );
+      expect(back.rulings.map((ruling) => ruling.id)).toEqual(["R1"]);
+      expect(back.effective).toBe("independent result within the relaxed tolerance");
+      // A hand-edited ruling that names a gate never loads.
+      const tampered = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      if (tampered.rulings[0]) tampered.rulings[0].rowId = "F1";
+      await fs.writeFile(f.plan.ledgerPath, JSON.stringify(tampered));
+      await expect(again.transaction(f.plan.id, "session-c", (ledger) => ledger)).rejects.toThrow("owner ruling R1");
+      expect((await again.details(f.root)).find((entry) => entry.plan.id === f.plan.id)?.status).toContain("owner ruling R1");
     });
   });
 

@@ -83,7 +83,7 @@ Native approval creates a bundle at `ctx.sessionManager.getSessionDir()/atlas/<p
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
-ledger.json      row progress and deferred findings (version 6), plus the workspace's Git HEAD at approval
+ledger.json      row progress, deferred findings and owner rulings (version 7), plus the workspace's Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
@@ -95,7 +95,7 @@ While Atlas owns a plan, the session's plan reference is `atlas://<plan-id>/plan
 
 ## Ledger
 
-The ledger tracks each row's acceptance criteria, dependencies, status, requested and resolved agent, tier, attempt and evidence receipt, plus the plan's SHA-256, its delivery mode, and the out-of-scope findings (`O1`, `O2`, … in recorded order, each with its triage once recorded). Rows come in this order:
+The ledger tracks each row's acceptance criteria, dependencies, status, requested and resolved agent, tier, attempt and evidence receipt, plus the plan's SHA-256, its delivery mode, the out-of-scope findings (`O1`, `O2`, … in recorded order, each with its triage once recorded) and the owner rulings (`R1`, `R2`, … in recorded order, each naming a T, D or X row, the complete acceptance text now in force for it, a note with the user's decision, and when it was confirmed). A row's own `acceptance` stays the approved plan's text; the latest ruling naming the row is the acceptance it is judged against, and every ruling is an owner-approved deviation from the approved plan. Rows come in this order:
 
 | Rows | Origin | Waits for |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ Atlas drives it with `atlas_ledger`:
 
 | Action | Effect |
 | --- | --- |
-| `status` | Every row, deferred findings with their ids and triage, delivery mode and dispatchable rows. |
+| `status` | Every row with its acceptance in force (marked `amended by Rn` when a ruling replaced the plan's text), owner rulings, deferred findings with their ids and triage, delivery mode and dispatchable rows. |
 | `start` | Reserves an open row whose prerequisites are done and returns its attempt binding; gates also get their `outputSchema`, a HEAVY row its last verification failure. |
 | `done` | Records the child's real final result. LIGHT rows, gates and P1 finish. A HEAVY row records its implementation and stays in progress; its verifier's `PASS` finishes it, `FAIL` reopens it with the summary, `INCONCLUSIVE` changes nothing. |
 | `verify` | HEAVY row with a recorded implementation: binds a distinct fresh verifier and returns its `{"verify": …}` binding and strict `outputSchema` (`rowId`, `planSha256`, `attempt`, `verdict`, `summary`, `evidence`). A second call replaces an unfinished verifier. |
@@ -117,6 +117,7 @@ Atlas drives it with `atlas_ledger`:
 | `triage` | Records where the deferred finding named by `id` went, with the reference in `evidence`; a later triage replaces it. `todo`: the Roadmap TODO id (`T` and at least three digits), only when the roadmap is usable in this repository. `duplicate`: what it duplicates. `wontfix`: the reason. `report`: only when no roadmap is usable in this repository; the reference is optional. Usability is the `usable` flag of a fresh roadmap binding answer; no answer means no roadmap, and an older roadmap's answer without the flag accepts either `todo` or `report`. |
 | `fix` | Appends an X row (optional tier) for the rejecting gate and reopens only that gate. |
 | `block`, `reopen` | Affect only the named row; completed dependents keep their proof. |
+| `amend` | Records an owner ruling for the T, D or X row named by `id`: `acceptance` is the complete replacement text, `evidence` the note. Refused for gates, P1, unknown rows and rows in progress. Before writing, the plugin shows you the row, the acceptance currently in force, the proposed one and the note in a confirmation dialog; a declined dialog records nothing, and without a UI the tool refuses and names `/atlas exit` plus a revised plan through `/prometheus` as the path. The row's status, other rows and passed gates are untouched. `status`, `start` and `verify` show the acceptance in force marked `amended by Rn`; the `start` results of F1 and F4 and every `verify` result list all rulings. |
 
 A row is done only with proof from the child's real final result; a failed, foreign or still-running child, or a hand-written reference, cannot complete work. A HEAVY row also needs a passing receipt from a different child created after verification started. Verification status (`pending`, `running`, `passed`, `failed`) is derived, never stored. `atlas_release` needs a valid receipt for every row, the verifier receipts of HEAVY rows, a triage for every deferred finding (it names the untriaged ones), and your explicit confirmation. Plan completion and `atlas:completed` never wait for triage.
 
@@ -124,7 +125,7 @@ Child outputs are copied into `evidence/` and rechecked against their digests, s
 
 Continuation is a hidden `<atlas-continuation>` message with the ledger summary, sent at most eight times per message from you; two in a row without progress stop the loop and notify you. When nothing can move without you, because every unfinished row is blocked or waits on a blocked row, the continuation lists each blocked row with its recorded reason and tells Atlas to `ask` you, so the session waits for your answer instead of ending with a question in chat.
 
-Ledgers from earlier releases are upgraded on load, keeping verified progress: before version 6 deferred findings get ids `O1`, `O2`, … in recorded order and start untriaged; before version 5 rows are LIGHT, discoveries and deferred findings start empty, and delivery comes from the plan's `Delivery:` line, else `direct`; version 1 checkpoints become version 2; before version 4 there is no recorded Git baseline, so F1 dates one from the earliest row start. Approvals of versions 1 and 2 load unchanged and are never rewritten, because the checkpoint binds their exact bytes. Plans from releases that kept the ledger inside the session are not migrated and need fresh approval. `prometheus_ledger` and `prometheus_release` became `atlas_ledger` and `atlas_release`, with no aliases.
+Ledgers from earlier releases are upgraded on load, keeping verified progress: before version 7 there are no owner rulings, so the list starts empty; before version 6 deferred findings get ids `O1`, `O2`, … in recorded order and start untriaged; before version 5 rows are LIGHT, discoveries and deferred findings start empty, and delivery comes from the plan's `Delivery:` line, else `direct`; version 1 checkpoints become version 2; before version 4 there is no recorded Git baseline, so F1 dates one from the earliest row start. Approvals of versions 1 and 2 load unchanged and are never rewritten, because the checkpoint binds their exact bytes. Plans from releases that kept the ledger inside the session are not migrated and need fresh approval. `prometheus_ledger` and `prometheus_release` became `atlas_ledger` and `atlas_release`, with no aliases.
 
 `timeline.jsonl` is display-only: a missing or damaged timeline never affects approval, ownership, receipts or progress. Bundles from earlier releases show history derived from their ledger, never written back. A crash-truncated final line and unknown future event kinds or versions are ignored.
 

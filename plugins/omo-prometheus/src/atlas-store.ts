@@ -20,6 +20,7 @@ import {
   isComplete,
   type LedgerItem,
   ledgerRows,
+  type OwnerRuling,
   planDigest,
   reopenRow,
   resetVerification,
@@ -90,6 +91,8 @@ export interface AtlasPlanDetail {
   /** Present for a readable ledger. */
   delivery?: Delivery;
   deferred?: DeferredFinding[];
+  /** User-confirmed acceptance amendments; the latest for a row replaces its `acceptance` text. */
+  rulings?: OwnerRuling[];
 }
 
 /** Version 3 adds the stage's declared `criteria` and `revision`; versions 1 and 2 load unchanged and are never rewritten. */
@@ -839,6 +842,7 @@ export class AtlasStore {
             inUse,
             delivery: ledger.delivery,
             deferred: ledger.deferred.map((finding) => ({ ...finding })),
+            rulings: ledger.rulings.map((ruling) => ({ ...ruling })),
           };
         } catch (error) {
           return {

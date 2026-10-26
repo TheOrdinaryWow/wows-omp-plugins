@@ -72,8 +72,24 @@ export interface DeferredFinding {
   triage?: FindingTriage;
 }
 
+/**
+ * A user-confirmed amendment of one row's acceptance, recorded during execution. The row keeps the approved plan's
+ * text; the latest ruling for a row is the acceptance in force. Every ruling is an owner-approved deviation from the plan.
+ */
+export interface OwnerRuling {
+  /** Stable `R1`, `R2`, … in recording order. */
+  id: string;
+  /** A T, D or X row. */
+  rowId: string;
+  /** The complete replacement acceptance text now in force for that row. */
+  acceptance: string;
+  /** What changed and why, including the user's decision. */
+  note: string;
+  confirmedAt: number;
+}
+
 export interface ExecutionLedger {
-  version: 6;
+  version: 7;
   ledgerId: string;
   planFilePath: string;
   planSha256: string;
@@ -86,6 +102,8 @@ export interface ExecutionLedger {
   /** Empty for `direct`; otherwise the single P1 row, which waits for every gate and fix row. */
   deliveries: LedgerItem[];
   deferred: DeferredFinding[];
+  /** Owner rulings in recording order; `effectiveAcceptance` resolves the one in force for a row. */
+  rulings: OwnerRuling[];
   delivery: Delivery;
   createdAt: number;
   /** `HEAD` commit of the plan workspace when the bundle was created; absent outside Git or for upgraded ledgers. */
@@ -94,6 +112,15 @@ export interface ExecutionLedger {
 
 export function ledgerRows(ledger: ExecutionLedger): LedgerItem[] {
   return [...ledger.items, ...ledger.discoveries, ...ledger.fixes, ...ledger.gates, ...ledger.deliveries];
+}
+
+/** The acceptance a row is judged against: its latest owner ruling, else the approved plan's text. */
+export function effectiveAcceptance(ledger: ExecutionLedger, row: LedgerItem): { text: string; ruling?: OwnerRuling } {
+  for (let index = ledger.rulings.length - 1; index >= 0; index -= 1) {
+    const ruling = ledger.rulings[index];
+    if (ruling?.rowId === row.id) return { text: ruling.acceptance, ruling };
+  }
+  return { text: row.acceptance };
 }
 
 /** Authenticated native final success, archived with its original session identity in shared evidence. */
@@ -342,7 +369,7 @@ function buildLedger(
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 6,
+    version: 7,
     ledgerId: randomUUID(),
     planFilePath,
     planSha256: planDigest(planContent),
@@ -363,6 +390,7 @@ function buildLedger(
         ]
       : [],
     deferred: [],
+    rulings: [],
     delivery: parsed.delivery,
     createdAt: now,
     ...(gitBaseline === undefined ? {} : { gitBaseline }),
@@ -430,9 +458,21 @@ export function isComplete(ledger: ExecutionLedger): boolean {
   );
 }
 
+/** Lines listing every owner ruling for gate children, verifiers and the final report; empty without rulings. */
+export function renderOwnerRulings(ledger: ExecutionLedger): string {
+  if (!ledger.rulings.length) return "";
+  return [
+    `Owner rulings — user-confirmed amendments to the approved plan (${ledger.rulings.length}; judge the named rows against these, not the plan's original text, and list each as a deviation in the final report):`,
+    ...ledger.rulings.map(
+      (ruling) =>
+        `- ${ruling.id} ${ruling.rowId}: ${ruling.acceptance.replace(/\s*\n\s*/g, " ")} — ${ruling.note.replace(/\s*\n\s*/g, " ")}`,
+    ),
+  ].join("\n");
+}
+
 /**
  * `changedId` renders the compact form returned after a row changes: acceptance and evidence only for that row, so the
- * result stays short on large plans. `status` renders the full table.
+ * result stays short on large plans. `status` renders the full table. Acceptance is the effective one, marked when a ruling amended it.
  */
 export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: readonly string[], changedId?: string): string {
   const cell = (text: string) => text.replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|");
@@ -451,9 +491,16 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const verification = verificationStatus(item);
     const status = item.status === "in_progress" && item.receipt ? `${item.status} (verify ${verification})` : item.status;
     const row = `| ${item.id}. ${cell(item.title)} | ${status} | ${item.tier?.toUpperCase() ?? "—"} | ${owner} | ${dependsOn} |`;
-    lines.push(compact ? row : `${row} ${cell(item.acceptance)} | ${cell(item.evidence ?? "—")} |`);
+    const accepted = effectiveAcceptance(ledger, item);
+    const acceptance = `${cell(accepted.text)}${accepted.ruling ? ` (amended by ${accepted.ruling.id})` : ""}`;
+    lines.push(compact ? row : `${row} ${acceptance} | ${cell(item.evidence ?? "—")} |`);
     if (item.id === changedId) {
-      notes.push(`${item.id} acceptance: ${cell(item.acceptance)}`, `${item.id} evidence: ${cell(item.evidence ?? "—")}`);
+      notes.push(`${item.id} acceptance: ${acceptance}`, `${item.id} evidence: ${cell(item.evidence ?? "—")}`);
+      if (accepted.ruling) {
+        notes.push(
+          `${item.id} ruling ${accepted.ruling.id} (user-confirmed amendment of the approved plan): ${cell(accepted.ruling.note)}`,
+        );
+      }
     }
     if (item.status === "in_progress" && !item.receipt) {
       notes.push(
@@ -472,6 +519,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
   }
   lines.push(...notes);
   lines.push(`Delivery: ${ledger.delivery}${ledger.deliveries.length ? ` (${ledger.deliveries.map((row) => row.id).join(", ")})` : ""}`);
+  if (!compact && ledger.rulings.length) lines.push(renderOwnerRulings(ledger));
   if (ledger.deferred.length) {
     const untriaged = untriagedFindings(ledger).map((finding) => finding.id);
     lines.push(
@@ -534,7 +582,7 @@ function validVerification(value: unknown): boolean {
 export function restoreLedger(data: unknown, planFilePath: string, planContent: string, approvedSha256: string): ExecutionLedger {
   if (!data || typeof data !== "object" || !("version" in data)) throw new Error("Execution ledger is not a versioned object");
   const version = data.version;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) {
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) {
     throw new Error("Unsupported execution ledger version");
   }
   // Validate the complete persisted shape and its approved definition below before returning it.
@@ -543,7 +591,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     throw new Error("Execution ledger or current plan no longer matches the exact approved plan");
   }
   // Before version 5 there were no tiers, discoveries, deferred findings or delivery rows.
-  const legacy = version !== 5 && version !== 6;
+  const legacy = version < 5;
   if (
     !Array.isArray(saved.items) ||
     !Array.isArray(saved.gates) ||
@@ -553,6 +601,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
         !Array.isArray(saved.deliveries) ||
         !Array.isArray(saved.deferred) ||
         !["direct", "pr", "ship"].includes(saved.delivery))) ||
+    (version === 7 && !Array.isArray(saved.rulings)) ||
     !Number.isFinite(saved.createdAt) ||
     (version !== 1 && saved.gitBaseline !== undefined && (typeof saved.gitBaseline !== "string" || !GIT_SHA.test(saved.gitBaseline)))
   ) {
@@ -667,9 +716,25 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
         !nonEmpty(finding.reason) ||
         (finding.origin !== undefined && typeof finding.origin !== "string") ||
         !Number.isFinite(finding.at) ||
-        (version === 6 && (finding.id !== `O${index + 1}` || !validTriage(finding.triage)))
+        (version >= 6 && (finding.id !== `O${index + 1}` || !validTriage(finding.triage)))
       ) {
-        throw new Error(`Malformed execution ledger deferred finding ${version === 6 ? `O${index + 1}` : index + 1}`);
+        throw new Error(`Malformed execution ledger deferred finding ${version >= 6 ? `O${index + 1}` : index + 1}`);
+      }
+    }
+  }
+  if (version === 7) {
+    const amendable = [...taskIds, ...discoveryIds, ...fixIds];
+    for (const [index, ruling] of saved.rulings.entries()) {
+      if (
+        !ruling ||
+        typeof ruling !== "object" ||
+        ruling.id !== `R${index + 1}` ||
+        !amendable.includes(ruling.rowId) ||
+        !nonEmpty(ruling.acceptance) ||
+        !nonEmpty(ruling.note) ||
+        !Number.isFinite(ruling.confirmedAt)
+      ) {
+        throw new Error(`Malformed execution ledger owner ruling R${index + 1}`);
       }
     }
   }
@@ -691,7 +756,9 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   }
   // Version six numbers deferred findings in recording order and adds their triage; earlier findings start untriaged.
   if (version === 5) for (const [index, finding] of saved.deferred.entries()) finding.id = `O${index + 1}`;
-  saved.version = 6;
+  // Version seven records owner rulings; earlier ledgers had none.
+  if (version < 7) saved.rulings = [];
+  saved.version = 7;
   return saved;
 }
 
@@ -714,6 +781,50 @@ export function reopenRow(ledger: ExecutionLedger, id: string, reason?: string):
   }
   row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
   return row;
+}
+
+/**
+ * Validate an owner ruling before the user confirms it: only T, D and X rows take one, and never while the row's child
+ * is working against the acceptance being replaced. Returns the row and the trimmed texts the ruling would record.
+ */
+export function checkAmendment(
+  ledger: ExecutionLedger,
+  id: string,
+  acceptance: string | undefined,
+  note: string | undefined,
+): { row: LedgerItem; acceptance: string; note: string } {
+  const row = ledgerRows(ledger).find((item) => item.id === id);
+  if (!row) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
+  if (!/^[TDX]/.test(row.id)) {
+    throw new Error(`Owner rulings amend T, D and X rows; ${row.id} keeps its plan-defined acceptance (reopen it to rerun it)`);
+  }
+  if (row.status === "in_progress") {
+    throw new Error(`${row.id} is in progress against its current acceptance; block or reopen it before recording a ruling`);
+  }
+  const text = acceptance?.trim() ?? "";
+  const reason = note?.trim() ?? "";
+  if (!text) throw new Error("A ruling requires, in acceptance, the complete acceptance text now in force for the row");
+  if (!reason) throw new Error("A ruling requires, in evidence, what changed and why, including the user's decision");
+  return { row, acceptance: text, note: reason };
+}
+
+/** Record a user-confirmed ruling as the next `R` id. The row's status is untouched; Atlas reopens it afterward. */
+export function amendAcceptance(
+  ledger: ExecutionLedger,
+  id: string,
+  acceptance: string | undefined,
+  note: string | undefined,
+): OwnerRuling {
+  const checked = checkAmendment(ledger, id, acceptance, note);
+  const ruling: OwnerRuling = {
+    id: `R${ledger.rulings.length + 1}`,
+    rowId: checked.row.id,
+    acceptance: checked.acceptance,
+    note: checked.note,
+    confirmedAt: Date.now(),
+  };
+  ledger.rulings.push(ruling);
+  return ruling;
 }
 
 function checkedAgent(agent: string, availableAgents: readonly string[] | undefined, role: string): string {

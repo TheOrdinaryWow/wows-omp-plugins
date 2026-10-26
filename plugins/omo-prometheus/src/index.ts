@@ -46,7 +46,10 @@ import {
   addDeferredFinding,
   addDiscoveredRow,
   addFixRow,
+  amendAcceptance,
+  checkAmendment,
   type ExecutionLedger,
+  effectiveAcceptance,
   isComplete,
   type LedgerItem,
   ledgerRows,
@@ -57,6 +60,7 @@ import {
   recordVerification,
   refreshDispatchAgents,
   renderLedgerSummary,
+  renderOwnerRulings,
   reopenRow,
   startRow,
   startVerification,
@@ -170,6 +174,8 @@ const PROGRESS_REPORT_REMINDERS: Record<string, string> = {
   block: OUTCOME_REPORT,
   reopen: OUTCOME_REPORT,
 };
+/** Where an acceptance change goes when the plugin cannot get the user's confirmation. */
+const RULING_FALLBACK = "The path is /atlas exit, then a revised plan through /prometheus with fresh approval.";
 
 type ReviewLevel = "off" | "ask" | "standard" | "high-accuracy";
 
@@ -1866,28 +1872,33 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   const ledgerParameters = z.object({
     action: z
-      .enum(["status", "start", "done", "verify", "block", "reopen", "fix", "discover", "triage"])
+      .enum(["status", "start", "done", "verify", "block", "reopen", "fix", "discover", "triage", "amend"])
       .describe(
-        "status shows every row; start, done, block, and reopen change the row named by id; verify binds a fresh verifier to the HEAVY row named by id once its implementation is done; fix appends an X row for the rejecting gate named by id; discover records work found while executing the row named by id: scope in appends a D row, scope out records a deferred finding O1, O2, …; triage records the disposition of the deferred finding named by id",
+        "status shows every row; start, done, block, and reopen change the row named by id; verify binds a fresh verifier to the HEAVY row named by id once its implementation is done; fix appends an X row for the rejecting gate named by id; discover records work found while executing the row named by id: scope in appends a D row, scope out records a deferred finding O1, O2, …; triage records the disposition of the deferred finding named by id; amend records, after the user confirms it in a dialog, an owner ruling R1, R2, … that replaces the acceptance of the T, D or X row named by id",
       ),
     id: z
       .string()
       .optional()
       .describe(
-        "Row id such as T3, D1, X1, F2, or P1, or a deferred finding id such as O2 for triage; required for every action except status and an out-of-scope discover",
+        "Row id such as T3, D1, X1, F2, or P1, or a deferred finding id such as O2 for triage; required for every action except status and an out-of-scope discover. amend: a T, D or X row that is not in progress",
       ),
     evidence: z
       .string()
       .optional()
       .describe(
-        "Inspected observable evidence; required for done, block, fix (the gate's rejection), and discover (why the finding is in or out of scope). triage: the reference (todo: the Roadmap TODO id; duplicate: what it duplicates; wontfix: the reason; report: optional note). Gate and verifier verdicts are read from native child output, not this text",
+        "Inspected observable evidence; required for done, block, fix (the gate's rejection), and discover (why the finding is in or out of scope). triage: the reference (todo: the Roadmap TODO id; duplicate: what it duplicates; wontfix: the reason; report: optional note). amend: what changed and why, including the user's decision and the measured values behind it. Gate and verifier verdicts are read from native child output, not this text",
       ),
     childAgentId: z
       .string()
       .optional()
       .describe("Required for done: exact id of the owned native child dispatched for this started attempt or verification"),
     title: z.string().optional().describe("Required for fix and discover: the correction or finding"),
-    acceptance: z.string().optional().describe("Required for fix and in-scope discover: the observable check that proves the work"),
+    acceptance: z
+      .string()
+      .optional()
+      .describe(
+        "Required for fix and in-scope discover: the observable check that proves the work. amend: the complete acceptance text now in force for the row, replacing the previous one, not a delta",
+      ),
     scope: z
       .enum(["in", "out"])
       .optional()
@@ -1912,7 +1923,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       ),
   });
   type LedgerParams = {
-    action: "status" | "start" | "done" | "verify" | "block" | "reopen" | "fix" | "discover" | "triage";
+    action: "status" | "start" | "done" | "verify" | "block" | "reopen" | "fix" | "discover" | "triage" | "amend";
     id?: string;
     evidence?: string;
     childAgentId?: string;
@@ -2082,12 +2093,104 @@ export default function prometheus(pi: ExtensionAPI): void {
     },
   });
 
+  /**
+   * `atlas_ledger amend`: the user confirms the ruling in a dialog before anything is written, outside the ledger lock
+   * because the answer may take hours. Model text alone never records a ruling.
+   */
+  const recordRuling = async (ctx: ExtensionContext, record: SessionRecord, params: LedgerParams) => {
+    const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
+    const refused = (error: unknown) =>
+      fail(
+        `Ledger operation refused: ${errorMessage(error)}. Execution requires a valid shared approved ledger; /atlas exit remains the user exit.`,
+      );
+    const ownership = record.ownership;
+    const id = params.id?.trim() ?? "";
+    let proposal: { rowId: string; title: string; current: string; currentRuling?: string; acceptance: string; note: string };
+    try {
+      proposal = await withExecutionLedger(ctx, record, (ledger) => {
+        const checked = checkAmendment(ledger, id, params.acceptance, params.evidence);
+        const current = effectiveAcceptance(ledger, checked.row);
+        return {
+          rowId: checked.row.id,
+          title: checked.row.title,
+          current: current.text,
+          currentRuling: current.ruling?.id,
+          acceptance: checked.acceptance,
+          note: checked.note,
+        };
+      });
+    } catch (error) {
+      return refused(error);
+    }
+    if (!ctx.hasUI) {
+      return fail(
+        `Ruling refused: no confirmation dialog is available, and an acceptance change needs the user's confirmation. ${RULING_FALLBACK}`,
+      );
+    }
+    let confirmed = false;
+    try {
+      confirmed = await ctx.ui.confirm(
+        `Amend the acceptance of ${proposal.rowId}?`,
+        [
+          `${proposal.rowId}. ${proposal.title}`,
+          "",
+          `Current acceptance (${proposal.currentRuling ? `ruling ${proposal.currentRuling}` : "approved plan"}):`,
+          proposal.current,
+          "",
+          "Proposed acceptance:",
+          proposal.acceptance,
+          "",
+          "Why:",
+          proposal.note,
+          "",
+          "Confirming records an owner ruling: the row is judged against the new acceptance, and the final report lists it as a deviation from the approved plan.",
+        ].join("\n"),
+      );
+    } catch (error) {
+      pi.logger.warn("prometheus ruling confirmation failed", { error: errorMessage(error) });
+      return fail(`Ruling refused: the confirmation dialog failed, so nothing was recorded. ${RULING_FALLBACK}`);
+    }
+    if (!confirmed) {
+      return fail(
+        `The user declined the ruling for ${proposal.rowId}; nothing was recorded. The row keeps its current acceptance; take the decision back to the user or report the blocker.`,
+      );
+    }
+    try {
+      if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
+      return await withExecutionLedger(ctx, record, (ledger) => {
+        const checked = checkAmendment(ledger, id, params.acceptance, params.evidence);
+        const before = effectiveAcceptance(ledger, checked.row);
+        if (before.text !== proposal.current || before.ruling?.id !== proposal.currentRuling) {
+          throw new Error(`${checked.row.id} changed while awaiting confirmation; amend again against its current acceptance`);
+        }
+        const ruling = amendAcceptance(ledger, id, params.acceptance, params.evidence);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${ruling.id} records the user-confirmed acceptance of ${ruling.rowId}; the row stays ${checked.row.status}. Reopen it if it is blocked and dispatch a fresh child against the new acceptance; gate children and verifiers receive every ruling, and the final report lists it as a deviation from the approved plan.\n\n${ledgerSummary(ledger, ruling.rowId)}`,
+            },
+          ],
+          details: {
+            id: ruling.rowId,
+            status: checked.row.status,
+            ruling,
+            row: ledgerCardRow(checked.row),
+            progress: ledgerProgress(ledger),
+          },
+        };
+      });
+    } catch (error) {
+      return refused(error);
+    }
+  };
+
   pi.registerTool({
     name: LEDGER_TOOL,
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. A HEAVY row's done records its implementation; verify then binds a distinct fresh verifier child with structured output, and only its PASS completes the row (FAIL reopens it with the verifier's summary). Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Before any gate starts, discover scope in appends a D row every gate waits for; discover scope out records a deferred finding O1, O2, … for the final report, and triage records each one's disposition (atlas_release waits for every triage). P1 delivers after every gate. Reopen/block affect only the named row.",
+      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. A HEAVY row's done records its implementation; verify then binds a distinct fresh verifier child with structured output, and only its PASS completes the row (FAIL reopens it with the verifier's summary). Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Before any gate starts, discover scope in appends a D row every gate waits for; discover scope out records a deferred finding O1, O2, … for the final report, and triage records each one's disposition (atlas_release waits for every triage). P1 delivers after every gate. Reopen/block affect only the named row. When the user's answer to a blocker changes how a T, D or X row's acceptance is met, amend asks the user to confirm in a dialog and records an owner ruling R1, R2, … that replaces that row's acceptance; the row then needs reopen and a fresh child, and F1, F4 and verifiers judge against the plan plus every ruling.",
     parameters: ledgerParameters,
     ...ledgerCard,
     defaultInactive: true,
@@ -2098,6 +2201,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
       if (!mainSession(ctx) || record?.phase !== "executing") return fail("Atlas execution is not active in this main session.");
       const ownership = record.ownership;
+      if (params.action === "amend") return await recordRuling(ctx, record, params);
       let changedRow: LedgerItem | undefined;
       let completion: Omit<AtlasCompleted, "v" | "at"> | undefined;
       let completedPlan: AtlasPlan | undefined;
@@ -2150,6 +2254,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           let schema: Record<string, unknown> | undefined;
           let planBinding = "";
           let note = "";
+          let rulings = "";
           if (params.action === "discover") {
             if (params.scope !== "in") throw new Error("discover requires scope in (a D row) or out (a deferred finding)");
             const found = addDiscoveredRow(
@@ -2208,8 +2313,14 @@ export default function prometheus(pi: ExtensionAPI): void {
             }
             startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
+            // F1 judges compliance and F4 fidelity against the plan as the user amended it; F2 and F3 need no ruling.
+            if (item.id === "F1" || item.id === "F4") rulings = renderOwnerRulings(ledger);
+            const amended = effectiveAcceptance(ledger, item).ruling;
+            if (amended) {
+              note = `\n${item.id} acceptance was amended by ${amended.id}: give the child the effective acceptance below, not the plan's original text.`;
+            }
             if (item.tier === "heavy") {
-              note = `\n${item.id} is HEAVY: mark its implementation child done, then bind a distinct fresh verifier with atlas_ledger verify.`;
+              note += `\n${item.id} is HEAVY: mark its implementation child done, then bind a distinct fresh verifier with atlas_ledger verify.`;
               if (item.verification?.verdict === "fail") {
                 note += `\nIts previous verification failed; give this to the implementation child: ${item.verification.summary ?? ""}`;
               }
@@ -2217,6 +2328,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           } else if (params.action === "verify") {
             startVerification(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             schema = verifyOutputSchema(ledger, item);
+            rulings = renderOwnerRulings(ledger);
             planBinding = `\nVerifier binding for a fresh ${item.verification?.dispatchAgent} child (copy literally): atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, verify: { [item.id]: item.verification?.attempt } })}`;
           } else if (params.action === "done") {
             const childAgentId = params.childAgentId?.trim();
@@ -2300,7 +2412,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             content: [
               {
                 type: "text" as const,
-                text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger, item.id)}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
+                text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger, item.id)}${rulings ? `\n${rulings}` : ""}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
               },
             ],
             details: { id: item.id, status: item.status, outputSchema: schema, row: ledgerCardRow(item), progress: ledgerProgress(ledger) },
