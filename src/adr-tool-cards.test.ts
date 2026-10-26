@@ -156,6 +156,7 @@ describe("adr tool cards", () => {
     const section = record(folded);
     expect(prop(section, "collapsed")).toBe(true);
     expect(walk(section?.c).some((node) => node.k === "md" && String(prop(node, "text")).includes("event sourcing"))).toBe(true);
+    expect(JSON.stringify(folded.body)).not.toContain("<!--");
     const open = status.describeResult(shown, { expanded: true }, args);
     expect(prop(record(open), "collapsed")).toBe(false);
     expect(status.describeResult(shown, { expanded: true }, args)).toBe(open);

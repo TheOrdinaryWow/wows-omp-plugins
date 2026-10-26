@@ -1,13 +1,16 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, test } from "bun:test";
 
 import { initTheme, type NativeChild, type NativeNode, type TUI, theme } from "@oh-my-pi/pi-tui";
 
 import { AdrConsole, AdrPreview, type ConsoleEntry, type ConsoleResult, type ConsoleState } from "../plugins/adr/src/console.ts";
 import type { AdrRecord } from "../plugins/adr/src/documents.ts";
+import { createMany } from "../plugins/adr/src/operations.ts";
+import { cleanupFixtures, decision, repoFixture } from "./adr-fixtures.ts";
 
 beforeAll(async () => {
   await initTheme();
 });
+afterEach(cleanupFixtures);
 
 const tui = { requestRender() {}, terminal: { rows: 24 } } as unknown as TUI;
 
@@ -178,4 +181,17 @@ test("the preview lists Write, the files and Cancel, shows the selected file, an
   preview.handleNativeEvent({ type: "action", key: "actions/write", act: "write", mods: [] });
   preview.handleNativeEvent({ type: "action", key: "actions/cancel", act: "cancel", mods: [] });
   expect(results).toEqual([false, true, false]);
+});
+
+test("the preview shows written files without the managed-by comment or generated-block markers", async () => {
+  const root = await repoFixture();
+  const { files } = await createMany(root, "main", [decision], { initialize: true, dryRun: true });
+  expect(files.some((file) => file.content.includes("<!--"))).toBe(true);
+  const preview = new AdrPreview("Write these", files, theme, tui, () => {});
+  for (const item of files.map((_, index) => `r${index + 1}`)) {
+    preview.handleNativeEvent({ type: "select", key: "split/sidebar/rows", item });
+    const shown = markdown(preview.describe());
+    expect(shown.join("\n")).not.toContain("<!--");
+    expect(shown.join("\n")).toMatch(/^# /m);
+  }
 });

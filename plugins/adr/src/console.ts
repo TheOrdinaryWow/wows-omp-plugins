@@ -39,7 +39,7 @@ import {
 import { leafKey } from "@oh-my-pi/pi-tui/native/node";
 import { actionBar, actionButton, escCloseButton, hintsRow, itemIndex, selectList } from "@oh-my-pi/pi-tui/native/overlay";
 
-import { type AdrRecord, type AdrStatus, STATUSES } from "#src/documents.ts";
+import { type AdrRecord, type AdrStatus, STATUSES, withoutManagedLines } from "#src/documents.ts";
 
 /** One line under the console body; failures render in the error color. */
 export interface ConsoleMessage {
@@ -901,7 +901,11 @@ export class AdrPreview implements Component {
       const front = /^---\n[\s\S]*?\n---\n/.exec(file.content)?.[0] ?? "";
       const yaml = front.slice(4, -4).trim();
       described = col(
-        [text([span(file.path, "path strong")]), ...(yaml ? [code(yaml, { lang: "yaml" })] : []), md(file.content.slice(front.length))],
+        [
+          text([span(file.path, "path strong")]),
+          ...(yaml ? [code(yaml, { lang: "yaml" })] : []),
+          md(withoutManagedLines(file.content.slice(front.length))),
+        ],
         { gap: "sm" },
       );
     } else {

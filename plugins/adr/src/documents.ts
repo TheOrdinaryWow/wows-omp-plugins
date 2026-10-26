@@ -32,6 +32,15 @@ const MANAGED_LINES: Readonly<Record<string, true>> = {
   "<!-- /roadmap:generated -->": true,
 };
 
+/** Markdown for display: the managed-by comment and generated-block markers are bookkeeping, not prose. */
+export function withoutManagedLines(markdown: string): string {
+  return markdown
+    .split("\n")
+    .filter((line) => MANAGED_LINES[line] !== true)
+    .join("\n")
+    .replace(/^\n+/, "");
+}
+
 const INDEX_TITLE = "# Architecture Decision Records";
 const INDEX_CONVENTIONS =
   "ADRs record significant, hard-to-reverse decisions in the vendored MADR 4.0 format. Files are NNNN-slug.md with ids ADR-NNNN; numbers are monotonic and never reused. Agents change these files only through the adr_* tools: proposed records are created and revised as a whole, while accepted records change only through status transitions, supersession or dated notes under More Information. Confirmation describes how a decision is verified; implementation steps belong to plans. Each file has format: 1 front matter and a managed-by comment; optional fields are omitted when empty. Files written by the roadmap plugin are read as they are and rewritten in this format when a write touches them. The table below is generated: run adr_check with fix: true, or /adr check --fix, when it is stale.";
