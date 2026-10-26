@@ -374,6 +374,30 @@ async function scenario(name: string, root: string): Promise<void> {
     name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : name.startsWith("heavy-") ? heavyPlan : plan,
   );
   await commands.get("prometheus")?.("", ctx);
+  // Magic Context fences the provider request against the rows it prepared, so the context hook keeps their count and order.
+  const assertContextRowShape = async (heading: RegExp, fullPolicy: RegExp) => {
+    const continuation = { role: "developer", attribution: "agent", synthetic: true, content: "<system-notice>\nContinue.", timestamp: 5 };
+    const input = [
+      { role: "user", content: "draft the plan", timestamp: 1 },
+      { role: "custom", customType: "plan-mode-context", content: "native plan rules", display: false, timestamp: 2 },
+      { role: "assistant", content: [{ type: "text", text: "working" }], timestamp: 3 },
+      { role: "custom", customType: "plan-mode-context", content: "native plan rules again", display: false, timestamp: 4 },
+      continuation,
+    ];
+    const result = (await hook("context", { messages: input })) as { messages: { role: string; content: unknown }[] };
+    assert.deepEqual(
+      result.messages.map((message) => message.role),
+      input.map((message) => message.role),
+    );
+    assert.match(JSON.stringify(result.messages[1]?.content), fullPolicy);
+    assert.match(JSON.stringify(result.messages[3]?.content), heading);
+    assert.doesNotMatch(JSON.stringify(result.messages), /native plan rules/);
+    assert.equal(result.messages[4], continuation);
+    assert.equal(await hook("context", { messages: [input[0], input[2], continuation] }), undefined);
+    const prepared = (await hook("before_agent_start", { prompt: "Continue.", systemPrompt: ["base"] })) as { systemPrompt: string[] };
+    assert.match(prepared.systemPrompt.join("\n"), heading);
+  };
+  if (name === "context-row-shape") await assertContextRowShape(/Prometheus planning workflow \(active\)/, /<available-agents/);
   if (name === "review-round-limit") {
     await mkdir(join(root, ".omp"), { recursive: true });
     await writeFile(
@@ -485,6 +509,10 @@ async function scenario(name: string, root: string): Promise<void> {
     install();
     await hook("session_start");
   };
+  if (name === "context-row-shape") {
+    await assertContextRowShape(/Atlas execution \(active\)/, /<execution-ledger/);
+    return;
+  }
   if (name === "url-boundaries") {
     const approvedUrl = reference as string;
     assert.equal(InternalUrlRouter.instance().getHandler("atlas")?.spec.write, undefined);
@@ -1122,8 +1150,8 @@ async function scenario(name: string, root: string): Promise<void> {
     await hook("session_start");
     assert.match(text(await call({ action: "start", id: "T3" })), /write the dispatch block/);
     assert.match(text(await call({ action: "block", id: "T3", evidence: "Needs the vendor SDK" })), /write the outcome block for this row/);
-    const context = (await hook("context", { messages: [] })) as { messages: { content?: unknown }[] };
-    assert.match(JSON.stringify(context.messages), /<progress-reports>/);
+    const prepared = (await hook("before_agent_start", { prompt: "Continue.", systemPrompt: [] })) as { systemPrompt: string[] };
+    assert.match(prepared.systemPrompt.join("\n"), /<progress-reports>/);
     return;
   }
   if (name === "ask-guard") {
@@ -2250,6 +2278,7 @@ if (process.env[CHILD_ENV]) {
       "non-git-workspace",
       "atlas-git",
       "discover",
+      "context-row-shape",
     ]) {
       // Each scenario runs in its own process with a private HOME, so scenarios share no state.
       test.concurrent(name, async () => {

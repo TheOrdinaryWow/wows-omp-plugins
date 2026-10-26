@@ -124,6 +124,7 @@ const ATLAS_START_TYPE = "wows-omp-omo-prometheus.atlas-start";
 const PLANNING_CONTEXT_TYPE = "wows-omp-omo-prometheus.planning-context";
 const EXECUTION_CONTEXT_TYPE = "wows-omp-omo-prometheus.execution-context";
 const NATIVE_PLAN_CONTEXT_TYPE = "plan-mode-context";
+const WORKFLOW_CONTEXT_TYPES: ReadonlySet<string> = new Set([NATIVE_PLAN_CONTEXT_TYPE, PLANNING_CONTEXT_TYPE, EXECUTION_CONTEXT_TYPE]);
 const BLOCK_NOTICE_BURST_MS = 5_000;
 const PLAN_MODE_DISABLED =
   "Prometheus needs OMP plan mode, which is turned off in settings. Enable plan mode (plan.enabled), then run /prometheus again.";
@@ -2579,6 +2580,14 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
     }
 
+    // Context handlers chain in load order, and a handler that ran earlier (Magic Context's dispatch fence) may have
+    // recorded the turn's row structure. Rewrite matching rows in place only; the policy itself reaches every turn
+    // through the system prompt that before_agent_start sets for the request and its continuations.
+    const rows = event.messages.flatMap((message, index) =>
+      message.role === "custom" && WORKFLOW_CONTEXT_TYPES.has(message.customType) ? [index] : [],
+    );
+    const first = rows[0];
+    if (first === undefined) return undefined;
     const planning = record.phase === "planning";
     const policyHeading = planning ? "# Prometheus planning workflow (active)" : "# Atlas execution (active)";
     const policyAlreadyInSystem = ctx.getSystemPrompt().some((part) => part.includes(policyHeading));
@@ -2587,33 +2596,22 @@ export default function prometheus(pi: ExtensionAPI): void {
       : planning
         ? await planningBlock(ctx)
         : await atlasBlock(ctx, record);
-    const customType = record.phase === "planning" ? PLANNING_CONTEXT_TYPE : EXECUTION_CONTEXT_TYPE;
-    const policyMessage = {
-      role: "custom" as const,
-      customType,
-      content,
-      display: false,
-      attribution: "agent" as const,
-      timestamp: Date.now(),
-    };
-    const messages = [] as typeof event.messages;
-    let inserted = false;
-    for (const message of event.messages) {
-      const replace =
-        message.role === "custom" &&
-        (message.customType === NATIVE_PLAN_CONTEXT_TYPE ||
-          message.customType === PLANNING_CONTEXT_TYPE ||
-          message.customType === EXECUTION_CONTEXT_TYPE);
-      if (!replace) {
-        messages.push(message);
-        continue;
-      }
-      if (!inserted) {
-        messages.push(policyMessage);
-        inserted = true;
-      }
-    }
-    if (!inserted) messages.push(policyMessage);
+    const replacedNote = `${policyHeading}\n\nThis message replaces conflicting native plan context; the complete workflow policy is ${
+      policyAlreadyInSystem ? "active in the system prompt" : "in the first workflow context message of this conversation"
+    }.`;
+    const customType = planning ? PLANNING_CONTEXT_TYPE : EXECUTION_CONTEXT_TYPE;
+    const messages = event.messages.map((message, index) =>
+      rows.includes(index)
+        ? {
+            role: "custom" as const,
+            customType,
+            content: index === first ? content : replacedNote,
+            display: false,
+            attribution: "agent" as const,
+            timestamp: message.timestamp,
+          }
+        : message,
+    );
     return { messages };
   });
 
