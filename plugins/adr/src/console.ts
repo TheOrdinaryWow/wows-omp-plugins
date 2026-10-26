@@ -106,7 +106,7 @@ function statusMarks(theme: Theme): Record<AdrStatus, string> {
 }
 
 /** Native tone and icon per status, the same meaning the terminal colors and glyphs carry. */
-const STATUS_TONE: Record<AdrStatus, "warning" | "success" | "error" | "muted"> = {
+export const STATUS_TONE: Record<AdrStatus, "warning" | "success" | "error" | "muted"> = {
   proposed: "warning",
   accepted: "success",
   rejected: "error",

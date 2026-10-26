@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
+import { registerMessageTitles } from "#src/cards.ts";
 import { registerCommands } from "#src/commands.ts";
 import { loadInitialized } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
@@ -51,6 +52,7 @@ export default function adr(pi: ExtensionAPI): void {
   };
   const service = registerService(pi, changed);
   registerTools(pi, changed, service.resolver);
+  registerMessageTitles(pi);
   const commands = registerCommands(pi, ses, uiFor, changed);
 
   async function rebuild(_event: unknown, ctx: ExtensionContext): Promise<void> {

@@ -87,7 +87,7 @@ omp plugin install adr@wows-omp-plugins
 
 `/adr init` 的预览使用同样的布局：左侧是文件，右侧是选中的文件。Shift+W 写入全部文件，Esc 拒绝。
 
-在 [Tern](https://docs.stencil.so/tern/) 中，控制台和预览以原生面板打开：点击状态标签筛选，点击 ADR 或文件选中它（双击即选择），按钮执行与按键相同的操作。按键照常可用。
+在 [Tern](https://docs.stencil.so/tern/) 中，控制台和预览以原生面板打开：点击状态标签筛选，点击 ADR 或文件选中它（双击即选择），按钮执行与按键相同的操作。按键照常可用。`adr_*` 工具调用显示为原生卡片（按状态着色的 ADR 表格、单条 ADR 的元数据及可折叠的正文、改动的文件、检查诊断），`/adr` 消息使用“ADR check”这类易读标题。
 
 ### 代理工具
 

@@ -2,11 +2,13 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
+import { checkCard, manageCard, statusCard } from "#src/cards.ts";
 import { check, type Diagnostic } from "#src/check.ts";
 import {
   type AdrDoc,
   type AdrModel,
   type AdrRepo,
+  type AdrStatus,
   adrRepo,
   DocumentError,
   dirState,
@@ -19,9 +21,38 @@ import { BODY_REPAIR_HINT, INIT_HINT, manage, Refusal, type StageResolver, type 
 import { Cancelled } from "#src/store.ts";
 import { statusCounts } from "#src/ui.ts";
 
+export interface AdrListEntry {
+  id: string;
+  title: string;
+  status: AdrStatus;
+  date: string;
+  stage?: string;
+  superseded_by?: string;
+}
+
+/** One ADR's metadata as `adr_status` reports it; `path` is repository-relative. */
+export interface AdrDetail extends AdrListEntry {
+  path: string;
+  legacy: boolean;
+  supersedes: string[];
+  /** The supersession chain in both directions, oldest first; empty when the ADR stands alone. */
+  chain: Array<{ id: string; status: AdrStatus }>;
+  decision_makers: string[];
+  consulted: string[];
+  informed: string[];
+  body: string;
+}
+
+/** Structured payload of a receipt for native views; the text the agent reads never depends on it. */
+export type ReceiptView =
+  | { kind: "list"; status?: AdrStatus; adrs: AdrListEntry[]; counts: Partial<Record<AdrStatus, number>>; legacy: number }
+  | { kind: "adr"; adr: AdrDetail }
+  | { kind: "check"; diagnostics: Diagnostic[] }
+  | { kind: "write"; ids: string[] };
+
 export type Receipt =
-  | { ok: true; summary: string; changedFiles: string[]; warnings: string[] }
-  | { ok: false; reason: string; hints: string[] };
+  | { ok: true; summary: string; changedFiles: string[]; warnings: string[]; view?: ReceiptView }
+  | { ok: false; reason: string; hints: string[]; view?: ReceiptView };
 
 /**
  * The service contract reports this path and every adr_* tool declares it: the host otherwise records the unresolved
@@ -61,7 +92,13 @@ export function failure(error: unknown): Extract<Receipt, { ok: false }> {
 }
 
 export function written(summary: string, result: WriteResult): Receipt {
-  return { ok: true, summary, changedFiles: result.files.map((file) => file.path), warnings: result.warnings };
+  return {
+    ok: true,
+    summary,
+    changedFiles: result.files.map((file) => file.path),
+    warnings: result.warnings,
+    view: { kind: "write", ids: result.ids },
+  };
 }
 
 /**
@@ -81,26 +118,48 @@ export async function requireInitialized(cwd: string, audience: "agent" | "user"
   throw new Refusal("ADR management is not initialized in this repository.", [INIT_HINT]);
 }
 
-function line(doc: AdrDoc): string {
+function entry(doc: AdrDoc): AdrListEntry {
+  return {
+    id: doc.id,
+    title: doc.title,
+    status: doc.status,
+    date: doc.date,
+    ...(doc.stage ? { stage: doc.stage } : {}),
+    ...(doc.superseded_by ? { superseded_by: doc.superseded_by } : {}),
+  };
+}
+
+function line(doc: AdrListEntry): string {
   const extra = [doc.stage ? `stage ${doc.stage}` : "", doc.superseded_by ? `superseded by ${doc.superseded_by}` : ""].filter(Boolean);
   return `- ${doc.id} [${doc.status}] ${doc.title} (${doc.date})${extra.length ? ` · ${extra.join(" · ")}` : ""}`;
 }
 
-function listText(model: AdrModel, status?: string): string {
-  const docs = ordered(model.adrs.filter((doc) => !status || doc.status === status));
-  const legacy = model.adrs.filter((doc) => doc.legacy).length + (model.index?.legacy ? 1 : 0);
+function listView(model: AdrModel, status?: AdrStatus): Extract<ReceiptView, { kind: "list" }> {
+  const counts: Partial<Record<AdrStatus, number>> = {};
+  for (const doc of model.adrs) counts[doc.status] = (counts[doc.status] ?? 0) + 1;
+  return {
+    kind: "list",
+    ...(status ? { status } : {}),
+    adrs: ordered(model.adrs.filter((doc) => !status || doc.status === status)).map(entry),
+    counts,
+    legacy: model.adrs.filter((doc) => doc.legacy).length + (model.index?.legacy ? 1 : 0),
+  };
+}
+
+function listText(model: AdrModel, view: Extract<ReceiptView, { kind: "list" }>): string {
+  const { legacy, status } = view;
   return [
     `ADRs: ${statusCounts(model.adrs)}.`,
     ...(legacy
       ? [`${legacy} file${legacy === 1 ? " is" : "s are"} still in the legacy roadmap format; the next write of each converts it.`]
       : []),
     status ? `${status[0]?.toUpperCase()}${status.slice(1)}:` : "All:",
-    ...(docs.length ? docs.map(line) : ["- none"]),
+    ...(view.adrs.length ? view.adrs.map(line) : ["- none"]),
   ].join("\n");
 }
 
-/** Metadata, the supersession chain in both directions, then the stored MADR body. */
-export function detailText(model: AdrModel, doc: AdrDoc): string {
+/** Metadata and the supersession chain in both directions. */
+function adrDetail(model: AdrModel, doc: AdrDoc): AdrDetail {
   const byId = new Map(model.adrs.map((candidate) => [candidate.id, candidate]));
   const chain = [doc];
   const seen = new Set([doc.id]);
@@ -114,24 +173,43 @@ export function detailText(model: AdrModel, doc: AdrDoc): string {
     seen.add(current.id);
     current = current.superseded_by ? byId.get(current.superseded_by) : undefined;
   }
+  return {
+    ...entry(doc),
+    path: repoPath(model.repo, doc.path),
+    legacy: doc.legacy,
+    supersedes: doc.supersedes,
+    chain: chain.length > 1 ? chain.map((link) => ({ id: link.id, status: link.status })) : [],
+    decision_makers: doc.decision_makers,
+    consulted: doc.consulted,
+    informed: doc.informed,
+    body: doc.body,
+  };
+}
+
+/** Metadata, the supersession chain in both directions, then the stored MADR body. */
+export function detailText(model: AdrModel, doc: AdrDoc): string {
+  return adrText(adrDetail(model, doc));
+}
+
+function adrText(adr: AdrDetail): string {
   const meta = [
-    `${doc.id} — ${doc.title}`,
-    `Status: ${doc.status}; date ${doc.date}${doc.stage ? `; stage ${doc.stage}` : ""}`,
-    `File: ${repoPath(model.repo, doc.path)}${doc.legacy ? " (legacy roadmap format; the next write converts it)" : ""}`,
-    ...(doc.supersedes.length ? [`Supersedes: ${doc.supersedes.join(", ")}`] : []),
-    ...(doc.superseded_by ? [`Superseded by: ${doc.superseded_by}`] : []),
-    ...(chain.length > 1 ? [`Supersession chain: ${chain.map((entry) => `${entry.id} (${entry.status})`).join(" → ")}`] : []),
-    ...(doc.decision_makers.length ? [`Decision-makers: ${doc.decision_makers.join("; ")}`] : []),
-    ...(doc.consulted.length ? [`Consulted: ${doc.consulted.join("; ")}`] : []),
-    ...(doc.informed.length ? [`Informed: ${doc.informed.join("; ")}`] : []),
+    `${adr.id} — ${adr.title}`,
+    `Status: ${adr.status}; date ${adr.date}${adr.stage ? `; stage ${adr.stage}` : ""}`,
+    `File: ${adr.path}${adr.legacy ? " (legacy roadmap format; the next write converts it)" : ""}`,
+    ...(adr.supersedes.length ? [`Supersedes: ${adr.supersedes.join(", ")}`] : []),
+    ...(adr.superseded_by ? [`Superseded by: ${adr.superseded_by}`] : []),
+    ...(adr.chain.length ? [`Supersession chain: ${adr.chain.map((link) => `${link.id} (${link.status})`).join(" → ")}`] : []),
+    ...(adr.decision_makers.length ? [`Decision-makers: ${adr.decision_makers.join("; ")}`] : []),
+    ...(adr.consulted.length ? [`Consulted: ${adr.consulted.join("; ")}`] : []),
+    ...(adr.informed.length ? [`Informed: ${adr.informed.join("; ")}`] : []),
   ];
-  return `${meta.join("\n")}\n\n${doc.body}`;
+  return `${meta.join("\n")}\n\n${adr.body}`;
 }
 
 export async function statusReceipt(repo: AdrRepo, input: { id?: string; status?: string } = {}): Promise<Receipt> {
   const model = await loadModel(repo);
   const warnings = model.parseErrors.map((issue) => `${repoPath(repo, issue.path)}: ${issue.message}`);
-  if (input.status !== undefined && !STATUSES.includes(input.status as (typeof STATUSES)[number]))
+  if (input.status !== undefined && !STATUSES.includes(input.status as AdrStatus))
     return { ok: false, reason: `Unknown status ${input.status}; use ${STATUSES.join(", ")}.`, hints: [] };
   if (input.id !== undefined) {
     const matches = model.adrs.filter((doc) => doc.id === input.id);
@@ -141,9 +219,11 @@ export async function statusReceipt(repo: AdrRepo, input: { id?: string; status?
         reason: `ADR ${input.id} is ${matches.length ? "ambiguous" : "unknown"}.`,
         hints: ["Call adr_status for ADR ids."],
       };
-    return { ok: true, summary: detailText(model, matches[0] as AdrDoc), changedFiles: [], warnings };
+    const adr = adrDetail(model, matches[0] as AdrDoc);
+    return { ok: true, summary: adrText(adr), changedFiles: [], warnings, view: { kind: "adr", adr } };
   }
-  return { ok: true, summary: listText(model, input.status), changedFiles: [], warnings };
+  const view = listView(model, input.status as AdrStatus | undefined);
+  return { ok: true, summary: listText(model, view), changedFiles: [], warnings, view };
 }
 
 export async function checkReceipt(repo: AdrRepo, fix = false, signal?: AbortSignal): Promise<Receipt> {
@@ -163,6 +243,7 @@ export async function checkReceipt(repo: AdrRepo, fix = false, signal?: AbortSig
     };
   }
   const lines = found.map((item) => `${item.severity}: ${item.rule} — ${item.path}: ${item.message}`);
+  const view: ReceiptView = { kind: "check", diagnostics: found };
   if (found.some((item) => item.severity === "error")) {
     return {
       ok: false,
@@ -171,6 +252,7 @@ export async function checkReceipt(repo: AdrRepo, fix = false, signal?: AbortSig
         "Check verifies ADR consistency, not whether code follows the decisions.",
         ...(changedFiles.length ? [`Regenerated: ${changedFiles.join(", ")}. Commit these files per the project's rules.`] : []),
       ],
+      view,
     };
   }
   return {
@@ -178,6 +260,7 @@ export async function checkReceipt(repo: AdrRepo, fix = false, signal?: AbortSig
     summary: `${changedFiles.length ? "Regenerated the ADR index. " : ""}ADR check passed. Check verifies ADR consistency, not whether code follows the decisions.`,
     changedFiles,
     warnings: lines,
+    view,
   };
 }
 
@@ -226,6 +309,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
       "List architecture decision records with an optional status filter, or read one ADR's full text and supersession chain by id.",
     parameters: statusParameters,
     approval: "read",
+    ...statusCard,
     async execute(_id, params: typeof statusParameters.infer, _signal, _onUpdate, ctx) {
       return run(ctx, (repo) => statusReceipt(repo, params));
     },
@@ -238,6 +322,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
       "Create MADR decisions, revise proposed ADRs, set status, supersede, append a dated note or link a stage. link requires id; stage sets or changes the link, omitted stage clears it, at any ADR status. Setting a stage needs the roadmap resolver. Subagents create only proposed ADRs and cannot set status, supersede or link.",
     parameters: manageParameters,
     approval: "write",
+    ...manageCard,
     async execute(_id, params: typeof manageParameters.infer, signal, _onUpdate, ctx) {
       return run(ctx, async (repo) => {
         const result = await manage(repo.repoRoot, ctx.agent.kind, params, { signal, resolver: resolver() });
@@ -260,6 +345,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
       "Check ADR consistency: parse errors, ids and filenames, supersession links and the generated index. fix: true regenerates only the index.",
     parameters: checkParameters,
     approval: "write",
+    ...checkCard,
     async execute(_id, params: typeof checkParameters.infer, signal, _onUpdate, ctx) {
       return run(ctx, (repo) => checkReceipt(repo, params.fix, signal));
     },
