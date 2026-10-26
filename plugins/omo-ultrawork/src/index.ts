@@ -10,11 +10,13 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { DIRECTIVE_ASSET, HYPERPLAN_ASSET, loadPromptAsset, RESEARCH_ASSET } from "#src/assets.ts";
 import { readHostSetting } from "#src/host-settings.ts";
 import { detectPointers, detectUltrawork, hasEmbeddedDirective } from "#src/keywords.ts";
+import { registerMessageTitle } from "#src/message-title.ts";
 import { triggersOrchestrate } from "#src/orchestrate.ts";
 import { PluginStatePublisher } from "#src/plugin-state.ts";
 
 const STATE_ENTRY = "wows-omp-omo-ultrawork.state";
 const DIRECTIVE_MESSAGE = "wows-omp-omo-ultrawork.directive";
+const COMMAND_NOTICE = "wows-omp-omo-ultrawork.command-status";
 const EXIT_MESSAGE = "wows-omp-omo-ultrawork.exit";
 const STATUS_KEY = "omo-ultrawork";
 const PACKAGE_NAME = "wows-omp-plugin-omo-ultrawork";
@@ -98,8 +100,9 @@ export default function ultrawork(pi: ExtensionAPI): void {
       ctx.ui.notify(message, type);
       return;
     }
-    pi.sendMessage({ customType: "wows-omp-omo-ultrawork.command-status", content: message, display: true, attribution: "agent" });
+    pi.sendMessage({ customType: COMMAND_NOTICE, content: message, display: true, attribution: "agent" });
   };
+  registerMessageTitle(pi, COMMAND_NOTICE, "Ultrawork");
 
   const settingsFor = (ctx: ExtensionContext): Promise<UltraworkSettings> => {
     const sessionId = ctx.sessionManager.getSessionId();

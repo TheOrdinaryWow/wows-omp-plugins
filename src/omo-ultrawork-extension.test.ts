@@ -61,6 +61,7 @@ async function scenario(name: string, root: string): Promise<void> {
     appendEntry: (customType: string, data: unknown) => manager.appendCustomEntry(customType, data),
     sendMessage: (message: Message, options?: { deliverAs?: string }) => messages.push({ ...message, deliverAs: options?.deliverAs }),
     sendUserMessage: (text: string) => requests.push(text),
+    registerMessageRenderer: () => {},
   } as unknown as ExtensionAPI;
   register(api);
   const hook = async (event: string, payload: Record<string, unknown> = {}) => {
