@@ -2412,7 +2412,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             content: [
               {
                 type: "text" as const,
-                text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger, item.id)}${rulings ? `\n${rulings}` : ""}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
+                text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger, item.id)}${rulings ? `\n\n${rulings}\n` : ""}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
               },
             ],
             details: { id: item.id, status: item.status, outputSchema: schema, row: ledgerCardRow(item), progress: ledgerProgress(ledger) },

@@ -519,7 +519,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
   }
   lines.push(...notes);
   lines.push(`Delivery: ${ledger.delivery}${ledger.deliveries.length ? ` (${ledger.deliveries.map((row) => row.id).join(", ")})` : ""}`);
-  if (!compact && ledger.rulings.length) lines.push(renderOwnerRulings(ledger));
+  if (!compact && ledger.rulings.length) lines.push("", renderOwnerRulings(ledger), "");
   if (ledger.deferred.length) {
     const untriaged = untriagedFindings(ledger).map((finding) => finding.id);
     lines.push(
