@@ -24,6 +24,14 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.23.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.22.4...omo-prometheus@0.23.0) (2026-10-26)
+
+
+### Features
+
+* **omo-prometheus:** render Atlas consoles and widget natively in Tern ([51b8bde](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/51b8bde4acb2cc94d1abc49d00581b2ff3915b93))
+* **omo-prometheus:** show Atlas tool calls and messages as native Tern cards ([6d7676f](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/6d7676fd914f2bade3e2367883bcf0dbed63a483))
+
 ## [0.22.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.22.3...omo-prometheus@0.22.4) (2026-10-21)
 
 

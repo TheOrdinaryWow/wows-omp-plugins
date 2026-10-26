@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.6.2...omp-herdr-dag@0.6.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** show the todo card natively in Tern ([ffaa4e1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/ffaa4e17b565e952c96cdcdcf0615d68169e5689))
+
 ## [0.6.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.6.1...omp-herdr-dag@0.6.2) (2026-10-14)
 
 

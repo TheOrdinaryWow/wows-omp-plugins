@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.5...audit-goal@0.4.0) (2026-10-26)
+
+
+### Features
+
+* **audit-goal:** render audit round and notices as native Tern cards ([27d112e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/27d112e512c948a8ee905d3f5fa2904ed0bdd099))
+
 ## [0.3.5](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.4...audit-goal@0.3.5) (2026-10-14)
 
 
