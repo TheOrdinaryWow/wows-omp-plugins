@@ -131,9 +131,12 @@ function changedFiles(files: readonly string[] | undefined, head = "Changed file
   return section(head, [list(items)], "changed");
 }
 
-/** A rendered document without its YAML front matter, which the head and fields already show. */
+/**
+ * A rendered document without its YAML front matter, which the head and fields already show, and without the
+ * managed-by and generated-block comments: Tern's Markdown shows HTML comments literally, and managed bodies refuse raw HTML.
+ */
 function documentBody(source: string): string {
-  return source.replace(/^---\n[\s\S]*?\n---\n+/, "");
+  return source.replace(/^---\n[\s\S]*?\n---\n+/, "").replace(/^[ \t]*<!--[^\n]*-->[ \t]*(?:\n|$)/gm, "");
 }
 
 function receiptOf(details: unknown): ToolReceipt | undefined {

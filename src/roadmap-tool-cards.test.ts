@@ -157,7 +157,7 @@ describe("roadmap tool cards", () => {
     if (active) expect(text).toContain(JSON.stringify({ t: "active", s: "accent" }));
   });
 
-  test("a stage request shows the stage detail with its handoff, without front matter", async () => {
+  test("a stage request shows the stage detail with its handoff, without front matter or managed comments", async () => {
     const { repo, model } = await diskFixture();
     const stage = model.stages[0];
     if (!stage) throw new Error("fixture stage");
@@ -170,6 +170,7 @@ describe("roadmap tool cards", () => {
     expect(text).toContain(stage.title);
     expect(text).toContain("Planning handoff");
     expect(text).not.toContain("closed_sha256");
+    expect(text).not.toContain("<!--");
   });
 
   test("check shows diagnostics with severity tones", async () => {
