@@ -24,6 +24,19 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.24.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.23.2...omo-prometheus@0.24.0) (2026-10-26)
+
+
+### Features
+
+* **omo-prometheus:** record user-confirmed acceptance rulings during Atlas execution ([013b1ae](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/013b1ae652a1ac52a04a76d4e331afba74f9d676))
+* **omo-prometheus:** show owner rulings in Atlas cards and plan view ([5f49b26](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/5f49b26e0320f6bcbae396751189a26e18e1f265))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** keep the owner rulings list from swallowing the lines after it ([4c1e998](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/4c1e9981cdd1f5fcdf66d3019938aa17d80f53db))
+
 ## [0.23.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.23.1...omo-prometheus@0.23.2) (2026-10-26)
 
 
