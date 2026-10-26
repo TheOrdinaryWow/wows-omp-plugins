@@ -143,14 +143,14 @@ const NON_GIT_EXECUTION =
 const PROGRESS_REPORTS_EXECUTION = `<progress-reports>
 The user turned on progress reports. Write each report as plain text in your reply, alongside your tool calls, as a block with one field per line in this order. Word the labels and the content as you normally address the user. Report progress and outcomes, not assignment details. A report never replaces a ledger record, a todo refresh or an ask.
 
-Before each dispatch batch, once for the whole batch:
+In the response that sends the dispatch batch, once for the whole batch (never in a todo-refresh response, which carries tool calls only):
 Progress: <rows done>/<total rows>
 Dispatching: <each row id with its short title>
 Goal: <what the batch delivers, one sentence>
 Agents: <agent per row, with HEAVY when the row is HEAVY>
 Running alongside: <rows still in progress, or none>
 
-After recording a row with done, block or reopen:
+After recording a row with done, block or reopen, in the response after its todo refresh:
 Progress: <rows done>/<total rows>
 Row: <row id and short title>
 Status: <passed | implementation recorded, awaiting verification | failed and reopened | blocked>
@@ -160,9 +160,9 @@ Problem: <only when failed or blocked: what went wrong, or what the user must de
 Next: <the next step>
 </progress-reports>`;
 const DISPATCH_REPORT =
-  "Progress report: before dispatching, write the dispatch block (Progress, Dispatching, Goal, Agents, Running alongside) once for this batch.";
+  "Progress report: write the dispatch block (Progress, Dispatching, Goal, Agents, Running alongside) once for this batch, in the response that sends the task call, not in a todo-refresh response.";
 const OUTCOME_REPORT =
-  "Progress report: write the outcome block for this row (Progress, Row, Status, Result, Evidence, Problem when any, Next).";
+  "Progress report: write the outcome block for this row (Progress, Row, Status, Result, Evidence, Problem when any, Next) in the response after the todo refresh, not beside the todo call.";
 const PROGRESS_REPORT_REMINDERS: Record<string, string> = {
   start: DISPATCH_REPORT,
   verify: DISPATCH_REPORT,
