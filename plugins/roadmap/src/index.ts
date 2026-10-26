@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { ADR_INSTALL_HINT, AdrConnection } from "#src/adr.ts";
 import { requestPlans } from "#src/atlas.ts";
+import { registerMessageTitles } from "#src/cards.ts";
 import { registerCommands } from "#src/commands.ts";
 import { loadAll, loadRepo } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
@@ -56,6 +57,7 @@ export default function roadmap(pi: ExtensionAPI): void {
   registerTools(pi, ses, uiFor, changed, adr);
   const commands = registerCommands(pi, ses, uiFor, changed, adr);
   registerPrometheusContract(pi, ses);
+  registerMessageTitles(pi);
 
   async function rebuild(_event: unknown, ctx: ExtensionContext): Promise<void> {
     ses.rebuild(ctx);

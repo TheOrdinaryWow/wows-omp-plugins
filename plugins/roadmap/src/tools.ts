@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { ADR_INSTALL_HINT, type AdrApi, type AdrConnection, type ContractEvents } from "#src/adr.ts";
 import { type AtlasStagePlan, requestPlans, stageCoverage } from "#src/atlas.ts";
+import { roadmapToolCard } from "#src/cards.ts";
 import { check, type Diagnostics } from "#src/check.ts";
 import { loadAll, loadRepo, type Model, overdue, type Repo, renderRound, renderStage, type StageDoc, today } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
@@ -27,7 +28,53 @@ import { type ArmedKind, actor, planModeActive, type RoadmapSession, type UiFact
 import { stageReadiness } from "#src/state.ts";
 import type { OverlapAnswer } from "#src/ui.ts";
 
-export type ToolReceipt = Receipt & { answer?: OverlapAnswer; diagnostics?: Diagnostics[]; changedFiles?: string[] };
+export type ToolReceipt = Receipt & {
+  answer?: OverlapAnswer;
+  diagnostics?: Diagnostics[];
+  changedFiles?: string[];
+  /** `roadmap_status` without an id: the rounds, stages, TODOs and plans its summary lists, for native cards. */
+  overview?: StatusOverview;
+  /** `roadmap_status` with an id: the round or stage the summary renders. */
+  focus?: StatusFocus;
+  /** A preview no dialog could confirm, held until `/roadmap confirm <token>`. */
+  held?: HeldPreview;
+};
+
+export interface StatusOverview {
+  project: string;
+  rounds: Array<{ id: string; title: string; status: string; target: string | null; overdue: boolean; stages: number }>;
+  stages: Array<{
+    id: string;
+    title: string;
+    status: string;
+    round: string;
+    target: string | null;
+    overdue: boolean;
+    dependsOn: string[];
+    /** Readiness of a planned stage in the active round; absent for every other stage. */
+    readiness?: { startable: true } | { startable: false; blockedBy: string[] };
+  }>;
+  /** Atlas plans of unclosed stages; absent when no planner answered. */
+  plans?: Array<{ stage: string; label: string; status: string; done: number; total: number; drifted: boolean }>;
+  todos: Array<{ id: string; title: string; severity: string; target: string }>;
+}
+
+export interface StatusFocus {
+  kind: "round" | "stage";
+  id: string;
+  title: string;
+  status: string;
+  target: string | null;
+  overdue: boolean;
+  round?: string;
+  dependsOn?: string[];
+}
+
+export interface HeldPreview {
+  summary: string;
+  token: string;
+  files: Array<{ path: string; content: string }>;
+}
 
 /** Asks omo-prometheus for the repository's Atlas plans, optionally for one stage; undefined when nothing answered. */
 export type PlanLookup = (stage?: string) => AtlasStagePlan[] | undefined;
@@ -69,7 +116,7 @@ export async function requireRepo(ctx: ExtensionContext, adr: AdrApi, initialize
   return { ...repo, adr };
 }
 
-export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup): Promise<Receipt> {
+export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup): Promise<ToolReceipt> {
   const model = await loadAll(repo);
   const on = today();
   if (id?.startsWith("R")) {
@@ -80,6 +127,7 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
       summary: `${renderRound(round)}${overdue(round, on) ? "\nOverdue: this unfinished round is past its target.\n" : ""}`,
       changedFiles: [],
       warnings: [],
+      focus: { kind: "round", id: round.id, title: round.title, status: round.status, target: round.target, overdue: overdue(round, on) },
     };
   }
   if (id) {
@@ -91,16 +139,26 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
       handoff: renderHandoff(model, current, on, plans?.(current.id)),
       changedFiles: [],
       warnings: [],
+      focus: {
+        kind: "stage",
+        id: current.id,
+        title: current.title,
+        status: current.status,
+        target: current.target,
+        overdue: overdue(current, on),
+        round: current.round,
+        dependsOn: current.depends_on,
+      },
     };
   }
   const open = model.todos.flatMap((doc) => doc.items.filter((item) => item.status === "open"));
-  const readiness = model.stages
-    .filter((current) => current.status === "planned")
-    .flatMap((current) => {
-      const ready = stageReadiness(model, current);
-      if (ready.startable) return [`- ${current.id} startable`];
-      return ready.blockedBy.length ? [`- ${current.id} blocked by ${ready.blockedBy.join(", ")}`] : [];
-    });
+  const readinessOf = new Map(
+    model.stages.filter((current) => current.status === "planned").map((current) => [current.id, stageReadiness(model, current)]),
+  );
+  const readiness = [...readinessOf].flatMap(([stageId, ready]) => {
+    if (ready.startable) return [`- ${stageId} startable`];
+    return ready.blockedBy.length ? [`- ${stageId} blocked by ${ready.blockedBy.join(", ")}`] : [];
+  });
   const summary = [
     model.index.title,
     renderInjection(model) || "No active round. ADR management remains available.",
@@ -117,17 +175,26 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
   ];
   if (readiness.length) summary.push("Readiness of planned stages in the active round:", ...readiness);
   const answered = plans?.();
+  let planRows: StatusOverview["plans"];
   if (answered) {
+    planRows = [];
     // Plans of unclosed stages only: closed and dropped stages no longer take plan work.
     const lines = model.stages
       .filter((current) => current.status === "planned" || current.status === "active")
       .flatMap((current) => {
         const bound = answered.filter((plan) => plan.stage === current.id);
         const drifted = stageCoverage(current, bound).drifted;
-        return bound.map(
-          (plan) =>
-            `- ${current.id} · ${planLabel(plan)} — ${plan.status}, ${plan.done}/${plan.total} rows; ${plan.criteria ? `criteria ${plan.criteria.join(", ")}` : "coverage undeclared"}${drifted.includes(plan) ? `; drift: approved before ${current.id}'s objective, scope, criteria or design constraints changed` : ""}`,
-        );
+        return bound.map((plan) => {
+          planRows?.push({
+            stage: current.id,
+            label: planLabel(plan),
+            status: plan.status,
+            done: plan.done,
+            total: plan.total,
+            drifted: drifted.includes(plan),
+          });
+          return `- ${current.id} · ${planLabel(plan)} — ${plan.status}, ${plan.done}/${plan.total} rows; ${plan.criteria ? `criteria ${plan.criteria.join(", ")}` : "coverage undeclared"}${drifted.includes(plan) ? `; drift: approved before ${current.id}'s objective, scope, criteria or design constraints changed` : ""}`;
+        });
       });
     summary.push("Atlas plans of unclosed stages:", ...(lines.length ? lines : ["- None."]));
   }
@@ -140,6 +207,41 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
     summary: summary.join("\n"),
     changedFiles: [],
     warnings: (model.parseErrors ?? []).map((issue) => `${issue.path}: ${issue.message}`),
+    overview: {
+      project: model.index.title,
+      rounds: model.rounds.map((round) => ({
+        id: round.id,
+        title: round.title,
+        status: round.status,
+        target: round.target,
+        overdue: overdue(round, on),
+        stages: model.stages.filter((current) => current.round === round.id).length,
+      })),
+      stages: model.stages.map((current) => {
+        const ready = readinessOf.get(current.id);
+        return {
+          id: current.id,
+          title: current.title,
+          status: current.status,
+          round: current.round,
+          target: current.target,
+          overdue: overdue(current, on),
+          dependsOn: current.depends_on,
+          ...(ready?.startable
+            ? { readiness: { startable: true as const } }
+            : ready?.blockedBy.length
+              ? { readiness: { startable: false as const, blockedBy: ready.blockedBy } }
+              : {}),
+        };
+      }),
+      ...(planRows ? { plans: planRows } : {}),
+      todos: open.map((item) => ({
+        id: item.id,
+        title: item.title,
+        severity: item.severity ?? "normal",
+        target: item.target ?? item.trigger ?? "",
+      })),
+    },
   };
 }
 
@@ -298,16 +400,18 @@ export function awaitConfirmation(
         : kind === "plan"
           ? "Call roadmap_round_plan again"
           : `Run /roadmap ${kind} again`;
+  const files = prepared.files.map((file) => ({ path: relative(repo.repoRoot, file.path), content: file.content }));
   return {
     ok: false,
     reason: [
       `${prepared.summary}\nNothing was written: no interactive UI can confirm this preview.`,
-      ...prepared.files.map((file) => `--- ${relative(repo.repoRoot, file.path)}\n${file.content}`),
+      ...files.map((file) => `--- ${file.path}\n${file.content}`),
     ].join("\n\n"),
     hints: [
       `Show this preview to the user. The user writes exactly these files with /roadmap confirm ${token}; any other reply declines it.`,
       `${again} only if the user asks for changes; a new preview replaces this one.`,
     ],
+    held: { summary: prepared.summary, token, files },
   };
 }
 
@@ -501,6 +605,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_status",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_status"),
     label: "Roadmap status",
     description: "Read rounds, stages and open TODOs. Supply a stage id for its full document and planning handoff.",
     parameters: statusParameters,
@@ -512,6 +617,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_stage",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_stage"),
     label: "Roadmap stage",
     description:
       "Manage stage lifecycle. Start or join returns the planning handoff and binds this session; in plan mode start binds a planned stage without writing, and it starts when start is called again outside plan mode. Close requires passing evidence for every done criterion and TODO dispositions, refuses while ADRs linked to the stage are proposed, and records still-unfinished linked Atlas plans under the Outcome's Deviations.",
@@ -539,6 +645,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_todo",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_todo"),
     label: "Roadmap TODO",
     description:
       "Add, update, resolve or move carry-over TODOs with a source, severity and an unclosed target stage or trigger. Fix broken tests/builds before proceeding.",
@@ -551,6 +658,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_check",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_check"),
     label: "Roadmap check",
     description:
       "Check document consistency. fix regenerates eligible generated blocks without changing frozen rounds. Does not compare documents with code.",
@@ -563,6 +671,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_overlap",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_overlap"),
     label: "Roadmap overlap",
     description:
       "Ask the user once per stage/session whether overlapping work should use the roadmap, be logged as free work, or be treated as unrelated. Subagents do not prompt.",
@@ -596,6 +705,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_init",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_init"),
     label: "Initialize Roadmap",
     description:
       "Write the interviewed project, first-round charter, initial ADRs (through the adr plugin) and stages after an exact user-confirmed preview. Only available to the main session armed by /init-project.",
@@ -628,6 +738,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_round_open",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_round_open"),
     label: "Open Roadmap round",
     description:
       "Open the next round from its charter and carried TODO ids after a confirmed preview. Only available to the main session armed by /roadmap new-round.",
@@ -656,6 +767,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_round_plan",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_round_plan"),
     label: "Plan Roadmap round",
     description:
       "Draft or revise a planned round charter and optional target after a user-confirmed preview. Only available to the main session armed by /roadmap plan-round. The first planned round upgrades format 1 with a warning in the same preview.",
@@ -684,6 +796,7 @@ export function registerTools(
   pi.registerTool({
     name: "roadmap_upgrade",
     sourcePath: TOOL_SOURCE_PATH,
+    ...roadmapToolCard("roadmap_upgrade"),
     label: "Roadmap upgrade",
     description:
       "Ask the user, in the same one-step dialog shown at session start, whether to upgrade this format-1 repository to roadmap format 2; writes the upgrade only on Yes. Main session only. Without a dialog it refuses: ask the user to run /roadmap upgrade.",

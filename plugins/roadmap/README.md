@@ -153,7 +153,7 @@ Checks, round closes, drops, target dates and upgrades finish in the console. On
 
 Write previews list the files on the left and show the selected one on the right; Space switches between rendered and raw text. Shift+W or the Write row writes every file. Esc or Cancel writes nothing.
 
-In Tern, the console and the write preview open as native sheets instead of terminal frames. Click a tab to switch sections, click a row to select it and double-click it to do what Enter does. The buttons below the panes run the same actions as their keys, and the keys keep working.
+In Tern, the console and the write preview open as native sheets instead of terminal frames. Click a tab to switch sections, click a row to select it and double-click it to do what Enter does. The buttons below the panes run the same actions as their keys, and the keys keep working. Roadmap tool calls show as native cards too (status as tables, check diagnostics by severity, the planning handoff folded until you expand it), and roadmap messages are headed by a readable title such as "Roadmap check".
 
 With `inline`, the console and previews are the select menus of earlier releases. RPC and ACP clients always get those menus. The setting is read on each use, so a change applies the next time without a restart. An unknown value falls back to `fullscreen` with a warning in the log.
 
