@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.6.2...roadmap@0.7.0) (2026-10-26)
+
+
+### Features
+
+* **roadmap:** render the console and write preview as native Tern sheets ([a8b112f](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/a8b112ffb599029f798f94a0ed62ed1ddd500b33))
+* **roadmap:** render tool calls and messages as native Tern cards ([01ffc4f](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/01ffc4fd5a37552efff725732a1eaf5d1691f3a4))
+
+
+### Bug Fixes
+
+* **roadmap:** hide managed-file comments in Tern tool cards ([9074695](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/90746951c6a501374fa8754aa54be1bee6e1d1e2))
+* **roadmap:** keep native list items on one readable line ([09e69eb](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/09e69ebb5cc8d8f1579993684809adab3bd12226))
+
 ## [0.6.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.6.1...roadmap@0.6.2) (2026-10-21)
 
 

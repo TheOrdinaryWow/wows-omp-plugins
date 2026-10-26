@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.2.1...adr@0.3.0) (2026-10-26)
+
+
+### Features
+
+* **adr:** render the console and write preview as native Tern sheets ([481bcb0](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/481bcb06b98c8f4703fbd5f7ef5169fce4f706c3))
+* **adr:** render tool calls and messages as native Tern cards ([9212aca](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/9212aca61e80eb571d385bb0d032711af0db3963))
+
+
+### Bug Fixes
+
+* **adr:** hide managed-file markers in native previews ([e559c8b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e559c8b9b72664163ee42ac1ab9ae5f125943f15))
+* **adr:** keep native list items on one readable line ([ecbcb5d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/ecbcb5d1d7b15b507d6d5904ecfc5aed6cad0046))
+
 ## [0.2.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.2.0...adr@0.2.1) (2026-10-14)
 
 
