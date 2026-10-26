@@ -51,6 +51,7 @@ import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { AtlasLive, AtlasLiveRow, AtlasLiveSnapshot } from "./atlas-live.ts";
 import type { AtlasPlanDetail, AtlasRowDetail } from "./atlas-store.ts";
 import type { AtlasEvent } from "./atlas-timeline.ts";
+import type { OwnerRuling } from "./ledger.ts";
 
 export type AtlasFilter = "unfinished" | "all";
 export type AtlasDispatch = "start" | "resume";
@@ -201,6 +202,11 @@ function evidenceSummary(item: AtlasRowDetail): string | undefined {
     : item.evidence;
 }
 
+/** The owner ruling in force for a row: the latest one recorded for it. */
+function rowRuling(detail: AtlasPlanDetail, rowId: string): OwnerRuling | undefined {
+  return detail.rulings?.findLast((ruling) => ruling.rowId === rowId);
+}
+
 /** One line per plan for dialog-free hosts: name, id, status and workspace. */
 export function atlasPlanList(details: readonly AtlasPlanDetail[]): string {
   if (!details.length) return "No shared approved plans are available.";
@@ -218,10 +224,22 @@ export function atlasPlanText(detail: AtlasPlanDetail): string {
     `Plan file: ${plan.planFilePath}`,
   ];
   if (detail.startedAt !== undefined) lines.push(`Started: ${formatTime(detail.startedAt)}`);
+  if (detail.rulings?.length) {
+    lines.push("", `Owner rulings (user-confirmed amendments to the approved plan): ${detail.rulings.length}`);
+    for (const ruling of detail.rulings) {
+      lines.push(
+        `- ${ruling.id} ${ruling.rowId}: ${singleLine(ruling.acceptance)} — ${singleLine(ruling.note)} (${formatTime(ruling.confirmedAt)})`,
+      );
+    }
+  }
   for (const row of detail.rows) {
     lines.push("", `${TEXT_MARK[row.status] ?? "[?]"} ${row.id}. ${row.title} — ${ROW_STATUS[row.status] ?? row.status} — ${row.agent}`);
     if (row.dependsOn.length) lines.push(`    Depends on: ${row.dependsOn.join(", ")}`);
-    if (row.acceptance) lines.push(`    Acceptance: ${singleLine(row.acceptance)}`);
+    const ruling = rowRuling(detail, row.id);
+    if (ruling) {
+      lines.push(`    Acceptance: ${singleLine(ruling.acceptance)} (amended by ${ruling.id})`);
+      if (row.acceptance) lines.push(`    Approved: ${singleLine(row.acceptance)}`);
+    } else if (row.acceptance) lines.push(`    Acceptance: ${singleLine(row.acceptance)}`);
     if (row.evidence) lines.push(`    Evidence: ${singleLine(row.evidence)}`);
     if (row.outputPath) lines.push(`    Output: ${row.outputPath}`);
   }
@@ -859,8 +877,15 @@ export class AtlasPlanView implements Component {
         lines.push(t.fg("dim", `Press Space to show the archived child output (${item.outputPath})`));
       }
     }
-    lines.push("", t.bold("Acceptance"));
-    markdown(item.acceptance);
+    const ruling = rowRuling(this.detail, item.id);
+    lines.push("", `${t.bold("Acceptance")}${ruling ? t.fg("warning", `  amended by ${ruling.id}`) : ""}`);
+    if (ruling) {
+      markdown(ruling.acceptance);
+      if (ruling.note) field("Note", singleLine(ruling.note));
+      field("Confirmed", formatTime(ruling.confirmedAt));
+      lines.push("", t.fg("muted", "Approved plan"));
+      wrap(item.acceptance, (value) => t.fg("dim", value));
+    } else markdown(item.acceptance);
     return lines;
   }
 
@@ -896,7 +921,13 @@ export class AtlasPlanView implements Component {
     const summary = `${status}  ${progressBar(t, this.detail.done, this.detail.total)} ${counts}  ${running} running · ${formatElapsed(this.detail.startedAt, this.#liveSnapshot?.at ?? Date.now())}  ${tally}`;
     const origin = t.fg("dim", `${this.detail.plan.id}  ${this.detail.plan.cwd || "Workspace unavailable"}`);
     const notice = this.#notice();
-    const header = [summary, origin, ...(notice ? [t.fg("warning", notice)] : [])];
+    const rulings = this.detail.rulings?.length
+      ? [
+          t.fg("warning", `Owner rulings ${this.detail.rulings.length}`) +
+            t.fg("muted", `  ${this.detail.rulings.map((ruling) => `${ruling.id} ${ruling.rowId}`).join(" · ")}`),
+        ]
+      : [];
+    const header = [summary, origin, ...rulings, ...(notice ? [t.fg("warning", notice)] : [])];
 
     this.#bodyRows = Math.max(3, height - 2 - header.length - 2 - hints.length);
     this.#bodyTop = 1 + header.length + 1;
@@ -1034,6 +1065,15 @@ export class AtlasPlanView implements Component {
       truncate: "middle",
       lines: 1,
     });
+    const rulings = detail.rulings?.length
+      ? text(
+          [
+            span(`Owner rulings ${detail.rulings.length}`, "warning"),
+            span(`  ${detail.rulings.map((ruling) => `${ruling.id} ${ruling.rowId}`).join(" · ")}`, "muted"),
+          ],
+          { wrap: "word" },
+        )
+      : undefined;
     const hints = hintsRow([
       actionHint(["tui.select.up", "tui.select.down"], this.#timeline ? "scroll" : "row"),
       this.#timeline ? undefined : { keys: ["space"], label: "child output" },
@@ -1045,6 +1085,7 @@ export class AtlasPlanView implements Component {
         keyed(tools, "tools"),
         keyed(summary, "summary"),
         keyed(origin, "origin"),
+        rulings ? keyed(rulings, "rulings") : undefined,
         notice ? keyed(text([span(notice, "warning")], { wrap: "word" }), "notice") : undefined,
         keyed(rowNode([sidebar, body], { gap: "lg", align: "start" }), "split"),
         hints,
@@ -1121,8 +1162,26 @@ export class AtlasPlanView implements Component {
       item.status === "in_progress" && keyed(this.#describeLive(item, live), "live"),
       keyed(evidence, "evidence"),
       item.outputPath ? this.#describeOutput(item.id, item.outputPath) : undefined,
-      keyed(col([text([span("Acceptance", "strong")]), md(item.acceptance)], { gap: "sm" }), "acceptance"),
+      keyed(this.#describeAcceptance(item), "acceptance"),
     ]);
+  }
+
+  /** The acceptance in force; an amended row marks its ruling and keeps the approved plan's text below it. */
+  #describeAcceptance(item: AtlasRowDetail): NativeNode {
+    const ruling = rowRuling(this.detail, item.id);
+    if (!ruling) return col([text([span("Acceptance", "strong")]), md(item.acceptance)], { gap: "sm" });
+    return col(
+      compact<NativeChild>([
+        text([span("Acceptance", "strong"), span(` · amended by ${ruling.id}`, "warning")]),
+        md(ruling.acceptance),
+        kv([
+          ["Note", ruling.note ? singleLine(ruling.note) : undefined],
+          ["Confirmed", formatTime(ruling.confirmedAt)],
+        ]),
+        text([span("Approved plan: ", "muted"), span(singleLine(item.acceptance), "dim")], { wrap: "word" }),
+      ]),
+      { gap: "sm" },
+    );
   }
 
   /** A running row's child: its clock, current tool, model and usage, and the newest tools and output. */

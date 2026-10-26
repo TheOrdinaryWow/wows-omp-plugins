@@ -162,6 +162,21 @@ test("Atlas plan view describes a large sheet titled by the plan with toned rows
   expect(component.describe(cx)).toBe(root);
 });
 
+test("Atlas plan view describes an amended row's ruling in force with the approved text, and lists every ruling", () => {
+  const amended: AtlasPlanDetail = {
+    ...plan,
+    rulings: [{ id: "R1", rowId: "T1", acceptance: "The build passes in 120 s", note: "User accepted 120 s", confirmedAt: 0 }],
+  };
+  const root = view(amended).component.describe(cx);
+  expect(shown(find(root, "rulings"))).toContain("R1 T1");
+  const acceptance = find(root, "acceptance");
+  expect(shown(acceptance)).toContain("amended by R1");
+  expect(kinds(root, "md").at(-1)?.p).toMatchObject({ text: "The build passes in 120 s" });
+  expect(shown(acceptance)).toContain("User accepted 120 s");
+  expect(shown(acceptance)).toMatch(/Approved plan: .*The build passes"/);
+  expect(find(view().component.describe(cx), "rulings")).toBeUndefined();
+});
+
 test("Atlas plan view row clicks and view tabs change it exactly as the arrow and Tab keys", () => {
   const keys = view();
   const clicks = view();

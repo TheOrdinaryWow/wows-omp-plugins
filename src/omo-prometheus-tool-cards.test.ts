@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import { runAtlasGit } from "../plugins/omo-prometheus/src/atlas-git.ts";
 import register from "../plugins/omo-prometheus/src/index.ts";
-import { addDeferredFinding, createLedger, ledgerRows, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
+import { addDeferredFinding, amendAcceptance, createLedger, ledgerRows, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
 import { ledgerCardRow, ledgerProgress } from "../plugins/omo-prometheus/src/tool-cards.ts";
 
 interface CardTool {
@@ -90,6 +90,7 @@ test("atlas_ledger heads read as the action and row, even from partial arguments
   expect(ledger.describeCall({ action: "start", id: "T3", i: "Starting row" }, options())?.tool).toMatchObject({ target: "start T3" });
   expect(ledger.describeCall({ action: "verify", id: "F2" }, options())?.tool).toMatchObject({ target: "verify F2" });
   expect(ledger.describeCall({ action: "discover", scope: "in", id: "T1" }, options())?.tool?.target).toBe("discover in T1");
+  expect(ledger.describeCall({ action: "amend", id: "T1", acceptance: "new" }, options())?.tool?.target).toBe("amend T1");
   for (const partial of [undefined, {}, { action: "" }, { action: "sta" }, { id: 3 }]) {
     expect(() => ledger.describeCall(partial, options())).not.toThrow();
   }
@@ -121,6 +122,27 @@ test("atlas_ledger shows the changed row and plan progress, guidance folded unti
   expect(shown(guidance)).toContain("T1 is now in_progress.");
   const expanded = tool("atlas_ledger").describeResult(result, options(true), args);
   expect(nodes(expanded?.body).find((node) => node.k === "section")?.p).toMatchObject({ collapsed: false });
+});
+
+test("atlas_ledger amend shows the ruling, its row, the acceptance now in force and the user's note", () => {
+  const ledger = createLedger("/plans/plan.md", planContent, ["task"]);
+  const ruling = amendAcceptance(ledger, "T1", "p95 latency stays under 250 ms", "User accepted 250 ms after measuring 230 ms");
+  const row = ledgerRows(ledger).find((entry) => entry.id === "T1");
+  if (!row) throw new Error("T1 missing");
+  const card = tool("atlas_ledger").describeResult(
+    {
+      content: [{ type: "text", text: `${ruling.id} records the user-confirmed acceptance of T1.` }],
+      details: { id: row.id, status: row.status, ruling, row: ledgerCardRow(row), progress: ledgerProgress(ledger) },
+    },
+    options(),
+    { action: "amend", id: "T1" },
+  );
+  expect(card?.tool?.target).toBe("amend T1");
+  expect(card?.tool?.badges).toMatchObject([{ text: "R1", tone: "warning" }, { text: "open" }]);
+  const section = nodes(card?.body).find((node) => node.key === "ruling");
+  expect(shown(section?.p)).toContain("amends T1 acceptance");
+  expect(shown(section)).toContain("p95 latency stays under 250 ms");
+  expect(shown(section)).toContain("User accepted 250 ms after measuring 230 ms");
 });
 
 test("atlas_ledger status lists every row; a deferred finding shows its triage state", () => {

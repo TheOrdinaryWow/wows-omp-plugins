@@ -13,6 +13,7 @@ import {
   type ExecutionLedger,
   type ItemStatus,
   type LedgerItem,
+  type OwnerRuling,
   type Tier,
   type VerificationStatus,
   verificationStatus,
@@ -47,6 +48,8 @@ export interface LedgerCardProgress {
 export interface LedgerCardDetails {
   row?: LedgerCardRow;
   finding?: { id: string; title: string; disposition?: string };
+  /** `amend`: the owner ruling just recorded for `row`. */
+  ruling?: OwnerRuling;
   progress: LedgerCardProgress;
 }
 
@@ -140,7 +143,7 @@ function rowState(row: LedgerCardRow): { word: string; tone: Tone } {
   return STATUS[row.status] ?? { word: String(row.status), tone: "muted" };
 }
 
-/** `start T3`, `discover in T2`, `triage O1 todo`; undefined until the action has streamed in. */
+/** `start T3`, `discover in T2`, `triage O1 todo`, `amend T1`; undefined until the action has streamed in. */
 function ledgerTarget(args: PartialArgs | undefined): string | undefined {
   const action = str(args?.action);
   if (!action) return undefined;
@@ -165,6 +168,19 @@ function progressBar(progress: LedgerCardProgress): NativeNode {
   });
 }
 
+/** A recorded owner ruling: the acceptance now in force for its row and the user's reason, marked as a plan deviation. */
+function rulingSection(ruling: OwnerRuling): NativeNode {
+  return node(
+    "section",
+    { head: [span(ruling.id, "strong"), span(` amends ${ruling.rowId} acceptance`, "warning")] },
+    compact<NativeChild>([
+      md(ruling.acceptance),
+      str(ruling.note) ? text([span("Note ", "muted"), span(ruling.note)], { wrap: "word" }) : undefined,
+    ]),
+    "ruling",
+  );
+}
+
 function describeLedgerResult(result: CardResult, expanded: boolean, args: PartialArgs | undefined): NativeToolView {
   const target = ledgerTarget(args);
   if (result.isError) return textView(LEDGER_TITLE, target, result, "Ledger operation refused.");
@@ -180,6 +196,7 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
   const progress = details?.progress;
   const changed = typeof details?.row?.id === "string" ? details.row : undefined;
   const finding = typeof details?.finding?.id === "string" ? details.finding : undefined;
+  const ruling = typeof details?.ruling?.id === "string" && typeof details.ruling.acceptance === "string" ? details.ruling : undefined;
   if (typeof progress?.done !== "number" || typeof progress.total !== "number" || (!changed && !finding)) {
     return textView(LEDGER_TITLE, target, result, "(no output)");
   }
@@ -188,7 +205,14 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
   return {
     tool: head(LEDGER_TITLE, target, {
       meta: [`${progress.done}/${progress.total} done`],
-      ...(state ? { badges: [{ text: state.word, tone: state.tone }] } : {}),
+      ...(state || ruling
+        ? {
+            badges: compact([
+              ruling ? { text: ruling.id, tone: "warning" as const } : undefined,
+              state ? { text: state.word, tone: state.tone } : undefined,
+            ]),
+          }
+        : {}),
     }),
     tone: state?.tone === "warning" ? "warning" : undefined,
     body: compact<NativeChild>([
@@ -202,6 +226,7 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
                 : [span("deferred, needs triage", "warning")],
             }),
       ]),
+      ruling ? rulingSection(ruling) : undefined,
       progressBar(progress),
       // The model's guidance repeats on every call during a run: folded until the user expands the card.
       guidance

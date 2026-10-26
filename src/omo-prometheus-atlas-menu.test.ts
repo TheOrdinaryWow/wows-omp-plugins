@@ -4,7 +4,13 @@ import { initTheme, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
 
 import type { AtlasLive, AtlasLiveRow, AtlasLiveSnapshot, AtlasProgress } from "../plugins/omo-prometheus/src/atlas-live.ts";
 import type { AtlasPlanViewMode } from "../plugins/omo-prometheus/src/atlas-menu.ts";
-import { AtlasMenu, type AtlasMenuAction, AtlasPlanView, type AtlasPlanViewAction } from "../plugins/omo-prometheus/src/atlas-menu.ts";
+import {
+  AtlasMenu,
+  type AtlasMenuAction,
+  AtlasPlanView,
+  type AtlasPlanViewAction,
+  atlasPlanText,
+} from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
 import { AtlasStatusWidget } from "../plugins/omo-prometheus/src/atlas-widget.ts";
 
@@ -170,6 +176,37 @@ test("Atlas plan view fills the terminal and expands the archived child output o
   expect(text(component.render(100))).toMatch(/no archived child output/);
 });
 
+const amended: AtlasPlanDetail = {
+  ...plan,
+  rulings: [
+    { id: "R1", rowId: "T1", acceptance: "The build passes in 90 s", note: "First limit", confirmedAt: 0 },
+    { id: "R2", rowId: "T1", acceptance: "The build passes in 120 s", note: "User accepted 120 s", confirmedAt: 0 },
+  ],
+};
+
+test("Atlas plan view shows a row's ruling in force, the approved text below it, and every ruling in the header", () => {
+  const tall = { requestRender() {}, terminal: { rows: 60 } } as unknown as TUI;
+  const component = new AtlasPlanView(
+    amended,
+    "dispatch",
+    theme,
+    tall,
+    async () => "",
+    () => {},
+  );
+  const screen = text(component.render(120));
+  expect(screen).toMatch(/Owner rulings 2 {2}R1 T1 · R2 T1/);
+  expect(screen).toMatch(/Acceptance {2}amended by R2/);
+  expect(screen).toContain("The build passes in 120 s");
+  expect(screen).toContain("User accepted 120 s");
+  expect(screen).not.toContain("The build passes in 90 s");
+  expect(screen).toMatch(/Approved plan[\s│]+The build passes/);
+
+  const plain = atlasPlanText(amended);
+  expect(plain).toContain("    Acceptance: The build passes in 120 s (amended by R2)\n    Approved: The build passes");
+  expect(plain).toMatch(/Owner rulings .*: 2\n- R1 T1: The build passes in 90 s — First limit/);
+  expect(atlasPlanText(plan)).not.toMatch(/Owner rulings|Approved:/);
+});
 test("Atlas plan view dispatches like the list and Esc returns", () => {
   const started = view();
   started.component.handleInput("R");
