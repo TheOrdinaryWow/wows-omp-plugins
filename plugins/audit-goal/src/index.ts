@@ -31,7 +31,9 @@ import {
   validateRound,
   verdict,
 } from "#src/ledger.ts";
+import { registerMessageTitle } from "#src/message-title.ts";
 import { PluginStatePublisher, pluginStatePath } from "#src/plugin-state.ts";
+import { describeRoundCall, describeRoundResult, roundCardDetails } from "#src/round-card.ts";
 
 const PLUGIN_NAME = "audit-goal";
 const PACKAGE_NAME = "wows-omp-plugin-audit-goal";
@@ -123,8 +125,8 @@ function ledgerSummary(state: AuditState): string {
   return lines.join("\n");
 }
 
-function textResult(text: string, isError = false) {
-  return { content: [{ type: "text" as const, text }], details: {}, ...(isError ? { isError: true } : {}) };
+function textResult(text: string, isError = false, details: object = {}) {
+  return { content: [{ type: "text" as const, text }], details, ...(isError ? { isError: true } : {}) };
 }
 
 export default function auditGoal(pi: ExtensionAPI): void {
@@ -166,6 +168,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     }
     pi.sendMessage({ customType: COMMAND_NOTICE, content: message, display: true, attribution: "agent" });
   };
+  registerMessageTitle(pi, COMMAND_NOTICE, "Audit goal");
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
     try {
@@ -547,17 +550,24 @@ export default function auditGoal(pi: ExtensionAPI): void {
     persist(ctx, next);
     showStatus(ctx, next);
 
+    const details = roundCardDetails("record", next, outcome);
     const header = `Round ${record.round} recorded.\n${ledgerSummary(next)}\n\nVerdict: ${outcome}.`;
     if (outcome === "threshold-ready")
       return textResult(
         `${header}\nThe ${next.intensity} exit gate is met. Record threshold-convergence with audit_round({op:"conclude", conclusion:"threshold-convergence", reason, evidence}), write the truthful report, then call goal({op:"complete"}). Open findings remain open.`,
+        false,
+        details,
       );
     if (outcome === "cap-reached")
       return textResult(
         `${header}\nThe round limit is exhausted without convergence${selfFeedingSignal(next.rounds) ? " (self-feeding signal observed, not a conclusion)" : ""}. Report the open findings and unaudited work, then call audit_round({op:"extend"}) to request the user's decision. Do not dispatch more audit work while the cap is pending.`,
+        false,
+        details,
       );
     return textResult(
       `${header}\n${selfFeedingSignal(next.rounds) ? "Self-feeding signal: simplify or revert mechanisms; this alone does not establish convergence. " : ""}Start round ${record.round + 1}, or, only with unlimited rounds and multi-round same-model evidence of discovery limits, record capability-saturation explicitly using op=conclude.`,
+      false,
+      details,
     );
   };
 
@@ -573,6 +583,8 @@ export default function auditGoal(pi: ExtensionAPI): void {
     showStatus(ctx, next);
     return textResult(
       `${ledgerSummary(next)}\nAudit process conclusion recorded. ${params.conclusion === "capability-saturation" ? "Capability saturation is not an accepted repair; unresolved findings remain open. " : "Threshold convergence is a discovery gate, not artifact acceptance. "}Report the outcome and remaining findings, then call goal({op:"complete"}).`,
+      false,
+      roundCardDetails("conclude", next),
     );
   };
 
@@ -615,13 +627,19 @@ export default function auditGoal(pi: ExtensionAPI): void {
       showStatus(ctx, next);
       return textResult(
         `${ledgerSummary(next)}\nStop recorded, not convergence or acceptance. Append truthful closing notes to the interim report, then call goal({op:"complete"}).`,
+        false,
+        roundCardDetails("extend", next),
       );
     }
     next.maxRounds = choice.newLimit;
     next.capPending = false;
     persist(ctx, next);
     showStatus(ctx, next);
-    return textResult(`The user extended the audit. New limit: ${limitLabel(next.maxRounds)}. Start round ${next.rounds.length + 1}.`);
+    return textResult(
+      `The user extended the audit. New limit: ${limitLabel(next.maxRounds)}. Start round ${next.rounds.length + 1}.`,
+      false,
+      roundCardDetails("extend", next),
+    );
   };
 
   pi.registerTool({
@@ -634,12 +652,14 @@ export default function auditGoal(pi: ExtensionAPI): void {
     defaultInactive: true,
     loadMode: "essential",
     approval: "read",
+    describeCall: (args) => describeRoundCall(args),
+    describeResult: (result, _options, args) => describeRoundResult(result, args),
     execute: async (_toolCallId, params: RoundParams, _signal, _onUpdate, ctx) => {
       if (invalidStates.has(ctx.sessionManager.getSessionId()))
         return textResult("Audit ledger is invalid or could not be saved. Do not complete or dispatch; use /goal drop explicitly.", true);
       const live = liveAudit(ctx);
       if (!live) return textResult("No /audit loop is active in this main session.", true);
-      if (params.op === "status") return textResult(ledgerSummary(live.state));
+      if (params.op === "status") return textResult(ledgerSummary(live.state), false, roundCardDetails("status", live.state));
       if (params.op === "conclude") return conclude(ctx, live.state, params);
       if (params.op === "extend") return await extendRounds(ctx, live.state);
       return recordRound(ctx, live.state, params);

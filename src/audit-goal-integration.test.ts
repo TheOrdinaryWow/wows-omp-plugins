@@ -133,6 +133,7 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
     sendMessage: (message: { customType: string; content: string; display: boolean }) => {
       messages.push(message);
     },
+    registerMessageRenderer: () => {},
     appendEntry: (customType: string, data: unknown) => {
       if (failNextPersist) {
         failNextPersist = false;
