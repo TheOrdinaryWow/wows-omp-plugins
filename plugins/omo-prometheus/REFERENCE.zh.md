@@ -10,7 +10,7 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 ## 计划语法
 
-- `## Tasks`：从 `T1` 开始编号的 `- [ ] T<n>. <title>` 行，每行带缩进的 `Agent:`、`Depends on:`、`Acceptance:`，以及可选的 `Tier: LIGHT | HEAVY`（不区分大小写）。缺少 tier 即为 LIGHT，旧计划行为不变。其他取值或重复字段都是解析错误。
+- `## Tasks`：从 `T1` 开始编号的 `- [ ] T<n>. <title>` 行，每行带缩进的 `Agent:`、`Depends on:`、`Acceptance:`，以及可选的 `Tier: LIGHT | HEAVY`（不区分大小写）。缺少 tier 即为 LIGHT，旧计划行为不变。其他取值或重复字段都是解析错误。规划技能要求的其他正文行（`Closes:`、`References:`、`Mechanisms:`、`QA happy:`、`QA failure:`、`Commit:`）只供子代理和评审者阅读，解析器会忽略它们。
 - `## Final gates`：恰好 F1–F4，标题固定。
 - `Delivery: direct | pr | ship`：在第 0 列的一行普通文本，位于代码块、列表、`## Tasks` 和 `## Final gates` 之外。重复、未知取值，或者出现在上述章节里的 `Delivery:` 行都是解析错误。没有这一行即为 `direct`。
 

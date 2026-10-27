@@ -10,7 +10,7 @@ Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execu
 
 ## Plan grammar
 
-- `## Tasks`: rows `- [ ] T<n>. <title>` numbered from `T1`, each with indented `Agent:`, `Depends on:`, `Acceptance:` and an optional `Tier: LIGHT | HEAVY` (case-insensitive). A missing tier means LIGHT, so older plans keep their behavior. Any other value or a repeated field is a parse error.
+- `## Tasks`: rows `- [ ] T<n>. <title>` numbered from `T1`, each with indented `Agent:`, `Depends on:`, `Acceptance:` and an optional `Tier: LIGHT | HEAVY` (case-insensitive). A missing tier means LIGHT, so older plans keep their behavior. Any other value or a repeated field is a parse error. The other body lines the planning skill requires (`Closes:`, `References:`, `Mechanisms:`, `QA happy:`, `QA failure:`, `Commit:`) are read by children and reviewers only; the parser ignores them.
 - `## Final gates`: exactly F1–F4 with their fixed titles.
 - `Delivery: direct | pr | ship`: one plain line at column 0, outside code fences, lists, `## Tasks` and `## Final gates`. A duplicate, an unknown value, or a `Delivery:` line inside those sections is a parse error. No line means `direct`.
 
