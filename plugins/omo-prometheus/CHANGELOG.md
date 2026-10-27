@@ -24,6 +24,13 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.24.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.24.0...omo-prometheus@0.24.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** drop the text-free todo-refresh rule now that Magic Context models the Continue repair ([efcbcff](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/efcbcff51217ebd5b8e71386918c494feb79b24f))
+
 ## [0.24.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.23.2...omo-prometheus@0.24.0) (2026-10-26)
 
 
