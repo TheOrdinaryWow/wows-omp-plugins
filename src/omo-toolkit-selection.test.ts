@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { type ExtensionAPI, z } from "@oh-my-pi/pi-coding-agent";
 
 import omoToolkit from "../plugins/omo-toolkit/src/index.ts";
 
@@ -32,6 +32,9 @@ function protocolFor(taskDescription: string | undefined, activeTools = ["read",
   let handler: BeforeAgentStart | undefined;
   const pi = {
     logger: { warn() {} },
+    zod: z,
+    registerCommand() {},
+    registerTool() {},
     on(event: string, registered: BeforeAgentStart) {
       if (event === "before_agent_start") handler = registered;
     },

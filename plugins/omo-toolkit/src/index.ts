@@ -1,10 +1,14 @@
-/** Registers omo-toolkit's model roles and injects its agent selection protocol into the main prompt. */
+/** Registers toolkit model roles, selection guidance, and optional runtime components. */
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { cfgModelTags, type ModelTagDef } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
+import { registerCommentChecker } from "#src/comment-checker.ts";
+import { registerFallbackArchitect } from "#src/fallback-architect.ts";
+import { registerInitDeepAdvisor } from "#src/init-deep-advisor.ts";
 import { buildSelectionProtocol, parseListedAgents } from "#src/selection-protocol.ts";
+import { DEFAULT_SETTINGS, readToolkitSettings, type ToolkitSettings } from "#src/settings.ts";
 
 export const TOOLKIT_MODEL_ROLES: Readonly<Record<string, ModelTagDef>> = {
   designer: { name: "DESIGNER", color: "syntaxVariable" },
@@ -34,6 +38,21 @@ export default function omoToolkit(pi: ExtensionAPI): void {
       pi.logger.warn("omo-toolkit could not register its model roles", { error: error instanceof Error ? error.message : String(error) });
     }
   };
+
+  const configurations = new Map<string, ToolkitSettings>();
+  const loadSettings = async (_event: unknown, ctx: ExtensionContext): Promise<void> => {
+    configurations.set(ctx.sessionManager.getSessionId(), await readToolkitSettings(pi, ctx));
+  };
+  const settings = (ctx: ExtensionContext): Readonly<ToolkitSettings> =>
+    configurations.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_SETTINGS;
+  pi.on("session_start", loadSettings);
+  pi.on("session_switch", loadSettings);
+  pi.on("session_shutdown", (_event, ctx) => {
+    configurations.delete(ctx.sessionManager.getSessionId());
+  });
+  registerCommentChecker(pi, settings);
+  registerInitDeepAdvisor(pi, settings);
+  registerFallbackArchitect(pi, settings);
 
   pi.on("session_start", (_event, ctx) => registerRoles(ctx));
   pi.on("session_switch", (_event, ctx) => registerRoles(ctx));

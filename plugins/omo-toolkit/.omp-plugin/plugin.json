@@ -5,5 +5,27 @@
   "author": {
     "name": "TheOrdinaryWow"
   },
-  "license": "MIT (code) / SUL-1.0 (derived prompt assets)"
+  "license": "MIT (code) / SUL-1.0 (derived prompt assets and adapted runtime components)",
+  "settings": {
+    "commentChecker": {
+      "type": "boolean",
+      "default": false,
+      "description": "Check successful file mutations with an external executable; disables speculative reads and early task launch for this session; reload required"
+    },
+    "commentCheckerPath": {
+      "type": "string",
+      "default": "",
+      "description": "User-provisioned comment-checker 0.8.0-compatible executable path or command on PATH; never downloaded or bundled"
+    },
+    "initDeepAdvisor": {
+      "type": "boolean",
+      "default": true,
+      "description": "Offer init-deep at eligible main-session startup with a real UI; never run it without consent"
+    },
+    "fallbackArchitect": {
+      "type": "boolean",
+      "default": false,
+      "description": "Offer a one-shot safe architecture-consultation hint after a correlated refusal-driven primary-model fallback"
+    }
+  }
 }
