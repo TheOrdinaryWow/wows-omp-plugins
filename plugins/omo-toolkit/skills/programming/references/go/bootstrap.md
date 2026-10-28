@@ -23,12 +23,13 @@ These are CLI tools, installed once per machine via `go install`:
 ```bash
 GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install mvdan.cc/gofumpt@latest
 GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install golang.org/x/tools/cmd/goimports@latest
-GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.0.0
+GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.0.0
 GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install go.uber.org/nilaway/cmd/nilaway@latest
 GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install github.com/pressly/goose/v3/cmd/goose@latest
 GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install go.uber.org/mock/mockgen@latest
 GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install github.com/go-task/task/v3/cmd/task@latest
+export PATH="${TMPDIR:-/tmp}/programming-tools/bin:$PATH"
 ```
 
 For Connect/protobuf projects, additionally:
@@ -272,10 +273,12 @@ jobs:
 
       - name: Install tools
         run: |
-          GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install mvdan.cc/gofumpt@latest
-          GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.0.0
-          GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install go.uber.org/nilaway/cmd/nilaway@latest
-          GOBIN="${TMPDIR:-/tmp}/programming-tools/bin" go install github.com/go-task/task/v3/cmd/task@latest
+          tools="${RUNNER_TEMP:-/tmp}/programming-tools/bin"
+          GOBIN="$tools" go install mvdan.cc/gofumpt@latest
+          GOBIN="$tools" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.0.0
+          GOBIN="$tools" go install go.uber.org/nilaway/cmd/nilaway@latest
+          GOBIN="$tools" go install github.com/go-task/task/v3/cmd/task@latest
+          echo "$tools" >> "$GITHUB_PATH"
 
       - name: Format check
         run: gofumpt -l . | (! grep .)
