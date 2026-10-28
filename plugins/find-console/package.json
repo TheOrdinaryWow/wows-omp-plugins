@@ -1,0 +1,16 @@
+{
+  "name": "wows-omp-plugin-find-console",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Interactive semantic search with native result previews",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

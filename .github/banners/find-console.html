@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-banner="find-console" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <title>find-console</title>
+    <link rel="stylesheet" href="banner.css" />
+    <style>
+      .search-flow {
+        display: grid;
+        gap: 12px;
+        font: 500 15px / 1.4 var(--mono);
+      }
+      .search-query {
+        color: var(--ink-2);
+      }
+      .search-file {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .search-source {
+        color: var(--ink-2);
+        white-space: pre;
+      }
+      .search-mark {
+        color: var(--accent);
+      }
+      .search-actions {
+        color: var(--ink);
+        padding-top: 8px;
+        border-top: 1px solid var(--ink-3);
+      }
+    </style>
+    <script>
+      document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
+    </script>
+  </head>
+  <body>
+    <div class="grid meta">
+      <div class="series">wows-omp-plugins</div>
+      <div>/find</div>
+    </div>
+    <div class="rule top"></div>
+    <div class="grid body">
+      <div class="lead">
+        <div class="title">find-console<span class="acc">.</span></div>
+        <div class="tag">Search by behavior. Preview judged source ranges. Choose what reaches the agent.</div>
+      </div>
+      <div class="fig">
+        <div class="fig-label">Query → source → reference</div>
+        <div class="search-flow" role="img" aria-label="Search results open beside a source preview, with insertion and sending actions">
+          <div class="search-query">where versions are bumped</div>
+          <div class="search-file">release-please-config.json</div>
+          <div class="search-source">packages:
+  <span class="search-mark">plugins/find-console</span>
+    extra-files</div>
+          <div class="search-actions">Preview · Insert · Send · Open</div>
+        </div>
+      </div>
+    </div>
+    <div class="rule bottom"></div>
+    <div class="grid foot">
+      <div>Native judge · in-process cascade</div>
+      <div>TUI · RPC / ACP · Tern</div>
+    </div>
+  </body>
+</html>

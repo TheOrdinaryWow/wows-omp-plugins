@@ -1,6 +1,7 @@
 {
   "plugins/adr": "0.3.0",
   "plugins/audit-goal": "0.4.0",
+  "plugins/find-console": "0.1.0",
   "plugins/judge-dispatch": "0.8.1",
   "plugins/omp-herdr-dag": "0.6.3",
   "plugins/omo-prometheus": "0.26.0",

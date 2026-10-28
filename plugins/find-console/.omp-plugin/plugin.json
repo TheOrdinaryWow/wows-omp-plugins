@@ -1,0 +1,9 @@
+{
+  "name": "find-console",
+  "version": "0.1.0",
+  "description": "Interactive semantic search with native result previews",
+  "author": {
+    "name": "TheOrdinaryWow"
+  },
+  "license": "MIT"
+}

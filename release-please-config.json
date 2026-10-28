@@ -20,6 +20,13 @@
         { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='audit-goal')].version" }
       ]
     },
+    "plugins/find-console": {
+      "component": "find-console",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='find-console')].version" }
+      ]
+    },
     "plugins/judge-dispatch": {
       "component": "judge-dispatch",
       "extra-files": [

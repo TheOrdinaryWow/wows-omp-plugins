@@ -46,6 +46,23 @@
       "license": "MIT"
     },
     {
+      "name": "find-console",
+      "source": "./find-console",
+      "description": "Interactive semantic search with native result previews",
+      "version": "0.1.0",
+      "author": {
+        "name": "TheOrdinaryWow"
+      },
+      "category": "productivity",
+      "keywords": [
+        "find",
+        "search",
+        "judge",
+        "console"
+      ],
+      "license": "MIT"
+    },
+    {
       "name": "judge-dispatch",
       "source": "./judge-dispatch",
       "description": "Route OMP subagent types with native judge-role judgments",

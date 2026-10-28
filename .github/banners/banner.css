@@ -15,6 +15,7 @@
  *   root             #E5322D   #FF4A3D   signal red
  *   adr              #2B59FF   #7A96FF   blue
  *   audit-goal       #F26A00   #FF8A33   orange
+ *   find-console     #087C83   #50C8CD   teal
  *   judge-dispatch   #0E9F6E   #34C98F   emerald
  *   omo-prometheus   #7A3CE0   #A57BFF   violet
  *   omo-toolkit      #B57C00   #F2B705   ochre
@@ -35,6 +36,10 @@
 [data-banner="audit-goal"] {
   --accent-light: #f26a00;
   --accent-dark: #ff8a33;
+}
+[data-banner="find-console"] {
+  --accent-light: #087c83;
+  --accent-dark: #50c8cd;
 }
 [data-banner="judge-dispatch"] {
   --accent-light: #0e9f6e;
@@ -234,7 +239,7 @@ body::after {
 .index {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: repeat(4, auto);
+  grid-template-rows: repeat(5, auto);
   grid-auto-flow: column;
   column-gap: var(--gut);
   list-style: none;
