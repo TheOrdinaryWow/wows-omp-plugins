@@ -45,6 +45,8 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 
 `--` ends option parsing. There is no ambiguous positional path: a path is always introduced by `--path`. Hidden and ignored files follow the host cascade's default search policy.
 
+Use `--no-cache` to bypass both reads and writes in the host judgment cache. Reports count cached answers independently of cost: `all cached`, `partly cached`, `fresh`, `cache off`, or `cache unavailable`. Exactly zero costs display as `$0`; tiny non-zero costs display as `<$0.0001` rather than rounding to zero.
+
 ### Results console
 
 The terminal opens a fullscreen console by default, with ranked hits on the left and source context on the right. Set `uiMenu: half-screen` for a compact, bottom-anchored overlay that keeps the conversation visible above it. Both layouts support selection, source preview and the same result actions. Scores use the same strong/plausible/muted bands as the built-in find tool. They are judge probabilities, not a guarantee that the hit is correct.

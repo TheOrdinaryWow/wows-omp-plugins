@@ -1,7 +1,7 @@
 import type { FindHit, FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 
-import type { CacheState, ConsoleHit } from "#src/report.ts";
+import type { CacheState, ConsoleHit, ConsoleReport } from "#src/report.ts";
 
 export type FindMode = "auto" | "on" | "off";
 
@@ -53,9 +53,9 @@ export function cacheLabel(cache: CacheState): string {
   return `${cache.cached === cache.total ? "all cached" : "partly cached"} · answers ${cache.cached}/${cache.total}`;
 }
 
-export function reportStats(report: FindToolDetails): string {
+export function reportStats(report: FindToolDetails | ConsoleReport): string {
   const { stats } = report;
-  return `${report.hits.length} hits · ${formatCost(stats.cost)} · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
+  return `${report.hits.length} hits · ${formatCost(stats.cost)}${"cache" in report ? ` · ${cacheLabel(report.cache)}` : ""} · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
 }
 
 export function rankedDigest(report: FindToolDetails): string {

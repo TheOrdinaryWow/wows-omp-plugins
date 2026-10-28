@@ -9,6 +9,7 @@ import { formatPathRelativeToCwd, resolveSearchResultPath } from "@oh-my-pi/pi-c
 import { cfgFindEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
 
 import { argumentCompletions, parseFindArgs, USAGE } from "#src/args.ts";
+import { accountCache } from "#src/cache.ts";
 import { showResults } from "#src/dialogs.ts";
 import { commandNotice } from "#src/notices.ts";
 import { PreviewReader } from "#src/preview.ts";
@@ -88,17 +89,19 @@ export default function findConsole(pi: ExtensionAPI): void {
         });
         const onUsage = journalJudgmentUsage(ctx.sessionManager);
         if (!onUsage) pi.logger.warn("Find judge usage cannot be journaled: this host's session manager has no appendModelUsage method.");
+        const accounting = accountCache(args.noCache ? undefined : sharedJudgmentCache(), args.noCache);
         const chain = resolveJudge({
           settings,
           registry: ctx.modelRegistry,
           sessionId: ctx.sessionManager.getSessionId(),
           purpose: "find",
           onUsage,
-          cache: sharedJudgmentCache(),
+          ...(accounting.cache ? { cache: accounting.cache } : {}),
         });
         const judge: Judge = {
           label: "native judge role",
           judge(request, options) {
+            accounting.requested(request);
             // `on` bypasses the host's auto gate, not the calibrated-score requirement.
             return chain.withCandidate((candidate, kind) => {
               if (kind !== "native")
@@ -132,7 +135,7 @@ export default function findConsole(pi: ExtensionAPI): void {
               scope: "ranges",
               refined: hit.ranges,
             })),
-            cache: { mode: sharedJudgmentCache() ? "on" : "unavailable", cached: 0, total: 0 },
+            cache: accounting.state,
             previewMode: "full-file",
           };
           return report;

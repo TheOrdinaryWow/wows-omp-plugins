@@ -9,7 +9,16 @@ import { FindProgressController, FindResultsController } from "../plugins/find-c
 import type { PreviewReader } from "../plugins/find-console/src/preview.ts";
 import { FindProgress } from "../plugins/find-console/src/progress-view.ts";
 import type { ConsoleHit, ConsoleReport } from "../plugins/find-console/src/report.ts";
-import { disabledReason, hitMessage, previewWindow, rankedDigest, reference, selectedRange } from "../plugins/find-console/src/results.ts";
+import {
+  cacheLabel,
+  disabledReason,
+  formatCost,
+  hitMessage,
+  previewWindow,
+  rankedDigest,
+  reference,
+  selectedRange,
+} from "../plugins/find-console/src/results.ts";
 import { parseUiMenu } from "../plugins/find-console/src/settings.ts";
 
 const hit: FindHit = {
@@ -127,6 +136,7 @@ describe("find arguments", () => {
       keywords: ["release-please", "package version"],
       help: false,
       cancel: false,
+      noCache: false,
     });
   });
 
@@ -156,6 +166,21 @@ describe("find arguments", () => {
     ]) {
       expect(() => parseFindArgs(input)).toThrow();
     }
+  });
+});
+
+describe("cost and cache accounting labels", () => {
+  test("non-zero costs never round to zero", () => {
+    expect([0, 0.00004, 0.0005, 0.0123].map(formatCost)).toEqual(["$0", "<$0.0001", "$0.0005", "$0.0123"]);
+    expect(parseFindArgs("--no-cache query").noCache).toBe(true);
+  });
+
+  test("cache state uses measured question counts, not cost", () => {
+    expect(cacheLabel({ mode: "on", cached: 8, total: 8 })).toBe("all cached · answers 8/8");
+    expect(cacheLabel({ mode: "on", cached: 2, total: 8 })).toBe("partly cached · answers 2/8");
+    expect(cacheLabel({ mode: "on", cached: 0, total: 8 })).toBe("fresh");
+    expect(cacheLabel({ mode: "off", cached: 0, total: 8 })).toBe("cache off");
+    expect(cacheLabel({ mode: "unavailable", cached: 0, total: 8 })).toBe("cache unavailable");
   });
 });
 
