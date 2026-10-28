@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.0...audit-goal@0.4.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* raise supported OMP floor to 18.12.0 ([3275e64](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/3275e64673fd98f76bf3cdc7a47750b5c2cf48b5))
+
 ## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.3.5...audit-goal@0.4.0) (2026-10-26)
 
 
