@@ -23,7 +23,7 @@ const PROSE_SKIP = new Set(["code", "pre", "kbd", "samp", "script", "style", "sv
 const SAFE_ID = /^[A-Za-z_][\w-]*$/
 
 export const PROSE_TAGS = new Set(["p", "li", ...HEADINGS, "td", "th", "figcaption", "blockquote", "dd", "dt"])
-const PROSE_BREAKS = new Set([...P_CLOSERS, ...PROSE_TAGS, "br", "tr"])
+export const PROSE_BREAKS = new Set([...P_CLOSERS, ...PROSE_TAGS, "br", "tr"])
 
 function makeNode(tag, attrs, parent, line) {
 	return { tag, attrs, children: [], parent, line, text: "", raw: null }
@@ -54,8 +54,8 @@ function skipSpaces(source, at) {
 	return at
 }
 
-/** Read `<name attrs...>` starting just after `<`. */
-function readTag(source, start) {
+/** Read `<name attrs...>` starting just after `<`; the one attribute parser (any quoting). */
+export function readTag(source, start) {
 	const end = source.length
 	let at = start
 	while (at < end && !isSpace(source[at]) && source[at] !== ">" && source[at] !== "/") at++

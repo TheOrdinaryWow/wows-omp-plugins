@@ -2,7 +2,7 @@
 
 # LaTeX report route
 
-Use this when a reader needs a typeset, math-heavy or citation-heavy PDF, or explicitly asks for `.tex`. The deliverable is the compiled PDF plus sources; a source tree alone is not a promised PDF. Keep work under the absolute filesystem `SESSION_DIR` (Node helpers cannot use a `local://` URL). Follow the delivery contract at `<Research assets directory>/references/deliverable-phase.md` and the same static, layout, page-visual, and proofreading gates appropriate to the requested output.
+Use this when a reader needs a typeset, math-heavy or citation-heavy PDF, or explicitly asks for `.tex`. The deliverable is the compiled PDF plus sources; a source tree alone is not a promised PDF. Keep work under the absolute filesystem `SESSION_DIR` (Node helpers cannot use a `local://` URL). Follow the delivery contract at `<Research assets directory>/references/deliverable-phase.md` and the same static, fidelity/meaning, layout, page-visual, and proofreading gates appropriate to the requested output.
 
 ## Detect a toolchain and choose an engine
 
@@ -34,6 +34,8 @@ Read the log after every compile: fix the first `!` error, then undefined comman
 ## Citations and visual material
 
 Every bibliography entry traces one-to-one to a source actually retrieved in `sources-ledger.md`; no remembered or fabricated citation. Use BibTeX/biblatex with `\cite{srcN}` when available, or a numbered `thebibliography` block for a small web-source report. Recheck attachment and counts after prose edits; never silently move or delete citations during proofreading.
+
+Keep an authoritative placeholder-bearing Markdown source for each reader-facing LaTeX edition. Fill its numbers and quotations from the same fact ledger, verify that Markdown with its fill map, and derive the TeX/PDF from it; direct `fact verify --format tex` is unsupported (usage error), not a passing check. Bind the delivered render through `--rendered-from <verified-source> --verified-by <matching-fidelity-record>` and inspect every rendered page. A language lane proposes text-only edits; protected `polish-apply`/`polish-diff`, fidelity, and changed-pair meaning rechecks precede conversion and a fresh render.
 
 Charts start from measured CSV/JSON, use vector PDF or adequate-resolution PNG, and include a caption, label, units, and textual reference. For Mermaid, render the diagram to a supported image before including it. Preserve aspect ratio with `\includegraphics[width=0.9\textwidth,keepaspectratio]{...}`. Tables use `booktabs` without vertical rules; use `tabularx` for full-width columns and `longtable` for multipage data. Code can use `listings` with wrapping rather than a shell-escape-dependent package. Large floats may use `[!htbp]`, but avoid forcing every element to `[H]` or inserting page breaks to conceal weak layout.
 
