@@ -48,7 +48,7 @@ describe("omo-toolkit agents", () => {
     expect(agent.model?.every((model) => model.startsWith("@"))).toBe(true);
     if (CATEGORY_AGENTS[name]) expect(agent.thinkingLevel).toBeDefined();
     if (TOOL_RESTRICTED_AGENTS[name]) expect(agent.tools?.length).toBeGreaterThan(0);
-    if (name === "architect") expect(isReadOnlyAgent(agent)).toBe(true);
+    if (TOOL_RESTRICTED_AGENTS[name]) expect(isReadOnlyAgent(agent)).toBe(true);
   });
 });
 

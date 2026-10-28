@@ -196,6 +196,11 @@ describe("routing authority boundaries", () => {
   test("restricts a read-only source to read-only destinations", () => {
     expect(routableCandidates("scout", candidates)?.map((candidate) => candidate.name)).toEqual(["scout", "reviewer"]);
   });
+
+  test("restricts librarian requests to read-only destinations", () => {
+    const withLibrarian = [...candidates, { name: "librarian", readOnly: true }];
+    expect(routableCandidates("librarian", withLibrarian)?.map((candidate) => candidate.name)).toEqual(["scout", "reviewer", "librarian"]);
+  });
 });
 
 describe("routing decision acceptance", () => {
