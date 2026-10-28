@@ -1,6 +1,8 @@
 import type { FindHit, FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 
+import type { CacheState, ConsoleHit } from "#src/report.ts";
+
 export type FindMode = "auto" | "on" | "off";
 
 export function disabledReason(mode: FindMode, nativeJudge: boolean): string | undefined {
@@ -10,8 +12,9 @@ export function disabledReason(mode: FindMode, nativeJudge: boolean): string | u
   return undefined;
 }
 
-export function bestRanges(hit: FindHit): FindRange[] {
-  return [...hit.ranges].sort((a, b) => b.p - a.p || a.start - b.start);
+export function bestRanges(hit: FindHit | ConsoleHit): FindRange[] {
+  const ranges = "scope" in hit ? (hit.scope === "whole-file" ? [] : hit.refined) : hit.ranges;
+  return [...ranges].sort((a, b) => b.p - a.p || a.start - b.start);
 }
 
 export function selectedRange(hit: FindHit, index: number): FindRange | undefined {
@@ -37,9 +40,22 @@ export function coverageWarning(report: FindToolDetails): string | undefined {
   return undefined;
 }
 
+export function formatCost(cost: number): string {
+  if (cost === 0) return "$0";
+  if (cost < 0.0001) return "<$0.0001";
+  return `$${Number(cost.toPrecision(4))}`;
+}
+
+export function cacheLabel(cache: CacheState): string {
+  if (cache.mode === "off") return "cache off";
+  if (cache.mode === "unavailable") return "cache unavailable";
+  if (!cache.cached) return "fresh";
+  return `${cache.cached === cache.total ? "all cached" : "partly cached"} · answers ${cache.cached}/${cache.total}`;
+}
+
 export function reportStats(report: FindToolDetails): string {
   const { stats } = report;
-  return `${report.hits.length} hits · $${stats.cost.toFixed(4)} · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
+  return `${report.hits.length} hits · ${formatCost(stats.cost)} · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
 }
 
 export function rankedDigest(report: FindToolDetails): string {

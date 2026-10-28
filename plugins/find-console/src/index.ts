@@ -7,13 +7,13 @@ import { runCascade } from "@oh-my-pi/pi-coding-agent/tools/jfind/cascade";
 import { resolveSearchRoot } from "@oh-my-pi/pi-coding-agent/tools/jfind/tree";
 import { formatPathRelativeToCwd, resolveSearchResultPath } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import { cfgFindEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
-import type { FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 
 import { argumentCompletions, parseFindArgs, USAGE } from "#src/args.ts";
 import { showResults } from "#src/dialogs.ts";
 import { commandNotice } from "#src/notices.ts";
 import { PreviewReader } from "#src/preview.ts";
 import { searchWithProgress } from "#src/progress.ts";
+import type { ConsoleReport } from "#src/report.ts";
 import { coverageWarning, disabledReason, rankedDigest } from "#src/results.ts";
 
 export default function findConsole(pi: ExtensionAPI): void {
@@ -120,13 +120,20 @@ export default function findConsole(pi: ExtensionAPI): void {
             signal,
             onProgress,
           });
-          const report: FindToolDetails = {
+          const report: ConsoleReport = {
             ...raw,
             query: args.query,
             elapsedMs: performance.now() - started,
             cwd: ctx.cwd,
             scopePath: formatPathRelativeToCwd(root.path, ctx.cwd),
-            hits: raw.hits.map((hit) => ({ ...hit, rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), ctx.cwd) })),
+            hits: raw.hits.map((hit) => ({
+              ...hit,
+              rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), ctx.cwd),
+              scope: "ranges",
+              refined: hit.ranges,
+            })),
+            cache: { mode: sharedJudgmentCache() ? "on" : "unavailable", cached: 0, total: 0 },
+            previewMode: "full-file",
           };
           return report;
         });

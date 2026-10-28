@@ -1,11 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getEditorCommand } from "@oh-my-pi/pi-coding-agent/utils/external-editor";
 import type { TUI } from "@oh-my-pi/pi-tui";
-import type { FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 
 import { insertReference, openExternally, sendHits } from "#src/actions.ts";
 import { type ConsoleAction, FindResultsController } from "#src/controller.ts";
 import type { PreviewReader } from "#src/preview.ts";
+import type { ConsoleReport } from "#src/report.ts";
 import { bestRanges, reference } from "#src/results.ts";
 import { mountResultsConsole } from "#src/ui.ts";
 
@@ -98,7 +98,7 @@ export async function resultDialogAction(
 export async function showResults(
   pi: Pick<ExtensionAPI, "sendUserMessage">,
   ctx: ExtensionContext,
-  report: FindToolDetails,
+  report: ConsoleReport,
   reader: PreviewReader,
 ): Promise<void> {
   const controller = new FindResultsController(report, reader, ctx.ui.supportsEditor === true);
@@ -116,7 +116,7 @@ export async function showResults(
     }
     if (!terminalConsole) action = await resultDialogAction(ctx, controller);
     if (action === "back") continue;
-    if (action === undefined || action === "close") return;
+    if (action === undefined || action === "close" || action === "refine" || action === "history") return;
     const hit = controller.selectedHit;
     if (!hit) return;
     if (action === "insert") {

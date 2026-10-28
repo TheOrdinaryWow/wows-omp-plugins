@@ -1,13 +1,14 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
 
 import { initTheme, type NativeNode, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
-import type { FindHit, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindHit } from "@oh-my-pi/pi-tui/tools/find";
 
 import { parseFindArgs } from "../plugins/find-console/src/args.ts";
 import { FindConsole } from "../plugins/find-console/src/console.ts";
 import { FindProgressController, FindResultsController } from "../plugins/find-console/src/controller.ts";
 import type { PreviewReader } from "../plugins/find-console/src/preview.ts";
 import { FindProgress } from "../plugins/find-console/src/progress-view.ts";
+import type { ConsoleHit, ConsoleReport } from "../plugins/find-console/src/report.ts";
 import { disabledReason, hitMessage, previewWindow, rankedDigest, reference, selectedRange } from "../plugins/find-console/src/results.ts";
 import { parseUiMenu } from "../plugins/find-console/src/settings.ts";
 
@@ -23,13 +24,15 @@ const hit: FindHit = {
   ],
 };
 
-function report(extra: Partial<FindToolDetails> = {}): FindToolDetails {
+function report(extra: Partial<ConsoleReport> = {}): ConsoleReport {
   return {
     query: "where versions are bumped",
     keywords: ["versions"],
     threshold: 0.2,
     coverage: "complete",
-    hits: [hit],
+    hits: [{ ...hit, scope: "ranges", refined: hit.ranges } satisfies ConsoleHit],
+    cache: { mode: "on", cached: 0, total: 0 },
+    previewMode: "snippet",
     elapsedMs: 2000,
     cwd: "/project",
     scopePath: "plugins/",
@@ -209,7 +212,7 @@ describe("judged references and previews", () => {
 
 describe("headless ranked digest", () => {
   test("the digest includes ranked references, partial-file coverage, accounting and failed requests", () => {
-    const result = report({ coverage: "partial", hits: [{ ...hit, truncated: true }] });
+    const result = report({ coverage: "partial", hits: [{ ...hit, scope: "ranges", refined: hit.ranges, truncated: true }] });
     result.stats.failed = 2;
     result.stats.failures = ["verification: unavailable"];
     const text = rankedDigest(result);

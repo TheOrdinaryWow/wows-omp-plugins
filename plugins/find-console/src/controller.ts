@@ -1,7 +1,8 @@
-import type { FindHit, FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 
 import { externalOpenReason, type PreviewReader, type PreviewSource } from "#src/preview.ts";
-import { coverageWarning, previewWindow, reference, reportStats, selectedRange } from "#src/results.ts";
+import type { ConsoleHit, ConsoleReport } from "#src/report.ts";
+import { cacheLabel, coverageWarning, formatCost, previewWindow, reference, reportStats, selectedRange } from "#src/results.ts";
 
 export interface ConsoleState {
   selected: number;
@@ -9,7 +10,7 @@ export interface ConsoleState {
   marked: number[];
 }
 
-export type ConsoleAction = "close" | "insert" | "send" | "open";
+export type ConsoleAction = "close" | "insert" | "send" | "open" | "refine" | "history";
 export interface ConsoleResult {
   action: ConsoleAction;
   state: ConsoleState;
@@ -26,24 +27,26 @@ export class FindResultsController {
     insert: () => this.requestAction("insert"),
     send: () => this.requestAction("send"),
     open: () => this.requestAction("open"),
+    refine: () => this.requestAction("refine"),
+    history: () => this.requestAction("history"),
     nextRange: () => this.cycleRange(1),
     previousRange: () => this.cycleRange(-1),
     toggleMarked: () => this.toggleMarked(),
   };
 
   constructor(
-    readonly report: FindToolDetails,
+    readonly report: ConsoleReport,
     readonly reader: PreviewReader,
     readonly supportsEditor: boolean,
   ) {
     this.loadPreview();
   }
 
-  get hits(): readonly FindHit[] {
+  get hits(): readonly ConsoleHit[] {
     return this.report.hits;
   }
 
-  get selectedHit(): FindHit | undefined {
+  get selectedHit(): ConsoleHit | undefined {
     return this.hits[this.state.selected];
   }
 
@@ -57,8 +60,23 @@ export class FindResultsController {
     return hit ? reference(hit, this.state.range) : "";
   }
 
-  get previewLines(): { start: number; lines: string[] } {
-    return previewWindow(this.preview?.lines ?? [], this.activeRange);
+  get previewLines(): { start: number; lines: string[]; highlight: FindRange[]; focusLine?: number } {
+    const lines = this.preview?.lines ?? [];
+    const highlight = this.selectedHit?.scope === "ranges" ? this.selectedHit.refined : [];
+    const window = this.report.previewMode === "full-file" ? { start: 1, lines } : previewWindow(lines, this.activeRange);
+    return { ...window, highlight, focusLine: this.activeRange?.start };
+  }
+
+  get cacheLabel(): string {
+    return cacheLabel(this.report.cache);
+  }
+
+  get costLabel(): string {
+    return formatCost(this.report.stats.cost);
+  }
+
+  get queryLabel(): string {
+    return this.report.originalQuery ?? this.report.query;
   }
 
   get coverage(): FindToolDetails["coverage"] {
@@ -84,7 +102,7 @@ export class FindResultsController {
   }
 
   cycleRange(delta: number): void {
-    const count = this.selectedHit?.ranges.length ?? 0;
+    const count = this.selectedHit?.scope === "ranges" ? this.selectedHit.refined.length : 0;
     if (!count) return;
     this.state.range = (((this.state.range + delta) % count) + count) % count;
     this.onChange?.();
