@@ -811,4 +811,93 @@ describe("Prometheus execution ledger", () => {
     failed(ledger, "P1", "p2", "CI integration scenario failed");
     expect(() => addFixRow(ledger, "P1", { title: "Again", acceptance: "pass", agent: "task", reason: "same" })).toThrow("retry stopped");
   });
+  test("v8 resume keeps a stored signature from an earlier normalizer authoritative", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    failed(ledger, "T1", "old-normalizer", "expected 4, got 5");
+    const stored = structuredClone(ledger);
+    const failure = stored.items[0]?.retry?.windows[0]?.failures[0] as FailedOutcome;
+    failure.signature = "legacy-normalizer:retained-error";
+    expect(failure.signature).not.toBe(failureSignature(failure.check, failure.firstError));
+    const resumed = restoreLedger(stored, stored.planFilePath, plan, stored.planSha256);
+    expect(resumed.items[0]?.retry?.windows[0]?.failures[0]?.signature).toBe("legacy-normalizer:retained-error");
+    expect(resumed.items[0]?.retry?.windows[0]?.failures).toHaveLength(1);
+  });
+
+  test("a rejected gate does not time out waiting on repairs and its next dispatch gets a fresh clock", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    for (const row of ledger.items) row.status = "done";
+    const gate = startRow(ledger, "F2");
+    const now = Date.now();
+    noteRetryDispatch(gate, now);
+    recordFailure(ledger, gate, {
+      outcomeKey: "gate-reject",
+      attempt: gate.attempt as string,
+      toolCallId: "gate-reject",
+      sessionId: "session",
+      childAgentId: "Rejector",
+      at: now + 1,
+      failureClass: "unknown",
+      check: "F2",
+      firstError: "specific quality defect",
+      signature: "",
+      evidence: "inspected gate rejection",
+    });
+    const repair = addFixRow(ledger, "F2", {
+      title: "Repair defect",
+      acceptance: "affected QA passes",
+      agent: "task",
+      reason: "gate rejected",
+    });
+    const afterRepairs = now + RETRY_LIMIT_MS + 200;
+    expect(expireRetryWindows(ledger, afterRepairs)).toBe(false);
+    expect(gate.status).toBe("open");
+    expect(() => startRow(ledger, "F2")).toThrow("unfinished");
+    repair.status = "done";
+    startRow(ledger, "F2");
+    expect(retryWindow(gate)?.openedAt).toBeUndefined();
+    noteRetryDispatch(gate, afterRepairs);
+    expect(retryWindow(gate)?.openedAt).toBe(afterRepairs);
+    expect(retryWindow(gate)?.failures).toHaveLength(1);
+    expect(expireRetryWindows(ledger, afterRepairs + RETRY_LIMIT_MS - 1)).toBe(false);
+    expect(expireRetryWindows(ledger, afterRepairs + RETRY_LIMIT_MS)).toBe(true);
+    expect(gate.status).toBe("blocked");
+  });
+
+  test("HEAVY waiting is untimed and expired verification retains implementation proof through a grant", () => {
+    const ledger = createLedger("local://example-plan.md", heavyPlan);
+    const first = ledger.items[0] as LedgerItem;
+    first.status = "done";
+    const row = startRow(ledger, "T2");
+    const now = Date.now();
+    noteRetryDispatch(row, now);
+    const implementation = receiptFor(row, row.attempt as string, "Implementer");
+    recordReceipt(row, implementation, "authenticated implementation evidence");
+    const verificationTime = now + RETRY_LIMIT_MS + 200;
+    expect(expireRetryWindows(ledger, verificationTime)).toBe(false);
+    expect(row.receipt).toBe(implementation);
+    startVerification(ledger, row.id);
+    expect(retryWindow(row)?.openedAt).toBeUndefined();
+    noteRetryDispatch(row, verificationTime);
+    expect(expireRetryWindows(ledger, verificationTime + RETRY_LIMIT_MS - 1)).toBe(false);
+    expect(expireRetryWindows(ledger, verificationTime + RETRY_LIMIT_MS)).toBe(true);
+    expect(row.status).toBe("blocked");
+    expect(row.receipt).toBe(implementation);
+    expect(row.attempt).toBe(implementation.attempt);
+    expect(row.verification).toEqual({});
+    expect(() => startVerification(ledger, row.id)).toThrow("retry stopped");
+    grantRetry(ledger, row, "Owner grants another independent verification", verificationTime + RETRY_LIMIT_MS);
+    expect(row.status).toBe("in_progress");
+    expect(row.receipt).toBe(implementation);
+    startVerification(ledger, row.id);
+    noteRetryDispatch(row, verificationTime + RETRY_LIMIT_MS + 1);
+    recordVerification(ledger, row, {
+      verdict: "pass",
+      receipt: receiptFor(row, row.verification?.attempt as string, "FreshVerifier"),
+      summary: "independently verified",
+      evidence: "real acceptance surface",
+    });
+    expect(row.status).toBe("done");
+    expect(row.receipt).toBe(implementation);
+    expect(row.retry?.windows).toHaveLength(2);
+  });
 });

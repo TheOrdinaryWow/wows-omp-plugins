@@ -521,15 +521,18 @@ export class ChildEvidence {
           void job.promise.then(
             () => {
               assignment.settled = true;
+              assignment.cancelled ||= job.status === "cancelled";
               assignment.finalStatus = job.status === "completed" && assignment.finalStatus !== "failed" ? "completed" : "failed";
               if (assignment.finalStatus === "failed")
-                assignment.nativeError ??= typeof job.error === "string" ? job.error : "Native async task failed during final integration";
+                assignment.nativeError ??=
+                  typeof job.errorText === "string" ? job.errorText : "Native async task failed during final integration";
               const child = this.#children.get(`${sessionId}:${job.agentId}`);
               if (child?.assignment === assignment && !child.reactivation) child.finalStatus = assignment.finalStatus;
               native.onSettled();
             },
             () => {
               assignment.settled = true;
+              assignment.cancelled ||= job.status === "cancelled";
               assignment.finalStatus = "failed";
               assignment.nativeError ??= "Native async task promise rejected";
               const child = this.#children.get(`${sessionId}:${job.agentId}`);
@@ -770,7 +773,7 @@ export class ChildEvidence {
       },
       output:
         captured.observed.finalStatus === "failed"
-          ? `Native final status: failed${captured.observed.assignment.nativeError ? `\n${captured.observed.assignment.nativeError}` : ""}\n\nChild output:\n${captured.content}`
+          ? `${captured.observed.assignment.nativeError ? `${captured.observed.assignment.nativeError}\n` : ""}Native final status: failed\n\nChild output:\n${captured.content}`
           : captured.content,
       nativeStatus: captured.observed.finalStatus as "completed" | "failed",
     };
@@ -821,7 +824,11 @@ export class ChildEvidence {
     const observed = this.#children.get(`${sessionId}:${childAgentId}`);
     if (child?.kind !== "sub" || child.parentId !== parentAgentId)
       throw new Error("Evidence must belong to a real direct child of this session");
-    if (child.status !== "idle" && child.status !== "parked")
+    if (
+      child.status !== "idle" &&
+      child.status !== "parked" &&
+      !(diagnostic && child.status === "aborted" && observed?.finalStatus === "failed")
+    )
       throw new Error(`Evidence child ${childAgentId} is not completed (${child.status})`);
     if (
       !observed ||
@@ -887,7 +894,9 @@ export class ChildEvidence {
     // A lifecycle change during the file read cannot authorize a now-running or replaced generation.
     if (
       registry.get(childAgentId) !== child ||
-      (child.status !== "idle" && child.status !== "parked") ||
+      (child.status !== "idle" &&
+        child.status !== "parked" &&
+        !(diagnostic && child.status === "aborted" && observed.finalStatus === "failed")) ||
       this.#children.get(`${sessionId}:${childAgentId}`) !== observed ||
       (observed.finalStatus !== "completed" && !(diagnostic && observed.finalStatus === "failed"))
     )

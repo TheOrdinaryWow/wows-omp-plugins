@@ -16,6 +16,7 @@ import {
   type ExecutionLedger,
   effectiveAcceptance,
   type FailedOutcome,
+  grantRetry,
   type LedgerItem,
   ledgerRows,
   noteRetryDispatch,
@@ -1449,6 +1450,75 @@ describe("Atlas shared plan storage", () => {
       expect(retryWindow(saved.items[0] as LedgerItem)?.failures).toHaveLength(1);
       expect(JSON.parse(await fs.readFile(path.join(f.plan.directory, "checkpoint.json"), "utf8")).version).toBe(2);
     });
+  });
+
+  test("expired verification keeps an authenticated implementation across disk resume and another verifier grant", async () => {
+    const heavy = content.replace("  - Acceptance: input is verified", "  - Tier: HEAVY\n  - Acceptance: input is verified");
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => {
+        const row = startRow(ledger, "T1");
+        noteRetryDispatch(row);
+      });
+      const implementation = await f.store.transaction(f.plan.id, "session-a", async (ledger, plan) => {
+        const row = ledger.items[0] as LedgerItem;
+        const receipt = await archive(f, row, ledger, plan, "Authenticated implementation retained while waiting");
+        recordReceipt(row, receipt, "implementation passed its own acceptance");
+        const window = retryWindow(row);
+        if (window) window.openedAt = Date.now() - RETRY_LIMIT_MS;
+        return receipt;
+      });
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => {
+        const row = ledger.items[0] as LedgerItem;
+        expect(row.receipt).toEqual(implementation);
+        expect(row.status).toBe("in_progress");
+        expect(retryWindow(row)?.stop).toBeUndefined();
+        startVerification(ledger, row.id);
+        noteRetryDispatch(row);
+        const window = retryWindow(row);
+        if (window) window.openedAt = Date.now() - RETRY_LIMIT_MS;
+      });
+      await expect(f.store.transaction(f.plan.id, "session-a", (ledger) => startVerification(ledger, "T1"))).rejects.toThrow(
+        "retry stopped",
+      );
+      const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      expect(saved.items[0]?.status).toBe("blocked");
+      expect(saved.items[0]?.receipt).toEqual(implementation);
+      expect(saved.items[0]?.verification).toEqual({});
+      await f.store.release(f.plan.id, "session-a");
+      const resumed = new AtlasStore(f.root);
+      await resumed.acquire(f.plan.id, "session-a");
+      await resumed.transaction(
+        f.plan.id,
+        "session-a",
+        (ledger) => {
+          const row = ledger.items[0] as LedgerItem;
+          expect(row.receipt).toEqual(implementation);
+          expect(row.status).toBe("blocked");
+          grantRetry(ledger, row, "Owner confirms a new verification window");
+          expect(row.status).toBe("in_progress");
+          expect(row.receipt).toEqual(implementation);
+          startVerification(ledger, row.id);
+          noteRetryDispatch(row);
+        },
+        { resume: true },
+      );
+      await resumed.transaction(f.plan.id, "session-a", async (ledger, plan) => {
+        const row = ledger.items[0] as LedgerItem;
+        const receipt = await archive({ ...f, store: resumed }, row, ledger, plan, verdict(ledger, row, "PASS"), true);
+        recordVerification(ledger, row, {
+          verdict: "pass",
+          receipt,
+          summary: "fresh independent verifier passed",
+          evidence: "actual acceptance surface",
+        });
+        expect(row.receipt).toEqual(implementation);
+      });
+      const complete = await resumed.transaction(f.plan.id, "session-a", (ledger) => structuredClone(ledger.items[0]));
+      expect(complete?.status).toBe("done");
+      expect(complete?.receipt).toEqual(implementation);
+      expect(complete?.retry?.windows).toHaveLength(2);
+    }, heavy);
   });
 
   test("a HEAVY row keeps verified completion only with both receipts, and a resume keeps its recorded implementation", async () => {

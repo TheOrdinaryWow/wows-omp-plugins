@@ -126,6 +126,7 @@ async function scenario(name: string, root: string): Promise<void> {
     label: string;
     ownerId: string;
     promise: Promise<void>;
+    errorText?: string;
   };
   const nativeJobs: NativeJob[] = [];
   let settleNativeJob: (() => void) | undefined;
@@ -705,7 +706,7 @@ async function scenario(name: string, root: string): Promise<void> {
     childAgentId: string,
     options: {
       parentId?: string;
-      status?: "running" | "idle";
+      status?: "running" | "idle" | "aborted";
       content?: string;
       observe?: boolean;
       createdAt?: number;
@@ -928,6 +929,46 @@ async function scenario(name: string, root: string): Promise<void> {
     ok(await call({ action: "block", id: "T3", evidence: "Waiting for owner credentials" }));
     ok(await call({ action: "retry", id: "T1", evidence: "Owner grants a new hypothesis after expired work settled" }));
     ok(await call({ action: "start", id: "T1" }));
+    return;
+  }
+  if (name === "retry-native-cancellation") {
+    let prepared = await prepare("T1");
+    await publish(prepared, "KilledWorker", { status: "running", nativeStatus: "started", asyncStatus: "running" });
+    const cancelled = nativeJobs.find((job) => job.agentId === "KilledWorker");
+    assert(cancelled && settleNativeJob);
+    cancelled.status = "cancelled";
+    settleNativeJob();
+    await publish(prepared, "KilledWorker", { status: "aborted", nativeStatus: "aborted", finalResult: false });
+    await hook("context", { messages: [] });
+    ok(await call({ action: "block", id: "T1", evidence: "Owner cancelled the native worker before changing direction" }));
+    assert.equal((await row("T1")).retry?.windows[0]?.failures.length, 0);
+    assert.equal((await row("T1")).retry?.windows[0]?.harnessRepair, undefined);
+    ok(await call({ action: "reopen", id: "T1" }));
+    prepared = await prepare("T1");
+    await publish(prepared, "AbortedRegistryFailure", { status: "aborted", nativeStatus: "aborted", asyncStatus: "running" });
+    const failed = nativeJobs.find((job) => job.agentId === "AbortedRegistryFailure");
+    assert(failed);
+    failed.errorText = "Specific native integration error: missing isolated patch artifact";
+    await rm(join(artifacts, "AbortedRegistryFailure.md"));
+    failed.status = "failed";
+    await hook("context", { messages: [] });
+    refused(await done("T1", "AbortedRegistryFailure"));
+    ok(
+      await call({
+        action: "fail",
+        id: "T1",
+        childAgentId: "AbortedRegistryFailure",
+        check: "native isolation integration",
+        evidence: "Inspected the owned async job errorText and aborted registry entry",
+      }),
+    );
+    const failure = (await row("T1")).retry?.windows[0]?.failures[0];
+    assert.equal(failure?.firstError, failed.errorText);
+    assert(failure?.output);
+    assert((await readFile(failure.output.path, "utf8")).includes(failed.errorText));
+    assert.equal((await row("T1")).retry?.windows[0]?.failures.length, 1);
+    await finish("T1");
+    assert.equal((await row("T1")).status, "done");
     return;
   }
   if (name === "delivery-repair" || name === "delivery-pr") {
@@ -2621,6 +2662,7 @@ if (process.env[CHILD_ENV]) {
       "retry-grant-changed",
       "retry-pre-spawn",
       "retry-expiry-live",
+      "retry-native-cancellation",
       "delivery-repair",
       "delivery-pr",
     ]) {

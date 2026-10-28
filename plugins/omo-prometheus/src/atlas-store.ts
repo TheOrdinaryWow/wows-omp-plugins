@@ -27,6 +27,7 @@ import {
   reopenRow,
   resetVerification,
   restoreLedger,
+  retryWindow,
   type Tier,
   type VerificationStatus,
   verificationStatus,
@@ -1132,7 +1133,7 @@ export class AtlasStore {
       for (const row of ledgerRows(ledger)) {
         const saved = checkpoint.attempts[row.id];
         const sameAttempt = saved !== null && saved !== undefined && saved.attempt === row.attempt && saved.startedAt === row.startedAt;
-        if (row.status === "in_progress" && row.receipt) {
+        if (row.receipt && (row.status === "in_progress" || (row.status === "blocked" && retryWindow(row)?.stop))) {
           // A HEAVY row's recorded implementation survives an interruption; only its unfinished verifier is discarded.
           if (row.tier !== "heavy" || !sameAttempt || !(await this.#provenReceipt(plan, ledger, row, saved))) {
             reopenRow(ledger, row.id, INVALID_PROOF);
@@ -1191,7 +1192,11 @@ export class AtlasStore {
       const validated = restoreLedger(ledger, plan.planFilePath, content, plan.planSha256);
       if (validated !== ledger || ledger.ledgerId !== checkpoint.ledgerId) throw new Error("Atlas ledger identity changed in transaction");
       for (const row of ledgerRows(ledger)) {
-        const holdsReceipt = row.status === "done" || (row.status === "in_progress" && row.tier === "heavy" && row.receipt !== undefined);
+        const holdsReceipt =
+          row.status === "done" ||
+          (row.tier === "heavy" &&
+            row.receipt !== undefined &&
+            (row.status === "in_progress" || (row.status === "blocked" && retryWindow(row)?.stop !== undefined)));
         if (!holdsReceipt) {
           if (row.receipt || row.verification?.receipt) throw new Error(`Atlas cannot persist a receipt on unfinished row ${row.id}`);
           continue;

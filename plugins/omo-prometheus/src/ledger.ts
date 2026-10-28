@@ -44,7 +44,7 @@ export interface FailedOutcome {
 }
 
 export interface RetryWindow {
-  /** First accepted native dispatch, not the reservation made by start. */
+  /** Accepted dispatch starting the current product-work phase; gate reruns and verifiers start fresh clocks. */
   openedAt?: number;
   failures: FailedOutcome[];
   harnessRepair?: { failureKey: string; attempt?: string };
@@ -644,7 +644,14 @@ export function assertRetryAvailable(row: LedgerItem, now = Date.now()): void {
   const window = retryWindow(row);
   if (window?.stop)
     throw new Error(`${row.id} retry stopped (${window.stop.reason}); use owner-confirmed atlas_ledger retry, not reopen or a new child`);
-  if (!row.id.startsWith("P") && window?.openedAt !== undefined && now - window.openedAt >= RETRY_LIMIT_MS && row.status !== "done") {
+  if (
+    !row.id.startsWith("P") &&
+    (!row.id.startsWith("F") || row.status === "in_progress") &&
+    (!row.receipt || row.verification?.attempt !== undefined) &&
+    window?.openedAt !== undefined &&
+    now - window.openedAt >= RETRY_LIMIT_MS &&
+    row.status !== "done"
+  ) {
     throw new Error(`${row.id} retry stopped (elapsed four-hour product-work limit); an owner-confirmed retry is required`);
   }
 }
@@ -699,6 +706,8 @@ export function expireRetryWindows(ledger: ExecutionLedger, now = Date.now()): b
     if (
       row.status === "done" ||
       row.id.startsWith("P") ||
+      (row.id.startsWith("F") && row.status !== "in_progress") ||
+      (row.receipt !== undefined && row.verification?.attempt === undefined) ||
       !window ||
       window.stop ||
       window.openedAt === undefined ||
@@ -706,11 +715,14 @@ export function expireRetryWindows(ledger: ExecutionLedger, now = Date.now()): b
     )
       continue;
     window.stop = { reason: "elapsed", at: now };
-    reopenRow(
-      ledger,
-      row.id,
-      "Four-hour product-work window expired at this host event. Cancel any live children and observe native terminal settlement before further work.",
-    );
+    const reason =
+      "Four-hour product-work phase expired at this host event. Cancel any live children and observe native terminal settlement before further work.";
+    if (row.tier === "heavy" && row.receipt) {
+      row.status = "blocked";
+      row.evidence =
+        `${row.evidence ?? ""}\n${reason} Recorded implementation proof is retained; owner-confirmed retry resumes independent verification.`.trim();
+      resetVerification(row);
+    } else reopenRow(ledger, row.id, reason);
     changed = true;
   }
   return changed;
@@ -720,7 +732,12 @@ export function expireRetryWindows(ledger: ExecutionLedger, now = Date.now()): b
 export function grantRetry(ledger: ExecutionLedger, row: LedgerItem, note: string, now = Date.now()): void {
   if (!retryWindow(row)?.stop || !note.trim()) throw new Error(`${row.id} requires an exhausted window and a reason for another retry`);
   row.retry?.windows.push({ failures: [], grant: { confirmedAt: now, note: note.trim() } });
-  reopenRow(ledger, row.id, `Owner confirmed a new retry window: ${note.trim()}`);
+  const reason = `Owner confirmed a new retry window: ${note.trim()}`;
+  if (row.tier === "heavy" && row.receipt) {
+    row.status = "in_progress";
+    row.evidence = `${row.evidence ?? ""}\n${reason}`.trim();
+    resetVerification(row);
+  } else reopenRow(ledger, row.id, reason);
 }
 
 function validRetry(value: LedgerItem["retry"]): boolean {
@@ -752,7 +769,7 @@ function validRetry(value: LedgerItem["retry"]): boolean {
         ].every(nonEmpty) ||
         !Number.isFinite(failure.at) ||
         !["product", "harness", "unknown"].includes(failure.failureClass) ||
-        failure.signature !== failureSignature(failure.check, failure.firstError) ||
+        !nonEmpty(failure.signature) ||
         outcomes.has(failure.outcomeKey) ||
         (failure.verifyAttempt !== undefined && !nonEmpty(failure.verifyAttempt)) ||
         (failure.childAgentId !== undefined && !nonEmpty(failure.childAgentId)) ||
@@ -1233,6 +1250,8 @@ export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: stri
   row.status = "in_progress";
   row.attempt = randomUUID();
   row.startedAt = Date.now();
+  const window = retryWindow(row);
+  if (window && row.id.startsWith("F")) window.openedAt = undefined;
   row.updatedAt = Math.max(row.startedAt, row.updatedAt + 1);
   row.evidence = undefined;
   return row;
@@ -1278,6 +1297,8 @@ export function startVerification(
   }
   const startedAt = Date.now();
   row.verification = { attempt: randomUUID(), startedAt, dispatchAgent };
+  const window = retryWindow(row);
+  if (window) window.openedAt = undefined;
   row.updatedAt = Math.max(startedAt, row.updatedAt + 1);
   return row;
 }
