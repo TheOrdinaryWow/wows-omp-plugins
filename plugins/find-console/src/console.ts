@@ -62,10 +62,13 @@ const STACKED_PREVIEW_MIN_ROWS = 6;
 /** Rows per wheel notch over the preview, as in the host's fullscreen plan review. */
 const WHEEL_ROWS = 3;
 /**
- * Height of the native source scroller, loaded or not: a fixed extent keeps the centered sheet from
- * jumping between hits and keeps its actions on screen; the whole file scrolls inside it.
+ * Height of the native source scroller in text lines, loaded or not: a fixed extent keeps the centered
+ * sheet from jumping between hits and keeps the whole sheet inside the window (so revealing a range
+ * scrolls only the source, never the sheet); the whole file scrolls inside it.
  */
-const NATIVE_SOURCE_ROWS = 14;
+const NATIVE_SOURCE_ROWS = 16;
+/** The same extent as the list's own scroll cap: a Tern list row is two text lines tall. */
+const NATIVE_SCROLLER_LIST_ROWS = NATIVE_SOURCE_ROWS / 2;
 /** Horizontal excerpt budget leaves room for the line-number gutter and a visible ellipsis in the native split pane. */
 const NATIVE_SOURCE_COLUMNS = 64;
 
@@ -73,6 +76,8 @@ const NATIVE_HINTS = hintsRow([
   { keys: ["up", "down"], label: "hit" },
   { keys: ["left", "right"], label: "range" },
   { keys: ["pageUp", "pageDown"], label: "scroll preview" },
+  { keys: ["r"], label: "search within results" },
+  { keys: ["h"], label: "recent searches" },
   { keys: ["escape"], label: "close" },
 ]);
 
@@ -682,7 +687,7 @@ export class FindConsole implements Component {
   #scroller(key: string, children: readonly NativeChild[]): NativeNode {
     return node(
       "list",
-      { max: { lines: NATIVE_SOURCE_ROWS }, min: { h: `${NATIVE_SOURCE_ROWS}lines` }, role: "omp.find-console.source" },
+      { max: { lines: NATIVE_SCROLLER_LIST_ROWS }, min: { h: `${NATIVE_SOURCE_ROWS}lines` }, role: "omp.find-console.source" },
       children,
       key,
     );
