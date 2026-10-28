@@ -17,7 +17,7 @@ Lets OMP's `judge` model role classify how `task` calls spawn subagents. By defa
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-Requires OMP 18.10.4 or newer. Automatic routing needs a native judgment model behind the `judge` role (see [Quick start](#quick-start)); pinning one task's model does not. Restart the session after installing.
+Requires OMP 18.12.0 or newer. Automatic routing needs a native judgment model behind the `judge` role (see [Quick start](#quick-start)); pinning one task's model does not. Restart the session after installing.
 
 ## Quick start
 

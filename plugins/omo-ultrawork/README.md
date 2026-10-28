@@ -15,7 +15,7 @@ A port of the ultrawork workflow from [oh-my-openagent](https://github.com/code-
 omp plugin install omo-ultrawork@wows-omp-plugins
 ```
 
-Requires OMP 18.10.4 or newer. The research helpers need Node 20+ or Bun on `PATH`. Browsers, document converters, fonts, and chart tools are optional and used only when a task needs them. Restart after the first install.
+Requires OMP 18.12.0 or newer. The research helpers need Node 20+ or Bun on `PATH`. Browsers, document converters, fonts, and chart tools are optional and used only when a task needs them. Restart after the first install.
 
 ## Quick start
 

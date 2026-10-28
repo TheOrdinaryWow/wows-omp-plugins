@@ -15,7 +15,7 @@ Category agents, a read-only research agent, workflow skills, optional runtime h
 omp plugin install omo-toolkit@wows-omp-plugins
 ```
 
-Requires OMP 18.10.4 or newer. Restart the session after installing.
+Requires OMP 18.12.0 or newer. Restart the session after installing.
 
 ## Quick start
 

@@ -22,7 +22,7 @@ The plugin builds on OMP's Plan Mode and approval flow. It adds:
 omp plugin install omo-prometheus@wows-omp-plugins
 ```
 
-Requires OMP 18.10.4 or newer. Planning also needs Plan Mode enabled (`plan.enabled`, on by default). Restart OMP after installing.
+Requires OMP 18.12.0 or newer. Planning also needs Plan Mode enabled (`plan.enabled`, on by default). Restart OMP after installing.
 
 If you used the older `prometheus` plugin, uninstall it first with `omp plugin uninstall prometheus@wows-omp-plugins`. Its session state does not carry over, so start a new plan.
 
