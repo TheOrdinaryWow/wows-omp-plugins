@@ -15,7 +15,7 @@
 omp plugin install find-console@wows-omp-plugins
 ```
 
-需要 OMP 18.12.0 或更高版本，并配置原生 judge，例如 TypeSafe jev。安装后启动新会话。插件没有运行时依赖，也不单独保存设置或凭据。
+需要 OMP 18.12.0 或更高版本，并配置原生 judge，例如 TypeSafe jev。安装后启动新会话。插件没有运行时依赖，也不单独保存凭据。
 
 ## 快速开始
 
@@ -47,7 +47,7 @@ omp plugin install find-console@wows-omp-plugins
 
 ### 结果控制台
 
-终端会打开全屏覆盖层，左侧按相关性排列结果，右侧显示源码上下文。每条结果包含与宿主一致的六格分数条、分数、最相关的已判定范围和文件覆盖情况。分数颜色沿用内置 find 工具的强匹配、可能匹配和弱匹配档位。分数是 judge 的概率判断，不保证结果一定正确。
+终端默认打开全屏控制台，左侧按相关性排列结果，右侧显示源码上下文。设置 `uiMenu: half-screen` 后，改用底部半屏覆盖层，上方保留可见的对话区域。两种布局均支持选择结果、预览源码和执行结果操作。分数颜色沿用内置 find 工具的强匹配、可能匹配和弱匹配档位。分数是 judge 的概率判断，不保证结果一定正确。
 
 | 按键 | 操作 |
 | --- | --- |
@@ -70,6 +70,20 @@ omp plugin install find-console@wows-omp-plugins
 - **没有结果**时显示通知，不打开空控制台。如果覆盖不完整，通知仍会说明未判定文件可能包含匹配。
 
 ## 设置
+
+### 终端布局
+
+```bash
+omp plugin config set wows-omp-plugin-find-console uiMenu half-screen
+```
+
+| 设置 | 可选值 | 默认值 | 效果 |
+| --- | --- | --- | --- |
+| `uiMenu` | `fullscreen` \| `half-screen` | `fullscreen` | 终端结果使用全屏控制台或底部半屏覆盖层。 |
+
+每次打开结果控制台时都会重新读取布局设置，无需重启会话。设置仅影响终端 TUI；Tern 保持大型原生玻璃面板，RPC/ACP 保持选择器和编辑器流程。将 `uiMenu` 设为 `fullscreen` 即可恢复全屏。
+
+### 搜索启用条件
 
 命令每次调用都会从当前会话的项目级设置读取宿主的 `find.enabled`。例如，可在项目的 `.omp/config.yml` 中配置：
 

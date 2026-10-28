@@ -15,7 +15,7 @@ Run `/find` yourself to search by behavior, browse calibrated judge scores and p
 omp plugin install find-console@wows-omp-plugins
 ```
 
-Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe jev. Start a new session after installing. The plugin has no runtime dependencies and no settings or credentials of its own.
+Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe jev. Start a new session after installing. The plugin has no runtime dependencies or credentials of its own.
 
 ## Quick start
 
@@ -47,7 +47,7 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 
 ### Results console
 
-The terminal opens a fullscreen overlay with ranked hits on the left and source context on the right. Each hit carries the host's six-cell score gauge, a score, its best judged range and file coverage. Scores use the same strong/plausible/muted bands as the built-in find tool. They are judge probabilities, not a guarantee that the hit is correct.
+The terminal opens a fullscreen console by default, with ranked hits on the left and source context on the right. Set `uiMenu: half-screen` for a compact, bottom-anchored overlay that keeps the conversation visible above it. Both layouts support selection, source preview and the same result actions. Scores use the same strong/plausible/muted bands as the built-in find tool. They are judge probabilities, not a guarantee that the hit is correct.
 
 | Key | Action |
 | --- | --- |
@@ -70,6 +70,20 @@ In [Tern](https://docs.stencil.so/tern/), the same console opens as a large nati
 - **No hits** produces a notice rather than an empty console. With partial coverage, the notice still warns that unjudged files may match.
 
 ## Settings
+
+### Terminal layout
+
+```bash
+omp plugin config set wows-omp-plugin-find-console uiMenu half-screen
+```
+
+| Setting | Values | Default | Effect |
+| --- | --- | --- | --- |
+| `uiMenu` | `fullscreen` \| `half-screen` | `fullscreen` | Choose a fullscreen console or a bottom-anchored half-screen overlay for terminal results. |
+
+The layout setting is read each time the results console opens; no session restart is needed. It applies only to the terminal TUI. Tern keeps its large native glass sheet, and RPC/ACP keep the selector/editor flow. To restore fullscreen, set `uiMenu` to `fullscreen`.
+
+### Search enablement
 
 The command reads the host's `find.enabled` setting on every call from the current session's project-scoped settings. For example, a project's `.omp/config.yml` can contain:
 

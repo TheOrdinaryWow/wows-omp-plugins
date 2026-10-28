@@ -4,6 +4,7 @@ import type { FindHit, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 
 import { parseFindArgs } from "../plugins/find-console/src/args.ts";
 import { disabledReason, hitMessage, previewWindow, rankedDigest, reference, selectedRange } from "../plugins/find-console/src/results.ts";
+import { parseUiMenu } from "../plugins/find-console/src/settings.ts";
 
 const hit: FindHit = {
   rel: "plugins/example/src/index.ts",
@@ -97,6 +98,16 @@ describe("find enablement", () => {
     expect(disabledReason("auto", true)).toBeUndefined();
     expect(disabledReason("on", false)).toBeUndefined();
     expect(disabledReason("on", true)).toBeUndefined();
+  });
+});
+
+describe("terminal layout setting", () => {
+  test("explicit fullscreen and half-screen choices survive parsing while unsupported layouts are rejected", () => {
+    expect(parseUiMenu("fullscreen")).toBe("fullscreen");
+    expect(parseUiMenu("half-screen")).toBe("half-screen");
+    for (const value of ["inline", "half", "", null, true, 50, { mode: "half-screen" }]) {
+      expect(() => parseUiMenu(value)).toThrow("invalid uiMenu");
+    }
   });
 });
 

@@ -11,6 +11,17 @@
   "omp": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "settings": {
+      "uiMenu": {
+        "type": "enum",
+        "values": [
+          "fullscreen",
+          "half-screen"
+        ],
+        "default": "fullscreen",
+        "description": "How /find shows terminal results: a fullscreen console or a bottom-anchored half-screen overlay"
+      }
+    }
   }
 }
