@@ -22,7 +22,6 @@
     },
     "plugins/find-console": {
       "component": "find-console",
-      "release-as": "0.1.0",
       "extra-files": [
         { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
         { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='find-console')].version" }
