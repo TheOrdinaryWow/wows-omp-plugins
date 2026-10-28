@@ -29,7 +29,7 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 ### Query, scope and keywords
 
 ```text
-/find [--path PATH] [-k KEYWORD]... [--no-cache] [--no-translate] <query>
+/find [--path PATH] [-k KEYWORD]... [--glob PATTERN]... [--ext EXT]... [--min-score 0.2..1] [--limit N] [--no-cache] [--no-translate] <query>
 /find --help
 /find --cancel
 ```
@@ -48,6 +48,8 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 Use `--no-cache` to bypass both reads and writes in the host judgment cache. Reports count cached answers independently of cost: `all cached`, `partly cached`, `fresh`, `cache off`, or `cache unavailable`. Exactly zero costs display as `$0`; tiny non-zero costs display as `<$0.0001` rather than rounding to zero.
 
 Queries containing non-Latin letters are translated to English before the lexical scan, using the configured `tiny` role first and `smol` if tiny is unavailable or fails. Results keep the original query and show `searched as: …`. If neither model works, search continues untranslated with the reason shown. Use `--no-translate` to disable translation for one search.
+
+File filters run before lexical scanning and filename judgments. Repeat `--glob` for alternative patterns and `--ext` for alternative suffixes; glob and extension filters intersect. A glob containing `/` matches a search-root-relative path; otherwise it matches the basename at any depth. Extensions ignore case and accept an optional leading dot. `--min-score` filters both hits and refined ranges and must be at least the cascade threshold (0.2); `--limit` is a positive hit-count cap applied after score filtering. For example: `/find --glob 'plugins/**/*.ts' --ext ts --min-score 0.7 --limit 5 where settings are read`.
 
 ### Results console
 

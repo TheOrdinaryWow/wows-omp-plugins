@@ -11,6 +11,7 @@ import { cfgFindEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { argumentCompletions, parseFindArgs, USAGE } from "#src/args.ts";
 import { accountCache } from "#src/cache.ts";
 import { showResults } from "#src/dialogs.ts";
+import { emptyCascade, fileMatcher, filteredFilesystem, filterHits } from "#src/filters.ts";
 import { commandNotice } from "#src/notices.ts";
 import { PreviewReader } from "#src/preview.ts";
 import { searchWithProgress } from "#src/progress.ts";
@@ -130,23 +131,28 @@ export default function findConsole(pi: ExtensionAPI): void {
           else if (translated.translation && "skipped" in translated.translation)
             onProgress(`Translation skipped: ${translated.translation.skipped}`);
           const root = await resolveSearchRoot(filesystem, args.path, ctx.cwd);
-          const raw = await runCascade({
-            root,
-            filesystem,
-            query: translated.query,
-            extraKeywords: args.keywords,
-            judge,
-            includeHidden: false,
-            signal,
-            onProgress,
-          });
+          const excluded = root.type === "file" && !fileMatcher(args)(root.path.split("/").at(-1) ?? root.path);
+          const raw = excluded
+            ? emptyCascade()
+            : await runCascade({
+                root,
+                filesystem: filteredFilesystem(filesystem, root, args),
+                query: translated.query,
+                extraKeywords: args.keywords,
+                judge,
+                includeHidden: false,
+                signal,
+                onProgress,
+              });
           const hits = await refineHits({
-            hits: raw.hits.map((hit) => ({
-              ...hit,
-              rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), ctx.cwd),
-            })),
+            hits: raw.hits
+              .filter((hit) => hit.contentScore >= args.minScore)
+              .map((hit) => ({
+                ...hit,
+                rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), ctx.cwd),
+              })),
             query: translated.query,
-            threshold: raw.threshold,
+            threshold: Math.max(raw.threshold, args.minScore),
             reader,
             judge,
             stats: raw.stats,
@@ -156,13 +162,14 @@ export default function findConsole(pi: ExtensionAPI): void {
           raw.stats.cost += translated.cost;
           const report: ConsoleReport = {
             ...raw,
+            threshold: Math.max(raw.threshold, args.minScore),
             query: translated.query,
             originalQuery: translated.originalQuery,
             translation: translated.translation,
             elapsedMs: performance.now() - started,
             cwd: ctx.cwd,
             scopePath: formatPathRelativeToCwd(root.path, ctx.cwd),
-            hits,
+            hits: filterHits(hits, args),
             coverage: raw.coverage === "complete" && hits.some((hit) => hit.refineFailed) ? "partial" : raw.coverage,
             cache: accounting.state,
             previewMode: pluginSettings.previewMode,

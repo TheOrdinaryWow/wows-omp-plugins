@@ -29,7 +29,7 @@ omp plugin install find-console@wows-omp-plugins
 ### 查询、搜索范围和关键词
 
 ```text
-/find [--path PATH] [-k KEYWORD]... [--no-cache] [--no-translate] <query>
+/find [--path PATH] [-k KEYWORD]... [--glob PATTERN]... [--ext EXT]... [--min-score 0.2..1] [--limit N] [--no-cache] [--no-translate] <query>
 /find --help
 /find --cancel
 ```
@@ -48,6 +48,8 @@ omp plugin install find-console@wows-omp-plugins
 使用 `--no-cache` 完全跳过宿主判定缓存的读取和写入。报告独立于费用统计缓存回答数，显示 `all cached`、`partly cached`、`fresh`、`cache off` 或 `cache unavailable`。费用恰好为零时显示 `$0`；微小但非零的费用显示 `<$0.0001`，不会舍入成零。
 
 包含非拉丁字母的查询会在词法扫描前翻译成英文，优先使用已配置的 `tiny` 角色；tiny 不可用或失败时使用 `smol`。结果保留原始查询，并显示 `searched as: …`。两个模型均不可用时，继续搜索原文并说明原因。使用 `--no-translate` 可仅对当前搜索禁用翻译。
+
+文件过滤在词法扫描和文件名判定前生效。重复 `--glob` 或 `--ext` 表示多个可选模式；glob 与扩展名条件取交集。包含 `/` 的 glob 匹配相对搜索根目录的路径，否则匹配任意深度的文件名。扩展名不区分大小写，可带前导点。`--min-score` 同时过滤结果和细化范围，不能低于级联阈值 0.2；`--limit` 是正整数，在分数过滤后限制结果数量。例如：`/find --glob 'plugins/**/*.ts' --ext ts --min-score 0.7 --limit 5 where settings are read`。
 
 ### 结果控制台
 

@@ -6,6 +6,7 @@ import type { FindHit } from "@oh-my-pi/pi-tui/tools/find";
 import { parseFindArgs } from "../plugins/find-console/src/args.ts";
 import { FindConsole } from "../plugins/find-console/src/console.ts";
 import { FindProgressController, FindResultsController } from "../plugins/find-console/src/controller.ts";
+import { fileMatcher, filterHits } from "../plugins/find-console/src/filters.ts";
 import type { PreviewReader } from "../plugins/find-console/src/preview.ts";
 import { FindProgress } from "../plugins/find-console/src/progress-view.ts";
 import { decideHitScope } from "../plugins/find-console/src/refinement.ts";
@@ -140,6 +141,9 @@ describe("find arguments", () => {
       cancel: false,
       noCache: false,
       noTranslate: false,
+      globs: [],
+      extensions: [],
+      minScore: 0.2,
     });
   });
 
@@ -169,6 +173,53 @@ describe("find arguments", () => {
     ]) {
       expect(() => parseFindArgs(input)).toThrow();
     }
+  });
+
+  test("repeatable file filters and numeric result limits parse without consuming the query", () => {
+    const args = parseFindArgs(
+      'version bump --glob "plugins/**/*.ts" --glob "*.json" --ext .TS --ext json --min-score 0.6 --limit 3 --no-cache --no-translate',
+    );
+    expect(args).toMatchObject({
+      query: "version bump",
+      globs: ["plugins/**/*.ts", "*.json"],
+      extensions: ["ts", "json"],
+      minScore: 0.6,
+      limit: 3,
+      noCache: true,
+      noTranslate: true,
+    });
+    for (const input of [
+      "--glob",
+      "--ext",
+      "--ext '*' query",
+      "--min-score 0.1 query",
+      "--min-score 1.1 query",
+      "--min-score NaN query",
+      "--limit 0 query",
+      "--limit 1.5 query",
+    ])
+      expect(() => parseFindArgs(input)).toThrow();
+  });
+});
+
+describe("result filters", () => {
+  test("file filters intersect extension and glob alternatives before judging", () => {
+    const matches = fileMatcher({ globs: ["plugins/**/*.ts", "*.json"], extensions: ["ts"] });
+    expect(matches("plugins/example/src/index.ts")).toBe(true);
+    expect(matches("src/index.ts")).toBe(false);
+    expect(matches("package.json")).toBe(false);
+  });
+
+  test("min-score removes weak hits and ranges before the hit limit", () => {
+    const hits: ConsoleHit[] = [
+      { ...hit, contentScore: 0.4, scope: "ranges", refined: hit.ranges },
+      { ...hit, rel: "precise.ts", scope: "ranges", refined: hit.ranges },
+      { ...hit, rel: "whole.ts", scope: "whole-file", refined: [] },
+    ];
+    const result = filterHits(hits, { minScore: 0.8, limit: 1 });
+    expect(result.map((hit) => hit.rel)).toEqual(["precise.ts"]);
+    expect(result[0]?.refined.map((range) => range.p)).toEqual([0.92, 0.92]);
+    expect(filterHits(hits, { minScore: 0.8 }).map((hit) => hit.rel)).toEqual(["precise.ts", "whole.ts"]);
   });
 });
 

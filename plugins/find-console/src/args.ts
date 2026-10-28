@@ -1,4 +1,6 @@
-export interface FindArgs {
+import type { FindFilters } from "#src/filters.ts";
+
+export interface FindArgs extends FindFilters {
   query: string;
   path: string;
   keywords: string[];
@@ -9,7 +11,7 @@ export interface FindArgs {
 }
 
 export const USAGE =
-  "Usage: /find [--path PATH] [-k KEYWORD]... [--no-cache] [--no-translate] <query>\nQuote paths and keywords containing spaces. Use -- before query text beginning with a dash. /find prompts for a query; /find --cancel cancels a running search.";
+  "Usage: /find [--path PATH] [-k KEYWORD]... [--glob PATTERN]... [--ext EXT]... [--min-score 0.2..1] [--limit N] [--no-cache] [--no-translate] <query>\nQuote paths, globs and keywords containing spaces. Use -- before query text beginning with a dash. /find prompts for a query; /find --cancel cancels a running search.";
 
 export function splitArguments(input: string): string[] {
   const words: string[] = [];
@@ -43,7 +45,18 @@ export function splitArguments(input: string): string[] {
 
 export function parseFindArgs(input: string): FindArgs {
   const args = splitArguments(input);
-  const result: FindArgs = { query: "", path: ".", keywords: [], help: false, cancel: false, noCache: false, noTranslate: false };
+  const result: FindArgs = {
+    query: "",
+    path: ".",
+    keywords: [],
+    help: false,
+    cancel: false,
+    noCache: false,
+    noTranslate: false,
+    globs: [],
+    extensions: [],
+    minScore: 0.2,
+  };
   const query: string[] = [];
   let options = true;
   let scoped = false;
@@ -59,20 +72,46 @@ export function parseFindArgs(input: string): FindArgs {
       result.noCache = true;
     } else if (options && arg === "--no-translate") {
       result.noTranslate = true;
-    } else if (options && (arg === "--path" || arg === "-p" || arg === "-k" || arg === "--keyword")) {
+    } else if (options && ["--path", "-p", "-k", "--keyword", "--glob", "--ext", "--min-score", "--limit"].includes(arg)) {
       const value = args[++i];
       if (!value?.trim() || value.startsWith("-")) throw new Error(`${arg} requires a value. ${USAGE}`);
       if (arg === "--path" || arg === "-p") {
         if (scoped) throw new Error("Use --path only once.");
         result.path = value;
         scoped = true;
+      } else if (arg === "--glob") {
+        result.globs.push(value);
+      } else if (arg === "--ext") {
+        const ext = value.replace(/^\./, "").toLowerCase();
+        if (!/^[a-z0-9][a-z0-9._-]*$/i.test(ext)) throw new Error("--ext requires a file extension, such as ts or .test.ts.");
+        result.extensions.push(ext);
+      } else if (arg === "--min-score") {
+        const score = Number(value);
+        if (!Number.isFinite(score) || score < 0.2 || score > 1)
+          throw new Error("--min-score must be at least the cascade threshold (0.2) and at most 1.");
+        result.minScore = score;
+      } else if (arg === "--limit") {
+        const limit = Number(value);
+        if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("--limit requires a positive integer.");
+        result.limit = limit;
       } else result.keywords.push(value);
     } else if (options && arg.startsWith("-")) {
       throw new Error(`Unknown option ${arg}. ${USAGE}`);
     } else query.push(arg);
   }
   result.query = query.join(" ").trim();
-  if (result.cancel && (result.query || scoped || result.keywords.length || result.noCache || result.noTranslate))
+  if (
+    result.cancel &&
+    (result.query ||
+      scoped ||
+      result.keywords.length ||
+      result.noCache ||
+      result.noTranslate ||
+      result.globs.length ||
+      result.extensions.length ||
+      result.minScore !== 0.2 ||
+      result.limit !== undefined)
+  )
     throw new Error("Use /find --cancel on its own.");
   return result;
 }
@@ -82,6 +121,10 @@ const OPTIONS = [
   ["-k", "Add one lexical keyword; repeat to add more"],
   ["--no-cache", "Bypass judgment cache reads and writes"],
   ["--no-translate", "Search the original query without automatic English translation"],
+  ["--glob", "Restrict files by glob; repeat for alternatives"],
+  ["--ext", "Restrict file extensions; repeat for alternatives"],
+  ["--min-score", "Minimum probability from 0.2 to 1, for hits and refined ranges"],
+  ["--limit", "Return at most this many hits"],
   ["--help", "Show command syntax"],
   ["--cancel", "Cancel the current search"],
 ] as const;
