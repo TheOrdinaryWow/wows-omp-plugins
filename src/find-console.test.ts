@@ -17,12 +17,14 @@ import { decideHitScope } from "../plugins/find-console/src/refinement.ts";
 import type { ConsoleHit, ConsoleReport } from "../plugins/find-console/src/report.ts";
 import {
   cacheLabel,
+  coverageWarning,
   disabledReason,
   formatCost,
   hitMessage,
   previewWindow,
   rankedDigest,
   reference,
+  runStats,
   selectedRange,
 } from "../plugins/find-console/src/results.ts";
 import { parseUiMenu } from "../plugins/find-console/src/settings.ts";
@@ -408,6 +410,29 @@ describe("headless ranked digest", () => {
     expect(text).toContain("$0.0123");
     expect(text).toContain("1 unanswered");
     expect(text).toContain("verification: unavailable");
+  });
+
+  test("numeric labels use singular nouns only for a single item", () => {
+    const single = report({
+      coverage: "partial",
+      within: { query: "previous search", files: 1 },
+      hits: [{ ...hit, scope: "whole-file", refined: [], linesSeen: 1 }],
+    });
+    Object.assign(single.stats, { listed: 1, judged: 1, filesRead: 1, requests: 1, failed: 1 });
+    const multiple = report({ hits: [...single.hits, ...single.hits] });
+    expect({
+      single: runStats(single),
+      multiple: runStats(multiple),
+      coverage: coverageWarning(single),
+      digest: rankedDigest(single),
+      message: hitMessage(single, single.hits),
+    }).toEqual({
+      single: expect.stringMatching(/^1 hit · .* · 1\/1 name judged · 1 file read · 1 request/),
+      multiple: expect.stringMatching(/^2 hits · .* · 128\/200 names judged · 20 files read · 12 requests/),
+      coverage: expect.stringContaining("1 of 1 judge request failed"),
+      digest: expect.stringContaining("1 line judged"),
+      message: expect.stringContaining("within 1 file of: previous search"),
+    });
   });
 
   test("translated and restricted reports preserve the original question in the digest and selected-hit message", () => {

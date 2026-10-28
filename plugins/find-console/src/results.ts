@@ -34,11 +34,11 @@ export function scoreGauge(score: number): string {
 
 export function coverageWarning(report: FindToolDetails | ConsoleReport): string | undefined {
   if (report.coverage === "unavailable")
-    return `Find unavailable: nothing was judged (${report.stats.failed} of ${report.stats.requests} judge requests failed). This is not evidence of absence; try grep.`;
+    return `Find unavailable: nothing was judged (${report.stats.failed} of ${countLabel(report.stats.requests, "judge request")} failed). This is not evidence of absence; try grep.`;
   if (report.coverage === "partial" && !report.stats.failed && "cache" in report && report.hits.some((hit) => hit.refineFailed))
     return "Partial refinement: some passages retain verified window ranges. See the reported refinement failures; this is not negative evidence.";
   if (report.coverage === "partial")
-    return `Partial coverage: ${report.stats.failed} of ${report.stats.requests} judge requests failed; unjudged files may still match.`;
+    return `Partial coverage: ${report.stats.failed} of ${countLabel(report.stats.requests, "judge request")} failed; unjudged files may still match.`;
   return undefined;
 }
 
@@ -54,6 +54,9 @@ export function cacheLabel(cache: CacheState): string {
   if (!cache.cached) return "fresh";
   return `${cache.cached === cache.total ? "all cached" : "partly cached"} · answers ${cache.cached}/${cache.total}`;
 }
+export function countLabel(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
 
 export function reportStats(report: FindToolDetails | ConsoleReport): string {
   return `${runStats(report)} · ${formatCost(report.stats.cost)}${"cache" in report ? ` · ${cacheLabel(report.cache)}` : ""}`;
@@ -61,7 +64,7 @@ export function reportStats(report: FindToolDetails | ConsoleReport): string {
 
 export function runStats(report: FindToolDetails): string {
   const { stats } = report;
-  return `${report.hits.length} hits · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
+  return `${countLabel(report.hits.length, "hit")} · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${countLabel(stats.listed, "name")} judged · ${countLabel(stats.filesRead, "file")} read · ${countLabel(stats.requests, "request")}${stats.unanswered ? ` · ${countLabel(stats.unanswered, "unanswered question")}` : ""}`;
 }
 
 export function rankedDigest(report: FindToolDetails | ConsoleReport): string {
@@ -69,7 +72,7 @@ export function rankedDigest(report: FindToolDetails | ConsoleReport): string {
   const heading = `Find: ${JSON.stringify(original ?? report.query)} in ${report.scopePath ?? "."} · threshold ${report.threshold.toFixed(2)}`;
   const warning = coverageWarning(report);
   const body = report.hits.flatMap((hit, index) => [
-    `${index + 1}. ${scoreGauge(hit.contentScore)} ${hit.contentScore.toFixed(2)} ${hit.rel}${"scope" in hit && hit.scope === "whole-file" ? " · whole-file" : ""} · ${hit.linesSeen} lines judged${hit.truncated ? ", partial file" : ""}`,
+    `${index + 1}. ${scoreGauge(hit.contentScore)} ${hit.contentScore.toFixed(2)} ${hit.rel}${"scope" in hit && hit.scope === "whole-file" ? " · whole-file" : ""} · ${countLabel(hit.linesSeen, "line")} judged${hit.truncated ? ", partial file" : ""}`,
     ...bestRanges(hit)
       .slice(0, 3)
       .map((range) => `   ${hit.rel}:${range.start}-${range.end} · ${range.p.toFixed(2)} · ${range.snippet.trim()}`),
@@ -80,7 +83,7 @@ export function rankedDigest(report: FindToolDetails | ConsoleReport): string {
     "translation" in report && report.translation && "skipped" in report.translation
       ? `Translation skipped: ${report.translation.skipped}`
       : undefined,
-    "within" in report && report.within ? `within ${report.within.files} files of: ${report.within.query}` : undefined,
+    "within" in report && report.within ? `within ${countLabel(report.within.files, "file")} of: ${report.within.query}` : undefined,
     warning,
     ...body,
     !report.hits.length && report.coverage !== "unavailable" ? "No hits." : undefined,
@@ -110,7 +113,7 @@ export function hitMessage(
   return [
     `Find results selected for ${JSON.stringify("originalQuery" in report ? (report.originalQuery ?? report.query) : report.query)}:`,
     "originalQuery" in report && report.originalQuery ? `searched as: ${report.query}` : undefined,
-    "within" in report && report.within ? `within ${report.within.files} files of: ${report.within.query}` : undefined,
+    "within" in report && report.within ? `within ${countLabel(report.within.files, "file")} of: ${report.within.query}` : undefined,
     ...hits.flatMap((hit) => [
       `\n${reference(hit, current?.hit === hit ? current.range : 0)} (score ${hit.contentScore.toFixed(2)})`,
       ...bestRanges(hit)

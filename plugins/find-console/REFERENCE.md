@@ -18,6 +18,8 @@ The plugin wraps only the cache reference passed into this search. Each native c
 
 Cost is independent of cache state: exactly zero is `$0`, positive values below 0.0001 are `<$0.0001`, and larger values use four significant digits without trailing zero padding.
 
+Numeric report, dialog and progress labels use singular nouns for exactly one item (`1 hit`, `1 file`, `1 request`) and plural nouns otherwise.
+
 ## Query translation
 
 Detection requires at least one Unicode letter whose script is not Latin. Chinese, Japanese, Cyrillic and Arabic therefore trigger translation; accented Latin letters, numbers and punctuation alone do not. This is script detection, not a general language classifier: non-English Latin-script queries are unchanged.

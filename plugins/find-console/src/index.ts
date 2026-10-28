@@ -18,7 +18,7 @@ import { PreviewReader } from "#src/preview.ts";
 import { searchWithProgress } from "#src/progress.ts";
 import { refineHits } from "#src/refinement.ts";
 import type { ConsoleReport } from "#src/report.ts";
-import { disabledReason, rankedDigest } from "#src/results.ts";
+import { countLabel, disabledReason, rankedDigest } from "#src/results.ts";
 import { readSearchSettings } from "#src/settings.ts";
 import { translateQuery } from "#src/translation.ts";
 
@@ -240,7 +240,7 @@ export default function findConsole(pi: ExtensionAPI): void {
           const action = await showResults(pi, ctx, report, reader);
           if (action === "refine") {
             const query = (
-              await ctx.ui.input(`Search within these ${report.hits.length} result files`, "Ask a more specific question")
+              await ctx.ui.input(`Search within ${countLabel(report.hits.length, "result file")}`, "Ask a more specific question")
             )?.trim();
             if (!query) return;
             within = { query: args.query, files: report.hits.map((hit) => resolveSearchResultPath(ctx.cwd, hit.rel)) };

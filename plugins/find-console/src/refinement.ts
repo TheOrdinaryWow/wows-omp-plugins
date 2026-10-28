@@ -3,6 +3,7 @@ import type { FindHit, FindRange, FindStats } from "@oh-my-pi/pi-tui/tools/find"
 
 import type { PreviewReader } from "#src/preview.ts";
 import type { ConsoleHit, HitScope } from "#src/report.ts";
+import { countLabel } from "#src/results.ts";
 
 const MAX_REQUESTS = 20;
 const MAX_SEGMENTS = 256;
@@ -135,7 +136,7 @@ export async function refineHits(options: {
       };
       const started = performance.now();
       stats.requests++;
-      onProgress(`refining ${index + 1}/${hits.length} hits`);
+      onProgress(`refining ${index + 1}/${countLabel(hits.length, "hit")}`);
       try {
         const judged = await judge.judge(request, { signal });
         stats.inputTokens += judged.usage.input;
@@ -145,7 +146,7 @@ export async function refineHits(options: {
         const missing = Object.keys(questions).filter((key) => probability(judged.answers[key]?.noul) === undefined);
         if (missing.length) {
           stats.unanswered += missing.length;
-          fail(`${missing.length} unanswered questions; using verified windows`);
+          fail(`${countLabel(missing.length, "unanswered question")}; using verified windows`);
           return result;
         }
         result.scope = decideHitScope(wholeScore, completeFile);

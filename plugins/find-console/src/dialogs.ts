@@ -7,7 +7,7 @@ import { type ConsoleAction, FindResultsController } from "#src/controller.ts";
 import { type HistoryEntry, historyCommand } from "#src/history.ts";
 import type { PreviewReader } from "#src/preview.ts";
 import type { ConsoleReport } from "#src/report.ts";
-import { bestRanges, reference } from "#src/results.ts";
+import { bestRanges, countLabel, reference } from "#src/results.ts";
 import { mountResultsConsole } from "#src/ui.ts";
 
 async function previewDialog(ctx: ExtensionContext, controller: FindResultsController): Promise<void> {
@@ -47,7 +47,9 @@ export async function resultDialogAction(
     controller.report.translation && "skipped" in controller.report.translation
       ? `Translation skipped: ${controller.report.translation.skipped}`
       : undefined,
-    controller.report.within ? `within ${controller.report.within.files} files of: ${controller.report.within.query}` : undefined,
+    controller.report.within
+      ? `within ${countLabel(controller.report.within.files, "file")} of: ${controller.report.within.query}`
+      : undefined,
     controller.stats,
     controller.warning,
   ]
@@ -59,7 +61,7 @@ export async function resultDialogAction(
       ...labels,
       {
         label: "Search within results",
-        description: `Ask a new question in only these ${controller.hits.length} files; keep the current flags.`,
+        description: `Ask a new question in only ${countLabel(controller.hits.length, "file")}; keep the current flags.`,
       },
       { label: "Recent searches", description: "Rerun a saved query with its original flags." },
     ],
@@ -88,13 +90,13 @@ export async function resultDialogAction(
       },
       { label: "Send selected hit to agent", description: "Sends a user message; queues a follow-up while streaming." },
       ...(controller.state.marked.length
-        ? [{ label: "Send marked hits to agent", description: `${controller.state.marked.length} hits` }]
+        ? [{ label: "Send marked hits to agent", description: countLabel(controller.state.marked.length, "hit") }]
         : []),
       {
         label: "Open externally",
         description: controller.actionReason("open") ?? "$VISUAL / $EDITOR at the selected line, or the OS opener.",
       },
-      { label: "Search within results", description: `Ask a new question in only these ${controller.hits.length} files.` },
+      { label: "Search within results", description: `Ask a new question in only ${countLabel(controller.hits.length, "file")}.` },
       { label: "Recent searches", description: "Rerun a saved query with its original flags." },
       { label: "Back to results" },
       { label: "Close" },
@@ -180,7 +182,7 @@ export async function showResults(
 export async function pickHistory(ctx: ExtensionContext, entries: readonly HistoryEntry[]): Promise<HistoryEntry | undefined> {
   const options = entries.map((entry, index) => ({
     label: `${index + 1}. ${entry.args.query}`,
-    description: `${entry.within ? `within ${entry.within.files.length} files of: ${entry.within.query} · ` : ""}${historyCommand(entry)}`,
+    description: `${entry.within ? `within ${countLabel(entry.within.files.length, "file")} of: ${entry.within.query} · ` : ""}${historyCommand(entry)}`,
   }));
   const picked = await ctx.ui.select("Recent searches in this project", options);
   return entries[options.findIndex((option) => option.label === picked)];
