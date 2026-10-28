@@ -118,15 +118,12 @@ async function scenario(name: "rpc" | "headless", root: string): Promise<void> {
         customCalls += 1;
         return undefined;
       },
-      select: async (title: string, options: string[]) => {
-        dialogs.push({ kind: "select", title, options });
+      select: async (title: string, options: Array<string | { label: string }>) => {
+        const labels = options.map((option) => (typeof option === "string" ? option : option.label));
+        dialogs.push({ kind: "select", title, options: labels });
         const answer = answers.shift();
         assert(answer, `Unexpected select: ${title}`);
-        return answer(options);
-      },
-      confirm: async (title: string) => {
-        dialogs.push({ kind: "confirm", title });
-        return true;
+        return answer(labels);
       },
       input: async (title: string) => {
         dialogs.push({ kind: "input", title });
@@ -280,9 +277,13 @@ async function scenario(name: "rpc" | "headless", root: string): Promise<void> {
     assert(!widgets.some((widget) => typeof widget === "function"), "component widgets are TUI-only");
     assert.match(lines[0] ?? "", /^Atlas Contract test \[[#-]{10}\] 0\/6 · 0 running · gates 0\/4$/);
     assert.match(lines[1] ?? "", /^T1 Observe input \(task\) · waiting for child$/);
-    answers.push((options) => options.find((option) => option === "Exit Atlas"));
+    answers.push(
+      (options) => options.find((option) => option === "Exit Atlas"),
+      (options) => options.find((option) => option === "Exit Atlas, keep progress"),
+    );
     await atlas("");
-    assert.equal(dialogs.at(-1)?.kind, "confirm");
+    assert.match(dialogs.at(-1)?.title ?? "", /^Exit Atlas early\?\nContract test still has \d+ unfinished item\(s\)\.$/);
+    assert.deepEqual(dialogs.at(-1)?.options, ["Exit Atlas, keep progress", "Keep Atlas running"]);
   } else {
     await atlas("");
     assert.match(output(), /Atlas is executing Renamed plan\. Run \/atlas exit/);

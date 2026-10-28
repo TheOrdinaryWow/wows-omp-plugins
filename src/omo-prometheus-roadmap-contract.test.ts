@@ -128,7 +128,12 @@ async function scenario(name: string, root: string): Promise<void> {
     cwd: root,
     hasUI: true,
     sessionManager,
-    ui: { setWidget() {}, notify: (message: string) => notices.push(message), confirm: async () => true },
+    ui: {
+      setWidget() {},
+      notify: (message: string) => notices.push(message),
+      // Atlas decision dialogs list the accept option first.
+      select: async (_title: string, options: Array<{ label: string }>) => options[0]?.label,
+    },
   } as unknown as ExtensionContext;
   let hooks = new Map<string, Hook>();
   let tools = new Map<string, RegisteredTool>();

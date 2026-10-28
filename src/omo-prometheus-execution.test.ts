@@ -104,6 +104,7 @@ async function scenario(name: string, root: string): Promise<void> {
   let confirmations = 0;
   let confirmAnswer = true as boolean;
   const confirmTitles: string[] = [];
+  const decisions: Array<{ title: string; options: Array<{ label: string; description: string }> }> = [];
   let sessionId = "integrity-session";
   const notices: string[] = [];
   const menuRenders: string[] = [];
@@ -227,14 +228,17 @@ async function scenario(name: string, root: string): Promise<void> {
       notify(message: string) {
         notices.push(message);
       },
-      confirm: async (title: string) => {
-        confirmations += 1;
-        confirmTitles.push(title);
-        return confirmAnswer;
-      },
-      select: async (title: string, options: string[]) => {
-        selections.push({ title, options });
-        return pickOption(options);
+      select: async (title: string, options: Array<string | { label: string }>) => {
+        const labels = options.map((option) => (typeof option === "string" ? option : option.label));
+        // Decision dialogs: accept first, decline second; confirmAnswer picks between them.
+        if (options.some((option) => typeof option !== "string")) {
+          confirmations += 1;
+          confirmTitles.push(title.split("\n")[0] ?? "");
+          decisions.push({ title, options: options as Array<{ label: string; description: string }> });
+          return confirmAnswer ? labels[0] : labels[1];
+        }
+        selections.push({ title, options: labels });
+        return pickOption(labels);
       },
       input: async () => inputAnswers.shift(),
       custom: async (
@@ -850,11 +854,12 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T1")).retry?.windows.length, 1);
     confirmAnswer = true;
     if (name === "retry-grant-changed") {
-      const original = ctx.ui.confirm;
-      ctx.ui.confirm = async () => {
-        ctx.ui.confirm = original;
+      const original = ctx.ui.select;
+      ctx.ui.select = async (_title, options) => {
+        ctx.ui.select = original;
         await commands.get("atlas")?.("exit", ctx);
-        return true;
+        const accept = options[0];
+        return typeof accept === "string" ? accept : accept?.label;
       };
       refused(await grant());
       assert.equal((await row("T1")).retry?.windows.length, 1);
@@ -2403,6 +2408,12 @@ async function scenario(name: string, root: string): Promise<void> {
     ok(recorded);
     assert.equal(confirmations, 2);
     assert.match(confirmTitles.at(-1) ?? "", /Amend the acceptance of T1/);
+    // The dialog names the consequence of each answer and keeps the full proposal behind a details option.
+    assert.deepEqual(
+      decisions.at(-1)?.options.map((option) => option.label),
+      ["Record owner ruling for T1", "Keep current acceptance", "Review full details"],
+    );
+    assert.match(decisions.at(-1)?.title ?? "", /Proposed change: prerequisite p95 latency stays under 250 ms/);
     assert.deepEqual(
       (await ledger()).rulings.map((entry) => [entry.id, entry.rowId, entry.acceptance]),
       [["R1", "T1", ruling.acceptance]],

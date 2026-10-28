@@ -38,6 +38,7 @@ import { type AtlasPlan, type AtlasPlanDetail, AtlasStore, deliveryResult, gateR
 import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
+import { amendDecision, decide, deleteDecision, exitEarlyDecision, releaseDecision, retryDecision } from "./decision-dialog.ts";
 import { ChildEvidence, gateOutputSchema, parseGateOutput, parseVerifyOutput, verifyOutputSchema } from "./evidence.ts";
 import { collectComplianceEvidence, isGitWorkTree } from "./git-evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
@@ -1130,7 +1131,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const confirmDelete = (ctx: ExtensionContext, name: string, planId: string): Promise<boolean> =>
-    ctx.ui.confirm("Delete Atlas plan?", `Permanently remove ${name} (${planId}) and all its evidence?`);
+    decide(ctx.ui, deleteDecision(name, planId));
 
   const deletePlan = (store: AtlasStore, planId: string): Promise<void> =>
     store.delete(
@@ -1214,12 +1215,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         remaining = undefined;
       }
       if (remaining !== 0) {
-        const confirmed = await ctx.ui.confirm(
-          "Exit Atlas early?",
-          remaining === undefined
-            ? `${activePlan} progress cannot be verified. Exit Atlas anyway? Shared progress is kept.`
-            : `${activePlan} still has ${remaining} unfinished item(s). Exit Atlas anyway? Shared progress is kept and you can resume later.`,
-        );
+        const confirmed = await decide(ctx.ui, exitEarlyDecision(activePlan, remaining));
         if (!confirmed) {
           commandNotice(ctx, "Atlas exit cancelled; Atlas stays active.");
           return;
@@ -2089,10 +2085,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       let confirmed = false;
       try {
-        confirmed = await ctx.ui.confirm(
-          "Exit Atlas execution?",
-          `${params.reason.trim()}\n\nRelease restores direct implementation tools and ends Atlas delegation in this session.`,
-        );
+        confirmed = await decide(ctx.ui, releaseDecision(params.reason.trim()));
       } catch (error) {
         pi.logger.warn("prometheus release confirmation failed", { error: errorMessage(error) });
       }
@@ -2157,23 +2150,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     let confirmed = false;
     try {
-      confirmed = await ctx.ui.confirm(
-        `Amend the acceptance of ${proposal.rowId}?`,
-        [
-          `${proposal.rowId}. ${proposal.title}`,
-          "",
-          `Current acceptance (${proposal.currentRuling ? `ruling ${proposal.currentRuling}` : "approved plan"}):`,
-          proposal.current,
-          "",
-          "Proposed acceptance:",
-          proposal.acceptance,
-          "",
-          "Why:",
-          proposal.note,
-          "",
-          "Confirming records an owner ruling: the row is judged against the new acceptance, and the final report lists it as a deviation from the approved plan.",
-        ].join("\n"),
-      );
+      confirmed = await decide(ctx.ui, amendDecision(proposal));
     } catch (error) {
       pi.logger.warn("prometheus ruling confirmation failed", { error: errorMessage(error) });
       return fail(`Ruling refused: the confirmation dialog failed, so nothing was recorded. ${RULING_FALLBACK}`);
@@ -2229,16 +2206,16 @@ export default function prometheus(pi: ExtensionAPI): void {
         return {
           state: JSON.stringify(row.retry),
           acceptance: effectiveAcceptance(ledger, row).text,
-          summary: `${ledgerSummary(ledger, row.id)}\n\nFailure history:\n${row.retry?.windows.flatMap((window, index) => window.failures.map((failure) => `Window ${index + 1}: ${failure.failureClass}; ${failure.check}; ${failure.firstError}\nSignature: ${failure.signature}\n${failure.evidence}${failure.output ? `\n${failure.output.path}` : ""}`)).join("\n\n") || "No failed outcome; elapsed limit reached"}`,
+          history: `${ledgerSummary(ledger, row.id)}\n\nFailure history:\n${row.retry?.windows.flatMap((window, index) => window.failures.map((failure) => `Window ${index + 1}: ${failure.failureClass}; ${failure.check}; ${failure.firstError}\nSignature: ${failure.signature}\n${failure.evidence}${failure.output ? `\n${failure.output.path}` : ""}`)).join("\n\n") || "No failed outcome; elapsed limit reached"}`,
         };
       });
       if (!ctx.hasUI)
         return refused(
           "Retry refused: no confirmation dialog is available. The row stays blocked; /atlas exit and a revised plan through /prometheus remain available.",
         );
-      const confirmed = await ctx.ui.confirm(
-        `Open a new retry window for ${id}?`,
-        `${proposal.summary}\n\nUnchanged acceptance:\n${proposal.acceptance}\n\nReason / changed hypothesis:\n${note}\n\nA new window grants more attempts, not scope or acceptance changes. Prior failures remain in history. Retain and inventory unverified changes; no rollback is authorized.`,
+      const confirmed = await decide(
+        ctx.ui,
+        retryDecision({ rowId: id as string, history: proposal.history, acceptance: proposal.acceptance, note: note as string }),
       );
       if (!confirmed) return refused("The user did not grant another retry window; nothing was recorded and the row stays blocked.");
       if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
