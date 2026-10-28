@@ -371,7 +371,13 @@ async function scenario(name: string, root: string): Promise<void> {
   );
   await writeFile(
     sourcePlanFile,
-    name === "cycle" ? plan.replace("Depends on: none", "Depends on: T2") : name.startsWith("heavy-") ? heavyPlan : plan,
+    name === "cycle"
+      ? plan.replace("Depends on: none", "Depends on: T2")
+      : name.startsWith("heavy-")
+        ? heavyPlan
+        : name.startsWith("delivery-")
+          ? plan.replace("## Tasks", `Delivery: ${name === "delivery-pr" ? "pr" : "ship"}\n\n## Tasks`)
+          : plan,
   );
   await commands.get("prometheus")?.("", ctx);
   // Magic Context fences the provider request against the rows it prepared, so the context hook keeps their count and order.
@@ -789,6 +795,224 @@ async function scenario(name: string, root: string): Promise<void> {
     await finish("F3");
     await finish("F4");
   };
+  if (name === "retry-fail" || name === "retry-grant-changed") {
+    const fail = (childAgentId: string) =>
+      call({
+        action: "fail",
+        id: "T1",
+        childAgentId,
+        check: "acceptance scenario",
+        firstError: "expected 4, got 5",
+        evidence: "Inspected terminal child output and reproduction",
+        failureClass: "unknown",
+      });
+    let prepared = await prepare("T1");
+    await publish(prepared, "FailedAcceptance", { observe: false, content: "acceptance scenario: expected 4, got 5" });
+    refused(await fail("FailedAcceptance"));
+    await publish(prepared, "FailedAcceptance", { content: "acceptance scenario: expected 4, got 5" });
+    ok(await fail("FailedAcceptance"));
+    const first = await row("T1");
+    assert.equal(first.retry?.windows[0]?.failures.length, 1);
+    const diagnostic = first.retry?.windows[0]?.failures[0];
+    assert(diagnostic?.output);
+    assert.equal(await readFile(diagnostic.output.path, "utf8"), "acceptance scenario: expected 4, got 5");
+    assert.equal(first.receipt, undefined);
+    ok(await fail("FailedAcceptance"));
+    assert.equal((await row("T1")).retry?.windows[0]?.failures.length, 1);
+    prepared = await prepare("T1");
+    await publish(prepared, "NativeFailure", { finalError: "Native integration failed after behavior was exercised" });
+    refused(await call({ action: "reopen", id: "T1" }));
+    const replacement = (await hook("tool_call", {
+      toolName: "task",
+      toolCallId: "unrecorded-failure-replacement",
+      input: prepared.input,
+    })) as { block?: boolean };
+    assert.equal(replacement.block, true);
+    ok(await fail("NativeFailure"));
+    assert.equal((await row("T1")).status, "blocked");
+    assert.equal((await row("T1")).retry?.windows[0]?.stop?.reason, "signature");
+    if (name === "retry-fail") {
+      await reload();
+      ok(await fail("NativeFailure"));
+      assert.equal((await row("T1")).retry?.windows[0]?.failures.length, 2);
+    }
+    ok(await call({ action: "reopen", id: "T1" }));
+    refused(await call({ action: "start", id: "T1" }));
+    refused(await call({ action: "retry", id: "T1", evidence: "Different repair hypothesis" }));
+    ok(await call({ action: "block", id: "T3", evidence: "Independent task needs owner credentials" }));
+    const grant = () => call({ action: "retry", id: "T1", evidence: "Different repair hypothesis; unchanged acceptance" });
+    interactive = false;
+    refused(await grant());
+    interactive = true;
+    confirmAnswer = false;
+    refused(await grant());
+    assert.equal((await row("T1")).retry?.windows.length, 1);
+    confirmAnswer = true;
+    if (name === "retry-grant-changed") {
+      const original = ctx.ui.confirm;
+      ctx.ui.confirm = async () => {
+        ctx.ui.confirm = original;
+        await commands.get("atlas")?.("exit", ctx);
+        return true;
+      };
+      refused(await grant());
+      assert.equal((await row("T1")).retry?.windows.length, 1);
+      return;
+    }
+    const history = (await row("T1")).retry?.windows[0];
+    ok(await grant());
+    assert.equal((await row("T1")).status, "open");
+    assert.equal((await row("T1")).retry?.windows.length, 2);
+    assert.deepEqual((await row("T1")).retry?.windows[0], history);
+    await finish("T1");
+    assert.equal((await row("T1")).status, "done");
+    return;
+  }
+  if (name === "retry-pre-spawn") {
+    const prepared = await prepare("T1");
+    const fail = () =>
+      call({
+        action: "fail",
+        id: "T1",
+        check: "native spawn",
+        firstError: "runner could not start",
+        failureClass: "harness",
+        evidence: "Native executor failed before any product code ran",
+      });
+    refused(await fail());
+    await hook("tool_result", {
+      toolName: "task",
+      toolCallId: prepared.toolCallId,
+      input: prepared.input,
+      isError: true,
+      details: { results: [] },
+      content: [{ type: "text", text: "runner could not start" }],
+    });
+    ok(await fail());
+    const current = await row("T1");
+    assert.equal(current.status, "open");
+    assert.equal(current.retry?.windows[0]?.failures[0]?.failureClass, "harness");
+    assert.equal(current.retry?.windows[0]?.failures[0]?.childAgentId, undefined);
+    ok(await fail());
+    assert.equal((await row("T1")).retry?.windows[0]?.failures.length, 1);
+    const next = await prepare("T1");
+    await hook("tool_result", {
+      toolName: "task",
+      toolCallId: next.toolCallId,
+      input: next.input,
+      isError: true,
+      details: { results: [{ id: "Unspawned", index: 0, exitCode: 1, error: "runner startup rejected before registry creation" }] },
+      content: [],
+    });
+    ok(await fail());
+    assert.equal((await row("T1")).retry?.windows[0]?.stop?.reason, "harness");
+    return;
+  }
+  if (name === "retry-expiry-live") {
+    const prepared = await prepare("T1");
+    await publish(prepared, "ExpiredWorker", { status: "running", nativeStatus: "started", finalResult: false });
+    const current = await ledger();
+    const window = current.items[0]?.retry?.windows[0];
+    assert(window);
+    window.openedAt = Date.now() - 4 * 60 * 60 * 1000;
+    await writeFile(ledgerFile, JSON.stringify(current));
+    const status = await call({ action: "status" });
+    ok(status);
+    assert.match(status.content.map((part) => part.text).join("\n"), /ExpiredWorker/);
+    assert.equal((await row("T1")).status, "blocked");
+    assert.equal((await row("T1")).retry?.windows[0]?.stop?.reason, "elapsed");
+    refused(await call({ action: "retry", id: "T1", evidence: "New window" }));
+    await publish(prepared, "ExpiredWorker", { finalError: "Expired worker failed during final integration" });
+    refused(await done("T1", "ExpiredWorker"));
+    assert.equal((await row("T1")).receipt, undefined);
+    ok(await call({ action: "block", id: "T3", evidence: "Waiting for owner credentials" }));
+    ok(await call({ action: "retry", id: "T1", evidence: "Owner grants a new hypothesis after expired work settled" }));
+    ok(await call({ action: "start", id: "T1" }));
+    return;
+  }
+  if (name === "delivery-repair" || name === "delivery-pr") {
+    await tasksDone();
+    await gatesDone();
+    const gates = (await ledger()).gates.map((gate) => gate.receipt);
+    let delivery = await prepare("P1");
+    const originalAttempt = delivery.item.attempt;
+    if (name === "delivery-repair") {
+      await publish(delivery, "DeliveryFailed", {
+        content: "PR 42 head abc base main: CI check 17 failed",
+        finalError: "Native integration failed after remote inspection",
+      });
+      refused(await done("P1", "DeliveryFailed"));
+      ok(
+        await call({
+          action: "fail",
+          id: "P1",
+          childAgentId: "DeliveryFailed",
+          check: "CI check 17",
+          firstError: "integration scenario failed",
+          evidence: "PR 42 head abc base main, check 17 failed",
+          failureClass: "unknown",
+        }),
+      );
+      ok(
+        await call({
+          action: "fix",
+          id: "P1",
+          title: "Repair review defect",
+          acceptance: "fresh affected QA and CI pass",
+          tier: "HEAVY",
+          evidence: "PR 42 check 17",
+          agent: "task",
+        }),
+      );
+      assert.equal((await row("X1")).origin, "P1");
+      assert.deepEqual((await row("P1")).dependsOn, ["F1", "F2", "F3", "F4", "X1"]);
+      refused(await call({ action: "start", id: "P1" }));
+      const repair = await prepare("X1");
+      await publish(repair, "Repair", { content: "Committed repair; affected real-surface QA passes with artifacts" });
+      ok(await done("X1", "Repair"));
+      const started = await call({ action: "verify", id: "X1" });
+      ok(started);
+      const item = await row("X1");
+      const current = await ledger();
+      const toolCallId = `dispatch-${sequence++}`;
+      const input = {
+        agent: item.verification?.dispatchAgent,
+        task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, verify: { X1: item.verification?.attempt } })}\nVerify affected QA without fixes`,
+        outputSchema: started.details?.outputSchema,
+        schemaMode: "strict",
+      };
+      assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
+      await publish({ item, current, toolCallId, input }, "RepairVerifier", {
+        createdAt: item.verification?.startedAt,
+        content: JSON.stringify({
+          rowId: "X1",
+          planSha256: current.planSha256,
+          attempt: item.verification?.attempt,
+          verdict: "PASS",
+          summary: "Affected QA independently verified",
+          evidence: ["native output and scenario"],
+        }),
+      });
+      ok(await done("X1", "RepairVerifier"));
+      delivery = await prepare("P1");
+      assert.notEqual(delivery.item.attempt, originalAttempt);
+      assert.deepEqual(
+        (await ledger()).gates.map((gate) => gate.receipt),
+        gates,
+      );
+      assert.equal((await row("P1")).retry?.windows[0]?.failures.length, 1);
+    }
+    await publish(delivery, "Delivered", {
+      content:
+        name === "delivery-pr"
+          ? "PR 42 open head def base main, handed off without merge"
+          : "PR 42 head def base main: required checks and review satisfied, no blocking requests, merged commit abc",
+    });
+    ok(await done("P1", "Delivered"));
+    assert.equal((await row("P1")).status, "done");
+    assert.equal((await ledger()).delivery, name === "delivery-pr" ? "pr" : "ship");
+    return;
+  }
 
   if (name === "atlas-autocomplete") {
     await tasksDone();
@@ -1134,7 +1358,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match((await guarded("task", { agent: "scout", task: "Read the module layout" })) ?? "", /T1, T3/);
     ok(await done("T1", "FinishedFirst"));
     await refreshTodo("done");
-    assert.match((await guarded("wait")) ?? "", /child of T3 has a final result/);
+    assert.match((await guarded("wait")) ?? "", /T3 has a final result/);
     assert.equal(await guarded("task", bind(third)), undefined, "a replacement child for the finished row may dispatch");
     assert.equal(await guarded("wait"), undefined);
     return;
@@ -1196,7 +1420,7 @@ async function scenario(name: string, root: string): Promise<void> {
         evidence: ["expected 8 keys, got 10"],
       }),
     });
-    refused(await done("F2", "Rejecting"));
+    ok(await done("F2", "Rejecting"));
     refused(await call({ action: "fix", id: "F2", evidence: "nondeterministic test", title: "Stabilize retention test" }));
     refused(await call({ action: "fix", id: "T2", evidence: "x", title: "x", acceptance: "x" }));
     ok(
@@ -1267,7 +1491,17 @@ async function scenario(name: string, root: string): Promise<void> {
     refused(await done("T1", "EarlyCompletion"));
     await publish(prepared, "CaptureFailed", { finalError: "Isolated patch capture failed after subprocess completion" });
     refused(await done("T1", "CaptureFailed"));
-    ok(await call({ action: "reopen", id: "T1" }));
+    refused(await call({ action: "reopen", id: "T1" }));
+    ok(
+      await call({
+        action: "fail",
+        id: "T1",
+        childAgentId: "CaptureFailed",
+        check: "native patch capture",
+        firstError: "isolated patch capture failed",
+        evidence: "Native final integration error inspected",
+      }),
+    );
     prepared = await prepare("T1");
     await publish(prepared, "PendingCapture", { asyncStatus: "running" });
     refused(await done("T1", "PendingCapture"));
@@ -1275,7 +1509,16 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(pending);
     pending.status = "failed";
     refused(await done("T1", "PendingCapture"));
-    ok(await call({ action: "reopen", id: "T1" }));
+    ok(
+      await call({
+        action: "fail",
+        id: "T1",
+        childAgentId: "PendingCapture",
+        check: "native async capture",
+        firstError: "async final integration failed",
+        evidence: "Native final job failure inspected",
+      }),
+    );
     prepared = await prepare("T1");
     await publish(prepared, "SuccessfulCapture", { asyncStatus: "completed" });
     await hook("context", { messages: [] });
@@ -1844,7 +2087,7 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
 
-  if (name === "heavy-verify" || name === "heavy-verify-fail") {
+  if (name === "heavy-verify" || name === "heavy-verify-fail" || name === "heavy-verify-inconclusive") {
     // A ruling recorded before the row starts reaches both the implementation child and its verifier.
     if (name === "heavy-verify") {
       ok(
@@ -1912,21 +2155,23 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(await hook("tool_call", { toolName: "task", toolCallId: verifier.toolCallId, input: textInput }), undefined);
     // The implementer's own completion never counts as the independent verification.
     refused(await done("T1", "Implementer"));
-    const verdict = name === "heavy-verify" ? "PASS" : "FAIL";
+    const verdict = name === "heavy-verify" ? "PASS" : name === "heavy-verify-inconclusive" ? "INCONCLUSIVE" : "FAIL";
     await publish(verifier, "Verifier", {
       createdAt: verifyStartedAt,
       content: JSON.stringify({ rowId: "T1", planSha256, attempt, verdict, summary: `Verifier ${verdict}`, evidence: ["reproduced"] }),
     });
     ok(await done("T1", "Verifier"));
     current = await row("T1");
-    if (name === "heavy-verify-fail") {
+    if (verdict !== "PASS") {
       assert.equal(current.status, "open");
       assert.equal(current.receipt, undefined);
       assert.equal(current.verification?.verdict, "fail");
-      assert.equal(current.evidence, "Verification failed: Verifier FAIL");
+      assert(current.evidence?.includes(`Verification failed: Verifier ${verdict}`));
+      assert.equal(current.retry?.windows[0]?.failures.length, 1);
+      assert(current.retry?.windows[0]?.failures[0]?.output?.path);
       const restarted = await call({ action: "start", id: "T1" });
       ok(restarted);
-      assert(restarted.content.some((part) => part.text?.includes("give this to the implementation child: Verifier FAIL")));
+      assert(restarted.content.some((part) => part.text?.includes(`give this to the implementation child: Verifier ${verdict}`)));
       return;
     }
     assert.equal(current.status, "done");
@@ -2135,7 +2380,7 @@ async function scenario(name: string, root: string): Promise<void> {
     // The ruling is part of the shared bundle, so it survives a session restart.
     await reload();
     ok(await call({ action: "status" }));
-    assert.equal((await ledger()).version, 7);
+    assert.equal((await ledger()).version, 8);
     assert.deepEqual(
       (await ledger()).rulings.map((entry) => entry.id),
       ["R1"],
@@ -2183,8 +2428,9 @@ async function scenario(name: string, root: string): Promise<void> {
         reviewedGates: {},
       }),
     });
-    refused(await done("F1", "Rejected"));
-    await publish(review, "Approved");
+    ok(await done("F1", "Rejected"));
+    const approved = await prepare("F1");
+    await publish(approved, "Approved");
     ok(await done("F1", "Approved"));
     const next = await prepare("F2");
     await publish(next, "Approved");
@@ -2362,6 +2608,7 @@ if (process.env[CHILD_ENV]) {
       "review-round-limit",
       "heavy-verify",
       "heavy-verify-fail",
+      "heavy-verify-inconclusive",
       "research-children",
       "structured-results",
       "isolation-required",
@@ -2370,6 +2617,12 @@ if (process.env[CHILD_ENV]) {
       "discover",
       "amend",
       "context-row-shape",
+      "retry-fail",
+      "retry-grant-changed",
+      "retry-pre-spawn",
+      "retry-expiry-live",
+      "delivery-repair",
+      "delivery-pr",
     ]) {
       // Each scenario runs in its own process with a private HOME, so scenarios share no state.
       test.concurrent(name, async () => {

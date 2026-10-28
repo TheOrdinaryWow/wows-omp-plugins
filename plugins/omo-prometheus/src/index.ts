@@ -38,7 +38,7 @@ import { type AtlasPlan, type AtlasPlanDetail, AtlasStore, deliveryResult, gateR
 import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
-import { ChildEvidence, gateOutputSchema, parseVerifyOutput, verifyOutputSchema } from "./evidence.ts";
+import { ChildEvidence, gateOutputSchema, parseGateOutput, parseVerifyOutput, verifyOutputSchema } from "./evidence.ts";
 import { collectComplianceEvidence, isGitWorkTree } from "./git-evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
 import { forceBranchMerge, restoreIsolationMerge } from "./isolation-merge.ts";
@@ -47,21 +47,27 @@ import {
   addDiscoveredRow,
   addFixRow,
   amendAcceptance,
+  assertRetryAvailable,
   checkAmendment,
   type ExecutionLedger,
   effectiveAcceptance,
+  type FailedOutcome,
+  type FailureClass,
+  grantRetry,
   isComplete,
   type LedgerItem,
   ledgerRows,
   movableRows,
   parsePlanChecklist,
   planDigest,
+  recordFailure,
   recordReceipt,
   recordVerification,
   refreshDispatchAgents,
   renderLedgerSummary,
   renderOwnerRulings,
   reopenRow,
+  retryWindow,
   startRow,
   startVerification,
   triageFinding,
@@ -539,7 +545,20 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   /** `changedId` selects the compact form returned after a row changes; status and refusals keep the full table and proofs. */
   const ledgerSummary = (ledger: ExecutionLedger, changedId?: string): string => {
-    const summary = renderLedgerSummary(ledger, availableAgents(), changedId);
+    const owner = [...ownerships].find((owner) => owner.ledgerId === ledger.ledgerId && !owner.detached);
+    const liveStops = owner
+      ? ledgerRows(ledger)
+          .filter((row) => retryWindow(row)?.stop)
+          .flatMap((row) => {
+            const children = childEvidence.pendingRowChildren(owner.sessionId, ledger.ledgerId, row.id);
+            return children.length
+              ? [
+                  `${row.id} stopped with live native children: ${children.join(", ")}. Cancel via proc://<id>/kill and observe terminal settlement; ownership is retained until then.`,
+                ]
+              : [];
+          })
+      : [];
+    const summary = [renderLedgerSummary(ledger, availableAgents(), changedId), ...liveStops].join("\n");
     if (changedId !== undefined) return summary;
     const proofs = ledgerRows(ledger).flatMap((row) =>
       row.receipt && row.status === "done"
@@ -1872,9 +1891,9 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   const ledgerParameters = z.object({
     action: z
-      .enum(["status", "start", "done", "verify", "block", "reopen", "fix", "discover", "triage", "amend"])
+      .enum(["status", "start", "done", "fail", "retry", "verify", "block", "reopen", "fix", "discover", "triage", "amend"])
       .describe(
-        "status shows every row; start, done, block, and reopen change the row named by id; verify binds a fresh verifier to the HEAVY row named by id once its implementation is done; fix appends an X row for the rejecting gate named by id; discover records work found while executing the row named by id: scope in appends a D row, scope out records a deferred finding O1, O2, …; triage records the disposition of the deferred finding named by id; amend records, after the user confirms it in a dialog, an owner ruling R1, R2, … that replaces the acceptance of the T, D or X row named by id",
+        "status shows every row; start, done, fail, block, and reopen change id; fail authenticates a terminal native outcome and charges its durable retry budget once; retry opens a new window only after an owner confirmation dialog; verify binds a fresh HEAVY verifier; fix appends an X row for rejecting F1–F4 or P1; discover records scope in as D or scope out as deferred O; triage disposes O; amend confirms an owner ruling replacing a T/D/X acceptance",
       ),
     id: z
       .string()
@@ -1886,12 +1905,18 @@ export default function prometheus(pi: ExtensionAPI): void {
       .string()
       .optional()
       .describe(
-        "Inspected observable evidence; required for done, block, fix (the gate's rejection), and discover (why the finding is in or out of scope). triage: the reference (todo: the Roadmap TODO id; duplicate: what it duplicates; wontfix: the reason; report: optional note). amend: what changed and why, including the user's decision and the measured values behind it. Gate and verifier verdicts are read from native child output, not this text",
+        "Inspected evidence required for done, fail, block, fix (the origin's rejection), and discover (scope reason). retry: the changed hypothesis/reason for another window; acceptance remains unchanged. triage: TODO id, duplicate reference, wontfix reason, or optional report note. amend: what changed and why. Structured gate/verifier verdicts come from native output, not this text",
       ),
     childAgentId: z
       .string()
       .optional()
-      .describe("Required for done: exact id of the owned native child dispatched for this started attempt or verification"),
+      .describe("Exact owned native child id for done or fail; fail may omit it only for an authenticated native pre-spawn failure"),
+    check: z.string().optional().describe("fail: the failing acceptance check or command, inspected in native output"),
+    firstError: z.string().optional().describe("fail: the first meaningful error line; volatile metadata is normalized by code"),
+    failureClass: z
+      .enum(["product", "harness", "unknown"])
+      .optional()
+      .describe("fail: harness only with evidence that product behavior was never exercised; unknown counts (default)"),
     title: z.string().optional().describe("Required for fix and discover: the correction or finding"),
     acceptance: z
       .string()
@@ -1923,10 +1948,13 @@ export default function prometheus(pi: ExtensionAPI): void {
       ),
   });
   type LedgerParams = {
-    action: "status" | "start" | "done" | "verify" | "block" | "reopen" | "fix" | "discover" | "triage" | "amend";
+    action: "status" | "start" | "done" | "fail" | "retry" | "verify" | "block" | "reopen" | "fix" | "discover" | "triage" | "amend";
     id?: string;
     evidence?: string;
     childAgentId?: string;
+    check?: string;
+    firstError?: string;
+    failureClass?: FailureClass;
     title?: string;
     acceptance?: string;
     scope?: "in" | "out";
@@ -2184,13 +2212,66 @@ export default function prometheus(pi: ExtensionAPI): void {
       return refused(error);
     }
   };
+  /** Like owner rulings, retry authorization happens outside the lock and is rechecked before writing. */
+  const recordRetryGrant = async (ctx: ExtensionContext, record: SessionRecord, params: LedgerParams) => {
+    const refused = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
+    const ownership = record.ownership;
+    const id = params.id?.trim();
+    const note = params.evidence?.trim();
+    try {
+      const proposal = await withExecutionLedger(ctx, record, (ledger) => {
+        const row = ledgerRows(ledger).find((row) => row.id === id);
+        if (!row || !retryWindow(row)?.stop || !note)
+          throw new Error("retry needs an exhausted row and evidence describing the changed hypothesis for another window");
+        const pending = childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, row.id);
+        if (pending.length) throw new Error(`Cancel and observe native terminal settlement first: ${pending.join(", ")}`);
+        if (movableRows(ledger).length) throw new Error("Keep independent movable work progressing before asking for a retry grant");
+        return {
+          state: JSON.stringify(row.retry),
+          acceptance: effectiveAcceptance(ledger, row).text,
+          summary: `${ledgerSummary(ledger, row.id)}\n\nFailure history:\n${row.retry?.windows.flatMap((window, index) => window.failures.map((failure) => `Window ${index + 1}: ${failure.failureClass}; ${failure.check}; ${failure.firstError}\nSignature: ${failure.signature}\n${failure.evidence}${failure.output ? `\n${failure.output.path}` : ""}`)).join("\n\n") || "No failed outcome; elapsed limit reached"}`,
+        };
+      });
+      if (!ctx.hasUI)
+        return refused(
+          "Retry refused: no confirmation dialog is available. The row stays blocked; /atlas exit and a revised plan through /prometheus remain available.",
+        );
+      const confirmed = await ctx.ui.confirm(
+        `Open a new retry window for ${id}?`,
+        `${proposal.summary}\n\nUnchanged acceptance:\n${proposal.acceptance}\n\nReason / changed hypothesis:\n${note}\n\nA new window grants more attempts, not scope or acceptance changes. Prior failures remain in history. Retain and inventory unverified changes; no rollback is authorized.`,
+      );
+      if (!confirmed) return refused("The user did not grant another retry window; nothing was recorded and the row stays blocked.");
+      if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
+      return await withExecutionLedger(ctx, record, (ledger) => {
+        const row = ledgerRows(ledger).find((row) => row.id === id);
+        if (!row || JSON.stringify(row.retry) !== proposal.state || effectiveAcceptance(ledger, row).text !== proposal.acceptance)
+          throw new Error("Retry history or acceptance changed while awaiting confirmation; request it again");
+        if (childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, row.id).length)
+          throw new Error("Native work became live while awaiting confirmation");
+        grantRetry(ledger, row, note as string);
+        const refresh = atlasTodoRefreshCall(row);
+        if (pi.getActiveTools().includes("todo")) pendingTodoRefreshes.set(ctx.sessionManager.getSessionId(), refresh);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${refresh}\n\n${row.id}: owner confirmed a new retry window; previous history is preserved.\n\n${ledgerSummary(ledger, row.id)}`,
+            },
+          ],
+          details: { id: row.id, status: row.status, row: ledgerCardRow(row), progress: ledgerProgress(ledger) },
+        };
+      });
+    } catch (error) {
+      return refused(`Retry refused: ${errorMessage(error)}. Nothing was granted; /atlas exit remains available.`);
+    }
+  };
 
   pi.registerTool({
     name: LEDGER_TOOL,
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read or update the shared approved execution ledger. Start a row BEFORE task dispatch and copy its atlas_assignment binding. Done requires its real native child's final successful result and inspected evidence; verified outputs are copied into shared storage. A HEAVY row's done records its implementation; verify then binds a distinct fresh verifier child with structured output, and only its PASS completes the row (FAIL reopens it with the verifier's summary). Gates F1–F4 run together and require distinct fresh children with structured PASS output. When a gate rejects, fix appends an X correction row and reopens only that gate. Before any gate starts, discover scope in appends a D row every gate waits for; discover scope out records a deferred finding O1, O2, … for the final report, and triage records each one's disposition (atlas_release waits for every triage). P1 delivers after every gate. Reopen/block affect only the named row. When the user's answer to a blocker changes how a T, D or X row's acceptance is met, amend asks the user to confirm in a dialog and records an owner ruling R1, R2, … that replaces that row's acceptance; the row then needs reopen and a fresh child, and F1, F4 and verifiers judge against the plan plus every ruling.",
+      "Read/update the shared approved ledger. Start before task and copy atlas_assignment. Done requires owned final native success plus inspected evidence; HEAVY then needs a fresh independent verifier PASS. Gate/verifier FAIL or INCONCLUSIVE records durable failure diagnostics. fail authenticates other terminal failures, idempotently: stop at consecutive identical counted signatures, three counted failures, repeated harness failure, or the event-bound four-hour work limit (P1 waiting exempt). retry requires owner confirmation; reopen/amend/new children do not reset budgets. fix creates an ordinary tiered X row from F1–F4 or P1, preserving other passed gates; a fresh origin child waits for repairs. discover adds D before gates or deferred O; triage disposes O; amend confirms T/D/X acceptance rulings. Missing or corrupt state pauses execution; status lists details.",
     parameters: ledgerParameters,
     ...ledgerCard,
     defaultInactive: true,
@@ -2202,6 +2283,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (!mainSession(ctx) || record?.phase !== "executing") return fail("Atlas execution is not active in this main session.");
       const ownership = record.ownership;
       if (params.action === "amend") return await recordRuling(ctx, record, params);
+      if (params.action === "retry") return await recordRetryGrant(ctx, record, params);
       let changedRow: LedgerItem | undefined;
       let completion: Omit<AtlasCompleted, "v" | "at"> | undefined;
       let completedPlan: AtlasPlan | undefined;
@@ -2251,6 +2333,17 @@ export default function prometheus(pi: ExtensionAPI): void {
           }
           const item = ledgerRows(ledger).find((entry) => entry.id === id);
           if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
+          if (
+            ["start", "verify", "fix", "reopen", "block"].includes(params.action) &&
+            childEvidence.unrecordedFailures(ctx.sessionManager.getSessionId(), ledger).includes(item.id)
+          ) {
+            throw new Error(`${item.id} has an unrecorded final native failure; use atlas_ledger fail before replacing or reopening it`);
+          }
+          if (["start", "verify"].includes(params.action)) {
+            const pending = childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, item.id);
+            if (pending.length)
+              throw new Error(`${item.id} still has live native work: ${pending.join(", ")}; wait for terminal settlement`);
+          }
           let schema: Record<string, unknown> | undefined;
           let planBinding = "";
           let note = "";
@@ -2301,7 +2394,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.\n\n${ledgerSummary(ledger, fix.id)}`,
                 },
               ],
-              details: { id: fix.id, status: fix.status, gate: item.id, row: ledgerCardRow(fix), progress: ledgerProgress(ledger) },
+              details: { id: fix.id, status: fix.status, origin: item.id, row: ledgerCardRow(fix), progress: ledgerProgress(ledger) },
             };
           }
           if (params.action === "start") {
@@ -2325,58 +2418,105 @@ export default function prometheus(pi: ExtensionAPI): void {
                 note += `\nIts previous verification failed; give this to the implementation child: ${item.verification.summary ?? ""}`;
               }
             }
+            if (item.id === "P1")
+              note += `\nDelivery ${ledger.delivery}: use the explicit parent integration branch/head and PR remote head/base, never a native isolation branch. Reuse the existing PR; no product edits. pr hands off without merge. ship waits for current-head repository-required checks/reviews with no unresolved blocking change request; never self-approve. Report in-scope failures for P1-origin X repairs with fresh affected QA, then a fresh P1 child. Missing human approval/access is an external blocker, not a counted product failure.`;
           } else if (params.action === "verify") {
             startVerification(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             schema = verifyOutputSchema(ledger, item);
             rulings = renderOwnerRulings(ledger);
             planBinding = `\nVerifier binding for a fresh ${item.verification?.dispatchAgent} child (copy literally): atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, verify: { [item.id]: item.verification?.attempt } })}`;
-          } else if (params.action === "done") {
+          } else if (params.action === "done" || params.action === "fail") {
             const childAgentId = params.childAgentId?.trim();
-            if (!evidence || !childAgentId) throw new Error(`Marking ${item.id} done requires inspected evidence and childAgentId`);
+            if (!evidence || (params.action === "done" && !childAgentId))
+              throw new Error(`Recording ${item.id} requires inspected evidence${params.action === "done" ? " and childAgentId" : ""}`);
+            const replay =
+              params.action === "fail" ? childEvidence.recordedFailure(ctx.sessionManager.getSessionId(), item, childAgentId) : undefined;
+            if (replay)
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `${item.id}: native outcome already recorded; no additional failure charged.\n\n${ledgerSummary(ledger, item.id)}`,
+                  },
+                ],
+                details: { id: item.id, status: item.status },
+              };
+            assertRetryAvailable(item);
             const verifying = item.tier === "heavy" && item.receipt !== undefined;
-            if (verifying && (item.verification?.attempt === undefined || item.verification.verdict !== undefined)) {
+            if (verifying && (item.verification?.attempt === undefined || item.verification.verdict !== undefined))
               throw new Error(`${item.id} implementation is already recorded; bind its verifier with atlas_ledger verify first`);
-            }
             const parent = AgentRegistry.global()
               .list()
               .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
             if (!parent) throw new Error("Registered parent identity is unavailable");
             observeFinalJobs(ctx);
-            const nativeOutput = path.join(ctx.sessionManager.getArtifactsDir() as string, `${childAgentId}.md`);
-            const { receipt, output } = await childEvidence.capture({
+            const captureOptions = {
               registry: AgentRegistry.global(),
               parentAgentId: parent.id,
               sessionId: ctx.sessionManager.getSessionId(),
               artifactsDir: ctx.sessionManager.getArtifactsDir() as string,
               ledger,
               row: item,
-              childAgentId,
               priorReceipts: ledgerRows(ledger).flatMap((row) => [
                 ...(row.receipt ? [row.receipt] : []),
                 ...(row.verification?.receipt ? [row.verification.receipt] : []),
               ]),
               verify: verifying,
-            });
-            if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during child evidence capture");
-            const archived = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
-            const verdict = verifying ? parseVerifyOutput(output, ledger, item) : undefined;
-            if (verdict?.verdict === "INCONCLUSIVE") {
-              throw new Error(
-                `${item.id} verification was inconclusive: ${verdict.summary}. Bind a fresh verifier with atlas_ledger verify, or reopen or block the row`,
-              );
-            }
-            if (verdict?.verdict === "FAIL") {
-              recordVerification(ledger, item, { verdict: "fail", childAgentId, summary: verdict.summary });
-              note = `\n${item.id} verification failed, so the row is open again. Start a new implementation attempt and give its child this failure: ${verdict.summary}`;
+            };
+            const diagnostic =
+              params.action === "fail" || verifying || item.id.startsWith("F")
+                ? await childEvidence.diagnostic({ ...captureOptions, childAgentId })
+                : undefined;
+            const verdict =
+              diagnostic?.nativeStatus === "completed"
+                ? verifying
+                  ? parseVerifyOutput(diagnostic.output, ledger, item)
+                  : item.id.startsWith("F")
+                    ? parseGateOutput(diagnostic.output, ledger, item)
+                    : undefined
+                : undefined;
+            if (params.action === "fail" && verdict?.verdict === "PASS")
+              throw new Error("A structured PASS is not a failed native outcome");
+            if (diagnostic && (params.action === "fail" || diagnostic.nativeStatus === "failed" || verdict?.verdict !== "PASS")) {
+              const check = verdict?.failure?.check ?? params.check?.trim() ?? (params.action === "fail" ? "" : `${item.id} acceptance`);
+              const firstError =
+                verdict?.failure?.firstError ??
+                params.firstError?.trim() ??
+                verdict?.summary ??
+                diagnostic.output.trim().split("\n")[0] ??
+                "";
+              if (!check || !firstError) throw new Error("fail requires the inspected check and first meaningful error line");
+              const failure: FailedOutcome = {
+                ...diagnostic.binding,
+                check,
+                firstError,
+                failureClass: verdict?.failure?.failureClass ?? params.failureClass ?? "unknown",
+                evidence,
+                signature: "",
+              };
+              if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during failure capture");
+              await store.saveFailure(plan, item, failure, diagnostic.output);
+              if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while diagnostic output was copied");
+              recordFailure(ledger, item, failure);
+              note = `\nAuthenticated failure recorded (${failure.failureClass}); ${item.status === "blocked" ? "retry limit reached — retain/inventory unverified commits and files; delivery blocked; owner confirmation required" : "give this diagnostic to a fresh repair attempt"}: ${firstError}`;
             } else {
-              // Only authenticated final native results can publish shared immutable proof.
+              if (!childAgentId) throw new Error("done requires childAgentId");
+              const nativeOutput = path.join(captureOptions.artifactsDir, `${childAgentId}.md`);
+              const { receipt, output } = await childEvidence.capture({ ...captureOptions, childAgentId });
+              if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during child evidence capture");
+              const archived = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
               await store.saveReceipt(plan, receipt, nativeOutput);
               if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while child evidence was copied");
-              if (verdict) recordVerification(ledger, item, { verdict: "pass", receipt, summary: verdict.summary, evidence: archived });
+              if (verifying)
+                recordVerification(ledger, item, {
+                  verdict: "pass",
+                  receipt,
+                  summary: parseVerifyOutput(output, ledger, item).summary,
+                  evidence: archived,
+                });
               else recordReceipt(item, receipt, archived);
-              if (item.status === "in_progress") {
+              if (item.status === "in_progress")
                 note = `\n${item.id} is HEAVY: its implementation is recorded. Bind a distinct fresh verifier with atlas_ledger verify id=${item.id}.`;
-              }
             }
             const completedNow = !wasComplete && isComplete(ledger);
             if (completedNow) completedPlan = plan;
@@ -2796,11 +2936,14 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       const ledger = event.toolName === RELEASE_TOOL ? undefined : await readLedger(ctx, record);
       const unrecorded = ledger ? childEvidence.unrecordedOutcomes(sessionId, ledger) : [];
-      const replacing = event.toolName === "task" && assignedRowIds(event.input).some((id) => unrecorded.includes(id));
+      const replacing =
+        event.toolName === "task" &&
+        assignedRowIds(event.input).some((id) => unrecorded.includes(id)) &&
+        !childEvidence.unrecordedFailures(sessionId, ledger as ExecutionLedger).length;
       if (unrecorded.length && !replacing) {
         return {
           block: true,
-          reason: `Atlas progress guard: the child of ${unrecorded.join(", ")} has a final result, but the ledger still shows ${unrecorded.length === 1 ? "that row" : "those rows"} in progress. Record each first: atlas_ledger done with the inspected evidence (a verifier's verdict for a HEAVY row under verification), block with the reason, or reopen; or dispatch a replacement child carrying that row's current atlas_assignment binding.`,
+          reason: `Atlas progress guard: ${unrecorded.join(", ")} has a final result not recorded in the ledger. Record done with inspected passing evidence, fail with the failing check/first error/classification, or block an external blocker. A terminal native failure must be recorded with fail before replacement; a new child cannot erase the budget.`,
         };
       }
     }
@@ -2868,9 +3011,22 @@ export default function prometheus(pi: ExtensionAPI): void {
     const live = mainSession(ctx);
     const sessionId = ctx.sessionManager.getSessionId();
     if (event.toolName === "task" && provenanceBlockReason("task") === undefined) {
-      childEvidence.observeTaskResult(sessionId, event.toolCallId, event.details, event.isError);
+      childEvidence.observeTaskResult(
+        sessionId,
+        event.toolCallId,
+        event.details,
+        event.isError,
+        event.isError
+          ? event.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("\n")
+          : undefined,
+      );
       observeFinalJobs(ctx);
       await settleDetached();
+      const executing = records.get(sessionId);
+      if (executing?.phase === "executing") await readLedger(ctx, executing);
     }
     if (!live) return undefined;
     const record = records.get(sessionId) ?? rehydrate(ctx) ?? recordFor(sessionId);

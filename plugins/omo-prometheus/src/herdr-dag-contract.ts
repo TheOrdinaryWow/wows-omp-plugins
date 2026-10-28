@@ -31,7 +31,7 @@ export interface AtlasRow {
   startedAt?: number;
   childAgentId?: string;
   updatedAt: number;
-  /** X rows: the rejecting gate. D rows: the row whose work surfaced the defect. */
+  /** X rows: the rejecting gate or P1. D rows: the row whose work surfaced the defect. */
   origin?: string;
   /** T, D and X rows. */
   tier?: "light" | "heavy";

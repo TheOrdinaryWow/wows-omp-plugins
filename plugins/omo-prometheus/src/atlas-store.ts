@@ -16,6 +16,8 @@ import {
   type DeferredFinding,
   type Delivery,
   type ExecutionLedger,
+  expireRetryWindows,
+  type FailedOutcome,
   type ItemStatus,
   isComplete,
   type LedgerItem,
@@ -1156,6 +1158,7 @@ export class AtlasStore {
           changed = true;
         }
       }
+      if (expireRetryWindows(ledger)) changed = true;
       // Recovery is committed before calling user code; a refused mutation cannot undo invalidation.
       if (changed) {
         await writeLedgerAtomic(path.join(plan.directory, "checkpoint.json"), checkpointFor(ledger, approvalSha256));
@@ -1231,6 +1234,47 @@ export class AtlasStore {
       }
       return result;
     });
+  }
+  /** Diagnostic output is durable context only, never a receipt or checkpoint completion binding. */
+  async saveFailure(plan: AtlasPlan, row: LedgerItem, failure: FailedOutcome, output: string): Promise<void> {
+    const scope = scopes.getStore();
+    if (
+      !scope?.active ||
+      scope.store !== this ||
+      scope.plan.id !== plan.id ||
+      scope.plan.directory !== plan.directory ||
+      !ledgerRows(scope.ledger).includes(row) ||
+      failure.sessionId !== scope.sessionId ||
+      row.status !== "in_progress" ||
+      failure.attempt !== row.attempt ||
+      (failure.verifyAttempt !== undefined && failure.verifyAttempt !== row.verification?.attempt)
+    ) {
+      throw new Error("Atlas failure diagnostics require their owned current ledger transaction");
+    }
+    await this.#assertOwner(scope.plan, scope.sessionId);
+    if (!output.trim()) throw new Error("Native failure diagnostic is empty");
+    const evidenceDir = path.join(plan.directory, "evidence");
+    await directory(evidenceDir);
+    const file = path.join(evidenceDir, `failure-${planDigest(failure.outcomeKey)}.md`);
+    const sha256 = planDigest(output);
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(output);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.link(temporary, file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || planDigest(await regularFile(file)) !== sha256) throw error;
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+    await syncDirectory(evidenceDir);
+    if (!scope.active) throw new Error("Atlas failure transaction has already ended");
+    failure.output = { path: file, sha256 };
   }
 
   async saveReceipt(plan: AtlasPlan, receipt: ChildReceipt, nativeOutputPath: string): Promise<void> {

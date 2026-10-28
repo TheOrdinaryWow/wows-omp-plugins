@@ -83,7 +83,7 @@ Prometheus 根据会话 `task` 工具列出的代理制定计划，Momus 也按�
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
-ledger.json      row progress, deferred findings and owner rulings (version 7), plus the workspace's Git HEAD at approval
+ledger.json      row progress, deferred findings, owner rulings and durable retry windows (version 8), plus Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
@@ -101,7 +101,7 @@ Atlas 持有计划期间，会话的计划引用是 `atlas://<plan-id>/plan.md`�
 | --- | --- | --- |
 | `T1…` | 已批准的计划 | 各自 `Depends on:` 中的行 |
 | `D1…` | 任何关口开始之前的 `discover` scope `in`；每行注明是哪个 T 或 D 行的工作发现了它 | 无 |
-| `X1…` | 关口否决后的 `fix` | 无 |
+| `X1…` | F1–F4 或 P1 否决工作后的 `fix`；`origin` 指定该行 | 无 |
 | `F1`–`F4` | 已批准的计划 | 所有 T 行和 D 行，以及各自的 X 行 |
 | `P1` | `Delivery: pr` 或 `ship` | 所有关口和所有 X 行 |
 
@@ -111,21 +111,32 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 | --- | --- |
 | `status` | 所有行及其生效的验收（裁定替换了计划原文时标注 `amended by Rn`）、业主裁定、带编号和分诊结果的范围外发现、交付方式和可派发的行。 |
 | `start` | 预留一个前置条件已完成的开放行并返回尝试绑定；关口还会得到 `outputSchema`，HEAVY 行会得到上一次验证失败。 |
-| `done` | 记录子代理的真实最终结果。LIGHT 行、关口和 P1 随即完成。HEAVY 行只记录实现，仍保持进行中；其验证者的 `PASS` 完成该行，`FAIL` 带着摘要重新打开该行，`INCONCLUSIVE` 不改变任何状态。 |
-| `verify` | 针对实现已记录的 HEAVY 行：绑定一个不同的全新验证者，返回其 `{"verify": …}` 绑定和严格的 `outputSchema`（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`）。再次调用会替换尚未完成的验证者。 |
+| `done` | 记录经认证的原生最终成功。LIGHT 行和 P1 完成；HEAVY 记录实现后还需验证者 PASS。关口或验证者 FAIL/INCONCLUSIVE 会归档诊断、消耗窗口并重新打开或阻塞该行，不会通过抛错丢弃变更。 |
+| `verify` | 已记录实现的 HEAVY 行：绑定不同的全新验证者并返回严格 schema（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`，可选 `failure: {failureClass, check, firstError}`）。没有失败详情的旧输出仍有效，非 PASS 默认按 unknown 计数。替换前必须等在途原生工作结束。 |
+| `fail` | 指定 `id`、检查过的 `evidence`、`check`、`firstError`、可选 `failureClass`（product/harness/unknown）及所属原生 `childAgentId`，认证一个最终原生代次并只记录一次。只有关联的派生前原生失败可以省略子代理 id。不生成成功回执。 |
+| `retry` | 已耗尽的行加上 `evidence` 中改变的假设：锁外请业主确认，再检查所有权、历史和未变的验收，追加新窗口，仅重新打开该行。拒绝、附加状态变化、子代理仍在运行或没有对话框都不会授权。 |
 | `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），一旦有关口开始或存在修正行即被拒绝；`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
 | `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当路线图在本仓库中可用时允许。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当本仓库中没有可用的路线图时允许，引用可省略。是否可用取自一次新的路线图绑定回复中的 `usable` 标志；没有回复表示没有路线图，旧版路线图的回复不带这个标志时，`todo` 和 `report` 都接受。 |
-| `fix` | 为否决的关口追加一个 X 行（可选 tier），并只重新打开该关口。 |
+| `fix` | 为否决的 F1–F4 或 P1 追加正常 tier 的 X 行，只重新打开来源行。P1 对每个 X 恰好依赖一次，X 从不依赖 P1。来源额度耗尽后，没有重试授权就不能继续自动修复。 |
 | `block`、`reopen` | 只影响指定的行；依赖它的已完成行保留各自的证明。 |
 | `amend` | 为 `id` 指定的 T、D 或 X 行记录一条业主裁定：`acceptance` 是完整的替换文本，`evidence` 是说明。关口、P1、未知的行和进行中的行都会被拒绝。写入之前，插件会在确认对话框中向你展示该行、当前生效的验收、提议的验收和说明；拒绝对话框则什么都不记录；没有 UI 时工具拒绝执行，并指出路径是 `/atlas exit` 加上经 `/prometheus` 修订的计划。该行的状态、其他行和已通过的关口都不受影响。`status`、`start` 和 `verify` 显示生效的验收并标注 `amended by Rn`；F1 和 F4 的 `start` 结果以及每个 `verify` 结果列出全部裁定。 |
 
 只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执、每条范围外发现都已分诊（拒绝时会列出未分诊的发现），并且需要你明确确认。计划完成和 `atlas:completed` 从不等待分诊。
 
-子代理的输出会被复制到 `evidence/` 并按摘要重新校验，因此删除原会话后，已验证的进度仍然保留。只保存子代理自己的输出（不含它链接的文件），未通过的验证者输出也不归档。某行的证明丢失或被改动时，该行会重新打开，旧的会话分支也无法回滚共享进度。恢复时，HEAVY 行保留已记录的实现，只丢弃尚未完成的验证者绑定。
+成功输出和原始回执复制到 `evidence/` 并校验摘要，因此原会话删除后已验证进度仍保留。最终诊断（含未通过的验证者）复制为 `failure-<outcome-digest>.md`，路径和摘要由版本化执行记录引用；它们只是上下文，不是完成证明或检查点绑定。成功证明缺失或变化只重新打开对应行。恢复时 HEAVY 保留有效实现，仅丢弃未完成的验证者绑定。检查点仍为版本 2，批准文件的字节不变。
+
+### 重试窗口与交付修复
+
+每行可选的 `retry.windows` 保存 `openedAt`、最终失败（原生 `outcomeKey`、实现/验证尝试、工具调用/会话/子代理身份、时间、类别、原始检查/错误、规范化签名、检查过的证据及复制输出的路径和摘要）、一次环境修复预留、可选的停止原因/时间，以及业主授权说明/时间。计数由记录推导，不另存计数器。新窗口保留旧窗口。规范化移除易变的 ANSI、时间戳、临时根路径、带标签的 id 和时长，不移除普通断言值、错误码或仓库相对路径。
+
+连续两次计数签名相同或第三次计数失败即停止；product 和 unknown 计数。有证据的 harness 未运行产品行为失败可以有一次不计数修复，下次派发会消耗预留；任何第二次 harness 失败即停止。T/D/X/F 还会在首次有效原生派发后四小时停止，包括会话离线时间；P1 被动等待 CI/评审例外。过期会在持有所有权的恢复过程中先落盘，再允许本次变更被拒绝；恢复、宿主返回、继续执行和工作操作都会检查，而不是实时调度器。会列出活动子代理 id，供取消并观察原生最终状态。重新打开、裁定、替换子代理或新 X 不重置来源历史；已知原生失败必须在替换前记录。语义验收失败和 harness 分类仍依赖 Atlas 检查证据。远程等待、故意复现失败、取消和需要业主的阻塞本身不算产品失败周期。
+
+停止时保留并清点可归属的未验证提交/文件，不回滚，也不标成部分完成。释放和交付仍要求每一行完成。`ship` 失败创建来源为 P1 的 X 行，按正常 tier 取得新的受影响测试/真实消费界面 QA（HEAVY 还需独立验证），再派全新 P1 子代理复用 PR，在合并前检查当前 head 的仓库必需检查/评审，且没有未解决的阻塞性变更请求。不得自批。`pr` 只移交不合并。人工批准/权限缺失或分支不明确属于外部阻塞；远程状态由子代理检查，不由插件专用客户端实现。原生分支集成与隔离保持不变。
+
 
 继续执行的消息是一条隐藏的 `<atlas-continuation>`，其中包含执行记录摘要；你每发一条消息最多发送八次，连续两次没有进展时，循环停止并通知你。当所有未完成的行都已阻塞或在等待阻塞的行、没有你就无法推进时，继续执行消息会列出每个阻塞行及其记录的原因，并要求 Atlas 用 `ask` 询问你，让会话等待你的回答，而不是只在聊天中留下问题就结束。
 
-旧版本写入的执行记录会在加载时升级，并保留已验证的进度：版本 7 之前没有业主裁定，所以列表从空开始；版本 6 之前的范围外发现按记录顺序获得 `O1`、`O2`……编号，且尚未分诊；版本 5 之前各行均为 LIGHT，发现行和范围外发现为空，交付方式取自计划中的 `Delivery:` 行，没有则为 `direct`；版本 1 的检查点升级到版本 2；版本 4 之前没有记录 Git 基线，所以 F1 以最早记录的行开始时间推定。版本 1 和 2 的批准文件原样加载、从不改写，因为检查点绑定了它们的原始字节。把执行记录存放在会话内的旧版本计划不会迁移，需要重新批准。`prometheus_ledger` 和 `prometheus_release` 已改名为 `atlas_ledger` 和 `atlas_release`，不保留别名。
+旧执行记录在加载时惰性升级：v7 到 v8 保留裁定、分诊、回执及批准的计划/批准文件原字节，不虚构失败历史，也不推测首次派发时间；从下一次接受的绑定派发开始计入。只读不改写旧格式，下一次变更写 v8。v7 前裁定为空；v6 前范围外发现获得稳定 O id 并从未分诊开始；v5 前各行保持 LIGHT，交付取自批准计划；检查点 v1 升级为 v2，旧批准文件保持字节不变。共享执行记录之前的会话内格式仍需重新批准，不保留工具别名。
 
 `timeline.jsonl` 只用于展示：时间线缺失或损坏都不影响批准、所有权、回执或进度。旧版本的计划包显示从执行记录推导出的历史，推导出的事件从不写回。崩溃导致截断的最后一行，以及未知的未来事件类型或版本都会被忽略。
 
@@ -140,7 +151,7 @@ F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）
 ## 会话集成
 
 - 待办镜像：Atlas 根据校验过的执行记录，按行的顺序维护会话的待办阶段：`Atlas tasks`、存在时的 `Atlas discovered` 和 `Atlas fixes`、`Atlas final gates`，以及计划需要交付时的 `Atlas delivery`。其他阶段保持不变；请不要手动编辑 Atlas 阶段。
-- 进度守卫：宿主只在模型调用 `todo` 时重绘待办 HUD，所以每个改动了行的 `atlas_ledger` 结果都以需要执行的 `todo` 调用开头，随后给出精简的执行记录（只列出改动行的验收和证据；`status` 显示所有行）。`todo` 可用时，在一次非 view 的 `todo` 调用成功之前，`task`、`wait` 和 `atlas_release` 都会被拒绝；一次调用覆盖之前的所有执行记录改动。另外，某行当前尝试的子代理已有最终结果而该行仍为 `in_progress` 时，`wait` 和不带该行 `atlas_assignment` 绑定的 `task` 调用都会被拒绝，直到 Atlas 用 `done`、`block` 或 `reopen` 记录该行，或者用该行当前的绑定派发替代子代理。两者都只保存在内存中：重启后的会话不带这些状态。
+- 进度守卫：`todo` 可用时，行变化后须先通过非 view 的 todo 调用刷新，才能派发、等待或释放。未记录的最终结果会阻止无关派发和等待；须先检查并记录 `done`、`fail` 或外部 `block`。已知原生失败必须先 `fail`，才能替换、阻塞、重新打开或创建来源修复；原生成功但验收失败也由编排策略要求 `fail`。原生观察仅在进程内，已记录的重试历史则在重启后保留。过期停止的代次不能完成工作，也不会在原生最终结束后卡住新授权窗口。
 - ask 守卫：`ask` 会让整个会话一直等到你回答，期间不会记录已完成的子代理，也不会派发任何行。只要还有进行中或可派发的行，Atlas 的 `ask` 就会被拒绝，并列出仍可推进的行。拒绝只是推迟提问，不会降低问题的级别：只要某种合理的回答会改变交付内容、验收方式、范围或不可逆的步骤，问题就要用 `block` 记录在对应的行上；只有每种回答都不影响计划的问题，才由 Atlas 写进回复并注明据以推进的假设。等所有未完成的行都已阻塞或在等待阻塞的行时，`ask` 才可用。执行记录不可用时，`ask` 不受限制。
 - 会话标题：Atlas 请 OMP 的标题生成器生成一个以“Atlas”开头的标题，没有结果时命名为 `Atlas: <plan name>`。用 `/rename` 设置的名称永远不会被替换，`PI_NO_TITLE` 会关闭这一功能。
 - 没有 UI 时，裸 `/atlas` 打印计划列表，或打印正在运行的计划及其各行；进入计划失败时，会话保持暂停，直到运行 `/atlas exit`，Atlas 永远不会退化为仅靠提示词的执行。输出以 `wows-omp-omo-prometheus.command-status` 消息送达。在 RPC 中，Atlas 激活时裸 `/atlas` 显示一个摘要，提供 Keep running、View details（只读 `editor` 对话框，显示计划文本）和 Exit；小组件文本行最多每秒发送两次。
@@ -184,7 +195,7 @@ F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）
 | `atlas:snapshot` | 在每个带绑定计划的 hello 之后以及每次实时更新时发送：计划标识、执行记录状态和总数、带依赖与来源信息的各行、每行的子代理进度、最近 50 条时间线事件。 |
 | `atlas:released` | 解除绑定，`reason` 为 `"exit"`、`"session-switch"` 或 `"shutdown"`，随后发送一个不带计划的 hello。 |
 
-快照中每一行的 `kind` 由 id 推导：`task`（T）、`discovered`（D）、`fix`（X）、`gate`（F）或 `delivery`（P）。`origin` 对 X 行指否决的关口，对 D 行指发现它的行。各行可能带 `tier` 和 `verification: {status}`；验证者的摘要不会发布。HEAVY 行接受验证期间，该行的 `attempt` 是验证尝试。时间线另有 `discovered`、`implemented`、`verify_started`、`verify_passed` 和 `verify_failed`。
+快照每行的 `kind` 由 id 推导：`task`（T）、`discovered`（D）、`fix`（X）、`gate`（F）或 `delivery`（P）。X 行的 `origin` 指否决的关口**或 P1**，D 行则指发现它的行。可带 `tier` 和 `verification: {status}`，不发布验证者摘要。HEAVY 行验证时 `attempt` 为验证尝试。P1 来源修复使用普通修复/依赖事件，不会误发 `gate_failed`；v1 快照和时间线格式保持不变。
 
 启动顺序无关紧要。不支持的版本和未知会话会被忽略。某行完成后，最后已知的子代理进度仍然可见，开始新的尝试时清除。释放只表示计划不再显示在视图中。`herdrDag: false` 时不发送任何事件，包括 hello 回复。
 

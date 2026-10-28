@@ -4,15 +4,31 @@ import * as path from "node:path";
 
 import type { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
-import { type ChildReceipt, type ExecutionLedger, type LedgerItem, ledgerRows, planDigest, verificationStatus } from "./ledger.ts";
+import {
+  assertRetryAvailable,
+  type ChildReceipt,
+  type ExecutionLedger,
+  type FailedOutcome,
+  type FailureClass,
+  type LedgerItem,
+  ledgerRows,
+  noteRetryDispatch,
+  planDigest,
+  verificationStatus,
+} from "./ledger.ts";
 
 export type ChildVerdict = "PASS" | "FAIL" | "INCONCLUSIVE";
 
 interface Assignment {
+  toolCallId: string;
+  outcomeKey: string;
+  nativeError?: string;
+  cancelled?: boolean;
   ledgerId: string;
   sessionId: string;
   planSha256: string;
   rows: Record<string, string>;
+  retryWindows: Record<string, number>;
   /** The rows map binds a HEAVY row's verification attempt, never its implementation. */
   verify: boolean;
   dispatchedAt: number;
@@ -67,6 +83,56 @@ function suppliesObjectSchema(value: unknown): boolean {
     return false;
   }
 }
+interface FailureDetails {
+  failureClass: FailureClass;
+  check: string;
+  firstError: string;
+}
+
+interface BoundVerdict {
+  verdict: ChildVerdict;
+  summary: string;
+  failure?: FailureDetails;
+}
+
+const FAILURE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["failureClass", "check", "firstError"],
+  properties: {
+    failureClass: { enum: ["product", "harness", "unknown"] },
+    check: { type: "string", minLength: 1 },
+    firstError: { type: "string", minLength: 1 },
+  },
+};
+
+function failureDetails(result: Record<string, unknown>): FailureDetails | undefined {
+  const failure = result.failure;
+  if (failure === undefined) return undefined;
+  if (
+    !object(failure) ||
+    !["product", "harness", "unknown"].includes(String(failure.failureClass)) ||
+    typeof failure.check !== "string" ||
+    !failure.check.trim() ||
+    typeof failure.firstError !== "string" ||
+    !failure.firstError.trim()
+  ) {
+    throw new Error("Invalid child failure details");
+  }
+  return failure as unknown as FailureDetails;
+}
+
+interface CaptureOptions {
+  registry: AgentRegistry;
+  parentAgentId: string;
+  sessionId: string;
+  artifactsDir: string;
+  ledger: ExecutionLedger;
+  row: LedgerItem;
+  childAgentId: string;
+  priorReceipts: readonly ChildReceipt[];
+  verify?: boolean;
+}
 
 /** The exact outputSchema given to a native gate child; it overrides any agent-native prose format. */
 export function gateOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Record<string, unknown> {
@@ -81,12 +147,13 @@ export function gateOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Reco
       verdict: { enum: ["PASS", "FAIL", "INCONCLUSIVE"] },
       summary: { type: "string", minLength: 1 },
       evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+      failure: FAILURE_SCHEMA,
     },
   };
 }
 
-/** Gate verdicts come from the child's complete JSON artifact, never a word in caller prose. */
-export function validateGateOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): void {
+/** Parse a bound non-PASS diagnosis without allowing it to authorize completion. */
+export function parseGateOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): BoundVerdict {
   let result: unknown;
   try {
     result = JSON.parse(content);
@@ -99,6 +166,7 @@ export function validateGateOutput(content: string, ledger: ExecutionLedger, row
     result.gateId !== row.id ||
     result.planSha256 !== ledger.planSha256 ||
     result.attempt !== row.attempt ||
+    (result.verdict !== "PASS" && result.verdict !== "FAIL" && result.verdict !== "INCONCLUSIVE") ||
     typeof result.summary !== "string" ||
     !result.summary.trim() ||
     !Array.isArray(result.evidence) ||
@@ -107,6 +175,12 @@ export function validateGateOutput(content: string, ledger: ExecutionLedger, row
   ) {
     throw new Error(`${row.id} child output does not match the current plan and attempt`);
   }
+  return { verdict: result.verdict, summary: result.summary.trim(), failure: failureDetails(result) };
+}
+
+/** Historical success receipts remain PASS-only; legacy extra fields stay tolerated. */
+export function validateGateOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): void {
+  const result = parseGateOutput(content, ledger, row);
   if (result.verdict !== "PASS")
     throw new Error(
       `${row.id} did not pass: ${String(result.verdict)}. Record each correction with atlas_ledger fix, or report the blocker.`,
@@ -126,12 +200,13 @@ export function verifyOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Re
       verdict: { enum: ["PASS", "FAIL", "INCONCLUSIVE"] },
       summary: { type: "string", minLength: 1 },
       evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+      failure: FAILURE_SCHEMA,
     },
   };
 }
 
 /** Read a verifier's verdict from its complete JSON artifact; a FAIL is a valid result, a mismatched binding is not. */
-export function parseVerifyOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): { verdict: ChildVerdict; summary: string } {
+export function parseVerifyOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): BoundVerdict {
   let result: unknown;
   try {
     result = JSON.parse(content);
@@ -153,7 +228,7 @@ export function parseVerifyOutput(content: string, ledger: ExecutionLedger, row:
   ) {
     throw new Error(`${row.id} verifier output does not match the current plan and verification attempt`);
   }
-  return { verdict: result.verdict, summary: result.summary.trim() };
+  return { verdict: result.verdict, summary: result.summary.trim(), failure: failureDetails(result) };
 }
 
 /** Correlates native dispatch and terminal lifecycle events; it never launches or schedules children. */
@@ -182,7 +257,7 @@ export class ChildEvidence {
     if (!tasks.length) throw new Error("Task batch is empty");
     const bound = new Set<string>();
     const dispatchedAt = Date.now();
-    const assignments = tasks.map((task): Assignment => {
+    const assignments = tasks.map((task, index): Assignment => {
       if (!object(task) || typeof task.task !== "string") throw new Error("Every task needs an assignment body");
       const text = `${typeof input.context === "string" ? input.context : ""}\n${task.task}`;
       const markers = [...text.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)];
@@ -204,8 +279,10 @@ export class ChildEvidence {
         throw new Error("Task assignment does not match the approved plan");
       }
       const rows: Record<string, string> = {};
+      const retryWindows: Record<string, number> = {};
       for (const [id, attempt] of Object.entries(entries)) {
         const row = ledgerRows(ledger).find((candidate) => candidate.id === id);
+        if (row) assertRetryAvailable(row, dispatchedAt);
         if (bound.has(id)) throw new Error(`${id} is assigned more than once in this batch`);
         if (verify) {
           const verification = row?.verification;
@@ -242,9 +319,29 @@ export class ChildEvidence {
         }
         bound.add(id);
         rows[id] = attempt;
+        retryWindows[id] = (row?.retry?.windows.length ?? 1) - 1;
       }
-      return { ledgerId: ledger.ledgerId, sessionId, planSha256: ledger.planSha256, rows, verify, dispatchedAt, artifactsDir };
+      return {
+        ledgerId: ledger.ledgerId,
+        sessionId,
+        planSha256: ledger.planSha256,
+        rows,
+        retryWindows,
+        verify,
+        dispatchedAt,
+        artifactsDir,
+        toolCallId,
+        outcomeKey: `${sessionId}:${toolCallId}:${index}`,
+      };
     });
+    for (const id of bound) {
+      const row = ledgerRows(ledger).find((candidate) => candidate.id === id);
+      if (row && this.pendingRowChildren(sessionId, ledger.ledgerId, id).length)
+        throw new Error(`${id} still has live native work; wait for terminal settlement before replacement`);
+      if (row && this.unrecordedFailures(sessionId, ledger).includes(id))
+        throw new Error(`${id} has an unrecorded native failure; record atlas_ledger fail before replacement`);
+      if (row) noteRetryDispatch(row, dispatchedAt);
+    }
     this.#dispatches.set(`${sessionId}:${toolCallId}`, assignments);
   }
 
@@ -334,13 +431,17 @@ export class ChildEvidence {
     }
   }
 
-  observeTaskResult(sessionId: string, toolCallId: string, details: unknown, isError = false): void {
+  observeTaskResult(sessionId: string, toolCallId: string, details: unknown, isError = false, nativeError?: string): void {
     const assignments = this.#dispatches.get(`${sessionId}:${toolCallId}`);
     if (!assignments) return;
     for (const assignment of assignments) assignment.returnedAt ??= Date.now();
     // The tool-level flag ORs every member's payload, so it can decide only a call without result details.
     if (!object(details)) {
-      if (isError) for (const assignment of assignments) assignment.finalStatus = "failed";
+      if (isError)
+        for (const assignment of assignments) {
+          assignment.finalStatus = "failed";
+          assignment.nativeError = nativeError ?? "Native task returned an error without result details";
+        }
       return;
     }
     if (object(details.async) && Array.isArray(details.progress)) {
@@ -350,6 +451,9 @@ export class ChildEvidence {
         if (assignment) {
           assignment.nativeChildId = progress.id;
           if (progress.status === "failed" || progress.status === "aborted") assignment.failedInFinalProgress = true;
+          if (progress.status === "failed" || progress.status === "aborted")
+            assignment.nativeError = typeof progress.error === "string" ? progress.error : `Native task ${String(progress.status)}`;
+          if (progress.status === "aborted") assignment.cancelled = true;
         }
       }
     }
@@ -361,6 +465,13 @@ export class ChildEvidence {
         const child = this.#children.get(`${sessionId}:${result.id}`);
         const finalStatus = result.exitCode === 0 && result.aborted !== true && result.error === undefined ? "completed" : "failed";
         assignment.finalStatus = finalStatus;
+        assignment.nativeChildId = result.id;
+        assignment.cancelled = result.aborted === true;
+        if (finalStatus === "failed")
+          assignment.nativeError =
+            typeof result.error === "string"
+              ? result.error
+              : `Native task exited ${String(result.exitCode)}${result.aborted === true ? " (aborted)" : ""}`;
         if (child?.assignment === assignment && !child.reactivation)
           child.finalStatus = child.finalStatus === "failed" ? "failed" : finalStatus;
       }
@@ -368,7 +479,11 @@ export class ChildEvidence {
     // A returned synchronous call is terminal even if spawn failed before a child existed.
     // Async task results can contain only the synchronous subset; their remaining jobs stay owned.
     if (!object(details.async)) {
-      for (const assignment of assignments) assignment.finalStatus ??= "failed";
+      for (const assignment of assignments)
+        if (assignment.finalStatus === undefined) {
+          assignment.finalStatus = "failed";
+          assignment.nativeError = nativeError ?? "Native task returned without a terminal member result";
+        }
     }
   }
 
@@ -407,6 +522,8 @@ export class ChildEvidence {
             () => {
               assignment.settled = true;
               assignment.finalStatus = job.status === "completed" && assignment.finalStatus !== "failed" ? "completed" : "failed";
+              if (assignment.finalStatus === "failed")
+                assignment.nativeError ??= typeof job.error === "string" ? job.error : "Native async task failed during final integration";
               const child = this.#children.get(`${sessionId}:${job.agentId}`);
               if (child?.assignment === assignment && !child.reactivation) child.finalStatus = assignment.finalStatus;
               native.onSettled();
@@ -414,6 +531,7 @@ export class ChildEvidence {
             () => {
               assignment.settled = true;
               assignment.finalStatus = "failed";
+              assignment.nativeError ??= "Native async task promise rejected";
               const child = this.#children.get(`${sessionId}:${job.agentId}`);
               if (child?.assignment === assignment && !child.reactivation) child.finalStatus = "failed";
               native.onSettled();
@@ -538,22 +656,158 @@ export class ChildEvidence {
       return own.length && !own.some(running) ? [row.id] : [];
     });
   }
+  /** Excludes deliberate cancellation, which is an external blocker rather than a failed product cycle. */
+  unrecordedFailures(sessionId: string, ledger: ExecutionLedger): string[] {
+    return ledgerRows(ledger)
+      .filter((row) =>
+        [...this.#dispatches.values()]
+          .flat()
+          .some(
+            (assignment) =>
+              assignment.sessionId === sessionId &&
+              assignment.ledgerId === ledger.ledgerId &&
+              assignment.rows[row.id] !== undefined &&
+              assignment.finalStatus === "failed" &&
+              !assignment.cancelled &&
+              !row.retry?.windows[assignment.retryWindows[row.id] ?? 0]?.stop &&
+              !row.retry?.windows.some((window) => window.failures.some((failure) => failure.outcomeKey === assignment.outcomeKey)),
+          ),
+      )
+      .map((row) => row.id);
+  }
+
+  pendingRowChildren(sessionId: string, ledgerId: string, rowId: string): string[] {
+    const pending = new Set<string>();
+    for (const assignments of this.#dispatches.values())
+      for (const assignment of assignments) {
+        if (assignment.sessionId !== sessionId || assignment.ledgerId !== ledgerId || assignment.rows[rowId] === undefined) continue;
+        if (assignment.finalStatus === undefined || (assignment.observingSettlement && !assignment.settled)) {
+          const child = [...this.#children.values()].find((child) => child.assignment === assignment);
+          pending.add(assignment.nativeChildId ?? child?.childAgentId ?? assignment.toolCallId);
+        }
+      }
+    for (const child of this.#reactivations)
+      if (
+        child.assignment.sessionId === sessionId &&
+        child.assignment.ledgerId === ledgerId &&
+        child.assignment.rows[rowId] !== undefined &&
+        !child.reactivation?.settled
+      )
+        pending.add(child.childAgentId);
+    return [...pending];
+  }
+
+  /** Replay only the exact already-authenticated generation; a wake changes the outcome identity. */
+  recordedFailure(sessionId: string, row: LedgerItem, childAgentId?: string): FailedOutcome | undefined {
+    const child = childAgentId ? this.#children.get(`${sessionId}:${childAgentId}`) : undefined;
+    return row.retry?.windows
+      .flatMap((window) => window.failures)
+      .find((failure) => {
+        if (failure.sessionId !== sessionId || failure.childAgentId !== childAgentId) return false;
+        if (child) return failure.outcomeKey === this.#outcomeKey(child);
+        if (row.status !== "in_progress") return true;
+        if (failure.attempt !== row.attempt || failure.verifyAttempt !== row.verification?.attempt) return false;
+        return (
+          !childAgentId &&
+          [...this.#dispatches.values()]
+            .flat()
+            .some((assignment) => assignment.outcomeKey === failure.outcomeKey && assignment.finalStatus === "failed")
+        );
+      });
+  }
+
+  #outcomeKey(child: ObservedChild): string {
+    return child.reactivation
+      ? `${child.assignment.outcomeKey}:wake:${child.reactivation.nativeJobId}:${child.reactivation.nativeJobStart}`
+      : child.assignment.outcomeKey;
+  }
+
+  /** Failed native results and successful children with failed acceptance share correlation, never success receipts. */
+  async diagnostic(options: Omit<CaptureOptions, "childAgentId"> & { childAgentId?: string }): Promise<{
+    binding: Pick<FailedOutcome, "outcomeKey" | "attempt" | "verifyAttempt" | "toolCallId" | "sessionId" | "childAgentId" | "at">;
+    output: string;
+    nativeStatus: "completed" | "failed";
+  }> {
+    const { row, ledger, sessionId } = options;
+    if (!options.childAgentId) {
+      const matches = [...this.#dispatches.values()]
+        .flat()
+        .filter(
+          (assignment) =>
+            assignment.sessionId === sessionId &&
+            assignment.ledgerId === ledger.ledgerId &&
+            assignment.rows[row.id] === (options.verify ? row.verification?.attempt : row.attempt) &&
+            (!assignment.nativeChildId || !options.registry.get(assignment.nativeChildId)) &&
+            assignment.finalStatus === "failed" &&
+            assignment.nativeError,
+        );
+      if (matches.length !== 1 || !row.attempt || (matches[0]?.observingSettlement && !matches[0]?.settled))
+        throw new Error("No unique terminal pre-spawn native failure for this assignment");
+      const assignment = matches[0] as Assignment;
+      return {
+        binding: {
+          outcomeKey: assignment.outcomeKey,
+          attempt: row.attempt,
+          ...(options.verify ? { verifyAttempt: row.verification?.attempt } : {}),
+          toolCallId: assignment.toolCallId,
+          sessionId,
+          at: Date.now(),
+        },
+        output: assignment.nativeError as string,
+        nativeStatus: "failed",
+      };
+    }
+    const captured = await this.#captureChild({ ...options, childAgentId: options.childAgentId }, true);
+    return {
+      binding: {
+        outcomeKey: this.#outcomeKey(captured.observed),
+        attempt: row.attempt as string,
+        ...(options.verify ? { verifyAttempt: captured.attempt } : {}),
+        toolCallId: captured.observed.assignment.toolCallId,
+        sessionId,
+        childAgentId: options.childAgentId,
+        at: Date.now(),
+      },
+      output:
+        captured.observed.finalStatus === "failed"
+          ? `Native final status: failed${captured.observed.assignment.nativeError ? `\n${captured.observed.assignment.nativeError}` : ""}\n\nChild output:\n${captured.content}`
+          : captured.content,
+      nativeStatus: captured.observed.finalStatus as "completed" | "failed",
+    };
+  }
 
   /**
    * Authenticate the row's current child. `verify` captures a HEAVY row's verifier, bound to the verification attempt;
    * the parsed output is returned so the caller can read a verifier's verdict without rereading the file.
    */
-  async capture(options: {
-    registry: AgentRegistry;
-    parentAgentId: string;
-    sessionId: string;
-    artifactsDir: string;
-    ledger: ExecutionLedger;
-    row: LedgerItem;
-    childAgentId: string;
-    priorReceipts: readonly ChildReceipt[];
-    verify?: boolean;
-  }): Promise<{ receipt: ChildReceipt; output: string }> {
+  async capture(options: CaptureOptions): Promise<{ receipt: ChildReceipt; output: string }> {
+    const { ledger, row, childAgentId, parentAgentId, sessionId } = options;
+    const { attempt, childCreatedAt, content } = await this.#captureChild(options);
+    if (options.verify) parseVerifyOutput(content, ledger, row);
+    else if (row.id.startsWith("F")) validateGateOutput(content, ledger, row);
+    return {
+      receipt: {
+        receiptId: randomUUID(),
+        ledgerId: ledger.ledgerId,
+        planSha256: ledger.planSha256,
+        rowId: row.id,
+        attempt,
+        childAgentId,
+        parentAgentId,
+        sessionId,
+        childCreatedAt,
+        outputSha256: planDigest(content),
+        capturedAt: Date.now(),
+        nativeFinal: true,
+      },
+      output: content,
+    };
+  }
+
+  async #captureChild(
+    options: CaptureOptions,
+    diagnostic = false,
+  ): Promise<{ attempt: string; childCreatedAt: number; content: string; observed: ObservedChild }> {
     const { registry, parentAgentId, sessionId, artifactsDir, ledger, row, childAgentId, priorReceipts } = options;
     const verify = options.verify === true;
     if (row.status !== "in_progress" || !row.attempt || row.startedAt === undefined)
@@ -570,7 +824,8 @@ export class ChildEvidence {
     if (child.status !== "idle" && child.status !== "parked")
       throw new Error(`Evidence child ${childAgentId} is not completed (${child.status})`);
     if (
-      observed?.status !== "completed" ||
+      !observed ||
+      (!diagnostic ? observed.status !== "completed" : !["completed", "failed", "aborted"].includes(observed.status)) ||
       observed.assignment.sessionId !== sessionId ||
       observed.assignment.ledgerId !== ledger.ledgerId ||
       observed.assignment.planSha256 !== ledger.planSha256 ||
@@ -588,15 +843,18 @@ export class ChildEvidence {
         "Another agent woke this child after its task, and that turn ended without a native final result, so its output cannot be authenticated; dispatch a fresh child with the row's current atlas_assignment, or reopen the row",
       );
     }
-    if (observed.finalStatus !== "completed") {
+    if (
+      observed.finalStatus !== "completed" &&
+      !(diagnostic && observed.finalStatus === "failed" && (!observed.assignment.observingSettlement || observed.assignment.settled))
+    ) {
       throw new Error(
         "The native task has not reported final success, including isolated-work capture; wait for its final result or repair the failure",
       );
     }
     const outputPath = path.join(artifactsDir, `${childAgentId}.md`);
     if (
-      !child.history?.outputPath ||
-      path.resolve(child.history.outputPath) !== path.resolve(outputPath) ||
+      ((!child.history?.outputPath || path.resolve(child.history.outputPath) !== path.resolve(outputPath)) &&
+        !(diagnostic && observed.finalStatus === "failed" && !child.history?.outputPath)) ||
       child.sessionFile === null ||
       path.resolve(child.sessionFile) !== path.resolve(artifactsDir, `${childAgentId}.jsonl`)
     ) {
@@ -610,36 +868,30 @@ export class ChildEvidence {
         "Final gates and verifications require distinct fresh verification children, never an implementation or previously used verifier child",
       );
     }
-    const stat = await fs.lstat(outputPath);
-    if (!stat.isFile()) throw new Error("Child evidence must be a native output file, not a link");
-    const content = await fs.readFile(outputPath, "utf8");
-    if (!content.trim()) throw new Error("Child output is empty");
-    if (verify) parseVerifyOutput(content, ledger, row);
-    else if (row.id.startsWith("F")) validateGateOutput(content, ledger, row);
+    let content: string;
+    try {
+      const stat = await fs.lstat(outputPath);
+      if (!stat.isFile()) throw new Error("Child evidence must be a native output file, not a link");
+      content = await fs.readFile(outputPath, "utf8");
+      if (!content.trim()) throw new Error("Child output is empty");
+    } catch (error) {
+      if (
+        !diagnostic ||
+        observed.finalStatus !== "failed" ||
+        (error as NodeJS.ErrnoException).code !== "ENOENT" ||
+        !observed.assignment.nativeError
+      )
+        throw error;
+      content = observed.assignment.nativeError;
+    }
     // A lifecycle change during the file read cannot authorize a now-running or replaced generation.
     if (
       registry.get(childAgentId) !== child ||
       (child.status !== "idle" && child.status !== "parked") ||
       this.#children.get(`${sessionId}:${childAgentId}`) !== observed ||
-      observed.finalStatus !== "completed"
+      (observed.finalStatus !== "completed" && !(diagnostic && observed.finalStatus === "failed"))
     )
       throw new Error("Child changed while evidence was being captured; retry after completion");
-    return {
-      receipt: {
-        receiptId: randomUUID(),
-        ledgerId: ledger.ledgerId,
-        planSha256: ledger.planSha256,
-        rowId: row.id,
-        attempt,
-        childAgentId,
-        parentAgentId,
-        sessionId,
-        childCreatedAt: child.createdAt,
-        outputSha256: planDigest(content),
-        capturedAt: Date.now(),
-        nativeFinal: true,
-      },
-      output: content,
-    };
+    return { attempt, childCreatedAt: child.createdAt, content, observed };
   }
 }

@@ -51,6 +51,8 @@ The plan is written as a `local://` session artifact and submitted through OMP's
 
 Plans are sized to what they owe. Each ideal-state row says who depends on it, where the requirement comes from (your request, a decision you confirmed, or a contract that already exists in the repository), and what breaks for that person if it fails. A row nobody depends on stays out of the plan, so it cannot justify extra machinery. Each task lists the mechanisms it adds (`Mechanisms:`), the plan lists what it will not build, and the proposal summary shows both, along with the reviewer notes Prometheus turned down, before you approve. Reviewers can reject a plan for building too much, and the F2 gate fails work that goes beyond what the plan declared.
 
+Design advisors are question-triggered, not a fixed review pair: Prometheus uses `architect` for an unresolved boundary/decomposition question or `ultrabrain` for a genuinely hard independent algorithm/contract question only when that exact name is in the live agent roster. Trivial and ordinary Standard plans get neither; unavailable advisors are skipped, not replaced. Advice is read-only and does not replace Metis, Oracle, or your decisions.
+
 OmO documents the original as the [Ultrawork Planner](https://github.com/code-yeongyu/oh-my-openagent/blob/ac9fcb6f4223cf105a80b93e965cbc6274e53100/docs/guide/orchestration.md#planning-the-ultrawork-planner) (`/ulw-plan`) and [`/ulw-execute`](https://github.com/code-yeongyu/oh-my-openagent/blob/ac9fcb6f4223cf105a80b93e965cbc6274e53100/docs/guide/orchestration.md#execution-ulw-execute). This plugin keeps the `/prometheus` and `/atlas` commands and tracks those kernels; `NOTICE` records the pinned revision.
 
 ### Plan format
@@ -89,6 +91,8 @@ Atlas tracks the plan in a ledger. A task is done when its child's final result 
 
 Atlas keeps working until the plan is done. If the ledger or plan files are missing, damaged, or no longer match the approved plan, it pauses until you restore them, or until you exit with `/atlas exit` and get a changed plan approved.
 
+Retry budgets survive restarts and session handoffs. A row stops at the second consecutive identical counted failure signature, the third counted failure, or four hours from its first native dispatch (checked at host events, not a background timer). Product and unknown failures count; an evidenced harness failure before product behavior runs gets one uncounted repair, and a second harness failure stops. P1's passive CI/review wait is exempt from the clock. Once independent work is exhausted, a confirmation dialog can grant a new window without erasing history or changing acceptance. Blocked work stays unfinished: attributable unverified commits/files are retained and inventoried, never automatically rolled back, and delivery cannot proceed with gaps.
+
 If a task needs you, Atlas marks it blocked and keeps going with everything that doesn't depend on it. Questions that wouldn't change the work go in its reply, so an unattended run doesn't stall on them. Once nothing else can move, Atlas asks you in a dialog and waits. It never treats a real blocker as optional, and the final report lists every assumption it made.
 
 If you fix a blocker yourself, for example in another session, tell Atlas which commit or files did it; it reopens the task and has a new child check it before marking it done. If your answer changes how a task's acceptance is met (a measured ceiling that proved unreachable and that you decide to relax, judge differently, or accept narrower), Atlas records an owner ruling (`R1`, `R2`, …) that replaces that task's acceptance. The plugin asks you to confirm the ruling in a dialog first. The task is then redone and judged against the ruling, reviewers and verifiers see every ruling, and the final report lists each one as a deviation from the approved plan. If the answer changes the plan's tasks or scope instead, run `/atlas exit` and plan the change with `/prometheus`.
@@ -108,11 +112,13 @@ Once every task is done, Atlas runs four gates in parallel, each on a fresh chil
 | F3. Real-surface QA | `deep-low` (fallback `task`) | every verification scenario run for real, each pass backed by an artifact |
 | F4. Success-criteria fidelity | `deep-high` (fallback `task`) | the result against each success criterion and ideal-state row; it passes unless one is shown to fail |
 
-Each gate returns a structured `PASS`, `FAIL` or `INCONCLUSIVE`; only `PASS` counts. A failed gate adds correction rows (`X1`, `X2`, …) and reruns only that gate. After two failed reruns, Atlas blocks the gate and asks you how to proceed.
+Each gate returns a structured `PASS`, `FAIL` or `INCONCLUSIVE`; only `PASS` counts. Non-PASS diagnostics consume the gate's durable retry window. Corrections become X rows, and only the rejecting gate reruns with a fresh child; other passing gates retain their proof. An exhausted window blocks the gate until an owner-confirmed grant.
 
 ### Delivery
 
 `delivery` sets how finished work leaves the repository: `direct` keeps commits on the working branch, `pr` has a child push the branch and open a pull request after the gates, and `ship` also waits for CI and merges. With `ask` (the default), Prometheus asks when the repository has a remote; a fixed value is used without asking, `pr` or `ship` without a remote becomes `direct`, and you can override it in conversation. The plan's `Delivery:` line governs execution, and pushes and merges are always done by a child.
+
+`pr` hands off without merging. `ship` keeps the same PR active through current-head CI and review: in-scope failures become P1-origin X repairs with normal tiers, fresh affected tests/QA and independent HEAVY verification, followed by a fresh P1 child. The delivery child never fixes product code in place. Merge follows repository-required checks/review/merge policy, with no unresolved blocking change request; it never self-approves or invents a reviewer minimum where none is required. Missing access, required human approval, ambiguous PR branches or incompatible policy blocks delivery. Scope/acceptance changes still need your decision. Native isolation remains host-owned; PR head/base are explicit, never inferred from a child's temporary branch. The plugin enforces ledger budgets/bindings, while Atlas inspects the child's remote check/review/merge evidence; it does not run a GitHub polling service.
 
 ### The `/atlas` command
 

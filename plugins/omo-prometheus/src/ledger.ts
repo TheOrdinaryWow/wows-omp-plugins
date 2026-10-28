@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 
 import { isKnownAgent, resolveAgent } from "./agents.ts";
 
@@ -23,6 +24,33 @@ export interface Verification {
   /** The verifier's own summary. A FAIL summary stays on the reopened row for the next implementation attempt. */
   summary?: string;
 }
+export type FailureClass = "product" | "harness" | "unknown";
+
+/** Diagnostic of an authenticated terminal native outcome; never completion authority. */
+export interface FailedOutcome {
+  outcomeKey: string;
+  attempt: string;
+  verifyAttempt?: string;
+  toolCallId: string;
+  sessionId: string;
+  childAgentId?: string;
+  at: number;
+  failureClass: FailureClass;
+  check: string;
+  firstError: string;
+  signature: string;
+  evidence: string;
+  output?: { path: string; sha256: string };
+}
+
+export interface RetryWindow {
+  /** First accepted native dispatch, not the reservation made by start. */
+  openedAt?: number;
+  failures: FailedOutcome[];
+  harnessRepair?: { failureKey: string; attempt?: string };
+  stop?: { reason: "signature" | "attempts" | "elapsed" | "harness"; at: number };
+  grant?: { confirmedAt: number; note: string };
+}
 
 export interface LedgerItem {
   id: string;
@@ -43,10 +71,12 @@ export interface LedgerItem {
   receipt?: ChildReceipt;
   /** HEAVY rows only. */
   verification?: Verification;
-  /** X rows: the final gate whose rejection created them. D rows: the T or D row whose work surfaced them. */
+  /** X rows: the rejecting final gate or P1. D rows: the T or D row whose work surfaced them. */
   origin?: string;
   /** D rows: why the defect belongs to this plan. */
   reason?: string;
+  /** Survives every attempt reset, acceptance amendment, and attaching session. */
+  retry?: { windows: RetryWindow[] };
   updatedAt: number;
 }
 
@@ -89,14 +119,14 @@ export interface OwnerRuling {
 }
 
 export interface ExecutionLedger {
-  version: 7;
+  version: 8;
   ledgerId: string;
   planFilePath: string;
   planSha256: string;
   items: LedgerItem[];
   /** D rows: in-scope defects found during execution, appended before any gate starts. Every gate waits for them. */
   discoveries: LedgerItem[];
-  /** X rows appended after a final gate rejected the work; they are not part of the approved plan text. */
+  /** X rows appended after a final gate or P1 rejected the work; not part of the approved plan text. */
   fixes: LedgerItem[];
   gates: LedgerItem[];
   /** Empty for `direct`; otherwise the single P1 row, which waits for every gate and fix row. */
@@ -369,7 +399,7 @@ function buildLedger(
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 7,
+    version: 8,
     ledgerId: randomUUID(),
     planFilePath,
     planSha256: planDigest(planContent),
@@ -516,6 +546,12 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     if (verification === "failed" && item.status !== "done") {
       notes.push(`Last verification of ${item.id} failed; give the next implementation child: ${cell(item.verification?.summary ?? "")}`);
     }
+    const window = retryWindow(item);
+    if (window) {
+      notes.push(
+        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total; opened ${window.openedAt ?? "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — owner-confirmed retry required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
+      );
+    }
   }
   lines.push(...notes);
   lines.push(`Delivery: ${ledger.delivery}${ledger.deliveries.length ? ` (${ledger.deliveries.map((row) => row.id).join(", ")})` : ""}`);
@@ -577,12 +613,183 @@ function validVerification(value: unknown): boolean {
     (verification.summary === undefined || typeof verification.summary === "string")
   );
 }
+/** Product-work clock is checked at host events; P1's passive remote waiting is exempt. */
+export const RETRY_LIMIT_MS = 4 * 60 * 60 * 1000;
+
+export function retryWindow(row: LedgerItem): RetryWindow | undefined {
+  return row.retry?.windows.at(-1);
+}
+
+function countedFailures(window: RetryWindow): FailedOutcome[] {
+  return window.failures.filter((failure) => failure.failureClass !== "harness");
+}
+
+/** Strip volatile log metadata narrowly; product paths, assertion values and error codes stay meaningful. */
+export function failureSignature(check: string, firstError: string): string {
+  const normalize = (text: string) =>
+    stripVTControlCharacters(text)
+      .replace(/^(?:\[?\d{4}-\d\d-\d\d[T ][\d:.]+Z?\]?\s*|\[?\d\d:\d\d:\d\d(?:\.\d+)?\]?\s*)/gm, "")
+      .replace(
+        /(?:\/private)?\/tmp\/[^/\s:]+|\/var\/folders\/[^/\s:]+\/[^/\s:]+\/T\/[^/\s:]+|\S*\/artifacts\/[^/\s:]+|\S*\/worktrees\/[^/\s:]+/g,
+        "<temporary>",
+      )
+      .replace(/\b(pid|process(?: id)?|run(?: id)?)[=: #]+[\w-]+/gi, "$1=<id>")
+      .replace(/\b(duration|elapsed|took)[=: ]+\d+(?:\.\d+)?\s*(?:ms|s|sec(?:onds)?|m(?:in(?:utes)?)?)\b/gi, "$1=<duration>")
+      .replace(/\s+/g, " ")
+      .trim();
+  return `${normalize(check)}\n${normalize(firstError)}`;
+}
+
+export function assertRetryAvailable(row: LedgerItem, now = Date.now()): void {
+  const window = retryWindow(row);
+  if (window?.stop)
+    throw new Error(`${row.id} retry stopped (${window.stop.reason}); use owner-confirmed atlas_ledger retry, not reopen or a new child`);
+  if (!row.id.startsWith("P") && window?.openedAt !== undefined && now - window.openedAt >= RETRY_LIMIT_MS && row.status !== "done") {
+    throw new Error(`${row.id} retry stopped (elapsed four-hour product-work limit); an owner-confirmed retry is required`);
+  }
+}
+
+/** Called only once the complete native assignment batch has validated. */
+export function noteRetryDispatch(row: LedgerItem, now = Date.now()): void {
+  assertRetryAvailable(row, now);
+  row.retry ??= { windows: [{ failures: [] }] };
+  const window = retryWindow(row) as RetryWindow;
+  window.openedAt ??= now;
+  if (window.harnessRepair && window.harnessRepair.attempt === undefined) window.harnessRepair.attempt = currentAttempt(row);
+}
+
+/** Idempotent per native generation, not per row attempt: replacement children cannot reset the budget. */
+export function recordFailure(ledger: ExecutionLedger, row: LedgerItem, failure: FailedOutcome): boolean {
+  if (row.retry?.windows.some((window) => window.failures.some((old) => old.outcomeKey === failure.outcomeKey))) return false;
+  if (
+    row.status !== "in_progress" ||
+    !row.attempt ||
+    failure.attempt !== row.attempt ||
+    (failure.verifyAttempt !== undefined && failure.verifyAttempt !== row.verification?.attempt)
+  ) {
+    throw new Error(`${row.id} failure does not match its current attempt`);
+  }
+  row.retry ??= { windows: [{ failures: [] }] };
+  const window = retryWindow(row) as RetryWindow;
+  const diagnostic = { ...failure, signature: failureSignature(failure.check, failure.firstError) };
+  window.failures.push(diagnostic);
+  if (failure.failureClass === "harness") {
+    if (window.harnessRepair) window.stop ??= { reason: "harness", at: failure.at };
+    else window.harnessRepair = { failureKey: failure.outcomeKey };
+  } else {
+    const counted = countedFailures(window);
+    if (counted.length >= 2 && counted.at(-2)?.signature === diagnostic.signature) window.stop ??= { reason: "signature", at: failure.at };
+    else if (counted.length >= 3) window.stop ??= { reason: "attempts", at: failure.at };
+  }
+  if (failure.verifyAttempt) row.verification = { verdict: "fail", childAgentId: failure.childAgentId, summary: failure.firstError };
+  reopenRow(
+    ledger,
+    row.id,
+    `${failure.verifyAttempt ? "Verification failed" : "Failed"}: ${failure.firstError}\n${failure.evidence}${failure.output ? `\nDiagnostic: ${failure.output.path}` : ""}`,
+  );
+  expireRetryWindows(ledger, failure.at);
+  return true;
+}
+
+/** Recovery writes these stops before a requested mutation can refuse or roll back. */
+export function expireRetryWindows(ledger: ExecutionLedger, now = Date.now()): boolean {
+  let changed = false;
+  for (const row of ledgerRows(ledger)) {
+    const window = retryWindow(row);
+    if (
+      row.status === "done" ||
+      row.id.startsWith("P") ||
+      !window ||
+      window.stop ||
+      window.openedAt === undefined ||
+      now - window.openedAt < RETRY_LIMIT_MS
+    )
+      continue;
+    window.stop = { reason: "elapsed", at: now };
+    reopenRow(
+      ledger,
+      row.id,
+      "Four-hour product-work window expired at this host event. Cancel any live children and observe native terminal settlement before further work.",
+    );
+    changed = true;
+  }
+  return changed;
+}
+
+/** Caller must obtain real owner confirmation and recheck the proposal outside/inside its transaction. */
+export function grantRetry(ledger: ExecutionLedger, row: LedgerItem, note: string, now = Date.now()): void {
+  if (!retryWindow(row)?.stop || !note.trim()) throw new Error(`${row.id} requires an exhausted window and a reason for another retry`);
+  row.retry?.windows.push({ failures: [], grant: { confirmedAt: now, note: note.trim() } });
+  reopenRow(ledger, row.id, `Owner confirmed a new retry window: ${note.trim()}`);
+}
+
+function validRetry(value: LedgerItem["retry"]): boolean {
+  if (value === undefined) return true;
+  if (!value || !Array.isArray(value.windows) || !value.windows.length) return false;
+  const outcomes = new Set<string>();
+  return value.windows.every((window, index) => {
+    if (
+      !window ||
+      !Array.isArray(window.failures) ||
+      (window.openedAt !== undefined && !Number.isFinite(window.openedAt)) ||
+      (index > 0 && (!window.grant || !value.windows[index - 1]?.stop)) ||
+      (window.grant !== undefined && (!Number.isFinite(window.grant.confirmedAt) || !nonEmpty(window.grant.note))) ||
+      (window.stop !== undefined &&
+        (!["signature", "attempts", "elapsed", "harness"].includes(window.stop.reason) || !Number.isFinite(window.stop.at)))
+    )
+      return false;
+    for (const failure of window.failures) {
+      if (
+        !failure ||
+        ![
+          failure.outcomeKey,
+          failure.attempt,
+          failure.toolCallId,
+          failure.sessionId,
+          failure.check,
+          failure.firstError,
+          failure.evidence,
+        ].every(nonEmpty) ||
+        !Number.isFinite(failure.at) ||
+        !["product", "harness", "unknown"].includes(failure.failureClass) ||
+        failure.signature !== failureSignature(failure.check, failure.firstError) ||
+        outcomes.has(failure.outcomeKey) ||
+        (failure.verifyAttempt !== undefined && !nonEmpty(failure.verifyAttempt)) ||
+        (failure.childAgentId !== undefined && !nonEmpty(failure.childAgentId)) ||
+        (failure.output !== undefined && (!nonEmpty(failure.output.path) || !/^[a-f0-9]{64}$/.test(failure.output.sha256)))
+      )
+        return false;
+      outcomes.add(failure.outcomeKey);
+    }
+    const counted = countedFailures(window);
+    const repeated = counted.length >= 2 && counted.at(-2)?.signature === counted.at(-1)?.signature;
+    if (
+      !window.stop &&
+      (counted.length >= 3 || repeated || window.failures.filter((failure) => failure.failureClass === "harness").length >= 2)
+    )
+      return false;
+    return (
+      window.harnessRepair === undefined ||
+      (window.failures.some((failure) => failure.outcomeKey === window.harnessRepair?.failureKey && failure.failureClass === "harness") &&
+        (window.harnessRepair.attempt === undefined || nonEmpty(window.harnessRepair.attempt)))
+    );
+  });
+}
 
 /** Restore structural state only; callers must independently authenticate each completed receipt. */
 export function restoreLedger(data: unknown, planFilePath: string, planContent: string, approvedSha256: string): ExecutionLedger {
   if (!data || typeof data !== "object" || !("version" in data)) throw new Error("Execution ledger is not a versioned object");
   const version = data.version;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) {
+  if (
+    version !== 1 &&
+    version !== 2 &&
+    version !== 3 &&
+    version !== 4 &&
+    version !== 5 &&
+    version !== 6 &&
+    version !== 7 &&
+    version !== 8
+  ) {
     throw new Error("Unsupported execution ledger version");
   }
   // Validate the complete persisted shape and its approved definition below before returning it.
@@ -601,7 +808,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
         !Array.isArray(saved.deliveries) ||
         !Array.isArray(saved.deferred) ||
         !["direct", "pr", "ship"].includes(saved.delivery))) ||
-    (version === 7 && !Array.isArray(saved.rulings)) ||
+    (version >= 7 && !Array.isArray(saved.rulings)) ||
     !Number.isFinite(saved.createdAt) ||
     (version !== 1 && saved.gitBaseline !== undefined && (typeof saved.gitBaseline !== "string" || !GIT_SHA.test(saved.gitBaseline)))
   ) {
@@ -648,7 +855,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       !nonEmpty(fix.acceptance) ||
       !validAgent(fix.agent) ||
       typeof fix.origin !== "string" ||
-      !gateIds.includes(fix.origin) ||
+      !(gateIds.includes(fix.origin) || (version >= 8 && expected.deliveries.some((row) => row.id === fix.origin))) ||
       (!legacy && fix.tier !== "light" && fix.tier !== "heavy")
     ) {
       throw new Error(`Malformed execution ledger fix row ${fix?.id ?? index}`);
@@ -694,7 +901,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       // Approved rows keep the plan's tier; appended rows chose theirs when added. Gates and delivery have none.
       (!legacy && planned && row.tier !== definition.tier) ||
       (!legacy && !validVerification(row.verification)) ||
-      (!legacy && row.verification !== undefined && row.tier !== "heavy")
+      (!legacy && row.verification !== undefined && row.tier !== "heavy") ||
+      (version >= 8 && !validRetry(row.retry))
     ) {
       throw new Error(`Malformed execution ledger row ${definition?.id ?? index}`);
     }
@@ -722,7 +930,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       }
     }
   }
-  if (version === 7) {
+  if (version >= 7) {
     const amendable = [...taskIds, ...discoveryIds, ...fixIds];
     for (const [index, ruling] of saved.rulings.entries()) {
       if (
@@ -758,7 +966,9 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   if (version === 5) for (const [index, finding] of saved.deferred.entries()) finding.id = `O${index + 1}`;
   // Version seven records owner rulings; earlier ledgers had none.
   if (version < 7) saved.rulings = [];
-  saved.version = 7;
+  // Version eight starts prospective accounting; never infer historical dispatch time or failures.
+  if (version < 8) for (const row of rows) delete row.retry;
+  saved.version = 8;
   return saved;
 }
 
@@ -766,8 +976,10 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
 export function reopenRow(ledger: ExecutionLedger, id: string, reason?: string): LedgerItem {
   const row = ledgerRows(ledger).find((item) => item.id === id);
   if (!row) throw new Error(`Unknown ledger row ${id}`);
-  row.status = "open";
-  row.evidence = reason;
+  row.status = retryWindow(row)?.stop ? "blocked" : "open";
+  row.evidence = retryWindow(row)?.stop
+    ? `${reason ?? ""}\nRetry stopped: ${retryWindow(row)?.stop?.reason}; owner-confirmed retry required. Retain and inventory unverified changes; delivery stays blocked.`.trim()
+    : reason;
   row.childAgentId = undefined;
   row.attempt = undefined;
   row.startedAt = undefined;
@@ -840,24 +1052,22 @@ function checkedTier(tier: string | undefined): Tier {
   return value;
 }
 
-/**
- * Record the correction a rejecting final gate asked for as a new X row, and make only that gate (and delivery) wait for it.
- * Completed plan rows and the other gates keep their proof.
- */
+/** Record a gate or delivery correction. Only its origin reopens; other completed proof stays valid. */
 export function addFixRow(
   ledger: ExecutionLedger,
   gateId: string,
   fix: { title: string; acceptance: string; agent: string; reason: string; tier?: string },
   availableAgents?: readonly string[],
 ): LedgerItem {
-  const gate = ledger.gates.find((item) => item.id === gateId);
-  if (!gate) throw new Error(`Fix rows belong to the rejecting final gate (F1–F4), not ${gateId}`);
+  const gate = [...ledger.gates, ...ledger.deliveries].find((item) => item.id === gateId);
+  if (!gate) throw new Error(`Fix rows belong to the rejecting final gate (F1–F4) or P1, not ${gateId}`);
+  assertRetryAvailable(gate);
   if (gate.status === "done") throw new Error(`${gateId} already passed; reopen it before recording a fix`);
   const title = fix.title.trim();
   const acceptance = fix.acceptance.trim();
   const reason = fix.reason.trim();
   if (!title || !acceptance || !reason)
-    throw new Error("A fix row requires a title, an observable acceptance check, and the gate's rejection");
+    throw new Error("A fix row requires a title, an observable acceptance check, and the origin row's rejection");
   const agent = checkedAgent(fix.agent, availableAgents, "Fix");
   const tier = checkedTier(fix.tier);
   const row: LedgerItem = {
@@ -874,8 +1084,7 @@ export function addFixRow(
     updatedAt: Date.now(),
   };
   ledger.fixes.push(row);
-  gate.dependsOn.push(row.id);
-  for (const delivery of ledger.deliveries) delivery.dependsOn.push(row.id);
+  for (const origin of new Set([gate, ...ledger.deliveries])) origin.dependsOn.push(row.id);
   reopenRow(ledger, gateId, `Rerun after ${gate.dependsOn.filter((id) => id.startsWith("X")).join(", ")}: ${reason}`);
   return row;
 }
@@ -1000,6 +1209,7 @@ export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: stri
   const rows = ledgerRows(ledger);
   const row = rows.find((item) => item.id === id);
   if (!row) throw new Error(`Unknown ledger row ${id}`);
+  assertRetryAvailable(row);
   if (row.status !== "open") throw new Error(`${id} is ${row.status}; reopen it before starting a fresh attempt`);
   const unfinished = row.dependsOn.filter((dependency) => rows.find((item) => item.id === dependency)?.status !== "done");
   if (unfinished.length) throw new Error(`${id} depends on unfinished rows: ${unfinished.join(", ")}`);
@@ -1030,6 +1240,7 @@ export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: stri
 
 /** Record an authenticated receipt of the row's own child. A HEAVY row then waits for its verification. */
 export function recordReceipt(row: LedgerItem, receipt: ChildReceipt, evidence: string): void {
+  assertRetryAvailable(row);
   row.receipt = receipt;
   row.childAgentId = receipt.childAgentId;
   row.evidence = evidence;
@@ -1047,6 +1258,7 @@ export function startVerification(
 ): LedgerItem {
   const row = ledgerRows(ledger).find((item) => item.id === id);
   if (!row) throw new Error(`Unknown ledger row ${id}`);
+  assertRetryAvailable(row);
   if (row.tier !== "heavy") throw new Error(`${id} is not HEAVY; only HEAVY rows get an independent verification child`);
   if (row.status !== "in_progress" || !row.receipt) {
     throw new Error(`${id} has no recorded implementation to verify; mark its implementation child done first`);

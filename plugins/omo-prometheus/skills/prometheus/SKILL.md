@@ -3,7 +3,7 @@ name: prometheus
 description: Shared decision-complete planning workflow for explicit Prometheus commands and opted-in native plan mode, with ideal-state anchoring, durable draft state, a Metis gap gate, configurable plan review, and the Atlas execution handoff.
 ---
 
-> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Prometheus: plan, resolve the decisions, get approval, hand off
 
@@ -37,6 +37,15 @@ Read the relevant repository instructions and the smallest useful set of real co
 Resolve discoverable facts by looking, never by asking; when you cannot tell whether a fork is a fact or a preference, treat it as the user's decision. **Retrieval budget:** run one research wave per open question and stop as soon as the evidence answers it; when two waves add no new useful fact, stop exploring that question and either default it or ask. Never re-explore to double-check what you already established.
 
 **Framework first.** When the platform, framework, or repository already provides a capability the request needs, the plan uses it and verifies the integration, not the platform's own implementation. A bespoke replacement needs an evidenced platform limitation and is an owner decision.
+
+### Focused design advice, only when it resolves a real question
+
+Trivial work and ordinary Standard work with established boundaries need neither advisor. For Standard/Architecture work, use `architect` only for a concrete unresolved boundary/decomposition/tradeoff/blast-radius question; use `ultrabrain` only for a genuinely hard independent algorithm, invariant, migration contract or edge-case design question. A public API or an edge case existing is not itself a trigger. An advisor runs only when its **exact name is listed in the live `<available-agents>` roster**: an unknown/disabled list or missing name means skip that optional lane, never substitute `task` through the implementation fallback table.
+
+When both independent questions exist, batch the relevant available advisors with the independent read-only research in one native `task` call; one relevant/listed advisor is sufficient, and there is no minimum pair. Each assignment includes **TASK / DELIVERABLE / SCOPE / VERIFY / STOP WHEN**, the precise unresolved question and inspected evidence packet, and explicitly says advisory-only/read-only/no edits/no implementation/no builds or tests. Ask for concrete options, consequences, contracts, source references and uncertainties, not another overall plan. Verify the claims yourself and record adopted/rejected reasoning in the existing draft's facts/decisions. Advice does not decide an owner-controlled fork.
+
+Keep mandatory Metis and the existing Oracle hardest-tradeoff consultation/review roles. Do not send Oracle a resolved advisor question or invent a second question just to create a chain. Exact-name availability governs only these optional advisory lanes, not mandatory reviewer fallback rules.
+
 
 ### Affected user and ideal state
 
@@ -90,7 +99,7 @@ Classify every open fork, in order, before acting on it:
 
 Owner decisions include anything irreversible or destructive; security, privacy, compliance, or data-retention policy; public API, config, schema, or data-contract behavior; compatibility and migration policy; distribution and packaging; new external dependencies or pinned revisions; a bespoke replacement for a capability the platform, framework, or repository already provides; real spend or service commitments; capacity and scale targets; target audience; and cross-cutting product behavior the user will live with. Extrinsic constraints — budget, mandated stack, scale, audience, compliance — leave no trace in the repository, so sweep them explicitly once per plan and record each as researched, defaulted, or asked.
 
-**Delivery.** Use the injected `<delivery-policy mode="...">` as this session's delivery setting; when absent, use `ask`. Delivery is `direct` (commits stay on the working branch), `pr` (a child pushes the branch and opens a pull request), or `ship` (the same, then waits for CI and merges).
+**Delivery.** Use the injected `<delivery-policy mode="...">` as this session's delivery setting; when absent, use `ask`. `direct` keeps commits on the working branch. `pr` has a child push/open a reviewer-readable PR and hand off its URL/head/base without merging. `ship` stays active through CI/review, routes in-scope failures through ordinary tiered P1-origin X repairs with fresh affected QA (and independent HEAVY verification), and uses a fresh P1 child to recheck the updated head and merge under repository-required checks/review/merge policy with no unresolved blocking change request. Never self-approve or invent a mandatory reviewer where repository policy has none. Missing access or required human approval blocks delivery; scope/acceptance-changing feedback still requires the owner. Publishing authority does not authorize another worktree layer or in-place product fixes by the delivery child.
 
 - `ask`: inspect the repository's git remotes read-only. Without a remote, delivery is `direct` and needs no question. With a remote, ask how finished work should be delivered. Pushing and merging publish work, so this is an owner decision, and `pr` or `ship` counts as irreversible for the `Authorize` block below.
 - `<workspace git="none">` overrides every mode: the workspace is not a Git repository, delivery is `direct`, and nothing is committed or initialized. Do not ask about delivery or about creating a repository.

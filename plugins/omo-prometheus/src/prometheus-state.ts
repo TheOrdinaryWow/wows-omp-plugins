@@ -16,7 +16,7 @@ export interface PrometheusStateRow {
   attempt?: string;
   startedAt?: number;
   evidence?: string;
-  /** Fix rows name the gate that requested them; discovered rows name the row whose work surfaced them. */
+  /** Fix rows name the rejecting gate or P1; discovered rows name the row whose work surfaced them. */
   origin?: string;
   tier?: AtlasRow["tier"];
   /** HEAVY rows: the independent verifier's state. */

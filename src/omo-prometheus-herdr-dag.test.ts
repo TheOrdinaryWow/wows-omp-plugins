@@ -225,7 +225,7 @@ if (process.env[CHILD]) {
         const store = new AtlasStore(root);
         const plan = await store.create({
           name: "Events",
-          content,
+          content: content.replace("## Tasks", "Delivery: ship\n\n## Tasks"),
           cwd: root,
           sourcePlanPath: "local://PLAN.md",
           sourceSessionId: "a",
@@ -312,6 +312,16 @@ if (process.env[CHILD]) {
         await fixEvent;
         expect(snapshots.at(-1)?.rows.find((row) => row.kind === "fix")?.origin).toBe("F1");
         expect(snapshots.at(-1)?.timeline.some((event) => event.kind === "fix_added")).toBe(true);
+        const gateFailures = snapshots.at(-1)?.timeline.filter((event) => event.kind === "gate_failed").length;
+        const deliveryFix = nextSnapshot((snapshot) => snapshot.rows.some((row) => row.id === "X2" && row.origin === "P1"));
+        await store.transaction(plan.id, "a", (ledger) =>
+          addFixRow(ledger, "P1", { title: "Repair CI", agent: "task", acceptance: "fresh QA and checks pass", reason: "CI failure" }),
+        );
+        await deliveryFix;
+        const delivered = snapshots.at(-1);
+        expect(delivered?.rows.find((row) => row.id === "X2")?.dependsOn).toEqual([]);
+        expect(delivered?.rows.find((row) => row.id === "P1")?.dependsOn).toEqual(["F1", "F2", "F3", "F4", "X1", "X2"]);
+        expect(delivered?.timeline.filter((event) => event.kind === "gate_failed").length).toBe(gateFailures);
         await store.release(plan.id, "a");
       } finally {
         live?.dispose();

@@ -10,6 +10,12 @@ Current upstream source used for this port:
 - Specialist and gate sources: `packages/senpi-task/src/agents/builtin/plan-consultant.ts`, `plan-reviewer.ts`, `gate-reviewer.ts`, `qa-executor.ts`, and `code-reviewer.ts`
 - Consulted for the execution ledger and continuation design (Boulder equivalent; no upstream code is copied into `src/ledger.ts`): `packages/boulder-state/src/plan-checklist.ts`
 
+Selected sections additionally ported at revision 8a8db1d3094da8743989bf693ee5de77889de50e (branch `dev`, 2026-10-28):
+- `packages/shared-skills/skills/ulw-execute/SKILL.md`: checkpoint failure normalization, aggregate retry/harness/time bounds, PR handoff and ship CI/review repair with fresh QA.
+- `packages/omo-senpi/skills/ulw-plan/SKILL.md`: available architect/ultrabrain read-only design advice, adapted to concrete independent questions and OMP's exact live agent names.
+- `docs/guide/orchestration.md`: PR versus ship lifecycle and planning advisory guidance.
+These selected adaptations update the notices in assets/atlas.md and skills/prometheus/SKILL.md; the remaining kernels/specialists retain their earlier provenance above. OMP keeps blocked rows unfinished, retains and inventories unverified changes, exempts passive P1 waits from the clock, and uses native isolation rather than upstream worktree topology. This is not a wholesale rebase.
+
 Earlier releases of this port tracked revision fe427efeed97e95f009dc6ca7fb17a3ac857f79f, where the execution prompt came from `packages/prompts-core/prompts/atlas/default.md` and the specialists from `packages/omo-opencode/src/agents/{metis,momus,oracle}.ts`.
 
 The modified/derived prompt assets in `agents/*.md`, `assets/*.md`, and `skills/prometheus/**` are licensed under the Sustainable Use License 1.0; the complete terms are included in `LICENSE-SUL-1.0`. Those terms permit internal business use as well as personal or noncommercial use, and permit free-of-charge distribution for noncommercial purposes. They do not categorically prohibit all business use.

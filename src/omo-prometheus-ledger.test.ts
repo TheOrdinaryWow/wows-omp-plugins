@@ -8,13 +8,22 @@ import {
   amendAcceptance,
   type ChildReceipt,
   createLedger,
+  type ExecutionLedger,
   effectiveAcceptance,
+  expireRetryWindows,
+  type FailedOutcome,
+  type FailureClass,
+  failureSignature,
+  grantRetry,
   isComplete,
   type LedgerItem,
   ledgerRows,
   nextDispatchable,
+  noteRetryDispatch,
   parsePlanChecklist,
   planDigest,
+  RETRY_LIMIT_MS,
+  recordFailure,
   recordReceipt,
   recordVerification,
   refreshDispatchAgents,
@@ -22,6 +31,7 @@ import {
   renderOwnerRulings,
   reopenRow,
   restoreLedger,
+  retryWindow,
   startRow,
   startVerification,
   triageFinding,
@@ -69,6 +79,27 @@ function receiptFor(row: LedgerItem, attempt: string, childAgentId: string): Chi
     capturedAt: Date.now(),
     nativeFinal: true,
   };
+}
+
+function failed(ledger: ExecutionLedger, id: string, key: string, error: string, failureClass: FailureClass = "product"): FailedOutcome {
+  const row = ledgerRows(ledger).find((row) => row.id === id) as LedgerItem;
+  if (row.status === "open") startRow(ledger, id);
+  noteRetryDispatch(row);
+  const failure: FailedOutcome = {
+    outcomeKey: key,
+    attempt: row.attempt as string,
+    toolCallId: key,
+    sessionId: "session",
+    childAgentId: `Child${key}`,
+    at: Date.now(),
+    failureClass,
+    check: "bun test src/parser.test.ts",
+    firstError: error,
+    signature: "",
+    evidence: `Inspected native output ${key}`,
+  };
+  recordFailure(ledger, row, failure);
+  return failure;
 }
 
 describe("Prometheus execution ledger", () => {
@@ -266,7 +297,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(7);
+    expect(restored.version).toBe(8);
     expect(restored.fixes).toEqual([]);
     expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -282,7 +313,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(7);
+    expect(restored.version).toBe(8);
     expect(restored.gitBaseline).toBeUndefined();
     expect(restored.fixes.map((row) => row.id)).toEqual(["X1"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -320,7 +351,7 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(7);
+    expect(restored.version).toBe(8);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
   });
 
@@ -442,7 +473,7 @@ describe("Prometheus execution ledger", () => {
     expect(addDeferredFinding(ledger, { title: "Late finding", reason: "outside" }).id).toBe("O3");
 
     const restored = restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(7);
+    expect(restored.version).toBe(8);
     expect(restored.deferred.map((finding) => [finding.id, finding.triage?.disposition])).toEqual([
       ["O1", "duplicate"],
       ["O2", "report"],
@@ -476,17 +507,17 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(7);
+    expect(restored.version).toBe(8);
     expect(restored.deferred.map(({ id, title, triage }) => ({ id, title, triage }))).toEqual([
       { id: "O1", title: "First", triage: undefined },
       { id: "O2", title: "Second", triage: undefined },
     ]);
   });
 
-  test("owner rulings replace a T, D or X row's acceptance in force, never a gate's or P1's, and persist as version seven", () => {
+  test("owner rulings replace a T, D or X row's acceptance in force, never a gate's or P1's, and persist as version eight", () => {
     const shipped = plan.replace("# Work plan\n", "# Work plan\n\nDelivery: pr\n");
     const ledger = createLedger("local://example-plan.md", shipped, ["task", "deep-low", "sonic"]);
-    expect(ledger.version).toBe(7);
+    expect(ledger.version).toBe(8);
     expect(ledger.rulings).toEqual([]);
     expect(renderOwnerRulings(ledger)).toBe("");
     const t1 = ledger.items[0];
@@ -581,14 +612,14 @@ describe("Prometheus execution ledger", () => {
     }
   });
 
-  test("a version-six ledger restores in place as version seven with no rulings", () => {
+  test("a version-six ledger restores in place as version eight with no rulings", () => {
     const current = createLedger("local://example-plan.md", plan);
     addDeferredFinding(current, { title: "First", reason: "outside" });
     const { rulings: _rulings, ...rest } = structuredClone(current);
     const legacy = { ...rest, version: 6 };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(7);
+    expect(restored.version).toBe(8);
     expect(restored.rulings).toEqual([]);
     expect(restored.deferred.map((finding) => finding.id)).toEqual(["O1"]);
     // Version six carried no rulings, so a stray one is not trusted.
@@ -665,7 +696,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, content, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(7);
+    expect(restored.version).toBe(8);
     // Rows approved before tiers existed keep the LIGHT evidence rule, even where the plan text names HEAVY.
     expect([...restored.items, ...restored.fixes].map((row) => row.tier)).toEqual(["light", "light", "light", "light"]);
     expect(restored.delivery).toBe("ship");
@@ -680,5 +711,104 @@ describe("Prometheus execution ledger", () => {
     const old = { ...structuredClone(rest), version: 4, fixes: [], planSha256: planDigest(prose) };
     for (const gate of old.gates) gate.dependsOn = ["T1", "T2", "T3"];
     expect(restoreLedger(old, old.planFilePath, prose, old.planSha256).delivery).toBe("direct");
+  });
+  test("failure signatures strip volatile metadata but keep product paths, values and error codes", () => {
+    expect(
+      failureSignature("bun test src/parser.test.ts", "2026-10-28T10:01:02Z pid=123 run=abc duration=10ms /tmp/run-a expected 4 EINVAL"),
+    ).toBe(
+      failureSignature("bun test src/parser.test.ts", "2026-10-29T12:03:04Z pid=456 run=xyz duration=22ms /tmp/run-b expected 4 EINVAL"),
+    );
+    expect(failureSignature("check src/a.ts", "expected 4 EINVAL")).not.toBe(failureSignature("check src/b.ts", "expected 5 EACCES"));
+    expect(failureSignature("check", "/tmp/run-a/src/a.ts: expected 4")).not.toBe(
+      failureSignature("check", "/tmp/run-b/src/b.ts: expected 4"),
+    );
+  });
+
+  test("durable failure bounds are idempotent, survive reopen/amend, and grants preserve old windows", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    const row = ledger.items[0] as LedgerItem;
+    const first = failed(ledger, "T1", "one", "expected 4, got 5");
+    expect(row.status).toBe("open");
+    expect(recordFailure(ledger, row, first)).toBe(false);
+    expect(retryWindow(row)?.failures).toHaveLength(1);
+    failed(ledger, "T1", "two", "expected 4, got 5", "unknown");
+    expect(row.status).toBe("blocked");
+    expect(retryWindow(row)?.stop?.reason).toBe("signature");
+    reopenRow(ledger, "T1");
+    amendAcceptance(ledger, "T1", "revised observable acceptance", "Owner confirmed a different tolerance");
+    expect(() => startRow(ledger, "T1")).toThrow("retry stopped");
+    const history = structuredClone(row.retry?.windows);
+    grantRetry(ledger, row, "Owner confirmed a different repair hypothesis");
+    expect(row.retry?.windows.slice(0, -1)).toEqual(history);
+    expect(row.retry?.windows).toHaveLength(2);
+    expect(row.status).toBe("open");
+    expect(retryWindow(row)?.openedAt).toBeUndefined();
+    startRow(ledger, "T1");
+    expect(retryWindow(row)?.openedAt).toBeUndefined();
+    noteRetryDispatch(row);
+    expect(retryWindow(row)?.openedAt).toBeDefined();
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).items[0]?.retry).toEqual(row.retry);
+  });
+
+  test("three different failures count, while one harness repair is non-counted and recurrence stops", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    const row = ledger.items[0] as LedgerItem;
+    failed(ledger, "T1", "harness", "runner failed before loading product", "harness");
+    expect(row.status).toBe("open");
+    expect(retryWindow(row)?.harnessRepair?.attempt).toBeUndefined();
+    failed(ledger, "T1", "a", "expected 1, got 2");
+    expect(retryWindow(row)?.harnessRepair?.attempt).toBeDefined();
+    failed(ledger, "T1", "b", "expected 3, got 4", "unknown");
+    expect(row.status).toBe("open");
+    failed(ledger, "T1", "c", "expected 5, got 6");
+    expect(retryWindow(row)?.stop?.reason).toBe("attempts");
+    grantRetry(ledger, row, "Owner grants new environment investigation");
+    failed(ledger, "T1", "h1", "runner unavailable", "harness");
+    failed(ledger, "T1", "h2", "fixture could not initialize", "harness");
+    expect(retryWindow(row)?.stop?.reason).toBe("harness");
+  });
+
+  test("event-bound expiry starts on dispatch, keeps unrelated proof and exempts P1 waiting", () => {
+    const content = plan.replace("## Tasks", "Delivery: ship\n\n## Tasks");
+    const ledger = createLedger("local://example-plan.md", content);
+    const row = startRow(ledger, "T1");
+    expect(row.retry).toBeUndefined();
+    noteRetryDispatch(row, 100);
+    const other = ledger.items[2] as LedgerItem;
+    other.status = "done";
+    const delivery = ledger.deliveries[0] as LedgerItem;
+    delivery.retry = { windows: [{ openedAt: 100, failures: [] }] };
+    expect(expireRetryWindows(ledger, 100 + RETRY_LIMIT_MS - 1)).toBe(false);
+    expect(expireRetryWindows(ledger, 100 + RETRY_LIMIT_MS)).toBe(true);
+    expect(row.status).toBe("blocked");
+    expect(retryWindow(row)?.stop?.reason).toBe("elapsed");
+    expect(other.status).toBe("done");
+    expect(retryWindow(delivery)?.stop).toBeUndefined();
+    expect(isComplete(ledger)).toBe(false);
+  });
+
+  test("P1-origin X repair waits once without cycles, preserves gates and source budget", () => {
+    const content = plan.replace("## Tasks", "Delivery: ship\n\n## Tasks");
+    const ledger = createLedger("local://example-plan.md", content);
+    for (const row of [...ledger.items, ...ledger.gates]) row.status = "done";
+    const delivery = ledger.deliveries[0] as LedgerItem;
+    failed(ledger, "P1", "p1", "CI integration scenario failed");
+    const fix = addFixRow(ledger, "P1", {
+      title: "Repair CI defect",
+      acceptance: "fresh affected QA and CI pass",
+      tier: "HEAVY",
+      agent: "task",
+      reason: "CI failed on current PR head",
+    });
+    expect(fix.origin).toBe("P1");
+    expect(fix.dependsOn).toEqual([]);
+    expect(delivery.dependsOn).toEqual(["F1", "F2", "F3", "F4", "X1"]);
+    expect(retryWindow(delivery)?.failures).toHaveLength(1);
+    expect(ledger.gates.every((gate) => gate.status === "done")).toBe(true);
+    expect(() => startRow(ledger, "P1")).toThrow("unfinished");
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, content, ledger.planSha256).fixes[0]?.origin).toBe("P1");
+    fix.status = "done";
+    failed(ledger, "P1", "p2", "CI integration scenario failed");
+    expect(() => addFixRow(ledger, "P1", { title: "Again", acceptance: "pass", agent: "task", reason: "same" })).toThrow("retry stopped");
   });
 });
