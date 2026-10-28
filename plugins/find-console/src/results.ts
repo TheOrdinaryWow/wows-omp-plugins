@@ -32,9 +32,11 @@ export function scoreGauge(score: number): string {
   return "━".repeat(filled) + "─".repeat(6 - filled);
 }
 
-export function coverageWarning(report: FindToolDetails): string | undefined {
+export function coverageWarning(report: FindToolDetails | ConsoleReport): string | undefined {
   if (report.coverage === "unavailable")
     return `Find unavailable: nothing was judged (${report.stats.failed} of ${report.stats.requests} judge requests failed). This is not evidence of absence; try grep.`;
+  if (report.coverage === "partial" && !report.stats.failed && "cache" in report && report.hits.some((hit) => hit.refineFailed))
+    return "Partial refinement: some passages retain verified window ranges. See the reported refinement failures; this is not negative evidence.";
   if (report.coverage === "partial")
     return `Partial coverage: ${report.stats.failed} of ${report.stats.requests} judge requests failed; unjudged files may still match.`;
   return undefined;
@@ -58,17 +60,23 @@ export function reportStats(report: FindToolDetails | ConsoleReport): string {
   return `${report.hits.length} hits · ${formatCost(stats.cost)}${"cache" in report ? ` · ${cacheLabel(report.cache)}` : ""} · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
 }
 
-export function rankedDigest(report: FindToolDetails): string {
-  const heading = `Find: ${JSON.stringify(report.query)} in ${report.scopePath ?? "."} · threshold ${report.threshold.toFixed(2)}`;
+export function rankedDigest(report: FindToolDetails | ConsoleReport): string {
+  const original = "originalQuery" in report ? report.originalQuery : undefined;
+  const heading = `Find: ${JSON.stringify(original ?? report.query)} in ${report.scopePath ?? "."} · threshold ${report.threshold.toFixed(2)}`;
   const warning = coverageWarning(report);
   const body = report.hits.flatMap((hit, index) => [
-    `${index + 1}. ${scoreGauge(hit.contentScore)} ${hit.contentScore.toFixed(2)} ${hit.rel} · ${hit.linesSeen} lines judged${hit.truncated ? ", partial file" : ""}`,
+    `${index + 1}. ${scoreGauge(hit.contentScore)} ${hit.contentScore.toFixed(2)} ${hit.rel}${"scope" in hit && hit.scope === "whole-file" ? " · whole-file" : ""} · ${hit.linesSeen} lines judged${hit.truncated ? ", partial file" : ""}`,
     ...bestRanges(hit)
       .slice(0, 3)
       .map((range) => `   ${hit.rel}:${range.start}-${range.end} · ${range.p.toFixed(2)} · ${range.snippet.trim()}`),
   ]);
   return [
     heading,
+    original ? `searched as: ${report.query}` : undefined,
+    "translation" in report && report.translation && "skipped" in report.translation
+      ? `Translation skipped: ${report.translation.skipped}`
+      : undefined,
+    "within" in report && report.within ? `within ${report.within.files} files of: ${report.within.query}` : undefined,
     warning,
     ...body,
     !report.hits.length && report.coverage !== "unavailable" ? "No hits." : undefined,

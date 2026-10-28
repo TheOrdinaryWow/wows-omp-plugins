@@ -21,7 +21,7 @@ omp plugin install find-console@wows-omp-plugins
 
 1. 运行 `/find where release-please versions are bumped`。不带文字运行 `/find` 时，会打开查询输入框。
 2. 查看进度视图。按 Esc 或 Ctrl+C 取消搜索；命令本身不设搜索时限。
-3. 用上、下方向键选择结果，用左、右方向键切换已判定的行范围。预览包含周围源码，并高亮当前范围。
+3. 用上、下方向键选择结果，用左、右方向键切换细化行范围。默认预览全文，仅高亮细化范围。标记为 `whole-file` 的结果不高亮，使用不带行号的路径引用。
 4. 按 Enter 将当前 `path:start-end` 引用插入输入框，或按 `s` 将选中的结果发送给代理。按 Esc 关闭控制台，不会增加对话记录。
 
 ## 用法
@@ -126,7 +126,7 @@ find:
 
 ## 参考
 
-宿主文档介绍了[语义 find](omp://tools/find.md)、[judge 和 find 设置](omp://settings.md)以及[扩展界面与消息投递](omp://extensions.md)。本插件不持久化状态，也不增加工具或客户端协议。
+[实现参考](REFERENCE.zh.md)介绍了原生判定细化和缓存统计。宿主文档介绍了[语义 find](omp://tools/find.md)、[judge 和 find 设置](omp://settings.md)以及[扩展界面与消息投递](omp://extensions.md)。
 
 ## 许可证
 

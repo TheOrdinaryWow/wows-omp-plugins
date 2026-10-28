@@ -8,6 +8,7 @@ import { FindConsole } from "../plugins/find-console/src/console.ts";
 import { FindProgressController, FindResultsController } from "../plugins/find-console/src/controller.ts";
 import type { PreviewReader } from "../plugins/find-console/src/preview.ts";
 import { FindProgress } from "../plugins/find-console/src/progress-view.ts";
+import { decideHitScope } from "../plugins/find-console/src/refinement.ts";
 import type { ConsoleHit, ConsoleReport } from "../plugins/find-console/src/report.ts";
 import {
   cacheLabel,
@@ -207,6 +208,18 @@ describe("terminal layout setting", () => {
 });
 
 describe("judged references and previews", () => {
+  test("only an explicit high-confidence full-file judgment removes line highlights and references", () => {
+    expect(decideHitScope(0.95, true)).toBe("whole-file");
+    expect(decideHitScope(0.79, true)).toBe("ranges");
+    expect(decideHitScope(0.99, false)).toBe("ranges");
+    expect(decideHitScope(undefined, true)).toBe("ranges");
+    const whole: ConsoleHit = { ...hit, scope: "whole-file", refined: [] };
+    expect(reference(whole)).toBe(hit.rel);
+    expect(selectedRange(whole, 0)).toBeUndefined();
+    const refined: ConsoleHit = { ...hit, scope: "ranges", refined: [{ start: 82, end: 85, p: 0.99, snippet: "precise" }] };
+    expect(reference(refined)).toBe(`${hit.rel}:82-85`);
+  });
+
   test("the strongest range wins and ties use the earlier line without changing cascade data", () => {
     expect(reference(hit)).toBe("plugins/example/src/index.ts:40-40");
     expect(reference(hit, 1)).toBe("plugins/example/src/index.ts:80-88");

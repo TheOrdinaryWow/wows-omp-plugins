@@ -13,6 +13,7 @@ async function previewDialog(ctx: ExtensionContext, controller: FindResultsContr
   const hit = controller.selectedHit;
   if (!hit) return;
   const source = await controller.reader.read(hit);
+  controller.preview = source;
   const window = controller.previewLines;
   const content = source.error
     ? `Preview unavailable: ${source.error}`
@@ -20,7 +21,7 @@ async function previewDialog(ctx: ExtensionContext, controller: FindResultsContr
       ? window.lines
           .map((line, index) => {
             const number = window.start + index;
-            const marked = hit.ranges.some((range) => range.start <= number && range.end >= number);
+            const marked = window.highlight.some((range) => range.start <= number && range.end >= number);
             return `${marked ? ">" : " "} ${number}: ${line}`;
           })
           .join("\n")

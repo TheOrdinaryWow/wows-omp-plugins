@@ -21,7 +21,7 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 
 1. Run `/find where release-please versions are bumped`. Running `/find` without text opens a query prompt.
 2. Watch the progress view. Esc or Ctrl+C cancels the search; there is no command-level search deadline.
-3. Use Up/Down to select a result and Left/Right to switch between its judged ranges. The preview includes surrounding source lines; the selected judged range is highlighted.
+3. Use Up/Down to select a result and Left/Right to switch refined ranges. By default the preview loads the full file and highlights only refined ranges. A `whole-file` result has no highlights and uses a bare-path reference.
 4. Press Enter to insert the selected `path:start-end` reference into the composer, or `s` to send the selected hit to the agent. Esc closes the console without adding a transcript entry.
 
 ## Usage
@@ -126,7 +126,7 @@ If a UI host cannot mount custom components, the command uses the same selector/
 
 ## Reference
 
-The host documentation describes [semantic find](omp://tools/find.md), [judge and find settings](omp://settings.md) and [extension UI/message delivery](omp://extensions.md). This plugin persists no state and exposes no additional tool or client protocol.
+The [implementation reference](REFERENCE.md) documents native refinement and cache accounting. Host documentation covers [semantic find](omp://tools/find.md), [judge and find settings](omp://settings.md) and [extension UI/message delivery](omp://extensions.md).
 
 ## License
 

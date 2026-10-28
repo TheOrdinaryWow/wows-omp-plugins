@@ -14,6 +14,7 @@ import { showResults } from "#src/dialogs.ts";
 import { commandNotice } from "#src/notices.ts";
 import { PreviewReader } from "#src/preview.ts";
 import { searchWithProgress } from "#src/progress.ts";
+import { refineHits } from "#src/refinement.ts";
 import type { ConsoleReport } from "#src/report.ts";
 import { coverageWarning, disabledReason, rankedDigest } from "#src/results.ts";
 
@@ -87,6 +88,7 @@ export default function findConsole(pi: ExtensionAPI): void {
           },
           tier: "read",
         });
+        const reader = new PreviewReader(filesystem, ctx.cwd);
         const onUsage = journalJudgmentUsage(ctx.sessionManager);
         if (!onUsage) pi.logger.warn("Find judge usage cannot be journaled: this host's session manager has no appendModelUsage method.");
         const accounting = accountCache(args.noCache ? undefined : sharedJudgmentCache(), args.noCache);
@@ -123,18 +125,27 @@ export default function findConsole(pi: ExtensionAPI): void {
             signal,
             onProgress,
           });
+          const hits = await refineHits({
+            hits: raw.hits.map((hit) => ({
+              ...hit,
+              rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), ctx.cwd),
+            })),
+            query: args.query,
+            threshold: raw.threshold,
+            reader,
+            judge,
+            stats: raw.stats,
+            signal,
+            onProgress,
+          });
           const report: ConsoleReport = {
             ...raw,
             query: args.query,
             elapsedMs: performance.now() - started,
             cwd: ctx.cwd,
             scopePath: formatPathRelativeToCwd(root.path, ctx.cwd),
-            hits: raw.hits.map((hit) => ({
-              ...hit,
-              rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), ctx.cwd),
-              scope: "ranges",
-              refined: hit.ranges,
-            })),
+            hits,
+            coverage: raw.coverage === "complete" && hits.some((hit) => hit.refineFailed) ? "partial" : raw.coverage,
             cache: accounting.state,
             previewMode: "full-file",
           };
@@ -167,7 +178,7 @@ export default function findConsole(pi: ExtensionAPI): void {
           return;
         }
         active = undefined;
-        await showResults(pi, ctx, report, new PreviewReader(filesystem, ctx.cwd));
+        await showResults(pi, ctx, report, reader);
       } catch (error) {
         if (controller?.signal.aborted) commandNotice(pi, ctx, "Find search cancelled.");
         else commandNotice(pi, ctx, `Find failed: ${error instanceof Error ? error.message : String(error)}`, "error");
