@@ -17,6 +17,9 @@ export interface CheckerInput {
 
 export type CheckerResult = { kind: "clean" } | { kind: "findings"; message: string } | { kind: "failed"; message: string };
 
+export const CHECKER_TIMEOUT_MS = 20_000;
+export const CHECKER_KILL_GRACE_MS = 1_000;
+
 /** The native 0.8.0 protocol: `check`, JSON stdin, exit 0 clean or exit 2 with findings on stderr. */
 export function runCommentChecker(
   executable: string,
@@ -55,8 +58,8 @@ export function runCommentChecker(
   const timer = setTimeout(() => {
     timedOut = true;
     kill("SIGTERM");
-    killTimer = setTimeout(() => kill("SIGKILL"), options.killGraceMs ?? 1_000);
-  }, options.timeoutMs ?? 30_000);
+    killTimer = setTimeout(() => kill("SIGKILL"), options.killGraceMs ?? CHECKER_KILL_GRACE_MS);
+  }, options.timeoutMs ?? CHECKER_TIMEOUT_MS);
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => {
     const remaining = 16_384 - stderr.length;

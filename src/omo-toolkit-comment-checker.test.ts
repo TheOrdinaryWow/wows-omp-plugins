@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { watch } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,12 @@ import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/
 
 import { registerCommentChecker } from "../plugins/omo-toolkit/src/comment-checker.ts";
 import { checkerTargets } from "../plugins/omo-toolkit/src/comment-checker-input.ts";
-import { type CheckerInput, runCommentChecker } from "../plugins/omo-toolkit/src/comment-checker-runner.ts";
+import {
+  CHECKER_KILL_GRACE_MS,
+  CHECKER_TIMEOUT_MS,
+  type CheckerInput,
+  runCommentChecker,
+} from "../plugins/omo-toolkit/src/comment-checker-runner.ts";
 import { DEFAULT_SETTINGS, parseToolkitSettings, TOOLKIT_PACKAGE } from "../plugins/omo-toolkit/src/settings.ts";
 
 const CHILD_ENV = "TOOLKIT_CHECKER_SCENARIO";
@@ -211,6 +217,89 @@ async function scenario(name: string, root: string): Promise<void> {
     );
     return;
   }
+  if (name === "budget") {
+    type Hook = (event: ToolResultEvent | { type: string }, ctx: ExtensionContext) => unknown;
+    const hooks = new Map<string, Hook[]>();
+    const warnings: string[] = [];
+    const api = {
+      on: (event: string, hook: Hook) => hooks.set(event, [...(hooks.get(event) ?? []), hook]),
+      logger: { warn: (text: string) => warnings.push(text) },
+    } as unknown as ExtensionAPI;
+    const readyPath = join(root, "checker-ready");
+    const log = join(root, "budget-runs.jsonl");
+    const checker = await executable(
+      root,
+      "budget-checker",
+      `
+      import { appendFileSync, renameSync, watch, writeFileSync } from "node:fs";
+      const released = Promise.withResolvers();
+      const held = watch(${JSON.stringify(root)}, () => {});
+      process.on("SIGUSR2", released.resolve);
+      appendFileSync(${JSON.stringify(log)}, await Bun.stdin.text() + "\\n");
+      writeFileSync(${JSON.stringify(`${readyPath}.tmp`)}, String(process.pid));
+      renameSync(${JSON.stringify(`${readyPath}.tmp`)}, ${JSON.stringify(readyPath)});
+      await released.promise;
+      held.close();
+      console.error("QUEUED_BUDGET_FINDING");
+      process.exit(2);
+    `,
+    );
+    registerCommentChecker(api, () => ({ ...DEFAULT_SETTINGS, commentChecker: true, commentCheckerPath: checker }));
+    const emit = async (event: string, payload: ToolResultEvent | { type: string }) => {
+      let output: unknown;
+      for (const hook of hooks.get(event) ?? []) output = await hook(payload, context(root));
+      return output as { content: Array<{ text: string }>; additionalContext: string } | undefined;
+    };
+    const firstPath = join(root, "first.ts");
+    const secondPath = join(root, "second.ts");
+    await writeFile(firstPath, "// first\n");
+    await writeFile(secondPath, "// second\n");
+    await emit("session_start", { type: "session_start" });
+    const ready = Promise.withResolvers<void>();
+    const watcher = watch(root, (_event, file) => {
+      if (file === "checker-ready") ready.resolve();
+    });
+    const originalNow = performance.now;
+    let clock = 0;
+    let pid: number | undefined;
+    performance.now = () => clock;
+    try {
+      assert.equal(CHECKER_TIMEOUT_MS, 20_000);
+      assert.equal(CHECKER_KILL_GRACE_MS, 1_000);
+      const first = emit("tool_result", result("write", { resolvedPath: firstPath }, { path: firstPath }));
+      await ready.promise;
+      pid = Number(await readFile(readyPath, "utf8"));
+      const second = emit("tool_result", result("write", { resolvedPath: secondPath }, { path: secondPath }));
+      // Advance only the elapsed-time source: no wall-clock sleep or guessed process-start delay.
+      clock = 9_000;
+      process.kill(pid, "SIGUSR2");
+      assert((await first)?.content.at(-1)?.text.includes("QUEUED_BUDGET_FINDING"));
+      const skipped = await second;
+      assert(skipped?.content.at(-1)?.text.includes("Insufficient result-handler budget"));
+      assert.equal(skipped?.content[0]?.text, "original result");
+      assert.equal(
+        (await readFile(log, "utf8")).trim().split("\n").length,
+        1,
+        "the queued checker must not start without its full timeout and kill grace",
+      );
+      assert.equal(await emit("tool_result", result("write", { resolvedPath: secondPath }, { path: secondPath })), undefined);
+      assert.equal(warnings.length, 1, "budget exhaustion uses the same one-warning, session-inert failure path");
+      console.log(
+        "CHECKER_BUDGET_OK: 20s process cap + 1s grace; simulated 9s queue wait skips second launch within 29s result budget; first findings retained; one warning only",
+      );
+    } finally {
+      performance.now = originalNow;
+      watcher.close();
+      if (pid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* The checker normally exited before cleanup. */
+        }
+      }
+    }
+    return;
+  }
   // Host imports deliberately occur inside the executable child after isolated HOME/agent-dir setup.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
@@ -291,7 +380,7 @@ if (process.env[CHILD_ENV]) {
 } else {
   const { describe, expect, test } = await import("bun:test");
   describe("omo-toolkit native comment-checker integration", () => {
-    for (const name of ["boundaries", "process", "sessions", "sdk"]) {
+    for (const name of ["boundaries", "process", "sessions", "budget", "sdk"]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "toolkit-checker-"));
         try {
