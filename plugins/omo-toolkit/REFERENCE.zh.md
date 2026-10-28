@@ -14,10 +14,12 @@
 
 ## 外部分析器协议
 
-本包不附带原生可执行文件、下载器、平台解析器、npm 包或第三方运行时依赖。操作者需提供兼容 `code-yeongyu/go-claude-code-comment-checker` 0.8.0 的程序。
+本包不附带原生可执行文件、平台解析器、npm 包或第三方运行时依赖。任何兼容 `code-yeongyu/go-claude-code-comment-checker` 0.8.x 的程序都可以使用。
 
-- 不含路径分隔符的命令按正常进程 `PATH` 查找；含分隔符的路径以会话 cwd 解析。
-- 执行方式为直接 argv 调用：`<executable> check`，不经过 Shell。
+- `commentCheckerPath` 为空时，检查器是 MIT 许可的 npm 包 `@code-yeongyu/comment-checker@0.8.2`，通过 Bun 的包运行器以 `bun x @code-yeongyu/comment-checker@0.8.2 check` 调用，`bun` 从 `PATH` 查找。Bun 会把这个包（连同平台二进制约 52 MB）下载到它自己的缓存中；版本号固定，因此之后的调用不会再访问 registry。
+- 启用检查后，会话启动或切换时会在后台运行一次 `bun x @code-yeongyu/comment-checker@0.8.2 --help`（每个进程一次），首次下载因此不会发生在检查过程中，安装输出也不会混进检查结果。检查时如果下载仍在进行，只在结果预算还够一次完整检查的前提下等待；否则跳过该文件，并只提示一次“下载期间编辑的文件不会被检查”，检查功能保持启用。下载失败或超过五分钟（无网络、没有 Bun、registry 出错）时，走下文的“只警告一次并在本会话停用”路径。
+- `commentCheckerPath` 非空时取代上述默认命令。不含路径分隔符的命令按正常进程 `PATH` 查找；含分隔符的路径以会话 cwd 解析。
+- 执行方式为直接 argv 调用：`<command> check`，不经过 Shell。
 - stdin 为一个 JSON 对象，包含 `session_id`、`transcript_path`、`cwd`、`hook_event_name: "PostToolUse"`、`tool_name` 和 `tool_input`。
 - 精确编辑快照使用 `tool_name: "edit"`，传入 `file_path`、`old_string` 和 `new_string`。
 - 文件写入，以及明确标注的快照缺失回退，使用 `tool_name: "write"`，传入 `file_path` 和最终 `content`。整文件回退不能证明被报告的注释由最近一次编辑引入。

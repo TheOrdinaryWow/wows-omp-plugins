@@ -14,10 +14,12 @@ The comment-checker `tool_result` handler is registered at session start or swit
 
 ## External analyzer protocol
 
-The package ships no native executable, downloader, platform resolver, npm package, or third-party runtime dependency. The operator supplies an executable compatible with `code-yeongyu/go-claude-code-comment-checker` 0.8.0.
+The package ships no native executable, platform resolver, npm package, or third-party runtime dependency. Any executable compatible with `code-yeongyu/go-claude-code-comment-checker` 0.8.x works.
 
-- A bare command is resolved through the normal process `PATH`. A value containing a path separator is resolved against the session cwd.
-- Invocation is a direct argv spawn: `<executable> check`. No shell is involved.
+- With `commentCheckerPath` empty, the checker is the MIT-licensed npm package `@code-yeongyu/comment-checker@0.8.2`, run through Bun's package runner as `bun x @code-yeongyu/comment-checker@0.8.2 check`. `bun` is looked up on `PATH`. Bun fetches the package (about 52 MB with its platform binary) into its own cache, and the exact version pin means later runs do not contact the registry.
+- When checking is enabled, session start or switch runs `bun x @code-yeongyu/comment-checker@0.8.2 --help` once per process in the background, so the first download is never part of a check and its installer output never mixes with findings. A check that finds the download still running waits for it only as long as the result budget leaves room for a full check; otherwise that file is skipped, a single notice says files edited during the download are not checked, and checking stays enabled. A failed or five-minute-overdue download (no network, no Bun, registry error) takes the one-warning, session-inert path below.
+- A non-empty `commentCheckerPath` replaces that default. A bare command is resolved through the normal process `PATH`. A value containing a path separator is resolved against the session cwd.
+- Invocation is a direct argv spawn: `<command> check`. No shell is involved.
 - Stdin is one JSON object with `session_id`, `transcript_path`, `cwd`, `hook_event_name: "PostToolUse"`, `tool_name`, and `tool_input`.
 - Exact edit snapshots use `tool_name: "edit"` with `file_path`, `old_string`, and `new_string`.
 - File writes, and explicitly labelled snapshot-unavailable fallback, use `tool_name: "write"` with `file_path` and the final `content`. A file-wide fallback does not show that a reported comment came from the last edit.

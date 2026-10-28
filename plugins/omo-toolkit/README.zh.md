@@ -110,7 +110,7 @@ OMP 启动时会连接这两个服务器。不需要某个服务器时，可以�
 
 ### 可选注释反馈
 
-默认关闭。请自备兼容原生 `comment-checker` 0.8.0 的可执行文件，启用 `commentChecker`，再把 `commentCheckerPath` 设为可执行文件的路径，或 `PATH` 中的命令名。插件不会下载、安装或捆绑检测器。
+默认关闭。启用 `commentChecker` 后，插件通过 `bun x` 运行固定版本的 npm 包 `@code-yeongyu/comment-checker@0.8.2`，你只需要 `PATH` 里有 Bun。首次使用时 Bun 会下载这个包（约 52 MB），之后直接用缓存。如果想用自己的构建，把 `commentCheckerPath` 设为兼容的可执行文件路径，或 `PATH` 中的命令名。
 
 原生 `write`、`edit`（包括 apply-patch 在内的所有模式）或已应用的 AST 编辑提案成功后，检查器会检查被修改的文件。它只检查会话工作目录内的普通文本文件。反馈仅供参考，出现在工具输出中，不会否决编辑，也不会删除注释。Shell 和 LSP 的修改不会被检查。超时等时序细节见 [REFERENCE.zh.md](REFERENCE.zh.md)。
 
@@ -146,8 +146,8 @@ OMP 启动时会连接这两个服务器。不需要某个服务器时，可以�
 
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
-| `commentChecker` | `false` | 用你自己的注释检查器可执行文件检查成功的文件修改。启用后，会话内关闭推测性读取和子任务提前启动，需要重新加载。 |
-| `commentCheckerPath` | `""` | 兼容的可执行文件路径（相对于会话工作目录），或 `PATH` 中的命令名。不会下载任何内容。 |
+| `commentChecker` | `false` | 用 `comment-checker` 检查成功的文件修改。启用后，会话内关闭推测性读取和子任务提前启动，需要重新加载。 |
+| `commentCheckerPath` | `""` | 留空时运行 `bun x @code-yeongyu/comment-checker@0.8.2`；否则填兼容的可执行文件路径（相对于会话工作目录），或 `PATH` 中的命令名。 |
 | `initDeepAdvisor` | `true` | 符合条件的主会话在有终端或 RPC UI 时提议 `init-deep`。未经同意绝不运行。 |
 | `fallbackArchitect` | `false` | 拒绝触发的主模型回退之后，若 `architect` 可用，就加入一条工程连续性提示。 |
 

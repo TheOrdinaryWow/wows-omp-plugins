@@ -110,7 +110,7 @@ The extension adds three optional behaviors on top of the agents and skills. Eac
 
 ### Comment feedback (optional)
 
-Off by default. Bring your own executable compatible with native `comment-checker` 0.8.0, enable `commentChecker`, and set `commentCheckerPath` to its path or to a command on `PATH`. The plugin does not download, install or bundle a detector.
+Off by default. Enable `commentChecker` and the plugin runs the pinned npm package `@code-yeongyu/comment-checker@0.8.2` through `bun x`, so you only need Bun on `PATH`. Bun downloads the package (about 52 MB) on first use and reuses its cache afterwards. To use your own build instead, set `commentCheckerPath` to a compatible executable or a command on `PATH`.
 
 After a successful native `write`, `edit` (all modes, including apply-patch), or applied AST-edit proposal, the checker runs on the changed file. It checks only regular text files inside the session's working directory. Findings are advisory. They appear in tool output and never block an edit or delete a comment. Shell and LSP changes are not checked. Timing and protocol details are in [REFERENCE.md](REFERENCE.md#external-analyzer-protocol).
 
@@ -146,8 +146,8 @@ Configure these manifest-backed settings for `wows-omp-plugin-omo-toolkit` in OM
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `commentChecker` | `false` | Check successful file mutations with your own comment-checker executable. Speculative reads and early task launch are disabled for the session; reload required. |
-| `commentCheckerPath` | `""` | Path to your compatible executable, relative to the session working directory, or a command on `PATH`. Nothing is downloaded. |
+| `commentChecker` | `false` | Check successful file mutations with `comment-checker`. Speculative reads and early task launch are disabled for the session; reload required. |
+| `commentCheckerPath` | `""` | Empty runs `bun x @code-yeongyu/comment-checker@0.8.2`. Otherwise a compatible executable, relative to the session working directory, or a command on `PATH`. |
 | `initDeepAdvisor` | `true` | Offer `init-deep` at eligible main-session startup when a terminal or RPC UI is present. Never runs it without consent. |
 | `fallbackArchitect` | `false` | Add one engineering-continuity hint after a refusal-driven primary-model fallback when `architect` is available. |
 

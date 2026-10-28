@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 
-import { registerCommentChecker } from "../plugins/omo-toolkit/src/comment-checker.ts";
+import { COMMENT_CHECKER_PACKAGE, registerCommentChecker } from "../plugins/omo-toolkit/src/comment-checker.ts";
 import { checkerTargets } from "../plugins/omo-toolkit/src/comment-checker-input.ts";
 import {
   CHECKER_KILL_GRACE_MS,
@@ -141,19 +141,19 @@ async function scenario(name: string, root: string): Promise<void> {
         `checker-${code}`,
         `await Bun.stdin.text(); console.error("untrusted findings"); process.exit(${code});`,
       );
-      assert.equal((await runCommentChecker(path, input)).kind, kind);
+      assert.equal((await runCommentChecker([path], input)).kind, kind);
     }
-    assert.equal((await runCommentChecker(join(root, "missing"), input)).kind, "failed");
+    assert.equal((await runCommentChecker([join(root, "missing")], input)).kind, "failed");
     const noPermission = join(root, "no-permission");
     await writeFile(noPermission, "not executable", { mode: 0o600 });
-    assert.equal((await runCommentChecker(noPermission, input)).kind, "failed");
+    assert.equal((await runCommentChecker([noPermission], input)).kind, "failed");
     const earlyExit = await executable(root, "early-exit", "process.stdin.destroy(); process.exit(2);");
     const largeInput = { ...input, tool_input: { ...input.tool_input, content: "x".repeat(2_000_000) } };
-    assert.equal((await runCommentChecker(earlyExit, largeInput)).kind, "failed");
+    assert.equal((await runCommentChecker([earlyExit], largeInput)).kind, "failed");
     // This integration case deliberately exercises real process deadlines and SIGKILL, not a guessed async wait.
     const hung = await executable(root, "hung", "process.on('SIGTERM', () => {}); await Bun.stdin.text(); setInterval(() => {}, 1000);");
     const start = Date.now();
-    const timed = await runCommentChecker(hung, input, { timeoutMs: 100, killGraceMs: 50 });
+    const timed = await runCommentChecker([hung], input, { timeoutMs: 100, killGraceMs: 50 });
     assert.equal(timed.kind, "failed");
     assert(timed.kind === "failed" && timed.message.includes("timed out"));
     assert(Date.now() - start < 2_000, "SIGKILL grace must terminate a checker ignoring SIGTERM");
@@ -300,6 +300,113 @@ async function scenario(name: string, root: string): Promise<void> {
     }
     return;
   }
+  if (name === "bunx") {
+    type Hook = (event: ToolResultEvent | { type: string }, ctx: ExtensionContext) => unknown;
+    const register = (sessionId: string) => {
+      const hooks = new Map<string, Hook[]>();
+      const warnings: string[] = [];
+      const notices: string[] = [];
+      const api = {
+        on: (event: string, hook: Hook) => hooks.set(event, [...(hooks.get(event) ?? []), hook]),
+        logger: { warn: (text: string) => warnings.push(text), info: (text: string) => notices.push(text) },
+      } as unknown as ExtensionAPI;
+      registerCommentChecker(api, () => ({ ...DEFAULT_SETTINGS, commentChecker: true, commentCheckerPath: "" }));
+      const emit = async (event: string, payload: ToolResultEvent | { type: string }) => {
+        let output: unknown;
+        for (const hook of hooks.get(event) ?? []) output = await hook(payload, context(root, sessionId));
+        return output as { content: Array<{ text: string }> } | undefined;
+      };
+      return { emit, warnings, notices };
+    };
+    const bin = join(root, "bin");
+    await mkdir(bin);
+    const log = join(root, "bun-argv.jsonl");
+    const readyPath = join(root, "warm-up-ready");
+    const failFlag = join(root, "fail-warm-up");
+    // A stand-in for Bun on PATH: records argv, holds the warm-up until SIGUSR2, then speaks the checker protocol.
+    await executable(
+      bin,
+      "bun",
+      `
+      import { appendFileSync, existsSync, renameSync, watch, writeFileSync } from "node:fs";
+      const args = process.argv.slice(2);
+      appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
+      if (args.at(-1) === "--help") {
+        if (existsSync(${JSON.stringify(failFlag)})) { console.error("ConnectionRefused downloading package manifest"); process.exit(1); }
+        const released = Promise.withResolvers();
+        const held = watch(${JSON.stringify(root)}, () => {});
+        process.on("SIGUSR2", released.resolve);
+        writeFileSync(${JSON.stringify(`${readyPath}.tmp`)}, String(process.pid));
+        renameSync(${JSON.stringify(`${readyPath}.tmp`)}, ${JSON.stringify(readyPath)});
+        await released.promise;
+        held.close();
+        process.exit(0);
+      }
+      const input = JSON.parse(await Bun.stdin.text());
+      if (input.tool_input.content?.includes("//")) { console.error("BUNX_FINDING"); process.exit(2); }
+    `,
+    );
+    const originalPath = process.env.PATH;
+    const originalNow = performance.now;
+    process.env.PATH = `${bin}:${originalPath}`;
+    const ready = Promise.withResolvers<void>();
+    const watcher = watch(root, (_event, file) => {
+      if (file === "warm-up-ready") ready.resolve();
+    });
+    let pid: number | undefined;
+    try {
+      const path = join(root, "a.ts");
+      await writeFile(path, "// explain\n");
+      const edit = () => result("write", { resolvedPath: path }, { path });
+      const pending = register("bunx-pending");
+      await pending.emit("session_start", { type: "session_start" });
+      await ready.promise;
+      pid = Number(await readFile(readyPath, "utf8"));
+      // The handler reads the clock for its deadline, then the check sees 10s gone: no window left to wait for the download.
+      for (let skipped = 0; skipped < 2; skipped++) {
+        let reads = 0;
+        performance.now = () => (reads++ === 0 ? 0 : 10_000);
+        assert.equal(await pending.emit("tool_result", edit()), undefined, "an edit is skipped while the download outlasts the budget");
+        performance.now = originalNow;
+      }
+      assert.equal(pending.notices.length, 1, "the download notice is shown once");
+      assert.deepEqual(pending.warnings, [], "a pending download does not disable checking");
+      const checked = pending.emit("tool_result", edit());
+      process.kill(pid, "SIGUSR2");
+      assert((await checked)?.content.at(-1)?.text.includes("BUNX_FINDING"), "a check waits for a download that finishes within budget");
+      const calls = (await readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      assert.deepEqual(calls, [
+        ["x", COMMENT_CHECKER_PACKAGE, "--help"],
+        ["x", COMMENT_CHECKER_PACKAGE, "check"],
+      ]);
+
+      await writeFile(failFlag, "");
+      const failed = register("bunx-failed");
+      await failed.emit("session_start", { type: "session_start" });
+      const warned = await failed.emit("tool_result", edit());
+      assert(warned?.content.at(-1)?.text.includes("ConnectionRefused"));
+      assert.equal(await failed.emit("tool_result", edit()), undefined);
+      assert.equal(failed.warnings.length, 1, "a failed download warns once and disables checking for the session");
+      console.log(
+        "CHECKER_BUNX_OK: pinned bun x warm-up; over-budget skip with one notice; in-budget wait then check; failed download warns once",
+      );
+    } finally {
+      performance.now = originalNow;
+      process.env.PATH = originalPath;
+      watcher.close();
+      if (pid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* The stand-in normally exited after release. */
+        }
+      }
+    }
+    return;
+  }
   // Host imports deliberately occur inside the executable child after isolated HOME/agent-dir setup.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
@@ -380,7 +487,7 @@ if (process.env[CHILD_ENV]) {
 } else {
   const { describe, expect, test } = await import("bun:test");
   describe("omo-toolkit native comment-checker integration", () => {
-    for (const name of ["boundaries", "process", "sessions", "budget", "sdk"]) {
+    for (const name of ["boundaries", "process", "sessions", "budget", "bunx", "sdk"]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "toolkit-checker-"));
         try {

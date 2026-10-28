@@ -10,12 +10,12 @@
     "commentChecker": {
       "type": "boolean",
       "default": false,
-      "description": "Check successful file mutations with an external executable; disables speculative reads and early task launch for this session; reload required"
+      "description": "Check successful file mutations with comment-checker; disables speculative reads and early task launch for this session; reload required"
     },
     "commentCheckerPath": {
       "type": "string",
       "default": "",
-      "description": "User-provisioned comment-checker 0.8.0-compatible executable path or command on PATH; never downloaded or bundled"
+      "description": "Empty runs bun x @code-yeongyu/comment-checker@0.8.2 (Bun fetches it once); otherwise a compatible executable path or command on PATH"
     },
     "initDeepAdvisor": {
       "type": "boolean",

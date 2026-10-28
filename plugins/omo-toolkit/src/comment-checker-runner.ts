@@ -2,7 +2,7 @@
  * Modified-port notice: adapts comment-checker-core/src/{runner,stdin-delivery,types}.ts from
  * oh-my-openagent revision 8a8db1d3094da8743989bf693ee5de77889de50e, Copyright the oh-my-openagent
  * contributors, licensed under the Sustainable Use License 1.0 (see LICENSE-SUL-1.0 and NOTICE).
- * OMP adaptation: externally supplied executable only, bounded output, and explicit not-checked failures.
+ * OMP adaptation: external or pinned-bunx executable only, bounded output, and explicit not-checked failures.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 
@@ -20,16 +20,16 @@ export type CheckerResult = { kind: "clean" } | { kind: "findings"; message: str
 export const CHECKER_TIMEOUT_MS = 20_000;
 export const CHECKER_KILL_GRACE_MS = 1_000;
 
-/** The native 0.8.0 protocol: `check`, JSON stdin, exit 0 clean or exit 2 with findings on stderr. */
+/** The native 0.8.x protocol: `check`, JSON stdin, exit 0 clean or exit 2 with findings on stderr. */
 export function runCommentChecker(
-  executable: string,
+  command: readonly [string, ...string[]],
   input: CheckerInput,
   options: { timeoutMs?: number; killGraceMs?: number } = {},
 ): Promise<CheckerResult> {
   const { promise, resolve } = Promise.withResolvers<CheckerResult>();
   let child: ChildProcess;
   try {
-    child = spawn(executable, ["check"], { cwd: input.cwd, windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
+    child = spawn(command[0], [...command.slice(1), "check"], { cwd: input.cwd, windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
   } catch (error) {
     resolve({ kind: "failed", message: String(error) });
     return promise;
