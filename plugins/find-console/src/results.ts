@@ -102,9 +102,15 @@ export function previewWindow(lines: readonly string[], range: FindRange | undef
   return { start, lines: lines.slice(start - 1, end) };
 }
 
-export function hitMessage(report: FindToolDetails, hits: readonly FindHit[], current?: { hit: FindHit; range: number }): string {
+export function hitMessage(
+  report: FindToolDetails | ConsoleReport,
+  hits: readonly FindHit[],
+  current?: { hit: FindHit; range: number },
+): string {
   return [
-    `Find results selected for ${JSON.stringify(report.query)}:`,
+    `Find results selected for ${JSON.stringify("originalQuery" in report ? (report.originalQuery ?? report.query) : report.query)}:`,
+    "originalQuery" in report && report.originalQuery ? `searched as: ${report.query}` : undefined,
+    "within" in report && report.within ? `within ${report.within.files} files of: ${report.within.query}` : undefined,
     ...hits.flatMap((hit) => [
       `\n${reference(hit, current?.hit === hit ? current.range : 0)} (score ${hit.contentScore.toFixed(2)})`,
       ...bestRanges(hit)

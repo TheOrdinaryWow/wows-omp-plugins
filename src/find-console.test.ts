@@ -390,6 +390,20 @@ describe("headless ranked digest", () => {
     expect(text).toContain("verification: unavailable");
   });
 
+  test("translated and restricted reports preserve the original question in the digest and selected-hit message", () => {
+    const result = report({
+      query: "version bump location",
+      originalQuery: "版本号在哪里被提升",
+      translation: { model: "tiny: local/query" },
+      within: { query: "release configuration", files: 2 },
+    });
+    for (const text of [rankedDigest(result), hitMessage(result, result.hits)]) {
+      expect(text).toContain("版本号在哪里被提升");
+      expect(text).toContain("searched as: version bump location");
+      expect(text).toContain("within 2 files of: release configuration");
+    }
+  });
+
   test("nothing judged must not become an absence claim", () => {
     const text = rankedDigest(report({ hits: [], coverage: "unavailable" }));
     expect(text).toContain("nothing was judged");

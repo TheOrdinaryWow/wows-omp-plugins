@@ -26,6 +26,8 @@ Resolution uses the host's `@tiny` role and its eligible candidate pool, then `@
 
 The report's `query` is the actual searched text. Successful translation adds `originalQuery` and `translation: { model: "<role>: <provider>/<id>" }`; skipped/failed translation adds `translation: { skipped: "<reason>" }`. Only the original query is used for display and history. Translation does not mutate host role settings.
 
+Selected-hit messages sent to the agent also retain the original query, the actual translated query and any within-results provenance, so sending results does not erase how their scope was chosen.
+
 ## Filters
 
 `--glob` and `--ext` filter directory entries in a per-search native-filesystem view before the host cascade lists or lexically scans files. The shared filesystem is unchanged, directories remain traversable, and ignore-policy files stay readable. Explicit file roots are checked before starting the cascade. Globs without a slash match basenames at any depth; globs with a slash match search-root-relative paths. Repeated patterns are alternatives, repeated extensions are alternatives, and the two filter groups intersect. Extensions are normalized to lowercase without a leading dot.
