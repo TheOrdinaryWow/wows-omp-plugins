@@ -54,7 +54,7 @@ File filters run before lexical scanning and filename judgments. Repeat `--glob`
 
 ### Recent searches and follow-up questions
 
-Recent original queries and their flags are saved per project in `.omp/.cache/find-console/history.json`, outside the installed plugin copy. The newest 50 searches are kept and duplicates replace their older flags. `/find` argument completion offers recent queries; `/find --history` or the console's Recent searches action opens a picker and reruns the selected search with its saved flags. Versioned history upgrades on load. It contains query text and paths, so treat it as local project data; remove the file to clear it.
+Recent original queries and their flags are saved per project in `.omp/.cache/find-console/history.json`, outside the installed plugin copy. The newest 50 searches are kept and duplicates replace their older flags. `/find` argument completion offers recent queries; `/find --history` or the console's Recent searches action opens a picker and reruns the selected search with its saved flags. History storage starts at version 1. It contains query text and paths, so treat it as local project data; remove the file to clear it.
 
 Press `r` (Search within results) to ask another question restricted to the current hit files, without a repository-wide rescan. Existing flags are preserved and results identify `within N files of: <previous query>`. Press `h` for recent searches. Both actions close the console before opening host input/select dialogs; cancelling those dialogs does not send anything to the agent. A history rerun also restores a saved within-results file restriction. Recent-query text completion covers ordinary searches; use the history picker for restricted follow-up searches.
 

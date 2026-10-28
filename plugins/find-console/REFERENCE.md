@@ -34,15 +34,15 @@ Selected-hit messages sent to the agent also retain the original query, the actu
 
 `--min-score` must be in [0.2, 1], preserving the host cascade's minimum threshold. It filters cascade hits before refinement and filters refined ranges afterward. Range hits with no surviving ranges are removed; whole-file hits have no line ranges by definition. `--limit` is a positive safe integer applied last; hit ordering remains the cascade's calibrated score order.
 
-## History storage and upgrades
+## History storage
 
-The per-project file is `<ctx.cwd>/.omp/.cache/find-console/history.json`. Plugin upgrades replace only the plugin directory, not this file. Writes use a private temporary file (mode 0600) and atomic rename; missing history means an empty list. Malformed or unknown-version files are preserved and reported rather than silently replaced.
+The per-project file is `<ctx.cwd>/.omp/.cache/find-console/history.json`. Plugin upgrades replace only the plugin directory, not this file. Writes use a private temporary file (mode 0600) and atomic rename; missing history means an empty list. Malformed files are preserved and reported. An unknown version is reported and treated as empty history; it is not overwritten by subsequent searches.
 
 Current format:
 
 ```json
 {
-  "version": 2,
+  "version": 1,
   "entries": [
     {
       "args": {
@@ -64,7 +64,7 @@ Current format:
 }
 ```
 
-`limit` is optional inside `args`. Restricted follow-ups also have `within: { query: "<previous original query>", files: ["<absolute path or URL>"] }` on the entry. The timestamp is Unix milliseconds. Newest entries come first; duplicates use normalized original query text, search path and within-file scope as their identity, keeping the newest flags. History is capped at 50 entries, including completed searches with zero hits; cancelled searches are not recorded. Search history first appears with this feature (0.1.0 wrote none). The accepted predecessor format is `{ version: 1, entries: [{ query, path, keywords, searchedAt }] }`; loading it fills new flags with defaults and atomically rewrites version 2 without losing the query, scope, keywords or timestamp.
+`limit` is optional inside `args`. Restricted follow-ups also have `within: { query: "<previous original query>", files: ["<absolute path or URL>"] }` on the entry. The timestamp is Unix milliseconds. Newest entries come first; duplicates use normalized original query text, search path and within-file scope as their identity, keeping the newest flags. History is capped at 50 entries, including completed searches with zero hits; cancelled searches are not recorded. History storage starts at version 1; release 0.1.0 persisted no history.
 
 The command API's completion callback has no context argument, so the extension loads a project-bound history snapshot at session start/switch and refreshes it after completed searches, using `ctx.cwd` only. Ordinary-query completion restores all command flags. Restricted follow-ups rerun through the host history picker so a textual completion cannot accidentally widen their file scope.
 

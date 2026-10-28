@@ -34,13 +34,13 @@
 
 `--min-score` 必须位于 [0.2, 1]，不降低宿主级联阈值。它在细化前过滤级联结果，在细化后过滤行范围。没有剩余行范围的范围结果会被移除；整文件结果按定义不包含行范围。`--limit` 必须是正的安全整数，在其他过滤结束后生效；结果仍按级联校准分数排序。
 
-## 历史存储与升级
+## 历史存储
 
-项目历史文件位于 `<ctx.cwd>/.omp/.cache/find-console/history.json`。插件升级仅替换插件目录，不替换这个文件。写入使用权限为 0600 的临时文件，并通过原子重命名替换；文件不存在时视为空历史。格式损坏或版本未知时，保留原文件并报告问题，不会静默覆盖。
+项目历史文件位于 `<ctx.cwd>/.omp/.cache/find-console/history.json`。插件升级仅替换插件目录，不替换这个文件。写入使用权限为 0600 的临时文件，并通过原子重命名替换；文件不存在时视为空历史。格式损坏时保留原文件并报告问题。遇到未知版本时会报告问题并按空历史处理，后续搜索也不会覆盖原文件。
 
-当前格式为 `{ version: 2, entries: [{ args, searchedAt, within? }] }`。`args` 包含 `query`、`path`、`keywords`、`globs`、`extensions`、`minScore`、`noCache`、`noTranslate`，以及值为 false 的 `help`、`cancel`、`history`。可选的 `limit` 也放在 `args` 中。`searchedAt` 为 Unix 毫秒时间戳。限定文件集合的追问还包含 `within: { query: "<上一条原始查询>", files: ["<绝对路径或 URL>"] }`。完整 JSON 示例见[英文参考](REFERENCE.md#history-storage-and-upgrades)。
+当前格式为 `{ version: 1, entries: [{ args, searchedAt, within? }] }`。`args` 包含 `query`、`path`、`keywords`、`globs`、`extensions`、`minScore`、`noCache`、`noTranslate`，以及值为 false 的 `help`、`cancel`、`history`。可选的 `limit` 也放在 `args` 中。`searchedAt` 为 Unix 毫秒时间戳。限定文件集合的追问还包含 `within: { query: "<上一条原始查询>", files: ["<绝对路径或 URL>"] }`。完整 JSON 示例见[英文参考](REFERENCE.md#history-storage)。
 
-记录按时间倒序排列，以规范化后的原始查询文本、搜索路径和限定文件集合去重，保留最新参数。最多保留 50 条，包括已完成但没有结果的搜索；取消的搜索不记录。本功能首次引入历史存储，0.1.0 不写入历史。支持的前一版格式为 `{ version: 1, entries: [{ query, path, keywords, searchedAt }] }`；加载时补齐新参数的默认值，并原子写回版本 2，不丢失查询、范围、关键词和时间戳。
+记录按时间倒序排列，以规范化后的原始查询文本、搜索路径和限定文件集合去重，保留最新参数。最多保留 50 条，包括已完成但没有结果的搜索；取消的搜索不记录。历史存储从版本 1 开始；0.1.0 不写入历史。
 
 宿主命令补全回调没有上下文参数，因此扩展在会话启动、切换时加载绑定项目的历史快照，并在搜索完成后刷新；路径始终来自 `ctx.cwd`。普通查询的补全文本包含全部命令参数。限定文件集合的追问通过宿主历史选择器重跑，避免文本补全意外扩大搜索范围。
 

@@ -29,7 +29,9 @@ export default function findConsole(pi: ExtensionAPI): void {
   const cancel = () => active?.abort();
   const refreshHistory = async (cwd: string) => {
     try {
-      recent = await new HistoryStore(cwd).load();
+      const history = new HistoryStore(cwd);
+      recent = await history.load();
+      if (history.warning) pi.logger.warn(history.warning);
     } catch (error) {
       recent = [];
       pi.logger.warn("Find history completion is unavailable", { error: error instanceof Error ? error.message : String(error) });
@@ -94,6 +96,7 @@ export default function findConsole(pi: ExtensionAPI): void {
               return;
             }
             recent = await history.load();
+            if (history.warning) commandNotice(pi, ctx, history.warning, "warning");
             if (!recent.length) {
               commandNotice(pi, ctx, "No recent searches in this project.");
               return;

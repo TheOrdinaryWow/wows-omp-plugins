@@ -238,7 +238,7 @@ describe("project search history", () => {
         searchedAt: index,
       }));
       await mkdir(dirname(store.file), { recursive: true });
-      await writeFile(store.file, JSON.stringify({ version: 2, entries }));
+      await writeFile(store.file, JSON.stringify({ version: 1, entries }));
       const updated = await store.remember({ args: parseFindArgs("--no-cache --ext ts --limit 2 query 54"), searchedAt: 100 });
       expect(updated).toHaveLength(HISTORY_LIMIT);
       expect(updated[0]?.args).toMatchObject({ query: "query 54", noCache: true, extensions: ["ts"], limit: 2 });
@@ -254,32 +254,17 @@ describe("project search history", () => {
     }
   });
 
-  test("a previous-version file upgrades on load without losing its original query, scope or keywords", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "find-history-upgrade-"));
+  test("an unknown history version is reported as empty and never overwritten", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "find-history-unknown-"));
     try {
       const store = new HistoryStore(cwd);
       await mkdir(dirname(store.file), { recursive: true });
-      await writeFile(
-        store.file,
-        JSON.stringify({
-          version: 1,
-          entries: [{ query: "版本号在哪里被提升", path: "plugins", keywords: ["release-please"], searchedAt: 42 }],
-        }),
-      );
-      const loaded = await store.load();
-      expect(loaded[0]).toMatchObject({
-        args: {
-          query: "版本号在哪里被提升",
-          path: "plugins",
-          keywords: ["release-please"],
-          minScore: 0.2,
-          noCache: false,
-          noTranslate: false,
-        },
-        searchedAt: 42,
-      });
-      expect(JSON.parse(await readFile(store.file, "utf8")).version).toBe(2);
-      expect(await new HistoryStore(cwd).load()).toEqual(loaded);
+      const source = JSON.stringify({ version: 99, entries: [{ future: "preserve this data" }] });
+      await writeFile(store.file, source);
+      expect(await store.load()).toEqual([]);
+      expect(store.warning).toContain("Unsupported find history version");
+      await expect(store.remember({ args: parseFindArgs("query"), searchedAt: 42 })).rejects.toThrow("preserving the file");
+      expect(await readFile(store.file, "utf8")).toBe(source);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

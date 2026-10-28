@@ -21,9 +21,9 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function entryFrom(value: unknown, version: number): HistoryEntry {
+function entryFrom(value: unknown): HistoryEntry {
   if (!record(value)) throw new Error("Invalid history entry.");
-  const stored = version === 1 ? value : value.args;
+  const stored = value.args;
   if (!record(stored) || typeof stored.query !== "string" || !stored.query.trim()) throw new Error("Invalid history query.");
   const defaults = parseFindArgs("");
   const path = stored.path ?? defaults.path;
@@ -86,12 +86,14 @@ function dedupe(entries: readonly HistoryEntry[]): HistoryEntry[] {
 /** Project state lives outside the copied plugin, so upgrades cannot erase recent searches. */
 export class HistoryStore {
   readonly file: string;
+  warning: string | undefined;
 
   constructor(cwd: string) {
     this.file = join(cwd, ".omp", ".cache", "find-console", "history.json");
   }
 
   async load(): Promise<HistoryEntry[]> {
+    this.warning = undefined;
     let raw: unknown;
     try {
       raw = JSON.parse(await readFile(this.file, "utf8"));
@@ -99,16 +101,19 @@ export class HistoryStore {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
       throw error;
     }
-    if (!record(raw) || (raw.version !== 1 && raw.version !== 2) || !Array.isArray(raw.entries))
-      throw new Error(`Unsupported or invalid find history at ${this.file}; the file was preserved.`);
-    const version = raw.version;
-    const entries = dedupe(raw.entries.map((entry) => entryFrom(entry, version)));
-    if (raw.version === 1) await this.save(entries);
-    return entries;
+    if (!record(raw)) throw new Error(`Invalid find history at ${this.file}; the file was preserved.`);
+    if (raw.version !== 1) {
+      this.warning = `Unsupported find history version at ${this.file}; treating it as empty and preserving the file.`;
+      return [];
+    }
+    if (!Array.isArray(raw.entries)) throw new Error(`Invalid find history at ${this.file}; the file was preserved.`);
+    return dedupe(raw.entries.map(entryFrom));
   }
 
   async remember(entry: HistoryEntry): Promise<HistoryEntry[]> {
-    const entries = dedupe([entry, ...(await this.load())]);
+    const previous = await this.load();
+    if (this.warning) throw new Error(this.warning);
+    const entries = dedupe([entry, ...previous]);
     await this.save(entries);
     return entries;
   }
@@ -117,7 +122,7 @@ export class HistoryStore {
     await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
     const temporary = `${this.file}.${randomUUID()}.tmp`;
     try {
-      await writeFile(temporary, `${JSON.stringify({ version: 2, entries })}\n`, { mode: 0o600 });
+      await writeFile(temporary, `${JSON.stringify({ version: 1, entries })}\n`, { mode: 0o600 });
       await rename(temporary, this.file);
     } finally {
       await rm(temporary, { force: true });
