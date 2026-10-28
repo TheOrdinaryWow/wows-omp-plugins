@@ -4,6 +4,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 
 import { insertReference, openExternally, sendHits } from "#src/actions.ts";
 import { type ConsoleAction, FindResultsController } from "#src/controller.ts";
+import { type HistoryEntry, historyCommand } from "#src/history.ts";
 import type { PreviewReader } from "#src/preview.ts";
 import type { ConsoleReport } from "#src/report.ts";
 import { bestRanges, reference } from "#src/results.ts";
@@ -38,11 +39,34 @@ export async function resultDialogAction(
 ): Promise<ConsoleAction | "back" | "send-selected"> {
   const labels = controller.hits.map((hit, index) => ({
     label: `${index + 1}. ${hit.rel} · ${hit.contentScore.toFixed(2)}`,
-    description: `${reference(hit)}${hit.truncated ? " · partial file" : ""} · ${bestRanges(hit)[0]?.snippet.trim() ?? ""}`,
+    description: `${reference(hit)}${hit.scope === "whole-file" ? " · whole-file" : ""}${hit.truncated ? " · partial file" : ""} · ${hit.refineFailed ?? bestRanges(hit)[0]?.snippet.trim() ?? ""}`,
   }));
-  const picked = await ctx.ui.select(`Find: ${controller.report.query}\n${controller.warning ?? controller.stats}`, labels, {
-    initialIndex: controller.state.selected,
-  });
+  const summary = [
+    `Find: ${controller.queryLabel}`,
+    controller.report.originalQuery ? `searched as: ${controller.report.query}` : undefined,
+    controller.report.translation && "skipped" in controller.report.translation
+      ? `Translation skipped: ${controller.report.translation.skipped}`
+      : undefined,
+    controller.report.within ? `within ${controller.report.within.files} files of: ${controller.report.within.query}` : undefined,
+    controller.stats,
+    controller.warning,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+  const picked = await ctx.ui.select(
+    summary,
+    [
+      ...labels,
+      {
+        label: "Search within results",
+        description: `Ask a new question in only these ${controller.hits.length} files; keep the current flags.`,
+      },
+      { label: "Recent searches", description: "Rerun a saved query with its original flags." },
+    ],
+    { initialIndex: controller.state.selected },
+  );
+  if (picked === "Search within results") return "refine";
+  if (picked === "Recent searches") return "history";
   const index = labels.findIndex((label) => label.label === picked);
   if (index < 0) return "close";
   controller.select(index);
@@ -50,9 +74,12 @@ export async function resultDialogAction(
   if (!hit) return "close";
   for (;;) {
     const options = [
-      { label: "Preview this range", description: controller.selectedReference },
-      ...(hit.ranges.length > 1
-        ? [{ label: "Next judged range", description: `Range ${controller.state.range + 1}/${hit.ranges.length}` }]
+      {
+        label: controller.report.previewMode === "full-file" || hit.scope === "whole-file" ? "Preview full file" : "Preview this range",
+        description: controller.selectedReference,
+      },
+      ...(bestRanges(hit).length > 1
+        ? [{ label: "Next judged range", description: `Range ${controller.state.range + 1}/${bestRanges(hit).length}` }]
         : []),
       { label: "Insert reference into composer", description: controller.actionReason("insert") ?? controller.selectedReference },
       {
@@ -67,13 +94,17 @@ export async function resultDialogAction(
         label: "Open externally",
         description: controller.actionReason("open") ?? "$VISUAL / $EDITOR at the selected line, or the OS opener.",
       },
+      { label: "Search within results", description: `Ask a new question in only these ${controller.hits.length} files.` },
+      { label: "Recent searches", description: "Rerun a saved query with its original flags." },
       { label: "Back to results" },
       { label: "Close" },
     ];
     const choice = await ctx.ui.select(`${controller.selectedReference} · ${hit.contentScore.toFixed(2)}`, options);
     if (choice === undefined || choice === "Back to results") return "back";
     if (choice === "Close") return "close";
-    if (choice === "Preview this range") {
+    if (choice === "Search within results") return "refine";
+    if (choice === "Recent searches") return "history";
+    if (choice === "Preview this range" || choice === "Preview full file") {
       await previewDialog(ctx, controller);
       continue;
     }
@@ -101,7 +132,7 @@ export async function showResults(
   ctx: ExtensionContext,
   report: ConsoleReport,
   reader: PreviewReader,
-): Promise<void> {
+): Promise<"refine" | "history" | undefined> {
   const controller = new FindResultsController(report, reader, ctx.ui.supportsEditor === true);
   let terminalConsole = ctx.mode === "tui";
   let tui: TUI | undefined;
@@ -117,7 +148,8 @@ export async function showResults(
     }
     if (!terminalConsole) action = await resultDialogAction(ctx, controller);
     if (action === "back") continue;
-    if (action === undefined || action === "close" || action === "refine" || action === "history") return;
+    if (action === "refine" || action === "history") return action;
+    if (action === undefined || action === "close") return;
     const hit = controller.selectedHit;
     if (!hit) return;
     if (action === "insert") {
@@ -143,4 +175,13 @@ export async function showResults(
       if (!terminalConsole) ctx.ui.notify(controller.message, "error");
     }
   }
+}
+
+export async function pickHistory(ctx: ExtensionContext, entries: readonly HistoryEntry[]): Promise<HistoryEntry | undefined> {
+  const options = entries.map((entry, index) => ({
+    label: `${index + 1}. ${entry.args.query}`,
+    description: `${entry.within ? `within ${entry.within.files.length} files of: ${entry.within.query} · ` : ""}${historyCommand(entry)}`,
+  }));
+  const picked = await ctx.ui.select("Recent searches in this project", options);
+  return entries[options.findIndex((option) => option.label === picked)];
 }

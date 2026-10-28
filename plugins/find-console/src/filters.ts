@@ -8,6 +8,7 @@ import { resolveSearchResultPath } from "@oh-my-pi/pi-coding-agent/tools/path-ut
 import { type ShellFilesystem, ShellFsFileType, ShellFsOp } from "@oh-my-pi/pi-natives";
 
 import type { ConsoleHit } from "#src/report.ts";
+import { withinTree } from "#src/within.ts";
 
 export interface FindFilters {
   globs: string[];
@@ -41,13 +42,32 @@ function rootRelative(root: SearchRoot, path: string): string {
 }
 
 /** Intercept directory entries before both native lexical scanning and cascade filename ranking. */
-export function filteredFilesystem(base: InternalUrlFilesystem, root: SearchRoot, filters: FindFilters): InternalUrlFilesystem {
-  if (!filters.globs.length && !filters.extensions.length) return base;
+export function filteredFilesystem(
+  base: InternalUrlFilesystem,
+  root: SearchRoot,
+  filters: FindFilters,
+  files?: readonly string[],
+): InternalUrlFilesystem {
+  if (!filters.globs.length && !filters.extensions.length && files === undefined) return base;
   const matches = fileMatcher(filters);
+  const tree = files === undefined ? undefined : withinTree(root, files);
   const binding: ShellFilesystem = {
     nativeLocalPaths: false,
     async handler(error, request) {
       if (error) return { error: { code: "EIO", message: error.message } };
+      if (tree && request.path) {
+        if (request.op === ShellFsOp.Canonicalize && (tree.has(request.path) || files?.includes(request.path)))
+          return { path: request.path };
+        if (request.op === ShellFsOp.ReadDir) {
+          const directory = request.path;
+          return {
+            entries: (tree.get(directory) ?? []).filter(
+              (entry) =>
+                entry.fileType === ShellFsFileType.Dir || matches(rootRelative(root, resolveSearchResultPath(directory, entry.name))),
+            ),
+          };
+        }
+      }
       const response = await base.handle(request);
       if (request.op !== ShellFsOp.ReadDir || !request.path || response.error) return response;
       try {

@@ -8,10 +8,11 @@ export interface FindArgs extends FindFilters {
   cancel: boolean;
   noCache: boolean;
   noTranslate: boolean;
+  history: boolean;
 }
 
 export const USAGE =
-  "Usage: /find [--path PATH] [-k KEYWORD]... [--glob PATTERN]... [--ext EXT]... [--min-score 0.2..1] [--limit N] [--no-cache] [--no-translate] <query>\nQuote paths, globs and keywords containing spaces. Use -- before query text beginning with a dash. /find prompts for a query; /find --cancel cancels a running search.";
+  "Usage: /find [--path PATH] [-k KEYWORD]... [--glob PATTERN]... [--ext EXT]... [--min-score 0.2..1] [--limit N] [--no-cache] [--no-translate] <query>\n/find --history reruns a recent search with its flags. /find --cancel cancels a running search. Quote paths, globs and keywords containing spaces. Use -- before dash-leading query text. /find prompts for a query.";
 
 export function splitArguments(input: string): string[] {
   const words: string[] = [];
@@ -53,6 +54,7 @@ export function parseFindArgs(input: string): FindArgs {
     cancel: false,
     noCache: false,
     noTranslate: false,
+    history: false,
     globs: [],
     extensions: [],
     minScore: 0.2,
@@ -72,6 +74,8 @@ export function parseFindArgs(input: string): FindArgs {
       result.noCache = true;
     } else if (options && arg === "--no-translate") {
       result.noTranslate = true;
+    } else if (options && arg === "--history") {
+      result.history = true;
     } else if (options && ["--path", "-p", "-k", "--keyword", "--glob", "--ext", "--min-score", "--limit"].includes(arg)) {
       const value = args[++i];
       if (!value?.trim() || value.startsWith("-")) throw new Error(`${arg} requires a value. ${USAGE}`);
@@ -100,19 +104,8 @@ export function parseFindArgs(input: string): FindArgs {
     } else query.push(arg);
   }
   result.query = query.join(" ").trim();
-  if (
-    result.cancel &&
-    (result.query ||
-      scoped ||
-      result.keywords.length ||
-      result.noCache ||
-      result.noTranslate ||
-      result.globs.length ||
-      result.extensions.length ||
-      result.minScore !== 0.2 ||
-      result.limit !== undefined)
-  )
-    throw new Error("Use /find --cancel on its own.");
+  if (result.cancel && args.length !== 1) throw new Error("Use /find --cancel on its own.");
+  if (result.history && args.length !== 1) throw new Error("Use /find --history on its own; saved flags are restored from history.");
   return result;
 }
 
@@ -125,6 +118,7 @@ const OPTIONS = [
   ["--ext", "Restrict file extensions; repeat for alternatives"],
   ["--min-score", "Minimum probability from 0.2 to 1, for hits and refined ranges"],
   ["--limit", "Return at most this many hits"],
+  ["--history", "Pick a recent search and rerun its original flags"],
   ["--help", "Show command syntax"],
   ["--cancel", "Cancel the current search"],
 ] as const;

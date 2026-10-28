@@ -32,6 +32,7 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 /find [--path PATH] [-k KEYWORD]... [--glob PATTERN]... [--ext EXT]... [--min-score 0.2..1] [--limit N] [--no-cache] [--no-translate] <query>
 /find --help
 /find --cancel
+/find --history
 ```
 
 `--path` (short form `-p`) is the slash-command form of the CLI's optional `[path]`: it can name a directory, one file, or an internal URL. It defaults to the session's current directory, not the process's working directory. Use `-k` (or `--keyword`) once per extra lexical keyword. Query text can remain unquoted; quote a path or keyword containing spaces. The command completes its option names.
@@ -51,6 +52,13 @@ Queries containing non-Latin letters are translated to English before the lexica
 
 File filters run before lexical scanning and filename judgments. Repeat `--glob` for alternative patterns and `--ext` for alternative suffixes; glob and extension filters intersect. A glob containing `/` matches a search-root-relative path; otherwise it matches the basename at any depth. Extensions ignore case and accept an optional leading dot. `--min-score` filters both hits and refined ranges and must be at least the cascade threshold (0.2); `--limit` is a positive hit-count cap applied after score filtering. For example: `/find --glob 'plugins/**/*.ts' --ext ts --min-score 0.7 --limit 5 where settings are read`.
 
+### Recent searches and follow-up questions
+
+Recent original queries and their flags are saved per project in `.omp/.cache/find-console/history.json`, outside the installed plugin copy. The newest 50 searches are kept and duplicates replace their older flags. `/find` argument completion offers recent queries; `/find --history` or the console's Recent searches action opens a picker and reruns the selected search with its saved flags. Versioned history upgrades on load. It contains query text and paths, so treat it as local project data; remove the file to clear it.
+
+Press `r` (Search within results) to ask another question restricted to the current hit files, without a repository-wide rescan. Existing flags are preserved and results identify `within N files of: <previous query>`. Press `h` for recent searches. Both actions close the console before opening host input/select dialogs; cancelling those dialogs does not send anything to the agent. A history rerun also restores a saved within-results file restriction. Recent-query text completion covers ordinary searches; use the history picker for restricted follow-up searches.
+
+
 ### Results console
 
 The terminal opens a fullscreen console by default, with ranked hits on the left and source context on the right. Set `uiMenu: half-screen` for a compact, bottom-anchored overlay that keeps the conversation visible above it. Both layouts support selection, source preview and the same result actions. Scores use the same strong/plausible/muted bands as the built-in find tool. They are judge probabilities, not a guarantee that the hit is correct.
@@ -64,6 +72,8 @@ The terminal opens a fullscreen console by default, with ranked hits on the left
 | Enter, `i` | Insert the current range reference into the composer and close. The existing draft is preserved. |
 | `s` | Send marked hits, or the selected hit when none are marked, as a user message. While the agent is streaming, queue it as a follow-up instead of interrupting it. |
 | `o` | Open the local file at the current range's first line in `$VISUAL` / `$EDITOR`, using `+line`. With no configured editor, use the OS opener. |
+| `r` | Ask a new question within only the current result files, preserving flags. |
+| `h` | Pick and rerun a recent search with its original flags. |
 | Esc, Ctrl+C | Close without sending results or recording the console in the transcript. |
 
 In [Tern](https://docs.stencil.so/tern/), the same console opens as a large native glass sheet. Click a hit to preview it; the range, marking, insertion, sending and opening buttons run the same actions as the keys. Long paths appear in row tooltips, with the filename first in the list. The footer reports hits, cost, wall time and search accounting.
@@ -116,7 +126,7 @@ No other marketplace plugin is required. `judge-dispatch` and this command share
 
 | Host | Behavior |
 | --- | --- |
-| RPC (`--mode rpc`, `rpc-ui`) and ACP with UI | Search progress appears through status updates with a cancel dialog. Results use a hit selector (file, score and range description), an action selector and a read-only preview editor. Preview edits are discarded. Marking and multi-hit sending remain available. |
+| RPC (`--mode rpc`, `rpc-ui`) and ACP with UI | Search progress appears through status updates with a cancel dialog. Results use a hit selector (file, score and range description), an action selector and a read-only preview editor. Preview edits are discarded. Marking, multi-hit sending, Search within results and Recent searches remain available. |
 | Host without a composer editor | Insertion is unavailable with a reason; use the send-to-agent action. RPC composers that advertise editor support can accept insertion; ACP normally cannot. |
 | No UI (print, JSON, SDK) | No dialogs or interactive actions. Supply the query in the command; ranked results, references, coverage, failures and accounting are reported through a displayed message. |
 
@@ -132,7 +142,7 @@ If a UI host cannot mount custom components, the command uses the same selector/
 
 ## Reference
 
-The [implementation reference](REFERENCE.md) documents native refinement and cache accounting. Host documentation covers [semantic find](omp://tools/find.md), [judge and find settings](omp://settings.md) and [extension UI/message delivery](omp://extensions.md).
+The [implementation reference](REFERENCE.md) documents refinement, translation, filters and versioned history storage. Host documentation covers [semantic find](omp://tools/find.md), [judge and find settings](omp://settings.md) and [extension UI/message delivery](omp://extensions.md).
 
 ## License
 

@@ -2,7 +2,7 @@ import type { FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 
 import { externalOpenReason, type PreviewReader, type PreviewSource } from "#src/preview.ts";
 import type { ConsoleHit, ConsoleReport } from "#src/report.ts";
-import { cacheLabel, coverageWarning, formatCost, previewWindow, reference, reportStats, selectedRange } from "#src/results.ts";
+import { cacheLabel, coverageWarning, formatCost, previewWindow, reference, reportStats, runStats, selectedRange } from "#src/results.ts";
 
 export interface ConsoleState {
   selected: number;
@@ -63,7 +63,10 @@ export class FindResultsController {
   get previewLines(): { start: number; lines: string[]; highlight: FindRange[]; focusLine?: number } {
     const lines = this.preview?.lines ?? [];
     const highlight = this.selectedHit?.scope === "ranges" ? this.selectedHit.refined : [];
-    const window = this.report.previewMode === "full-file" ? { start: 1, lines } : previewWindow(lines, this.activeRange);
+    const window =
+      this.report.previewMode === "full-file" || this.selectedHit?.scope === "whole-file"
+        ? { start: 1, lines }
+        : previewWindow(lines, this.activeRange);
     return { ...window, highlight, focusLine: this.activeRange?.start };
   }
 
@@ -89,6 +92,10 @@ export class FindResultsController {
 
   get stats(): string {
     return reportStats(this.report);
+  }
+
+  get runStats(): string {
+    return runStats(this.report);
   }
 
   select(index: number): void {

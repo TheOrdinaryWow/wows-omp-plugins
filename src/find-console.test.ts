@@ -1,4 +1,7 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import { initTheme, type NativeNode, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { FindHit } from "@oh-my-pi/pi-tui/tools/find";
@@ -7,6 +10,7 @@ import { parseFindArgs } from "../plugins/find-console/src/args.ts";
 import { FindConsole } from "../plugins/find-console/src/console.ts";
 import { FindProgressController, FindResultsController } from "../plugins/find-console/src/controller.ts";
 import { fileMatcher, filterHits } from "../plugins/find-console/src/filters.ts";
+import { HISTORY_LIMIT, type HistoryEntry, HistoryStore, historyCommand } from "../plugins/find-console/src/history.ts";
 import type { PreviewReader } from "../plugins/find-console/src/preview.ts";
 import { FindProgress } from "../plugins/find-console/src/progress-view.ts";
 import { decideHitScope } from "../plugins/find-console/src/refinement.ts";
@@ -141,6 +145,7 @@ describe("find arguments", () => {
       cancel: false,
       noCache: false,
       noTranslate: false,
+      history: false,
       globs: [],
       extensions: [],
       minScore: 0.2,
@@ -220,6 +225,64 @@ describe("result filters", () => {
     expect(result.map((hit) => hit.rel)).toEqual(["precise.ts"]);
     expect(result[0]?.refined.map((range) => range.p)).toEqual([0.92, 0.92]);
     expect(filterHits(hits, { minScore: 0.8 }).map((hit) => hit.rel)).toEqual(["precise.ts", "whole.ts"]);
+  });
+});
+
+describe("project search history", () => {
+  test("recent searches dedupe, retain the newest flags, stay bounded and survive a new store instance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "find-history-"));
+    try {
+      const store = new HistoryStore(cwd);
+      const entries: HistoryEntry[] = Array.from({ length: HISTORY_LIMIT + 5 }, (_, index) => ({
+        args: parseFindArgs(`query ${index}`),
+        searchedAt: index,
+      }));
+      await mkdir(dirname(store.file), { recursive: true });
+      await writeFile(store.file, JSON.stringify({ version: 2, entries }));
+      const updated = await store.remember({ args: parseFindArgs("--no-cache --ext ts --limit 2 query 54"), searchedAt: 100 });
+      expect(updated).toHaveLength(HISTORY_LIMIT);
+      expect(updated[0]?.args).toMatchObject({ query: "query 54", noCache: true, extensions: ["ts"], limit: 2 });
+      expect(updated.filter((entry) => entry.args.query === "query 54")).toHaveLength(1);
+      expect(await new HistoryStore(cwd).load()).toEqual(updated);
+      const first = updated[0];
+      if (!first) throw new Error("missing saved query");
+      expect(parseFindArgs(historyCommand(first))).toEqual(first.args);
+      expect(parseFindArgs("--history").history).toBe(true);
+      expect(() => parseFindArgs("--history query")).toThrow("on its own");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a previous-version file upgrades on load without losing its original query, scope or keywords", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "find-history-upgrade-"));
+    try {
+      const store = new HistoryStore(cwd);
+      await mkdir(dirname(store.file), { recursive: true });
+      await writeFile(
+        store.file,
+        JSON.stringify({
+          version: 1,
+          entries: [{ query: "版本号在哪里被提升", path: "plugins", keywords: ["release-please"], searchedAt: 42 }],
+        }),
+      );
+      const loaded = await store.load();
+      expect(loaded[0]).toMatchObject({
+        args: {
+          query: "版本号在哪里被提升",
+          path: "plugins",
+          keywords: ["release-please"],
+          minScore: 0.2,
+          noCache: false,
+          noTranslate: false,
+        },
+        searchedAt: 42,
+      });
+      expect(JSON.parse(await readFile(store.file, "utf8")).version).toBe(2);
+      expect(await new HistoryStore(cwd).load()).toEqual(loaded);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 

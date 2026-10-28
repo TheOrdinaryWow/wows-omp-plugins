@@ -56,8 +56,12 @@ export function cacheLabel(cache: CacheState): string {
 }
 
 export function reportStats(report: FindToolDetails | ConsoleReport): string {
+  return `${runStats(report)} · ${formatCost(report.stats.cost)}${"cache" in report ? ` · ${cacheLabel(report.cache)}` : ""}`;
+}
+
+export function runStats(report: FindToolDetails): string {
   const { stats } = report;
-  return `${report.hits.length} hits · ${formatCost(stats.cost)}${"cache" in report ? ` · ${cacheLabel(report.cache)}` : ""} · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
+  return `${report.hits.length} hits · ${formatDuration(report.elapsedMs)} wall · ${stats.judged}/${stats.listed} names judged · ${stats.filesRead} files read · ${stats.requests} requests${stats.unanswered ? ` · ${stats.unanswered} unanswered` : ""}`;
 }
 
 export function rankedDigest(report: FindToolDetails | ConsoleReport): string {

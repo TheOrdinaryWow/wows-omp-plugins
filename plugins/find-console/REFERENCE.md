@@ -31,3 +31,41 @@ The report's `query` is the actual searched text. Successful translation adds `o
 `--glob` and `--ext` filter directory entries in a per-search native-filesystem view before the host cascade lists or lexically scans files. The shared filesystem is unchanged, directories remain traversable, and ignore-policy files stay readable. Explicit file roots are checked before starting the cascade. Globs without a slash match basenames at any depth; globs with a slash match search-root-relative paths. Repeated patterns are alternatives, repeated extensions are alternatives, and the two filter groups intersect. Extensions are normalized to lowercase without a leading dot.
 
 `--min-score` must be in [0.2, 1], preserving the host cascade's minimum threshold. It filters cascade hits before refinement and filters refined ranges afterward. Range hits with no surviving ranges are removed; whole-file hits have no line ranges by definition. `--limit` is a positive safe integer applied last; hit ordering remains the cascade's calibrated score order.
+
+## History storage and upgrades
+
+The per-project file is `<ctx.cwd>/.omp/.cache/find-console/history.json`. Plugin upgrades replace only the plugin directory, not this file. Writes use a private temporary file (mode 0600) and atomic rename; missing history means an empty list. Malformed or unknown-version files are preserved and reported rather than silently replaced.
+
+Current format:
+
+```json
+{
+  "version": 2,
+  "entries": [
+    {
+      "args": {
+        "query": "where versions are bumped",
+        "path": ".",
+        "keywords": [],
+        "globs": [],
+        "extensions": [],
+        "minScore": 0.2,
+        "noCache": false,
+        "noTranslate": false,
+        "help": false,
+        "cancel": false,
+        "history": false
+      },
+      "searchedAt": 1793180000000
+    }
+  ]
+}
+```
+
+`limit` is optional inside `args`. Restricted follow-ups also have `within: { query: "<previous original query>", files: ["<absolute path or URL>"] }` on the entry. The timestamp is Unix milliseconds. Newest entries come first; duplicates use normalized original query text, search path and within-file scope as their identity, keeping the newest flags. History is capped at 50 entries, including completed searches with zero hits; cancelled searches are not recorded. Search history first appears with this feature (0.1.0 wrote none). The accepted predecessor format is `{ version: 1, entries: [{ query, path, keywords, searchedAt }] }`; loading it fills new flags with defaults and atomically rewrites version 2 without losing the query, scope, keywords or timestamp.
+
+The command API's completion callback has no context argument, so the extension loads a project-bound history snapshot at session start/switch and refreshes it after completed searches, using `ctx.cwd` only. Ordinary-query completion restores all command flags. Restricted follow-ups rerun through the host history picker so a textual completion cannot accidentally widen their file scope.
+
+## Search within results
+
+The action closes the current console, asks a new question through host input, and reruns the same cascade and refinement with unchanged flags. A synthetic directory tree is constructed only from the current hit paths and their ancestors. Both the lexical scan and filename listing see this tree through the native filesystem bridge; no repository directory enumeration occurs. File contents and metadata still resolve through the original session filesystem. Results display the preceding original query and restricted file count. Nested follow-ups narrow to their own current hits, and persisted history retains the exact file restriction for reruns.
