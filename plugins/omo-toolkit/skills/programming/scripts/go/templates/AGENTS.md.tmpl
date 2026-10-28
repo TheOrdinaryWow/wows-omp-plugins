@@ -1,0 +1,27 @@
+> **Modified-port notice and license.** This template is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. The source material is under the [Sustainable Use License 1.0](https://github.com/code-yeongyu/oh-my-openagent/blob/8a8db1d3094da8743989bf693ee5de77889de50e/LICENSE.md), also bundled as the toolkit plugin's `LICENSE-SUL-1.0`; it permits internal business use and personal/noncommercial use and free noncommercial distribution.
+
+> **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
+
+# AGENTS.md
+
+Go 1.23+ $short_purpose service.
+
+## Commands
+- `task` — fmt + lint + test
+- `task build` — produce ./bin/server
+- `task ci` — full CI pipeline locally
+
+## Architecture
+- `cmd/server/main.go` — entrypoint, ≤50 LOC
+- `internal/cmd/` — root command, signal wiring
+- `internal/api/` — HTTP handlers + middleware (gin)
+- `internal/domain/` — smart-constructor types, no I/O
+- `internal/store/` — DB layer (sqlc-generated, never hand-edited)
+- `internal/config/` — env-driven Config
+- `internal/obs/` — slog setup, observability
+
+## Conventions
+- `slog` for all logs; never `log.*`, never `fmt.Println` in libs
+- `context.Context` first arg for every public function with I/O
+- Errors wrapped with `%w`; check with `errors.Is/As`
+- Tests follow Given/When/Then; less mock the better
