@@ -1,8 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test, vi } from "bun:test";
 
+import { initTheme, type NativeNode, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { FindHit, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 
 import { parseFindArgs } from "../plugins/find-console/src/args.ts";
+import { FindConsole } from "../plugins/find-console/src/console.ts";
+import { FindProgressController, FindResultsController } from "../plugins/find-console/src/controller.ts";
+import type { PreviewReader } from "../plugins/find-console/src/preview.ts";
+import { FindProgress } from "../plugins/find-console/src/progress-view.ts";
 import { disabledReason, hitMessage, previewWindow, rankedDigest, reference, selectedRange } from "../plugins/find-console/src/results.ts";
 import { parseUiMenu } from "../plugins/find-console/src/settings.ts";
 
@@ -48,6 +53,68 @@ function report(extra: Partial<FindToolDetails> = {}): FindToolDetails {
     ...extra,
   };
 }
+
+beforeAll(async () => {
+  await initTheme();
+});
+
+function nativeNodes(root: NativeNode): NativeNode[] {
+  const nodes = [root];
+  for (const child of root.c ?? []) {
+    if ("k" in child) nodes.push(...nativeNodes(child));
+  }
+  return nodes;
+}
+
+describe("loading presentation", () => {
+  const tui = { terminal: { rows: 36 }, requestRender() {} } as unknown as TUI;
+
+  test("source loading reserves the same native code rows and terminal frame height as loaded content", async () => {
+    const reader = {
+      read: async () => ({ lines: Array.from({ length: 120 }, (_, index) => `line ${index + 1} ${"x".repeat(200)}`), truncated: false }),
+    } as unknown as PreviewReader;
+    const controller = new FindResultsController(report(), reader, true);
+    const view = new FindConsole(controller, theme, tui);
+    const loading = nativeNodes(view.describe()).find((node) => node.k === "code");
+    const loadingHeight = view.render(120).length;
+    const half = new FindConsole(new FindResultsController(report(), reader, true), theme, tui, true);
+    const halfLoadingHeight = half.render(80).length;
+    await Promise.resolve();
+    const loaded = nativeNodes(view.describe()).find((node) => node.k === "code");
+    expect(loading?.k).toBe("code");
+    expect(loaded?.k).toBe("code");
+    if (loading?.k !== "code" || loaded?.k !== "code") throw new Error("source code block missing");
+    expect(loading.p?.text?.split("\n")).toHaveLength(12);
+    expect(loaded.p?.text?.split("\n")).toHaveLength(12);
+    expect(loading.p?.path).toBe(loaded.p?.path);
+    expect(loading.p?.numbers).toBe(loaded.p?.numbers);
+    for (const line of loaded.p?.text?.split("\n") ?? []) {
+      expect(visibleWidth(line)).toBeLessThanOrEqual(64);
+      expect(line.endsWith("…")).toBe(true);
+    }
+    expect(view.render(120)).toHaveLength(loadingHeight);
+    expect(half.render(80)).toHaveLength(halfLoadingHeight);
+  });
+
+  test("fast searches stay static, while a still-pending search animates after a second in both renderers", () => {
+    vi.useFakeTimers();
+    const controller = new FindProgressController("where versions are bumped", () => {});
+    const view = new FindProgress(controller, theme, tui);
+    try {
+      const initial = view.render(80);
+      expect(nativeNodes(view.describe()).some((node) => node.k === "spinner")).toBe(false);
+      vi.advanceTimersByTime(160);
+      expect(view.render(80)).toEqual(initial);
+      expect(nativeNodes(view.describe()).some((node) => node.k === "spinner")).toBe(false);
+      vi.advanceTimersByTime(1000);
+      expect(nativeNodes(view.describe()).some((node) => node.k === "spinner")).toBe(true);
+      expect(view.render(80)).not.toEqual(initial);
+    } finally {
+      view.dispose();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("find arguments", () => {
   test("unquoted queries remain natural language while explicit scopes and repeated keywords stay separate", () => {

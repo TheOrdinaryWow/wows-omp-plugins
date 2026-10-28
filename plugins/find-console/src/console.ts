@@ -54,6 +54,8 @@ const STACKED_PREVIEW_MIN_ROWS = 6;
 const WHEEL_ROWS = 3;
 /** A bounded source page keeps the glass sheet's actions visible; PgUp/PgDn move through the complete source. */
 const NATIVE_PAGE_ROWS = 12;
+/** Horizontal excerpt budget leaves room for the line-number gutter and a visible ellipsis in the native split pane. */
+const NATIVE_SOURCE_COLUMNS = 64;
 
 const NATIVE_HINTS = hintsRow([
   { keys: ["up", "down"], label: "hit" },
@@ -488,7 +490,15 @@ export class FindConsole implements Component {
           "facts",
         ),
       );
-    if (!source) children.push(keyed(node("spinner", { style: "dots", label: "Loading preview…" }), "loading"));
+    if (!source)
+      children.push(
+        keyed(text("Loading preview…", { tone: "muted" }), "position"),
+        // Use the same native code chrome and twelve-line extent as the loaded page, so the centered sheet cannot jump.
+        keyed(
+          code("\n".repeat(NATIVE_PAGE_ROWS - 1), { path: hit.rel, start: active?.start ?? 1, numbers: true, wrap: false }),
+          `code:${where}`,
+        ),
+      );
     else if (source.error) children.push(keyed(text(`Preview unavailable: ${source.error}`, { tone: "error", wrap: "word" }), "error"));
     else if (active && active.start > source.lines.length)
       children.push(keyed(text("The judged range is no longer present in this file.", { tone: "warning", wrap: "word" }), "missing"));
@@ -511,9 +521,15 @@ export class FindConsole implements Component {
         }
       }
       children.push(
-        keyed(text(`Lines ${start}–${end} of ${source.lines.length} · PgUp/PgDn to scroll`, { tone: "muted" }), "position"),
+        keyed(text(`Lines ${start}–${end} of ${source.lines.length} · PgUp/PgDn to scroll · … clipped`, { tone: "muted" }), "position"),
         keyed(
-          code(source.lines.slice(start - 1, end).join("\n"), { path: hit.rel, start, numbers: true, marks, wrap: false }),
+          code(
+            source.lines
+              .slice(start - 1, end)
+              .map((line) => truncateToWidth(line.replaceAll("\t", "  "), NATIVE_SOURCE_COLUMNS))
+              .join("\n"),
+            { path: hit.rel, start, numbers: true, marks, wrap: false },
+          ),
           `code:${where}`,
         ),
       );

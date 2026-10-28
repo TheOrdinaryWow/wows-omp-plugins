@@ -67,6 +67,7 @@ export class FindProgress implements Component {
   #names: number | undefined;
   #note: string | undefined;
   #frame = 0;
+  #animate = false;
   #timer: NodeJS.Timeout | undefined;
   #memo: { key: string; lines: readonly string[] } | undefined;
   #native: NativeNode | undefined;
@@ -84,8 +85,15 @@ export class FindProgress implements Component {
       this.#native = undefined;
       tui.requestRender();
     };
-    // Natively the terminal clocks the spinner and the elapsed counter itself.
+    // Short searches keep a static status; only a wait lasting a second earns an animated indicator.
+    // Native motion is terminal-clocked after this single transition; TUI loaders then advance at host cadence.
     this.#timer = setInterval(() => {
+      if (Date.now() - this.#started < 1000) return;
+      if (!this.#animate) {
+        this.#animate = true;
+        this.#native = undefined;
+        tui.requestRender();
+      }
       if (isNativeRendering()) return;
       this.#frame++;
       tui.requestRender();
@@ -145,7 +153,9 @@ export class FindProgress implements Component {
     const c = this.controller;
     const inner = Math.max(1, width - 4);
     const frames = t.spinnerFrames;
-    const spinner = c.cancelled ? t.fg("warning", t.status.aborted) : t.fg("accent", frames[this.#frame % frames.length] ?? "");
+    const spinner = c.cancelled
+      ? t.fg("warning", t.status.aborted)
+      : t.fg("accent", this.#animate ? (frames[this.#frame % frames.length] ?? "") : "·");
     const glyphs = { done: t.status.success, skipped: "–", pending: "·" };
     const glyphWidth = Math.max(visibleWidth(spinner), ...Object.values(glyphs).map(visibleWidth));
     const phases = PHASES.map((phase, index) => {
@@ -209,10 +219,9 @@ export class FindProgress implements Component {
       keyed(
         nativeRow(
           [
-            node("spinner", {
-              style: "dots",
-              label: [span(c.cancelled ? "Cancelling search…" : (current?.label ?? "Searching"), c.cancelled ? "warning" : "strong")],
-            }),
+            this.#animate && !c.cancelled
+              ? node("spinner", { style: "dots", label: [span(current?.label ?? "Searching", "strong")] })
+              : text([span(c.cancelled ? "Cancelling search…" : (current?.label ?? "Searching"), c.cancelled ? "warning" : "strong")]),
             node("spacer", { grow: 1 }),
             elapsed(Date.now() - this.#started),
           ],
