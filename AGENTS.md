@@ -228,6 +228,34 @@ calls a chat-model fallback. Automatic routing fails open: a missing native judg
 keeps the requested agent and warns once per session. A pin that cannot apply
 must instead refuse the call; never run a pinned task on the agent's own model.
 
+## UI runs in three environments
+
+Every user-facing surface a plugin adds (commands, dialogs, widgets, status
+lines, notices) must work in all three places omp runs, and a change to one is
+verified in each it can reach, naming any that were not:
+
+- **Terminal TUI** (`ctx.mode === "tui"`): `render()` output and host dialogs.
+- **Non-TUI hosts.** In RPC/ACP `ctx.mode` is `"rpc"` and `hasUI` is true, but
+  `ui.custom` returns undefined and component widgets are dropped; `select`,
+  `confirm`, `input` and `editor` still work. With `hasUI` false there is no
+  dialog at all: offer a command form (`/atlas exit`) and report through a
+  display message (`commandNotice`), and refuse instead of assuming consent.
+- **Tern**, through `describe()` (next section).
+
+Prefer host dialogs (`select`, `confirm`, `input`, `editor`, `askDialog`): the
+host renders each of them natively in all three, so they need no per-mode code.
+A custom component is TUI-only unless it also implements the Tern surface, and
+it always needs a host-dialog fallback when `ctx.mode !== "tui"`.
+
+What goes into a host dialog matters. `confirm(title, message)` is
+`select(`${title}\n${message}`, ["Yes", "No"])`: the TUI paints every message
+line in the accent colour with no markdown, and Tern shows it as a plain
+subtitle, so a long message becomes an unreadable wall. Keep the title to the
+question plus a line or two of summary, put long text (plans, acceptance
+criteria, failure history) behind a "review details" option that opens a
+read-only `editor`, and use `select` options whose labels name the
+consequence; option descriptions render muted with inline markdown.
+
 ## Tern native rendering
 
 In Tern, omp speaks the Tern Surface Protocol and asks each component for
