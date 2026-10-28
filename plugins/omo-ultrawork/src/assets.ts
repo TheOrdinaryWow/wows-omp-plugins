@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 export const DIRECTIVE_ASSET = "../assets/ultrawork-directive.md";
 export const HYPERPLAN_ASSET = "../assets/hyperplan.md";
 export const RESEARCH_ASSET = "../assets/ulw-research.md";
+export const LOOP_ASSET = "../skills/ulw-loop/SKILL.md";
+export const LOOP_DEFINE_ASSET = "../skills/ulw-loop/references/define-goal.md";
+export const LOOP_WORKFLOW_ASSET = "../skills/ulw-loop/references/full-workflow.md";
 
 type Asset = { body: string } | { error: Error };
 
@@ -36,6 +39,9 @@ const ASSETS: Record<string, Asset | undefined> = {
   [DIRECTIVE_ASSET]: readAsset(DIRECTIVE_ASSET),
   [HYPERPLAN_ASSET]: readAsset(HYPERPLAN_ASSET),
   [RESEARCH_ASSET]: readAsset(RESEARCH_ASSET),
+  [LOOP_ASSET]: readAsset(LOOP_ASSET),
+  [LOOP_DEFINE_ASSET]: readAsset(LOOP_DEFINE_ASSET),
+  [LOOP_WORKFLOW_ASSET]: readAsset(LOOP_WORKFLOW_ASSET),
 };
 
 export function loadPromptAsset(relativePath: string): string {

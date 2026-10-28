@@ -1,18 +1,16 @@
-import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
-import { DIRECTIVE_ASSET, HYPERPLAN_ASSET, loadPromptAsset, RESEARCH_ASSET } from "#src/assets.ts";
+import { DIRECTIVE_ASSET, HYPERPLAN_ASSET, loadPromptAsset } from "#src/assets.ts";
 import { readHostSetting } from "#src/host-settings.ts";
 import { detectPointers, detectUltrawork, hasEmbeddedDirective } from "#src/keywords.ts";
 import { registerMessageTitle } from "#src/message-title.ts";
 import { triggersOrchestrate } from "#src/orchestrate.ts";
 import { PluginStatePublisher } from "#src/plugin-state.ts";
+import { renderPointers } from "#src/pointers.ts";
+import { buildResearchPayload, RESEARCH_COMPANIONS } from "#src/research-payload.ts";
+import { registerLoop } from "#src/ulw-loop.ts";
 
 const STATE_ENTRY = "wows-omp-omo-ultrawork.state";
 const DIRECTIVE_MESSAGE = "wows-omp-omo-ultrawork.directive";
@@ -21,11 +19,9 @@ const EXIT_MESSAGE = "wows-omp-omo-ultrawork.exit";
 const STATUS_KEY = "omo-ultrawork";
 const PACKAGE_NAME = "wows-omp-plugin-omo-ultrawork";
 const EXIT_NOTICE =
-  "<omo-ultrawork-exit>ultrawork mode is off; the ultrawork directive no longer applies. Resume normal operation.</omo-ultrawork-exit>";
+  "<omo-ultrawork-exit>Ordinary ultrawork mode is off; its directive no longer applies. An explicitly active ulw-loop or approved Atlas workflow retains ownership. Use /ulw-loop pause|stop to manage a loop.</omo-ultrawork-exit>";
 const ARMED_REMINDER =
   "<omo-ultrawork-reminder>ultrawork mode is already armed for this session - the ultrawork directive above remains binding; re-read it and continue.</omo-ultrawork-reminder>";
-const MASS_ULW_POINTER =
-  "<omo-mass-ulw-pointer>The request names mass-ulw. Read skill://mass-ulw before decomposing the work and follow its wave and verification protocol.</omo-mass-ulw-pointer>";
 const ORCHESTRATE_CONFLICT =
   "OMP's orchestrate keyword conflicts with ultrawork. Remove that word, or disable it with `omp config set magicKeywords.orchestrate false`.";
 const TODO_FANOUT_REMINDER = [
@@ -135,6 +131,17 @@ export default function ultrawork(pi: ExtensionAPI): void {
     }
   };
 
+  const loop = registerLoop(pi, { mainSession, commandNotice });
+  const researchPayload = async (request: string, ctx: ExtensionContext): Promise<string> => {
+    const configured = await settingsFor(ctx);
+    return await buildResearchPayload(request, {
+      sessionDir: ctx.sessionManager.getSessionDir(),
+      cwd: ctx.cwd,
+      scratchDir: configured.researchScratchDir,
+      loopContext: await loop.researchContext(ctx),
+    });
+  };
+
   const stateFor = (sessionId: string): ArmingState => {
     const existing = states.get(sessionId);
     if (existing) return existing;
@@ -227,7 +234,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
       state.rearmPending = false;
       persist(ctx, state);
       status(ctx, state);
-      return undefined;
+      if (!pointers.length) return undefined;
     }
     if (!state.mode && !keyword && pointers.length === 0) return undefined;
     if (await orchestrateConflict(session, event.text)) {
@@ -236,7 +243,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
     }
 
     let content = "";
-    if (state.mode || keyword) {
+    if ((state.mode || keyword) && !embedded) {
       if (!state.armed || state.rearmPending) {
         try {
           content = `<ultrawork-mode>\n${loadPromptAsset(DIRECTIVE_ASSET)}\n</ultrawork-mode>`;
@@ -248,23 +255,28 @@ export default function ultrawork(pi: ExtensionAPI): void {
         content = ARMED_REMINDER;
       }
     }
-    if (pointers.includes("mass-ulw")) content += `${content ? "\n" : ""}${MASS_ULW_POINTER}`;
-
-    const idle = ctx.isIdle();
-    if (!idle)
-      content = `The following ultrawork instructions apply from the user's next/queued message, not the work already in progress.\n${content}`;
-
-    pi.sendMessage(
-      { customType: DIRECTIVE_MESSAGE, content, display: false, attribution: "user" },
-      { deliverAs: idle ? "nextTurn" : "aside" },
-    );
+    const pointerContent = renderPointers(pointers, event.text);
+    if (pointerContent) content += `${content ? "\n" : ""}${pointerContent}`;
+    let text = event.text;
+    if (pointers.some((pointer) => pointer.target === "ulw-research" && pointer.intent === "binding")) {
+      try {
+        text =
+          event.text.includes("<omo-ulw-research-mode>") || event.text.includes("<ulw-research-request>")
+            ? `${event.text}\n\n${RESEARCH_COMPANIONS}\n\n${await loop.researchContext(ctx)}`
+            : await researchPayload(event.text, ctx);
+      } catch (error) {
+        commandNotice(ctx, `Research procedure could not be loaded (${errorMessage(error)}); request was not activated.`, "error");
+        return undefined;
+      }
+    }
     if (state.mode || keyword) {
       state.armed = true;
       state.rearmPending = false;
       persist(ctx, state);
       status(ctx, state);
     }
-    return undefined;
+    // Transform this input, including queued input, rather than steering the turn already running.
+    return content || text !== event.text ? { text: content ? `${text}\n\n${content}` : text, images: event.images } : undefined;
   });
 
   pi.on("tool_result", (event, ctx) => {
@@ -371,23 +383,7 @@ export default function ultrawork(pi: ExtensionAPI): void {
         return;
       }
       try {
-        const body = loadPromptAsset(RESEARCH_ASSET);
-        const dir = fileURLToPath(new URL("../assets/ulw-research", import.meta.url));
-        if (!existsSync(dir)) {
-          commandNotice(
-            ctx,
-            "The research scripts of this omo-ultrawork install are gone; the plugin was upgraded or removed while this session ran. Restart OMP to use /ulw-research.",
-            "error",
-          );
-          return;
-        }
-        const configured = await settingsFor(ctx);
-        const scratchRoot = configured.researchScratchDir.trim()
-          ? path.resolve(ctx.cwd, configured.researchScratchDir)
-          : path.join(tmpdir(), "ulw-research");
-        pi.sendUserMessage(
-          `<ulw-research-request>\n${request}\n</ulw-research-request>\n\n${body}\n\nResearch assets directory: ${dir}\nResearch scratch root: ${scratchRoot}`,
-        );
+        pi.sendUserMessage(await researchPayload(request, ctx));
       } catch (error) {
         commandNotice(ctx, `Research procedure could not be loaded (${errorMessage(error)}).`, "error");
       }

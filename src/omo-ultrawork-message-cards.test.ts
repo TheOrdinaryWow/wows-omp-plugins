@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { initTheme } from "@oh-my-pi/pi-tui";
+import { z } from "zod";
 
 import register from "../plugins/omo-ultrawork/src/index.ts";
 
@@ -17,6 +18,8 @@ describe("ultrawork message titles", () => {
     const api = {
       logger: { warn: () => {} },
       on: () => {},
+      zod: z,
+      registerTool: () => {},
       registerCommand: () => {},
       registerMessageRenderer: (customType: string, renderer: Renderer) => renderers.set(customType, renderer),
     } as unknown as ExtensionAPI;

@@ -22,12 +22,13 @@ async function scenario(name: string, root: string): Promise<void> {
   const { SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { AgentRegistry } = await import("@oh-my-pi/pi-coding-agent/registry/agent-registry");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+  const { z } = await import("zod");
   const { default: register } = await import("../plugins/omo-ultrawork/src/index.ts");
   const cwd = join(root, "workspace");
   await mkdir(cwd, { recursive: true });
   let manager = SessionManager.create(cwd, join(root, "sessions"));
   const settings = await Settings.loadIsolated({ cwd, agentDir: join(root, "agent") });
-  const hooks = new Map<string, Hook>();
+  const hooks = new Map<string, Hook[]>();
   const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => Promise<void>>();
   const messages: Message[] = [];
   const notices: string[] = [];
@@ -51,11 +52,17 @@ async function scenario(name: string, root: string): Promise<void> {
     },
     settings,
     getEnabledToolNames: () => ["task"],
+    getGoalModeState: () => undefined,
+    getPlanModeState: () => undefined,
+    getVibeModeState: () => undefined,
   } as unknown as AgentSession;
   AgentRegistry.global().register({ id: "Main", kind: "main", displayName: "Main", session: live });
   const api = {
     logger: { warn: (text: string) => warnings.push(text) },
-    on: (event: string, hook: Hook) => hooks.set(event, hook),
+    zod: z,
+    on: (event: string, hook: Hook) => hooks.set(event, [...(hooks.get(event) ?? []), hook]),
+    registerTool: () => {},
+    events: { emit: () => {} },
     registerCommand: (command: string, spec: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) =>
       commands.set(command, spec.handler),
     appendEntry: (customType: string, data: unknown) => manager.appendCustomEntry(customType, data),
@@ -65,9 +72,14 @@ async function scenario(name: string, root: string): Promise<void> {
   } as unknown as ExtensionAPI;
   register(api);
   const hook = async (event: string, payload: Record<string, unknown> = {}) => {
-    const handler = hooks.get(event);
-    assert(handler);
-    return await handler({ type: event, ...payload }, ctx);
+    const handlers = hooks.get(event);
+    assert(handlers);
+    let result: unknown;
+    for (const handler of handlers) {
+      const value = await handler({ type: event, ...payload }, ctx);
+      if (value !== undefined) result = value;
+    }
+    return result;
   };
   const command = async (name: string, args = "") => {
     const handler = commands.get(name);
@@ -103,22 +115,48 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   try {
     await hook("session_start");
-    if (name === "busy-input") {
-      const scope = "The following ultrawork instructions apply from the user's next/queued message, not the work already in progress.\n";
+    if (name === "pointers") {
+      const plan = (await hook("input", { source: "user", text: "ulw plan the upload change" })) as { text: string };
+      assert(plan.text.includes("<omo-prometheus-pointer>"));
+      const loop = (await hook("input", { source: "user", text: "what is ulw loop?" })) as { text: string };
+      assert(loop.text.includes("<omo-ulw-loop-pointer>"));
+      assert.equal(await Bun.file(join(manager.getSessionDir(), "ulw-loop", manager.getSessionId(), "state.json")).exists(), false);
+      const discussion = (await hook("input", { source: "user", text: "what is ulw research?" })) as { text: string };
+      assert(discussion.text.includes("<omo-ulw-research-pointer>"));
+      assert(!discussion.text.includes("<omo-ulw-research-mode>"));
+      const input = "use ulw research to compare storage modes";
       idle = false;
-      await hook("input", { source: "user", text: "ulw fix the parser" });
-      assert(messages.at(-1)?.content.startsWith(`${scope}<ultrawork-mode>`));
-      assert.equal(messages.at(-1)?.deliverAs, "aside");
-      await hook("input", { source: "user", text: "ulw add the regression" });
-      assert(messages.at(-1)?.content.startsWith(`${scope}<omo-ultrawork-reminder>`));
-      assert.equal(messages.at(-1)?.deliverAs, "aside");
+      const images = [{ type: "image", data: "fixture", mimeType: "image/png" }];
+      const binding = (await hook("input", { source: "rpc", text: input, images })) as { text: string; images: unknown };
+      assert(binding.text.includes("<omo-ulw-research-mode>"));
+      assert(binding.text.includes("<omo-ulw-research-companions>"));
+      assert.equal(binding.images, images);
+      await command("ulw-research", input);
+      assert(requests.at(-1));
+      assert(
+        binding.text.startsWith(requests.at(-1) as string),
+        "command and binding input must use the same procedure/assets payload builder",
+      );
+      assert.equal(messages.length, 0, "binding a queued research input must not steer running work");
+      assert.equal(await hook("input", { source: "extension", text: input }), undefined);
+      assert.equal(await hook("input", { source: "user", text: "/ulw-plan" }), undefined);
+      return;
+    }
+    if (name === "busy-input") {
+      idle = false;
+      const images = [{ type: "image", data: "fixture", mimeType: "image/png" }];
+      const first = (await hook("input", { source: "user", text: "ulw fix the parser", images })) as { text: string; images: unknown };
+      assert(first.text.startsWith("ulw fix the parser\n\n<ultrawork-mode>"));
+      assert.equal(first.images, images);
+      const second = (await hook("input", { source: "user", text: "ulw add the regression" })) as { text: string };
+      assert(second.text.startsWith("ulw add the regression\n\n<omo-ultrawork-reminder>"));
       await hook("session_compact");
-      await hook("input", { source: "user", text: "ulw continue" });
-      assert(messages.at(-1)?.content.startsWith(`${scope}<ultrawork-mode>`));
+      const compacted = (await hook("input", { source: "user", text: "ulw continue" })) as { text: string };
+      assert(compacted.text.startsWith("ulw continue\n\n<ultrawork-mode>"));
       idle = true;
-      await hook("input", { source: "user", text: "ulw finish" });
-      assert(messages.at(-1)?.content.startsWith("<omo-ultrawork-reminder>"));
-      assert.equal(messages.at(-1)?.deliverAs, "nextTurn");
+      const last = (await hook("input", { source: "user", text: "ulw finish" })) as { text: string };
+      assert(last.text.startsWith("ulw finish\n\n<omo-ultrawork-reminder>"));
+      assert.equal(messages.length, 0, "queued input must not send an aside into currently running work");
       assert.deepEqual((await snapshot()).state, payload(false, true));
       return;
     }
@@ -166,9 +204,9 @@ async function scenario(name: string, root: string): Promise<void> {
     const enabled = await snapshot();
     assert.deepEqual(enabled.state, payload(true, false));
     assert(enabled.seq > initial.seq);
-    await hook("input", { source: "user", text: "continue the work" });
+    const transformed = (await hook("input", { source: "user", text: "continue the work" })) as { text: string };
+    assert(transformed.text.includes("<ultrawork-mode>"));
     assert.deepEqual((await snapshot()).state, payload(true, true));
-    assert(messages.some((message) => message.customType.endsWith(".directive") && !message.display));
     await hook("input", { source: "user", text: "orchestrate this" });
     assert(feedback().some((text) => text.startsWith("Ultrawork skipped for this message:")));
     await command("ulw");
@@ -220,7 +258,7 @@ if (process.env[CHILD_ENV]) {
   // bun:test cannot load in the executable child; this intentionally exercises an isolated module-loading boundary.
   const { describe, expect, test } = await import("bun:test");
   describe("ultrawork command feedback and session state projection", () => {
-    for (const name of ["headless", "tui", "rpc", "publish-failure", "busy-input", "todo-reminder"]) {
+    for (const name of ["headless", "tui", "rpc", "publish-failure", "busy-input", "todo-reminder", "pointers"]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "ultrawork-extension-"));
         try {
