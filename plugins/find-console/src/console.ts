@@ -64,7 +64,7 @@ const WHEEL_ROWS = 3;
 /**
  * Height of the native source scroller in text lines, loaded or not: a fixed extent keeps the centered
  * sheet from jumping between hits and keeps the whole sheet inside the window (so revealing a range
- * scrolls only the source, never the sheet); the whole file scrolls inside it.
+ * scrolls only the source, never the sheet); the full file scrolls inside it.
  */
 const NATIVE_SOURCE_ROWS = 16;
 /** The same extent as the list's own scroll cap: a Tern list row is two text lines tall. */
@@ -102,7 +102,7 @@ function inside(region: Region | undefined, event: SgrMouseEvent): region is Reg
 /**
  * The `/find` results console. In a terminal it is a fullscreen (or half-screen) frame with the hit list
  * beside (or, when narrow, above) the selected hit's source; in Tern it is a large glass sheet with the
- * same parts. The source is the whole file (`full-file`) or a window around the active range (`snippet`),
+ * same parts. The source is the full file (`full-file`) or a window around the active range (`snippet`),
  * scrolled to the active refined range, with only refined ranges highlighted. Keys, mouse and native
  * clicks all run the controller's actions.
  */
@@ -370,8 +370,8 @@ export class FindConsole implements Component {
       }
       this.#top = clampTop(this.#top, codeRows, window);
       body = sourceRows(t, hit.rel, window, active, window.highlight, this.#top, codeRows, width);
-      const snippet = window.lines.length < source.lines.length ? " · snippet" : "";
-      if (body.length) shown = t.fg("dim", `lines ${this.#top}-${this.#top + body.length - 1} of ${source.lines.length}${snippet}`);
+      const mode = window.lines.length < source.lines.length ? " · snippet" : " · full file";
+      if (body.length) shown = t.fg("dim", `lines ${this.#top}-${this.#top + body.length - 1} of ${source.lines.length}${mode}`);
       else body = [t.fg("dim", "This file is empty.")];
     }
     return [head, spread(facts.join(t.fg("dim", " · ")), shown, width), t.fg("borderMuted", "─".repeat(width)), ...body];
@@ -673,7 +673,7 @@ export class FindConsole implements Component {
     });
     const full = window.start === 1 && window.lines.length === source.lines.length;
     const extent = full
-      ? `${source.lines.length} lines · whole file`
+      ? `${source.lines.length} lines · full file`
       : `Lines ${window.start}–${window.start + window.lines.length - 1} of ${source.lines.length} · snippet`;
     children.push(
       keyed(text(`${extent} · scroll or PgUp/PgDn${clipped ? " · long lines end in …" : ""}`, { tone: "muted" }), "position"),
