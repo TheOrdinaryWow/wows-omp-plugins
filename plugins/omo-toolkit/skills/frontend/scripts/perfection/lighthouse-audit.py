@@ -8,11 +8,13 @@
 # ]
 # ///
 
+# Modified OMP port of oh-my-openagent at 8a8db1d3094da8743989bf693ee5de77889de50e.
+# Sustainable Use License 1.0: ../../../../LICENSE-SUL-1.0.
+# Internal business and personal/noncommercial use; free noncommercial distribution.
 # ─── How to run ───
-# 1. Install uv (if not installed):
-#      curl -LsSf https://astral.sh/uv/install.sh | sh
-# 2. Chrome must already be installed locally:
-#      The script uses channel="chrome"; it downloads no browser.
+# 1. uv, Node, local Chrome and project-resolvable lighthouse must be installed.
+#    No tool or Node dependency is installed by this helper.
+# 2. Chrome is launched with channel="chrome"; no browser download.
 # 3. Run:
 #      uv run lighthouse-audit.py https://example.com
 #      uv run lighthouse-audit.py https://example.com --desktop-only
@@ -42,14 +44,17 @@ from rich import print as rprint
 from rich.table import Table
 
 
-# Lighthouse config as Node.js script — run via subprocess
+# Resolve Lighthouse from the caller's project, not a temporary runner directory.
 LIGHTHOUSE_RUNNER_JS = """\
-const lighthouse = require('lighthouse');
-const chromeLauncher = require('chrome-launcher');
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const require = createRequire(resolve(process.cwd(), 'package.json'));
+const { default: lighthouse } = await import(pathToFileURL(require.resolve('lighthouse')).href);
 
-const url = process.argv[2];
-const port = parseInt(process.argv[3]);
-const preset = process.argv[4]; // 'mobile' or 'desktop'
+const url = process.argv[1];
+const port = parseInt(process.argv[2]);
+const preset = process.argv[3]; // 'mobile' or 'desktop'
 
 const config = {
   extends: 'lighthouse:default',
@@ -78,72 +83,52 @@ const config = {
 
 
 def _check_node_deps() -> bool:
-    """Check if lighthouse and chrome-launcher are available."""
-    result = subprocess.run(
-        ["node", "-e", "require('lighthouse'); require('chrome-launcher')"],
-        capture_output=True,
-        text=True,
-    )
+    """Check the caller's Lighthouse installation without installing anything."""
+    try:
+        result = subprocess.run(
+            ["node", "-e", "require.resolve('lighthouse')"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return False
     return result.returncode == 0
 
 
-def _install_node_deps() -> None:
-    """Install lighthouse + chrome-launcher globally."""
-    rprint("[yellow]Installing lighthouse + chrome-launcher...[/yellow]")
-    subprocess.run(
-        ["npm", "install", "-g", "lighthouse", "chrome-launcher"],
-        capture_output=True,
-        check=True,
-    )
-
-
 def _run_lighthouse_via_cdp(url: str, cdp_port: int, preset: str) -> dict[str, int]:
-    """Run lighthouse against a CDP endpoint."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False) as f:
-        f.write(LIGHTHOUSE_RUNNER_JS)
-        js_path = f.name
-
-    try:
-        result = subprocess.run(
-            ["node", js_path, url, str(cdp_port), preset],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            rprint(f"[red]Lighthouse failed:[/red] {result.stderr}")
-            raise SystemExit(1)
-
-        return json.loads(result.stdout.strip())
-    finally:
-        Path(js_path).unlink(missing_ok=True)
+    """Run the project-resolved ESM Lighthouse API against real Chrome's CDP."""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", LIGHTHOUSE_RUNNER_JS, url, str(cdp_port), preset],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        rprint(f"[red]Lighthouse failed:[/red] {result.stderr}")
+        raise SystemExit(1)
+    return json.loads(result.stdout.strip())
 
 
 def _run_with_playwright(url: str, preset: str) -> dict[str, int]:
     """Launch real Chrome via Playwright, run Lighthouse against CDP."""
     from playwright.sync_api import sync_playwright
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chrome",
-            headless=True,
-            args=["--remote-debugging-port=0"],
-        )
-
-        # Get the actual CDP port from browser
-        cdp_url = browser.contexts[0].pages[0].url if browser.contexts else ""
-        # Use the browser's websocket endpoint to extract port
-        ws_endpoint = browser._impl_obj._connection._transport._ws_url  # noqa: SLF001
-        # Extract port from ws://127.0.0.1:PORT/...
-        port_str = ws_endpoint.split("://")[1].split(":")[1].split("/")[0]
-        cdp_port = int(port_str)
-
-        try:
-            scores = _run_lighthouse_via_cdp(url, cdp_port, preset)
-        finally:
-            browser.close()
-
-    return scores
+    # Chrome writes its selected CDP port to this public profile file. A fresh
+    # temporary profile never reads or modifies the user's browser state.
+    with tempfile.TemporaryDirectory(prefix="frontend-lighthouse-") as profile:
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                profile,
+                channel="chrome",
+                headless=True,
+                args=["--remote-debugging-port=0"],
+            )
+            try:
+                port_file = Path(profile) / "DevToolsActivePort"
+                cdp_port = int(port_file.read_text().splitlines()[0])
+                return _run_lighthouse_via_cdp(url, cdp_port, preset)
+            finally:
+                context.close()
 
 
 def _print_scores(scores: dict[str, int], preset: str, threshold: int) -> bool:
@@ -172,9 +157,14 @@ def main(
     mobile_only: bool = typer.Option(False, "--mobile-only", help="Skip desktop audit"),
 ) -> None:
     """Run Lighthouse audit via real Playwright Chrome."""
-    # Check node deps
     if not _check_node_deps():
-        _install_node_deps()
+        print(
+            "Missing audit prerequisite: Node and a project-resolvable lighthouse package are required. "
+            "With project-owner approval, run `npm install --save-dev lighthouse` in the target project, "
+            "then rerun this helper from that project. No global installation was attempted.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
     all_pass = True
 

@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 
 # Frontend Perfectionist
@@ -18,7 +18,7 @@ The correct path:
 3. Run Lighthouse against the Playwright-controlled page via `playwright-lighthouse` OR via `chrome-launcher` + the `lighthouse` Node API, attaching to the Playwright CDP endpoint so cookies, auth state, and warmed caches mirror what a real returning user sees.
 4. Use the **mobile** preset (4x CPU throttle, Fast 3G) for the primary number, AND the **desktop** preset for the secondary number. Report both.
 
-If the `playwright` skill is not loaded in this session, load it now via the `skill` tool.
+Use native OMP `browser` for visual capture and inspection (`skill://agent-browser`). The standalone audit helper uses its own isolated Playwright Chrome instance; do not assume an upstream `playwright` skill is installed.
 
 ### 2. 100 IN EVERY CATEGORY IS THE FLOOR.
 
@@ -60,7 +60,7 @@ Use the design ruleset:
 
 ### 6. DESIGN SYSTEM COMPLIANCE IS NOT OPTIONAL.
 
-The design ruleset (`../design/README.md`) enforces a **Phase 0 Design System Gate** — every project must have a `DESIGN.md` before any UI work begins. This skill enforces the other side: **every audit must verify compliance.**
+The design ruleset (`../design/README.md`) enforces its Phase 0 contract: a `DESIGN.md`, or the nearest styled sibling under its small existing-surface change exception. Audit against the applicable contract; do not turn a small local fix into design-system extraction.
 
 During the audit loop, after Lighthouse scores pass, run a Design System Compliance check:
 
@@ -95,6 +95,8 @@ uv run <skill-directory>/scripts/perfection/lighthouse-audit.py https://localhos
 uv run <skill-directory>/scripts/perfection/lighthouse-audit.py https://localhost:3000 --threshold 95
 uv run <skill-directory>/scripts/perfection/lighthouse-audit.py https://localhost:3000 --desktop-only
 ```
+
+The helper requires local Chrome, Node and a project-resolvable `lighthouse` package. It never installs Node packages globally or into the shipped skill tree. Python dependencies stay isolated under `uv run`. If Lighthouse is absent it exits with an exact project-local prerequisite message; request permission before adding that development dependency. A missing prerequisite is an unrun audit, not PASS. It attaches through Chrome's public `DevToolsActivePort` file, not Playwright private internals.
 
 Or use the TypeScript approach directly in your test suite:
 
