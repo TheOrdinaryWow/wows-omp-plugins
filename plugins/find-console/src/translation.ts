@@ -30,8 +30,9 @@ export async function translateQuery(options: {
   ctx: Pick<ExtensionContext, "modelRegistry" | "sessionManager">;
   signal: AbortSignal;
   onUsage?: (usage: JudgmentUsage) => void;
+  onProgress?: (message: string) => void;
 }): Promise<QueryTranslation> {
-  const { query, enabled, settings, ctx, signal, onUsage } = options;
+  const { query, enabled, settings, ctx, signal, onUsage, onProgress } = options;
   if (!needsTranslation(query)) return { query, cost: 0 };
   if (!enabled) return { query, cost: 0, translation: { skipped: "disabled by autoTranslate or --no-translate" } };
   const reasons: string[] = [];
@@ -43,6 +44,7 @@ export async function translateQuery(options: {
         settings,
       });
       if (!model) throw new Error("role is not configured or has no available model");
+      onProgress?.(`translating with ${role}: ${model.provider}/${model.id}`);
       let text: string | null;
       if (model.api === "local-inference") {
         text = await tinyModelClient.chat(

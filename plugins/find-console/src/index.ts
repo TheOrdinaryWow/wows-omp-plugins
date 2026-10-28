@@ -167,6 +167,7 @@ export default function findConsole(pi: ExtensionAPI): void {
               ctx,
               signal,
               onUsage,
+              onProgress,
             });
             if (translated.originalQuery) onProgress(`searched as: ${translated.query}`);
             else if (translated.translation && "skipped" in translated.translation)

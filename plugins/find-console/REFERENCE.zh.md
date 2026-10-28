@@ -24,6 +24,8 @@
 
 模型解析使用宿主 `@tiny` 角色及其候选池；tiny 缺失、失败或未返回英文查询时，再使用 `@smol`。本地推理模型使用通用 tiny chat 客户端，而非仅输出 20 个 token 的标题模式；在线模型通过 `completeSimple` 和注册表的凭据解析器调用。请求仅包含原始查询和英文代码搜索翻译指令，最多输出 128 个 token。取消信号继续传递；翻译不可用时会说明原因，并继续搜索原文。在线用量以 `find-translate` 记入账本，也计入报告费用，但不计入判定缓存回答数。
 
+每次调用可用的 tiny 或 smol 模型前，进度会显示 `translating with <role>: <provider>/<model>`，明确标示正在等待的翻译角色和模型。
+
 报告的 `query` 是实际搜索文本。翻译成功时增加 `originalQuery` 和 `translation: { model: "<role>: <provider>/<id>" }`；跳过或失败时增加 `translation: { skipped: "<reason>" }`。显示与历史记录始终使用原始查询。翻译不会修改宿主的角色设置。
 
 发送给代理的已选结果消息同样保留原始查询、实际翻译查询和结果内搜索来源，不会因发送结果而丢失搜索范围的选择依据。

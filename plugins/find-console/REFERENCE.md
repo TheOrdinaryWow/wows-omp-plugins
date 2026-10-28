@@ -24,6 +24,8 @@ Detection requires at least one Unicode letter whose script is not Latin. Chines
 
 Resolution uses the host's `@tiny` role and its eligible candidate pool, then `@smol` if tiny is absent, fails, or does not return an English query. Local-inference models use the generic tiny chat client (not its 20-token title-generation mode); online models use `completeSimple` with the registry's credential resolver. A request contains only the original query and an English code-search translation instruction, with a 128-token output bound. Cancellation propagates; unavailable translation is reported and does not block an untranslated search. Online usage is journaled as `find-translate` and included in the reported cost, separately from judgment-cache answer counts.
 
+Before each available tiny/smol model is invoked, progress names the attempted role and provider/model as `translating with <role>: <provider>/<model>`, so a pending translation remains visible.
+
 The report's `query` is the actual searched text. Successful translation adds `originalQuery` and `translation: { model: "<role>: <provider>/<id>" }`; skipped/failed translation adds `translation: { skipped: "<reason>" }`. Only the original query is used for display and history. Translation does not mutate host role settings.
 
 Selected-hit messages sent to the agent also retain the original query, the actual translated query and any within-results provenance, so sending results does not erase how their scope was chosen.
