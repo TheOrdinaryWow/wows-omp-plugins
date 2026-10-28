@@ -88,31 +88,66 @@ function nativeNodes(root: NativeNode): NativeNode[] {
 describe("loading presentation", () => {
   const tui = { terminal: { rows: 36 }, requestRender() {} } as unknown as TUI;
 
-  test("source loading reserves the same native code rows and terminal frame height as loaded content", async () => {
+  test("source loading reserves the native scroller extent and terminal frame height of loaded content", async () => {
     const reader = {
       read: async () => ({ lines: Array.from({ length: 120 }, (_, index) => `line ${index + 1} ${"x".repeat(200)}`), truncated: false }),
     } as unknown as PreviewReader;
+    const scroller = (root: NativeNode) =>
+      nativeNodes(root).find((node) => node.k === "list" && node.p?.role === "omp.find-console.source");
     const controller = new FindResultsController(report(), reader, true);
     const view = new FindConsole(controller, theme, tui);
-    const loading = nativeNodes(view.describe()).find((node) => node.k === "code");
+    const loading = scroller(view.describe());
     const loadingHeight = view.render(120).length;
     const half = new FindConsole(new FindResultsController(report(), reader, true), theme, tui, true);
     const halfLoadingHeight = half.render(80).length;
     await Promise.resolve();
-    const loaded = nativeNodes(view.describe()).find((node) => node.k === "code");
-    expect(loading?.k).toBe("code");
-    expect(loaded?.k).toBe("code");
-    if (loading?.k !== "code" || loaded?.k !== "code") throw new Error("source code block missing");
-    expect(loading.p?.text?.split("\n")).toHaveLength(12);
-    expect(loaded.p?.text?.split("\n")).toHaveLength(12);
-    expect(loading.p?.path).toBe(loaded.p?.path);
-    expect(loading.p?.numbers).toBe(loaded.p?.numbers);
-    for (const line of loaded.p?.text?.split("\n") ?? []) {
-      expect(visibleWidth(line)).toBeLessThanOrEqual(64);
-      expect(line.endsWith("…")).toBe(true);
+    const loaded = scroller(view.describe());
+    if (!loading || !loaded) throw new Error("source scroller missing");
+    expect(loading.p).toEqual(loaded.p);
+    const blocks = (loaded.c ?? []).filter((child): child is NativeNode => "k" in child && child.k === "code");
+    expect(blocks.map((block) => (block.k === "code" ? [block.p?.start, block.p?.text?.split("\n").length] : []))).toEqual([
+      [35, 2],
+      [37, 4],
+      [41, 5],
+    ]);
+    expect(blocks.map((block) => block.reveal)).toEqual([undefined, "start", undefined]);
+    for (const block of blocks) {
+      for (const line of block.k === "code" ? (block.p?.text?.split("\n") ?? []) : []) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(64);
+        expect(line.endsWith("…")).toBe(true);
+      }
     }
     expect(view.render(120)).toHaveLength(loadingHeight);
     expect(half.render(80)).toHaveLength(halfLoadingHeight);
+  });
+
+  test("full-file previews hold the whole file, highlight only refined ranges, and leave whole-file hits unmarked", async () => {
+    const reader = {
+      read: async () => ({ lines: Array.from({ length: 120 }, (_, index) => `line ${index + 1}`), truncated: false }),
+    } as unknown as PreviewReader;
+    const blocksOf = (view: FindConsole) =>
+      nativeNodes(view.describe()).filter(
+        (node): node is Extract<NativeNode, { k: "code" }> => node.k === "code" && node.key !== undefined,
+      );
+    const ranged = new FindConsole(new FindResultsController(report({ previewMode: "full-file" }), reader, true), theme, tui);
+    await Promise.resolve();
+    const blocks = blocksOf(ranged);
+    expect(blocks.reduce((sum, block) => sum + (block.p?.text?.split("\n").length ?? 0), 0)).toBe(120);
+    expect(blocks.flatMap((block) => block.p?.marks ?? []).map((mark) => mark.line)).toEqual([
+      4, 5, 6, 7, 40, 80, 81, 82, 83, 84, 85, 86, 87, 88,
+    ]);
+    expect(blocks.find((block) => block.reveal)?.p?.marks?.[0]).toEqual({ line: 40, tone: "accent" });
+    const whole = new FindConsole(
+      new FindResultsController(report({ previewMode: "full-file", hits: [{ ...hit, scope: "whole-file", refined: [] }] }), reader, true),
+      theme,
+      tui,
+    );
+    await Promise.resolve();
+    const wholeBlocks = blocksOf(whole);
+    expect(wholeBlocks).toHaveLength(1);
+    expect(wholeBlocks[0]?.p?.marks).toBeUndefined();
+    expect(wholeBlocks[0]?.reveal).toBeUndefined();
+    expect(whole.render(120).join("\n")).toContain("whole file");
   });
 
   test("fast searches stay static, while a still-pending search animates after a second in both renderers", () => {

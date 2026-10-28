@@ -2,6 +2,7 @@ import {
   type Component,
   code,
   col,
+  getLanguageFromPath,
   item,
   kbd,
   keyed,
@@ -21,13 +22,15 @@ import {
   wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { bottomBorder, divider, dividerSplit, rawKeyHint, row, splitBodyWidth, splitRow, topBorder } from "@oh-my-pi/pi-tui/chrome";
-import { leafKey } from "@oh-my-pi/pi-tui/native/node";
+import { leafKey, type NativeScroll } from "@oh-my-pi/pi-tui/native/node";
 import { actionBar, actionButton, escCloseButton, hintsRow, itemIndex, selectList } from "@oh-my-pi/pi-tui/native/overlay";
 
 import type { ConsoleAction, FindResultsController } from "#src/controller.ts";
+import type { PreviewSource } from "#src/preview.ts";
 import { bestRanges, scoreGauge } from "#src/results.ts";
 import {
   anchorTop,
+  cacheTone,
   clampTop,
   gauge,
   hintLines,
@@ -35,10 +38,16 @@ import {
   type ListRow,
   listTop,
   rangeLabel,
+  type SourceWindow,
+  type Strength,
+  sourceChunks,
   sourceRows,
   splitPath,
   spread,
   strength,
+  WHOLE_FILE,
+  WINDOW_RANGES,
+  wholeFileBadge,
 } from "#src/view.ts";
 
 export const FULLSCREEN = {
@@ -52,8 +61,11 @@ const SPLIT_MIN_WIDTH = 96;
 const STACKED_PREVIEW_MIN_ROWS = 6;
 /** Rows per wheel notch over the preview, as in the host's fullscreen plan review. */
 const WHEEL_ROWS = 3;
-/** A bounded source page keeps the glass sheet's actions visible; PgUp/PgDn move through the complete source. */
-const NATIVE_PAGE_ROWS = 12;
+/**
+ * Height of the native source scroller, loaded or not: a fixed extent keeps the centered sheet from
+ * jumping between hits and keeps its actions on screen; the whole file scrolls inside it.
+ */
+const NATIVE_SOURCE_ROWS = 14;
 /** Horizontal excerpt budget leaves room for the line-number gutter and a visible ellipsis in the native split pane. */
 const NATIVE_SOURCE_COLUMNS = 64;
 
@@ -83,9 +95,11 @@ function inside(region: Region | undefined, event: SgrMouseEvent): region is Reg
 }
 
 /**
- * The `/find` results console. In a terminal it is a fullscreen frame with the hit list beside (or, when
- * narrow, above) the selected hit's source; in Tern it is a large glass sheet with the same parts. Keys,
- * mouse and native clicks all run the controller's actions.
+ * The `/find` results console. In a terminal it is a fullscreen (or half-screen) frame with the hit list
+ * beside (or, when narrow, above) the selected hit's source; in Tern it is a large glass sheet with the
+ * same parts. The source is the whole file (`full-file`) or a window around the active range (`snippet`),
+ * scrolled to the active refined range, with only refined ranges highlighted. Keys, mouse and native
+ * clicks all run the controller's actions.
  */
 export class FindConsole implements Component {
   readonly nativeOverlay: NonNullable<Component["nativeOverlay"]>;
@@ -99,6 +113,15 @@ export class FindConsole implements Component {
   #listTop = 0;
   #list: { region: Region; rows: ListRow[] } | undefined;
   #source: Region | undefined;
+  /** Native reveal bookkeeping: bumped per anchor change; the scroller of `#mounted` was added at `#mountedFocus`. */
+  #focus = 0;
+  #nativeAnchor = "";
+  #mounted: string | undefined;
+  #mountedFocus = 0;
+  /** PgUp/PgDn forwarded to the native scroller. */
+  #nativeScroll: NativeScroll | undefined;
+  /** Native block texts of the loaded source, tab-expanded and clipped, by line span. */
+  #blocks: { source: PreviewSource; texts: Map<string, { text: string; clipped: boolean }> } | undefined;
 
   constructor(
     readonly controller: FindResultsController,
@@ -110,7 +133,7 @@ export class FindConsole implements Component {
       role: "omp.overlay.find-console.results",
       size: "lg",
       anchor: "center",
-      head: `Find: ${controller.report.query}`,
+      head: `Find: ${controller.queryLabel}`,
     };
     controller.onChange = () => this.#changed();
   }
@@ -126,12 +149,12 @@ export class FindConsole implements Component {
   }
 
   #scroll(lines: number): void {
-    const total = this.controller.preview?.lines.length ?? 0;
-    this.#top = clampTop(this.#top + lines, this.#codeRows, total);
+    this.#top = clampTop(this.#top + lines, this.#codeRows, this.controller.previewLines);
     this.#changed();
   }
 
   #page(delta: 1 | -1): void {
+    this.#nativeScroll = { by: delta > 0 ? "page-down" : "page-up", n: (this.#nativeScroll?.n ?? 0) + 1 };
     this.#scroll(delta * Math.max(1, this.#codeRows - 2));
   }
 
@@ -151,6 +174,8 @@ export class FindConsole implements Component {
     else if (matchesKey(key, "enter") || key === "i") actions.insert();
     else if (key === "s") actions.send();
     else if (key === "o") actions.open();
+    else if (key === "r") actions.refine();
+    else if (key === "h") actions.history();
   }
 
   /** Wheel over the list moves the selection and over the source scrolls it; a click on a list row selects its hit and range. */
@@ -188,12 +213,13 @@ export class FindConsole implements Component {
     const c = this.controller;
     const inner = Math.max(1, width - 4);
     const split = width >= SPLIT_MIN_WIDTH;
+    const header = this.#header(inner);
     let warning = c.warning ? wrapTextWithAnsi(t.fg("warning", `${t.status.warning} ${c.warning}`), inner).slice(0, 2) : [];
-    const status = c.message ? t.fg("warning", `${t.status.warning} ${c.message}`) : t.fg("muted", c.stats);
+    const status = c.message ? t.fg("warning", `${t.status.warning} ${c.message}`) : this.#status();
     let reasons = this.#reasons();
     let hints = hintLines(this.#hints(), inner);
-    // Top border, header, the rule over the body, the rule under it, status, bottom border.
-    const chrome = () => 6 + warning.length + (reasons ? 1 : 0) + hints.length;
+    // Top border, the header, the rule over the body, the rule under it, status, bottom border.
+    const chrome = () => 5 + header.length + warning.length + (reasons ? 1 : 0) + hints.length;
     // Short terminals keep three body rows: the reasons go first, then wrapped hint and warning lines.
     const minimum = 3;
     if (height - chrome() < minimum) reasons = undefined;
@@ -203,7 +229,7 @@ export class FindConsole implements Component {
 
     const marked = c.state.marked.length;
     const title = `Find · ${c.hits.length} ${c.hits.length === 1 ? "hit" : "hits"}${marked ? ` · ${marked} marked` : ""}`;
-    const lines = [topBorder(width, title), row(this.#header(inner), width), ...warning.map((line) => row(line, width))];
+    const lines = [topBorder(width, title), ...header.map((line) => row(line, width)), ...warning.map((line) => row(line, width))];
     const bodyTop = lines.length + 1;
     if (split) {
       const sidebarWidth = Math.max(30, Math.min(52, Math.floor(width * 0.36)));
@@ -248,17 +274,44 @@ export class FindConsole implements Component {
     return lines;
   }
 
-  /** The query and scope, with the coverage flush right. */
-  #header(width: number): string {
+  /** The query as typed and the scope, with the coverage flush right; then how it was searched, when that differs. */
+  #header(width: number): string[] {
     const t = this.theme;
-    const { report } = this.controller;
+    const c = this.controller;
+    const { report } = c;
     const coverage =
       report.coverage === "complete"
         ? t.fg("success", `${t.status.success} complete coverage`)
         : report.coverage === "partial"
           ? t.fg("warning", `${t.status.warning} partial coverage`)
           : t.fg("error", `${t.status.error} coverage unavailable`);
-    return spread(`${t.bold(report.query)}${t.fg("muted", ` in ${report.scopePath ?? "."}`)}`, coverage, width);
+    const lines = [spread(`${t.bold(c.queryLabel)}${t.fg("muted", ` in ${report.scopePath ?? "."}`)}`, coverage, width)];
+    const notes = this.#queryNotes().map(({ label, value, tone }) => `${t.fg(tone ?? "muted", label)}${value ? t.fg("text", value) : ""}`);
+    if (notes.length) lines.push(truncateToWidth(notes.join(t.fg("dim", "  ·  ")), width));
+    return lines;
+  }
+
+  /** What the search actually ran: the English query it searched as, the results it searched within, or why it was not translated. */
+  #queryNotes(): { label: string; value?: string; tone?: "warning" }[] {
+    const { report } = this.controller;
+    const notes: { label: string; value?: string; tone?: "warning" }[] = [];
+    if (report.originalQuery) notes.push({ label: "searched as: ", value: report.query });
+    else if (report.translation && "skipped" in report.translation)
+      notes.push({ label: `not translated: ${report.translation.skipped}`, tone: "warning" });
+    if (report.within)
+      notes.push({
+        label: `within ${report.within.files} ${report.within.files === 1 ? "file" : "files"} of: `,
+        value: report.within.query,
+      });
+    return notes;
+  }
+
+  /** Where the answers came from, what they cost, then the run's counts: three separate facts. */
+  #status(): string {
+    const t = this.theme;
+    const c = this.controller;
+    const gap = t.fg("dim", "  ·  ");
+    return `${t.fg(cacheTone(c.report.cache), c.cacheLabel)}${gap}${t.fg("muted", "cost ")}${t.fg("text", c.costLabel)}${gap}${t.fg("muted", c.runStats)}`;
   }
 
   #listRows(width: number, rows: number, compact: boolean, region: Region): string[] {
@@ -269,7 +322,7 @@ export class FindConsole implements Component {
     return shown.map((line) => line.text);
   }
 
-  /** The selected hit's head, its range facts, a rule, then its highlighted source around the active range. */
+  /** The selected hit's head, its facts, a rule, then its highlighted source scrolled to the active range. */
   #sourceRows(width: number, rows: number): string[] {
     const t = this.theme;
     const c = this.controller;
@@ -278,12 +331,19 @@ export class FindConsole implements Component {
     const active = c.activeRange;
     const source = c.preview;
     const { name, dir } = splitPath(hit.rel);
-    const count = hit.ranges.length;
-    const position = `${t.fg("muted", "range ")}${t.fg("accent", `${count ? c.state.range + 1 : 0}/${count}`)}${t.fg("dim", ` · hit ${c.state.selected + 1}/${c.hits.length}`)}`;
-    const head = spread(`${t.bold(t.fg("accent", name))}${active ? t.fg("muted", rangeLabel(active)) : ""}`, position, width);
+    const whole = hit.scope === "whole-file";
+    const count = bestRanges(hit).length;
+    const where = t.fg("dim", `hit ${c.state.selected + 1}/${c.hits.length}`);
+    const position = whole
+      ? where
+      : `${t.fg("muted", "range ")}${t.fg("accent", `${count ? c.state.range + 1 : 0}/${count}`)}${t.fg("dim", " · ")}${where}`;
+    const label = whole ? ` ${wholeFileBadge(t)}` : active ? t.fg("muted", rangeLabel(active)) : "";
+    const head = spread(`${t.bold(t.fg("accent", name))}${label}`, position, width);
+    const score = active?.p ?? hit.contentScore;
     const facts = [
-      active ? `${gauge(t, active.p)} ${t.fg(strength(active.p), active.p.toFixed(2))}` : "",
+      `${gauge(t, score)} ${t.fg(strength(score), score.toFixed(2))}`,
       t.fg("dim", `${hit.linesSeen} lines judged`),
+      hit.refineFailed ? t.fg("warning", WINDOW_RANGES) : "",
       hit.truncated ? t.fg("warning", "partial file") : "",
       source?.truncated ? t.fg("warning", "first 4 MiB") : "",
       dir ? t.fg("dim", `${dir}/`) : "",
@@ -297,14 +357,16 @@ export class FindConsole implements Component {
     else if (active && active.start > source.lines.length)
       body = wrapTextWithAnsi(t.fg("warning", `${t.status.warning} The judged range is no longer present in this file.`), width);
     else {
+      const window = c.previewLines;
       const anchor = `${hit.rel}\n${c.state.range}`;
       if (this.#anchor !== anchor) {
         this.#anchor = anchor;
-        this.#top = anchorTop(active, codeRows, source.lines.length);
+        this.#top = anchorTop(active, codeRows, window);
       }
-      this.#top = clampTop(this.#top, codeRows, source.lines.length);
-      body = sourceRows(t, hit, active, source.lines, this.#top, codeRows, width);
-      if (body.length) shown = t.fg("dim", `lines ${this.#top}-${this.#top + body.length - 1} of ${source.lines.length}`);
+      this.#top = clampTop(this.#top, codeRows, window);
+      body = sourceRows(t, hit.rel, window, active, window.highlight, this.#top, codeRows, width);
+      const snippet = window.lines.length < source.lines.length ? " · snippet" : "";
+      if (body.length) shown = t.fg("dim", `lines ${this.#top}-${this.#top + body.length - 1} of ${source.lines.length}${snippet}`);
       else body = [t.fg("dim", "This file is empty.")];
     }
     return [head, spread(facts.join(t.fg("dim", " · ")), shown, width), t.fg("borderMuted", "─".repeat(width)), ...body];
@@ -325,13 +387,15 @@ export class FindConsole implements Component {
       hint("enter", "insert", "insert"),
       hint("s", marked ? `send ${marked} marked` : "send", "send"),
       hint("o", "open", "open"),
+      hint("r", "search within results", "refine"),
+      hint("h", "recent searches", "history"),
       rawKeyHint("escape", "close"),
     ];
   }
 
   #reasons(): string | undefined {
     const t = this.theme;
-    const reasons = (["insert", "open"] as const).flatMap((action) => {
+    const reasons = (["insert", "open", "refine", "history"] as const).flatMap((action) => {
       const reason = this.controller.actionReason(action);
       return reason ? [reason] : [];
     });
@@ -370,6 +434,25 @@ export class FindConsole implements Component {
         "head",
       ),
     ];
+    const notes = this.#queryNotes();
+    if (notes.length)
+      children.push(
+        keyed(
+          text(
+            notes.flatMap((note, index) => [
+              ...(index ? [span(" · ", "dim")] : []),
+              span(note.label, note.tone ?? "muted"),
+              ...(note.value ? [span(note.value, "strong")] : []),
+            ]),
+            {
+              wrap: "word",
+              role: "omp.find-console.query",
+              ...(report.translation && "model" in report.translation ? { title: `Translated by ${report.translation.model}` } : {}),
+            },
+          ),
+          "query",
+        ),
+      );
     if (c.warning)
       children.push(
         keyed(
@@ -386,13 +469,26 @@ export class FindConsole implements Component {
     const preview = node("col", { grow: 1, gap: "sm", role: "omp.find-console.preview" }, hit ? this.#describeSource() : [], "preview");
     children.push(keyed(nativeRow([sidebar, preview], { gap: "lg", align: "start" }), "split"), this.#describeActions());
     if (c.message) children.push(keyed(text(c.message, { tone: "warning", wrap: "word" }), "message"));
-    children.push(keyed(text(c.stats, { tone: "muted", wrap: "word" }), "stats"), NATIVE_HINTS);
+    children.push(
+      keyed(
+        nativeRow(
+          [
+            node("badge", { text: c.cacheLabel, tone: cacheTone(report.cache), title: "Where the judge's answers came from" }),
+            text([span("cost ", "muted"), span(c.costLabel, "num")], { title: "Judge and translation cost of this search" }),
+            text(c.runStats, { tone: "muted", grow: 1, truncate: "end", lines: 1, title: c.stats }),
+          ],
+          { gap: "md", align: "center", role: "omp.find-console.stats" },
+        ),
+        "stats",
+      ),
+      NATIVE_HINTS,
+    );
     const described = col(children, { gap: "md" });
     this.#native = { revision: this.#revision, node: described };
     return described;
   }
 
-  /** The hits (marked ones carry a pin), then every judged range of the selected hit. */
+  /** The hits (marked ones carry a pin, whole-file ones a badge), then the selected hit's refined ranges. */
   #describeLists(): NativeNode[] {
     const c = this.controller;
     const hits = selectList(
@@ -402,17 +498,24 @@ export class FindConsole implements Component {
         const marked = c.state.marked.includes(index);
         const score = hit.contentScore.toFixed(2);
         const ranges = bestRanges(hit);
+        const whole = hit.scope === "whole-file";
         return item(`hit-${index}`, {
           label: name,
           detail: dir ? `${score} · ${dir}` : score,
-          value: [span(scoreGauge(hit.contentScore), strength(hit.contentScore))],
+          value: [
+            ...(whole ? [span(WHOLE_FILE, "mark accent")] : []),
+            ...(hit.refineFailed ? [span("windows", "warning")] : []),
+            span(scoreGauge(hit.contentScore), strength(hit.contentScore)),
+          ],
           icon: marked ? "pin" : "file",
           tone: strength(hit.contentScore),
           title: [
             `${hit.rel} · score ${score}`,
             `${hit.linesSeen} lines judged${hit.truncated ? ", partial file" : ""}`,
+            ...(whole ? ["Whole file: the file as a whole answers the query"] : []),
             ...ranges.slice(0, 3).map((range) => `${rangeLabel(range)} ${range.p.toFixed(2)}  ${range.snippet.trim()}`),
             ...(ranges.length > 3 ? [`+${ranges.length - 3} more ranges`] : []),
+            ...(hit.refineFailed ? [`Includes window ranges: ${hit.refineFailed}`] : []),
             ...(marked ? ["Marked for sending"] : []),
           ].join("\n"),
         });
@@ -421,10 +524,16 @@ export class FindConsole implements Component {
     );
     const hit = c.selectedHit;
     if (!hit) return [hits];
+    const { name } = splitPath(hit.rel);
+    if (hit.scope === "whole-file")
+      return [
+        hits,
+        text([span("Whole file", "accent strong"), span(` · ${name} answers as a whole; no line ranges`, "dim")], { wrap: "word" }),
+      ];
     const ranges = bestRanges(hit);
     return [
       hits,
-      text([span("Ranges", "muted"), span(` · ${ranges.length} in ${splitPath(hit.rel).name}`, "dim")], { truncate: "end", lines: 1 }),
+      text([span("Ranges", "muted"), span(` · ${ranges.length} in ${name}`, "dim")], { truncate: "end", lines: 1 }),
       selectList(
         "ranges",
         ranges.map((range, index) =>
@@ -440,7 +549,7 @@ export class FindConsole implements Component {
     ];
   }
 
-  /** The selected hit's head with range stepping, its facts, and its source from just above the active range. */
+  /** The selected hit's head with range stepping, its facts, and its source in a fixed-height scroller. */
   #describeSource(): NativeNode[] {
     const c = this.controller;
     const hit = c.selectedHit;
@@ -448,95 +557,153 @@ export class FindConsole implements Component {
     const active = c.activeRange;
     const source = c.preview;
     const { name, dir } = splitPath(hit.rel);
-    const count = hit.ranges.length;
+    const whole = hit.scope === "whole-file";
+    const count = bestRanges(hit).length;
     const where = `${hit.rel}\n${c.state.range}`;
+    if (this.#nativeAnchor !== where) {
+      this.#nativeAnchor = where;
+      this.#focus++;
+    }
     const children: NativeNode[] = [
       {
         ...nativeRow(
-          [
-            text([span(name, "strong accent"), span(active ? rangeLabel(active) : "", "muted")], { grow: 1, truncate: "end", lines: 1 }),
-            actionButton("Previous", "previous-range", { keys: "left", title: "Previous range  ←" }),
-            text(`${count ? c.state.range + 1 : 0}/${count}`, { tone: "muted" }),
-            actionButton("Next", "next-range", { keys: "right", title: "Next range  →" }),
-          ],
+          whole
+            ? [
+                text([span(name, "strong accent")], { grow: 1, truncate: "end", lines: 1 }),
+                node("badge", {
+                  text: WHOLE_FILE,
+                  tone: "accent",
+                  title: "The file as a whole answers the query; its reference is the bare path",
+                }),
+              ]
+            : [
+                text([span(name, "strong accent"), span(active ? rangeLabel(active) : "", "muted")], {
+                  grow: 1,
+                  truncate: "end",
+                  lines: 1,
+                }),
+                actionButton("Previous", "previous-range", { keys: "left", title: "Previous range  ←" }),
+                text(`${count ? c.state.range + 1 : 0}/${count}`, { tone: "muted" }),
+                actionButton("Next", "next-range", { keys: "right", title: "Next range  →" }),
+              ],
           { gap: "sm", align: "center" },
         ),
         key: `head:${where}`,
       },
     ];
-    if (active)
-      children.push(
-        keyed(
-          nativeRow(
-            [
-              node("progress", {
-                value: active.p,
-                tone: strength(active.p),
-                title: `range score ${active.p.toFixed(2)}`,
-                max: { w: "10ch" },
-              }),
-              text(
-                [
-                  span(active.p.toFixed(2), strength(active.p)),
-                  span(` · ${hit.linesSeen} lines judged`, "muted"),
-                  ...(hit.truncated ? [span(" · partial file", "warning")] : []),
-                  ...(dir ? [span(` · ${dir}/`, "dim")] : []),
-                ],
-                { grow: 1, truncate: "end", lines: 1 },
-              ),
-            ],
-            { gap: "sm", align: "center" },
-          ),
-          "facts",
+    const score = active?.p ?? hit.contentScore;
+    children.push(
+      keyed(
+        nativeRow(
+          [
+            node("progress", {
+              value: score,
+              tone: strength(score),
+              title: `${active ? "range" : "file"} score ${score.toFixed(2)}`,
+              max: { w: "10ch" },
+            }),
+            text(
+              [
+                span(score.toFixed(2), strength(score)),
+                span(` · ${hit.linesSeen} lines judged`, "muted"),
+                ...(hit.truncated ? [span(" · partial file", "warning")] : []),
+                ...(dir ? [span(` · ${dir}/`, "dim")] : []),
+              ],
+              { grow: 1, truncate: "end", lines: 1 },
+            ),
+            ...(hit.refineFailed ? [node("badge", { text: WINDOW_RANGES, tone: "warning", title: hit.refineFailed })] : []),
+          ],
+          { gap: "sm", align: "center" },
         ),
-      );
-    if (!source)
+        "facts",
+      ),
+    );
+    if (!source || source.error || (active && active.start > source.lines.length)) {
+      this.#mounted = undefined;
+      const [note, tone] = !source
+        ? ["Loading preview…", "muted"]
+        : source.error
+          ? [`Preview unavailable: ${source.error}`, "error"]
+          : ["The judged range is no longer present in this file.", "warning"];
       children.push(
-        keyed(text("Loading preview…", { tone: "muted" }), "position"),
-        // Use the same native code chrome and twelve-line extent as the loaded page, so the centered sheet cannot jump.
-        keyed(
-          code("\n".repeat(NATIVE_PAGE_ROWS - 1), { path: hit.rel, start: active?.start ?? 1, numbers: true, wrap: false }),
-          `code:${where}`,
-        ),
+        keyed(text(source ? (whole ? "Whole file" : "Source") : "Loading…", { tone: "muted" }), "position"),
+        // The same fixed extent as the loaded scroller, so the centered sheet cannot jump while sources load.
+        this.#scroller(`state:${hit.rel}`, [keyed(text(note, { tone: tone as "muted", wrap: "word" }), "note")]),
       );
-    else if (source.error) children.push(keyed(text(`Preview unavailable: ${source.error}`, { tone: "error", wrap: "word" }), "error"));
-    else if (active && active.start > source.lines.length)
-      children.push(keyed(text("The judged range is no longer present in this file.", { tone: "warning", wrap: "word" }), "missing"));
-    else {
-      this.#codeRows = NATIVE_PAGE_ROWS;
-      if (this.#anchor !== where) {
-        this.#anchor = where;
-        this.#top = anchorTop(active, NATIVE_PAGE_ROWS, source.lines.length);
-      }
-      this.#top = clampTop(this.#top, NATIVE_PAGE_ROWS, source.lines.length);
-      const start = this.#top;
-      const end = Math.min(source.lines.length, start + NATIVE_PAGE_ROWS - 1);
-      const ranges = bestRanges(hit);
-      const marks = [];
-      for (let line = start; line <= end; line++) {
-        if (active && line >= active.start && line <= active.end) marks.push({ line, tone: "accent" as const });
-        else {
-          const judged = ranges.find((range) => line >= range.start && line <= range.end);
-          if (judged) marks.push({ line, tone: strength(judged.p) });
-        }
-      }
-      children.push(
-        keyed(text(`Lines ${start}–${end} of ${source.lines.length} · PgUp/PgDn to scroll · … clipped`, { tone: "muted" }), "position"),
-        keyed(
-          code(
-            source.lines
-              .slice(start - 1, end)
-              .map((line) => truncateToWidth(line.replaceAll("\t", "  "), NATIVE_SOURCE_COLUMNS))
-              .join("\n"),
-            { path: hit.rel, start, numbers: true, marks, wrap: false },
-          ),
-          `code:${where}`,
-        ),
-      );
-      if (source.truncated)
-        children.push(keyed(text("Preview limited to the first 4 MiB of this file.", { tone: "warning" }), "truncated"));
+      return children;
     }
+    const window = c.previewLines;
+    const chunks = sourceChunks(window, window.highlight);
+    if (this.#mounted !== hit.rel) {
+      this.#mounted = hit.rel;
+      this.#mountedFocus = this.#focus;
+    }
+    // A scroller added with the hit reveals its active block by placement; later range moves bump `n`.
+    const reveal = this.#focus === this.#mountedFocus ? ("start" as const) : { at: "start" as const, n: this.#focus };
+    const lang = getLanguageFromPath(hit.rel);
+    let clipped = false;
+    const blocks = chunks.map((chunk, index): NativeNode => {
+      const block = this.#blockText(source, window, chunk.start, chunk.end);
+      clipped ||= block.clipped;
+      const marks: { line: number; tone: "accent" | Strength }[] = [];
+      let holdsActive = false;
+      for (const range of chunk.ranges) {
+        const isActive = active !== undefined && active.start === range.start && active.end === range.end;
+        holdsActive ||= isActive;
+        const tone = isActive ? "accent" : strength(range.p);
+        for (let line = Math.max(range.start, chunk.start); line <= Math.min(range.end, chunk.end); line++) marks.push({ line, tone });
+      }
+      return {
+        ...code(block.text, {
+          ...(lang ? { lang } : {}),
+          start: chunk.start,
+          numbers: true,
+          wrap: false,
+          ...(marks.length ? { marks } : {}),
+        }),
+        key: `${chunk.start}`,
+        ...(holdsActive ? { reveal } : {}),
+        ...(index === 0 && this.#nativeScroll ? { scroll: this.#nativeScroll } : {}),
+      };
+    });
+    const full = window.start === 1 && window.lines.length === source.lines.length;
+    const extent = full
+      ? `${source.lines.length} lines · whole file`
+      : `Lines ${window.start}–${window.start + window.lines.length - 1} of ${source.lines.length} · snippet`;
+    children.push(
+      keyed(text(`${extent} · scroll or PgUp/PgDn${clipped ? " · long lines end in …" : ""}`, { tone: "muted" }), "position"),
+      this.#scroller(`source:${hit.rel}`, blocks.length ? blocks : [keyed(text("This file is empty.", { tone: "muted" }), "empty")]),
+    );
+    if (source.truncated) children.push(keyed(text("Preview limited to the first 4 MiB of this file.", { tone: "warning" }), "truncated"));
     return children;
+  }
+
+  /** A fixed-height native scroller (a `list` capped at its height) holding source blocks or a status note. */
+  #scroller(key: string, children: readonly NativeChild[]): NativeNode {
+    return node(
+      "list",
+      { max: { lines: NATIVE_SOURCE_ROWS }, min: { h: `${NATIVE_SOURCE_ROWS}lines` }, role: "omp.find-console.source" },
+      children,
+      key,
+    );
+  }
+
+  /** Lines `start…end` of the source as one block: tabs expanded, long lines clipped with an ellipsis. Cached per source. */
+  #blockText(source: PreviewSource, window: SourceWindow, start: number, end: number): { text: string; clipped: boolean } {
+    if (this.#blocks?.source !== source) this.#blocks = { source, texts: new Map() };
+    const id = `${start}-${end}`;
+    let block = this.#blocks.texts.get(id);
+    if (!block) {
+      let clipped = false;
+      const lines = window.lines.slice(start - window.start, end - window.start + 1).map((line) => {
+        const shown = truncateToWidth(line.replaceAll("\t", "  "), NATIVE_SOURCE_COLUMNS);
+        if (shown !== line && shown.endsWith("…")) clipped = true;
+        return shown;
+      });
+      block = { text: lines.join("\n"), clipped };
+      this.#blocks.texts.set(id, block);
+    }
+    return block;
   }
 
   /** Action buttons; an unavailable one is muted, says why in its tooltip, and a click shows the reason. */
@@ -558,6 +725,9 @@ export class FindConsole implements Component {
       button(marked ? `Send ${marked} marked` : "Send to agent", "send", "s"),
       actionButton(c.state.marked.includes(c.state.selected) ? "Unmark" : "Mark for sending", "mark", { keys: "space" }),
       button("Open in editor", "open", "o"),
+      null,
+      button("Search within results", "refine", "r"),
+      button("Recent searches", "history", "h"),
     ]);
   }
 
@@ -569,6 +739,8 @@ export class FindConsole implements Component {
       else if (event.act === "insert") actions.insert();
       else if (event.act === "send") actions.send();
       else if (event.act === "open") actions.open();
+      else if (event.act === "refine") actions.refine();
+      else if (event.act === "history") actions.history();
       else if (event.act === "mark") actions.toggleMarked();
       else if (event.act === "next-range") actions.nextRange();
       else if (event.act === "previous-range") actions.previousRange();

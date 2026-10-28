@@ -35,18 +35,45 @@ export const PROGRESS_OVERLAY = {
 /** Spinner cadence of the host's loaders. */
 const FRAME_MS = 80;
 
+/** One progress message a phase recognizes: its capture, after `prefix`, becomes the phase's live fact. */
+interface PhaseMessage {
+  pattern: RegExp;
+  prefix?: string;
+  /** The fact reports a fallback the user should notice (an untranslated query). */
+  warning?: boolean;
+}
+
+interface Phase {
+  id: string;
+  label: string;
+  messages: readonly PhaseMessage[];
+  /** A `done/total` fact draws a progress bar while the phase runs; `unit` names what is counted. */
+  bar?: { unit: string };
+}
+
 /**
- * The cascade's phases, recognized by the progress messages it reports. `detail` turns a message into
- * the phase's live fact; a message that matches no phase is shown as is under the list.
+ * The search's phases, recognized by the progress messages it reports: query translation, the cascade,
+ * then range refinement. A message that matches no phase is shown as is under the list.
  */
-const PHASES = [
-  { id: "resolve", label: "Resolve scope and judge", pattern: /^Resolving/ },
-  { id: "scan", label: "Lexical scan", pattern: /^lexical scan/ },
-  { id: "names", label: "Rank file names", pattern: /^filename ranking (.+)/ },
-  { id: "read", label: "Read candidate files", pattern: /^reading (.+)/ },
-  { id: "score", label: "Score passage sketches", pattern: /^scoring (.+)/ },
-  { id: "verify", label: "Verify passages", pattern: /^verifying (.+)/ },
-] as const;
+const PHASES: readonly Phase[] = [
+  { id: "resolve", label: "Resolve scope and judge", messages: [{ pattern: /^Resolving/ }] },
+  {
+    id: "translate",
+    label: "Translate query",
+    messages: [
+      { pattern: /^checking query language/ },
+      { pattern: /^translating with (.+)/, prefix: "with " },
+      { pattern: /^searched as: (.+)/, prefix: "searched as: " },
+      { pattern: /^Translation skipped: (.+)/, prefix: "not translated: ", warning: true },
+    ],
+  },
+  { id: "scan", label: "Lexical scan", messages: [{ pattern: /^lexical scan/ }] },
+  { id: "names", label: "Rank file names", messages: [{ pattern: /^filename ranking (.+)/ }], bar: { unit: " names" } },
+  { id: "read", label: "Read candidate files", messages: [{ pattern: /^reading (.+)/ }] },
+  { id: "score", label: "Score passage sketches", messages: [{ pattern: /^scoring (.+)/ }] },
+  { id: "verify", label: "Verify passages", messages: [{ pattern: /^verifying (.+)/ }] },
+  { id: "refine", label: "Refine ranges", messages: [{ pattern: /^refining (.+)/ }], bar: { unit: "" } },
+];
 
 type PhaseState = "done" | "active" | "pending" | "skipped";
 
@@ -62,9 +89,11 @@ export class FindProgress implements Component {
   readonly nativeOverlay: NonNullable<Component["nativeOverlay"]>;
   readonly #started = Date.now();
   readonly #details = new Map<number, string>();
+  readonly #warnings = new Set<number>();
   readonly #seen = new Set<number>();
   #phase = 0;
-  #names: number | undefined;
+  /** Completed share of the running phase, from its `done/total` fact. */
+  #fraction: number | undefined;
   #note: string | undefined;
   #frame = 0;
   #animate = false;
@@ -101,20 +130,23 @@ export class FindProgress implements Component {
   }
 
   #ingest(message: string): void {
-    const index = PHASES.findIndex((phase) => phase.pattern.test(message));
-    if (index < 0) {
-      this.#note = message;
-      return;
+    for (const [index, phase] of PHASES.entries()) {
+      for (const { pattern, prefix = "", warning } of phase.messages) {
+        const match = pattern.exec(message);
+        if (!match) continue;
+        this.#note = undefined;
+        this.#phase = Math.max(this.#phase, index);
+        this.#seen.add(index);
+        const captured = match[1];
+        if (captured) this.#details.set(index, `${prefix}${captured}`);
+        if (warning) this.#warnings.add(index);
+        if (index !== this.#phase) return;
+        const [done, total] = phase.bar ? (captured ?? "").split(/[/\s]/).map(Number) : [];
+        this.#fraction = done !== undefined && total ? done / total : undefined;
+        return;
+      }
     }
-    this.#note = undefined;
-    this.#phase = Math.max(this.#phase, index);
-    this.#seen.add(index);
-    const detail = PHASES[index]?.pattern.exec(message)?.[1];
-    if (detail) this.#details.set(index, detail);
-    if (PHASES[index]?.id === "names") {
-      const [done, total] = (detail ?? "").split("/").map(Number);
-      this.#names = done !== undefined && total ? done / total : undefined;
-    }
+    this.#note = message;
   }
 
   #state(index: number): PhaseState {
@@ -168,19 +200,21 @@ export class FindProgress implements Component {
             : t.fg("dim", state === "skipped" ? glyphs.skipped : glyphs.pending);
       const label = phase.label.padEnd(LABEL_WIDTH);
       const styled = state === "active" ? t.bold(label) : state === "done" ? t.fg("muted", label) : t.fg("dim", label);
-      const names = phase.id === "names" && this.#names !== undefined && state === "active";
-      const bar = names
-        ? `${renderProgressBar(this.#names, 12, {
-            style: {
-              filled: t.symbol("progress.filled"),
-              empty: t.symbol("progress.empty"),
-              styleFilled: (cells) => t.fg("accent", cells),
-              styleEmpty: (cells) => t.fg("dim", cells),
-            },
-          })} `
-        : "";
+      const fraction = state === "active" && phase.bar ? this.#fraction : undefined;
+      const bar =
+        fraction !== undefined
+          ? `${renderProgressBar(fraction, 12, {
+              style: {
+                filled: t.symbol("progress.filled"),
+                empty: t.symbol("progress.empty"),
+                styleFilled: (cells) => t.fg("accent", cells),
+                styleEmpty: (cells) => t.fg("dim", cells),
+              },
+            })} `
+          : "";
       const detail = this.#details.get(index);
-      const fact = `${bar}${detail ? t.fg(state === "active" ? "muted" : "dim", detail) : ""}`;
+      const tone = this.#warnings.has(index) ? "warning" : state === "active" ? "muted" : "dim";
+      const fact = `${bar}${detail ? t.fg(tone, detail) : ""}`;
       return row(truncateToWidth(`${glyph}${padding(glyphWidth - visibleWidth(glyph))} ${styled}  ${fact}`, inner), width);
     });
     const footer = c.cancelled
@@ -208,8 +242,17 @@ export class FindProgress implements Component {
         return item(phase.id, {
           label: phase.label,
           ...(this.#details.has(index) ? { detail: this.#details.get(index) } : {}),
-          ...(state === "done" ? { icon: "check" } : state === "active" ? { icon: "pending" } : {}),
-          tone: state === "done" ? "success" : state === "active" ? (c.cancelled ? "warning" : "accent") : "muted",
+          ...(state === "done" ? { icon: this.#warnings.has(index) ? "warning" : "check" } : state === "active" ? { icon: "pending" } : {}),
+          tone:
+            state === "done"
+              ? this.#warnings.has(index)
+                ? "warning"
+                : "success"
+              : state === "active"
+                ? c.cancelled
+                  ? "warning"
+                  : "accent"
+                : "muted",
         });
       }),
       { role: "omp.find-console.phases" },
@@ -231,9 +274,12 @@ export class FindProgress implements Component {
       ),
       phases,
     ];
-    if (current?.id === "names" && this.#names !== undefined)
+    if (current?.bar && this.#fraction !== undefined)
       children.push(
-        keyed(node("progress", { value: this.#names, tone: "accent", label: `${this.#details.get(this.#phase)} names` }), "names"),
+        keyed(
+          node("progress", { value: this.#fraction, tone: "accent", label: `${this.#details.get(this.#phase)}${current.bar.unit}` }),
+          "fraction",
+        ),
       );
     if (this.#note) children.push(keyed(text(this.#note, { tone: "muted", wrap: "word" }), "note"));
     children.push(
