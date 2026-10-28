@@ -21,6 +21,7 @@ import type { ConsoleReport } from "#src/report.ts";
 import { countLabel, disabledReason, rankedDigest } from "#src/results.ts";
 import { readSearchSettings } from "#src/settings.ts";
 import { translateQuery } from "#src/translation.ts";
+import { trackJudgmentUsage } from "#src/usage.ts";
 
 export default function findConsole(pi: ExtensionAPI): void {
   pi.setLabel("Find console");
@@ -135,13 +136,14 @@ export default function findConsole(pi: ExtensionAPI): void {
           const reader = new PreviewReader(filesystem, ctx.cwd);
           const onUsage = journalJudgmentUsage(ctx.sessionManager);
           if (!onUsage) pi.logger.warn("Find judge usage cannot be journaled: this host's session manager has no appendModelUsage method.");
+          const usage = trackJudgmentUsage(onUsage);
           const accounting = accountCache(args.noCache ? undefined : sharedJudgmentCache(), args.noCache);
           const chain = resolveJudge({
             settings,
             registry: ctx.modelRegistry,
             sessionId: ctx.sessionManager.getSessionId(),
             purpose: "find",
-            onUsage,
+            onUsage: usage.onUsage,
             ...(accounting.cache ? { cache: accounting.cache } : {}),
           });
           const judge: Judge = {
@@ -200,7 +202,7 @@ export default function findConsole(pi: ExtensionAPI): void {
               signal,
               onProgress,
             });
-            raw.stats.cost += translated.cost;
+            usage.setReportCost(raw.stats, translated.cost);
             const report: ConsoleReport = {
               ...raw,
               threshold: Math.max(raw.threshold, args.minScore),

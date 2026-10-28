@@ -75,6 +75,85 @@ function report(extra: Partial<ConsoleReport> = {}): ConsoleReport {
   };
 }
 
+function billedRefinement(fallback: boolean): { cost: number; judgmentCost: number; translationCost: number } {
+  // Isolate the factory override; dynamic imports load the host only after its transport replacement.
+  const script = `
+    import { mock } from "bun:test";
+    const ai = await import("@oh-my-pi/pi-ai");
+    const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+    const { cfgModelRoles } = await import("@oh-my-pi/pi-coding-agent/config/model-settings");
+    const { cfgRetryFallbackChains } = await import("@oh-my-pi/pi-coding-agent/session/settings");
+    const settings = Settings.isolated();
+    const fallback = ${fallback};
+    cfgModelRoles.override(settings, { judge: "typesafe/fixture-paid" });
+    cfgRetryFallbackChains.override(settings, { judge: fallback ? ["typesafe/fixture-success"] : [] });
+    mock.module("@oh-my-pi/pi-ai", () => ({
+      ...ai,
+      createNativeJudge: (model) => new ai.NativeJudge({
+        api: "typesafe", provider: "typesafe", model: model.id, apiKey: "fixture", baseUrl: "http://fixture.invalid", maxQuestions: 1,
+        fetch: async (_url, init) => {
+          const payload = JSON.parse(init.body);
+          // A later chunk starts only after earlier chunks completed; no clock delay is needed.
+          if (model.id === "fixture-paid" && Object.keys(payload.questions)[0] === "s4")
+            return new Response("injected failed chunk", { status: 400 });
+          return Response.json({
+            model: model.id,
+            answers: Object.fromEntries(Object.keys(payload.questions).map((id) => [id, { type: "noul", noul: 0.95 }])),
+            usage: { input_tokens: 17, output_tokens: 3 },
+          });
+        },
+      }),
+    }));
+    const { resolveJudge } = await import("@oh-my-pi/pi-coding-agent/judgment");
+    const { emptyCascade } = await import("./plugins/find-console/src/filters.ts");
+    const { refineHits } = await import("./plugins/find-console/src/refinement.ts");
+    const { formatCost, reportStats } = await import("./plugins/find-console/src/results.ts");
+    const { trackJudgmentUsage } = await import("./plugins/find-console/src/usage.ts");
+    const models = ["fixture-paid", "fixture-success"].map((id) => ({
+      api: "typesafe", provider: "typesafe", id, name: id, input: ["text"], reasoning: false,
+      cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 4096,
+    }));
+    const registry = { getAvailable: () => models, getApiKey: async () => "fixture", resolver: () => "fixture", resolveModelHeaders: async () => undefined };
+    const ledger = [];
+    const usage = trackJudgmentUsage((event) => ledger.push(event));
+    const chain = resolveJudge({ settings, registry, purpose: "find", onUsage: usage.onUsage, telemetry: { enabled: false } });
+    const judge = {
+      judge: (request, options) => chain.withCandidate((candidate, kind) => {
+        if (kind !== "native") throw new Error("Expected a native judge");
+        return candidate.judge(request, options);
+      }, options),
+    };
+    const raw = emptyCascade();
+    if (fallback) {
+      const initial = await judge.judge({ state: "cascade", questions: { cascade: { type: "noul", instructions: "Does this match?", criteria: { false: "No", true: "Yes" } } } });
+      raw.stats.cost += initial.usage.cost.total;
+      raw.stats.requests++;
+    }
+    const hits = await refineHits({
+      hits: [{ rel: "fixture.ts", contentScore: 0.9, linesSeen: 60, truncated: false, ranges: [{ start: 1, end: 60, p: 0.9, snippet: "original" }] }],
+      query: "implementation", threshold: 0.2,
+      reader: { read: async () => ({ lines: Array.from({ length: 60 }, () => "implementation answer"), truncated: false }) },
+      judge, stats: raw.stats, signal: new AbortController().signal, onProgress: () => {},
+    });
+    const translationCost = fallback ? 0.00003 : 0;
+    usage.setReportCost(raw.stats, translationCost);
+    console.log(JSON.stringify({
+      cost: raw.stats.cost,
+      judgmentCost: ledger.reduce((sum, event) => sum + event.usage.cost.total, 0),
+      display: formatCost(raw.stats.cost),
+      summary: reportStats({ ...raw, hits, query: "implementation", cwd: process.cwd(), elapsedMs: 1 }),
+      failed: raw.stats.failed,
+      scope: hits[0]?.scope,
+      refineFailed: hits[0]?.refineFailed,
+      translationCost,
+      ledger: ledger.map((event) => ({ stopReason: event.stopReason, cost: event.usage.cost.total })),
+    }));
+  `;
+  const result = Bun.spawnSync([process.execPath, "-e", script], { cwd: join(import.meta.dir, ".."), timeout: 5000 });
+  expect(result.exitCode).toBe(0);
+  return JSON.parse(new TextDecoder().decode(result.stdout));
+}
+
 beforeAll(async () => {
   await initTheme();
 });
@@ -312,6 +391,37 @@ describe("cost and cache accounting labels", () => {
   test("non-zero costs never round to zero", () => {
     expect([0, 0.00004, 0.0005, 0.0123].map(formatCost)).toEqual(["$0", "<$0.0001", "$0.0005", "$0.0123"]);
     expect(parseFindArgs("--no-cache query").noCache).toBe(true);
+  });
+
+  test("a billed split judgment that later fails still displays its non-zero search cost", () => {
+    const outcome = billedRefinement(false);
+    expect(outcome.cost).toBeGreaterThan(0);
+    expect(outcome.cost).toBeCloseTo(outcome.judgmentCost, 12);
+    expect(outcome).toMatchObject({
+      display: "<$0.0001",
+      summary: expect.stringContaining("<$0.0001"),
+      failed: 1,
+      scope: "ranges",
+      refineFailed: expect.stringContaining("using verified windows"),
+      ledger: [{ stopReason: "error", cost: expect.any(Number) }],
+    });
+  });
+
+  test("failed and successful candidates plus translation are charged once, without re-adding successful cascade cost", () => {
+    const outcome = billedRefinement(true);
+    expect(outcome.cost).toBeCloseTo(outcome.judgmentCost + outcome.translationCost, 12);
+    expect(outcome.cost).toBeGreaterThan(outcome.translationCost);
+    expect(outcome).toMatchObject({
+      display: "<$0.0001",
+      translationCost: 0.00003,
+      failed: 0,
+      scope: "whole-file",
+      ledger: [
+        { stopReason: "stop", cost: expect.closeTo(0.000002, 12) },
+        { stopReason: "error", cost: expect.any(Number) },
+        { stopReason: "stop", cost: expect.closeTo(0.000012, 12) },
+      ],
+    });
   });
 
   test("cache state uses measured question counts, not cost", () => {

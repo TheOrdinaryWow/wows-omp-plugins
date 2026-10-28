@@ -141,7 +141,6 @@ export async function refineHits(options: {
         const judged = await judge.judge(request, { signal });
         stats.inputTokens += judged.usage.input;
         stats.outputTokens += judged.usage.output;
-        stats.cost += judged.usage.cost.total;
         const wholeScore = probability(judged.answers.whole?.noul);
         const missing = Object.keys(questions).filter((key) => probability(judged.answers[key]?.noul) === undefined);
         if (missing.length) {
