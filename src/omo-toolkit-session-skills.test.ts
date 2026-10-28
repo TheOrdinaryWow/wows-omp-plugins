@@ -14,8 +14,24 @@ if (!node) throw new Error("Session-skill tests require Node.js");
 const roots: string[] = [];
 const stamp = "2026-07-01T00:00:00.000Z";
 
+/** Tests mark copies read-only; a non-root runner cannot delete them until write permission is back. */
+function restoreWritable(path: string) {
+  try {
+    chmodSync(path, 0o755);
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (entry.isDirectory()) restoreWritable(join(path, entry.name));
+      else chmodSync(join(path, entry.name), 0o644);
+    }
+  } catch {
+    /* Already removed or never created. */
+  }
+}
+
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    restoreWritable(root);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function home() {

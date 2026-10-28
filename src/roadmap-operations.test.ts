@@ -1113,7 +1113,8 @@ describe("roadmap body allowlist boundaries", () => {
       );
       expect(await managedBytes(repo)).toEqual(before);
     }
-  });
+    // One full round-open validation per rejected body is CPU-bound; parallel CI workers on shared cores push it past 10s.
+  }, 30_000);
 
   test("plain lists and top-level fences retain the same rendered and scanned headings after every write", async () => {
     const repo = await initialized();
