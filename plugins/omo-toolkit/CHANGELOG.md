@@ -8,6 +8,27 @@
 - Align debugging and Git guidance with observed evidence, user-owned decisions, and previously authorized commit cadence.
 - Inject an agent selection protocol into the main agent's system prompt when the `task` roster lists omo-toolkit agents: domain-to-agent lanes, `deep-low` as the default, and handling of `ESCALATE: deep-high` and `ESCALATE: parent` results by re-dispatching with the same task `name`.
 
+## [0.6.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.5.0...omo-toolkit@0.6.0) (2026-10-28)
+
+
+### Features
+
+* **omo-toolkit:** add coding-agent-sessions, onboarding and give-me-tips skills ([b5df91b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/b5df91b54eec099f9653bea4ca86765e2c34c03b))
+* **omo-toolkit:** add data-scientist and repository-first programming skills ([962326d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/962326d7da12f948a4272ae36f6c519883842be3))
+* **omo-toolkit:** add opt-in comment checker, AGENTS.md coverage advisor and fallback architect hint ([ecb5ae2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/ecb5ae2696e9083e6a786eced42c31c6630b8f35))
+* **omo-toolkit:** add ultimate-browsing routing and visualize skills ([4ebd654](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/4ebd654a90cd867f3acebcc9cbe08607a78267c9))
+* **omo-toolkit:** run comment-checker through pinned bunx when no path is set ([7b3932d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/7b3932d6323423e0a6a998b014fb09d3b0d14262))
+* **omo-toolkit:** sync frontend and visual-qa with upstream draft guard and bounded review ([9fd0911](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/9fd0911fa53ad7ecd08e70584bfca8430e6213fe))
+* **omo-toolkit:** sync init-deep with reviewed-PR delivery and durable snapshots ([9ea55e0](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/9ea55e012d6a7f3d5a26ca89e36a4a038ceaf71a))
+
+
+### Bug Fixes
+
+* **omo-toolkit:** install golangci-lint from its v2 module path ([67b6362](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/67b6362234f54053725c4c25465629693d70776d))
+* **omo-toolkit:** keep librarian read-only so routing never hands it to a writer ([aa64ea7](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/aa64ea7c1099880621e6694a6f35e74620426473))
+* **omo-toolkit:** keep queued comment checks inside the host result budget ([8634905](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/8634905498d7aeb18842cc644a3771e0b076c8f4))
+* **omo-toolkit:** put scoped Go tools on the generated CI path ([a393cd5](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/a393cd5c22bc65923cea727fdb786712a6343d26))
+
 ## [0.5.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.4.2...omo-toolkit@0.5.0) (2026-10-16)
 
 
