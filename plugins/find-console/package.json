@@ -21,6 +21,20 @@
         ],
         "default": "fullscreen",
         "description": "How /find shows terminal results: a fullscreen console or a bottom-anchored half-screen overlay"
+      },
+      "autoTranslate": {
+        "type": "boolean",
+        "default": true,
+        "description": "Translate non-Latin search queries into English using tiny, then smol"
+      },
+      "previewMode": {
+        "type": "enum",
+        "values": [
+          "full-file",
+          "snippet"
+        ],
+        "default": "full-file",
+        "description": "Show the full source file or only context around the active refined range"
       }
     }
   }

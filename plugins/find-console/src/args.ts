@@ -5,10 +5,11 @@ export interface FindArgs {
   help: boolean;
   cancel: boolean;
   noCache: boolean;
+  noTranslate: boolean;
 }
 
 export const USAGE =
-  "Usage: /find [--path PATH] [-k KEYWORD]... [--no-cache] <query>\nQuote paths and keywords containing spaces. Use -- before query text beginning with a dash. /find prompts for a query; /find --cancel cancels a running search.";
+  "Usage: /find [--path PATH] [-k KEYWORD]... [--no-cache] [--no-translate] <query>\nQuote paths and keywords containing spaces. Use -- before query text beginning with a dash. /find prompts for a query; /find --cancel cancels a running search.";
 
 export function splitArguments(input: string): string[] {
   const words: string[] = [];
@@ -42,7 +43,7 @@ export function splitArguments(input: string): string[] {
 
 export function parseFindArgs(input: string): FindArgs {
   const args = splitArguments(input);
-  const result: FindArgs = { query: "", path: ".", keywords: [], help: false, cancel: false, noCache: false };
+  const result: FindArgs = { query: "", path: ".", keywords: [], help: false, cancel: false, noCache: false, noTranslate: false };
   const query: string[] = [];
   let options = true;
   let scoped = false;
@@ -56,6 +57,8 @@ export function parseFindArgs(input: string): FindArgs {
       result.cancel = true;
     } else if (options && arg === "--no-cache") {
       result.noCache = true;
+    } else if (options && arg === "--no-translate") {
+      result.noTranslate = true;
     } else if (options && (arg === "--path" || arg === "-p" || arg === "-k" || arg === "--keyword")) {
       const value = args[++i];
       if (!value?.trim() || value.startsWith("-")) throw new Error(`${arg} requires a value. ${USAGE}`);
@@ -69,7 +72,7 @@ export function parseFindArgs(input: string): FindArgs {
     } else query.push(arg);
   }
   result.query = query.join(" ").trim();
-  if (result.cancel && (result.query || scoped || result.keywords.length || result.noCache))
+  if (result.cancel && (result.query || scoped || result.keywords.length || result.noCache || result.noTranslate))
     throw new Error("Use /find --cancel on its own.");
   return result;
 }
@@ -78,6 +81,7 @@ const OPTIONS = [
   ["--path", "Scope to a directory, file, or internal URL"],
   ["-k", "Add one lexical keyword; repeat to add more"],
   ["--no-cache", "Bypass judgment cache reads and writes"],
+  ["--no-translate", "Search the original query without automatic English translation"],
   ["--help", "Show command syntax"],
   ["--cancel", "Cancel the current search"],
 ] as const;

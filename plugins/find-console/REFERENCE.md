@@ -17,3 +17,11 @@ Otherwise `scope: "ranges"` contains the segment probabilities at or above the c
 The plugin wraps only the cache reference passed into this search. Each native cache lookup adds its requested question count to `total` and the number of returned answers to `cached`. It does not mutate the process-wide cache. Labels are `all cached` (N/N), `partly cached` (k/N), or `fresh` (0/N). Without a cache the label is `cache unavailable`; `--no-cache` omits the cache entirely from judge resolution, disabling reads and writes and displaying `cache off`.
 
 Cost is independent of cache state: exactly zero is `$0`, positive values below 0.0001 are `<$0.0001`, and larger values use four significant digits without trailing zero padding.
+
+## Query translation
+
+Detection requires at least one Unicode letter whose script is not Latin. Chinese, Japanese, Cyrillic and Arabic therefore trigger translation; accented Latin letters, numbers and punctuation alone do not. This is script detection, not a general language classifier: non-English Latin-script queries are unchanged.
+
+Resolution uses the host's `@tiny` role and its eligible candidate pool, then `@smol` if tiny is absent, fails, or does not return an English query. Local-inference models use the generic tiny chat client (not its 20-token title-generation mode); online models use `completeSimple` with the registry's credential resolver. A request contains only the original query and an English code-search translation instruction, with a 128-token output bound. Cancellation propagates; unavailable translation is reported and does not block an untranslated search. Online usage is journaled as `find-translate` and included in the reported cost, separately from judgment-cache answer counts.
+
+The report's `query` is the actual searched text. Successful translation adds `originalQuery` and `translation: { model: "<role>: <provider>/<id>" }`; skipped/failed translation adds `translation: { skipped: "<reason>" }`. Only the original query is used for display and history. Translation does not mutate host role settings.

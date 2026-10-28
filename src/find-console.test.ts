@@ -21,6 +21,7 @@ import {
   selectedRange,
 } from "../plugins/find-console/src/results.ts";
 import { parseUiMenu } from "../plugins/find-console/src/settings.ts";
+import { needsTranslation } from "../plugins/find-console/src/translation.ts";
 
 const hit: FindHit = {
   rel: "plugins/example/src/index.ts",
@@ -138,6 +139,7 @@ describe("find arguments", () => {
       help: false,
       cancel: false,
       noCache: false,
+      noTranslate: false,
     });
   });
 
@@ -182,6 +184,16 @@ describe("cost and cache accounting labels", () => {
     expect(cacheLabel({ mode: "on", cached: 0, total: 8 })).toBe("fresh");
     expect(cacheLabel({ mode: "off", cached: 0, total: 8 })).toBe("cache off");
     expect(cacheLabel({ mode: "unavailable", cached: 0, total: 8 })).toBe("cache unavailable");
+  });
+});
+
+describe("query language detection", () => {
+  test("non-Latin letters trigger translation without treating accents or code punctuation as foreign script", () => {
+    for (const query of ["版本号在哪里被提升", "где версия", "バージョン更新", "أين الإصدار", "find 中文 identifiers"])
+      expect(needsTranslation(query)).toBe(true);
+    for (const query of ["where versions change", "café parser déjà vu", "release-please v1.2 #42", "123 --path src", ""])
+      expect(needsTranslation(query)).toBe(false);
+    expect(parseFindArgs("--no-translate 版本号").noTranslate).toBe(true);
   });
 });
 

@@ -29,7 +29,7 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 ### Query, scope and keywords
 
 ```text
-/find [--path PATH] [-k KEYWORD]... <query>
+/find [--path PATH] [-k KEYWORD]... [--no-cache] [--no-translate] <query>
 /find --help
 /find --cancel
 ```
@@ -46,6 +46,8 @@ Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe je
 `--` ends option parsing. There is no ambiguous positional path: a path is always introduced by `--path`. Hidden and ignored files follow the host cascade's default search policy.
 
 Use `--no-cache` to bypass both reads and writes in the host judgment cache. Reports count cached answers independently of cost: `all cached`, `partly cached`, `fresh`, `cache off`, or `cache unavailable`. Exactly zero costs display as `$0`; tiny non-zero costs display as `<$0.0001` rather than rounding to zero.
+
+Queries containing non-Latin letters are translated to English before the lexical scan, using the configured `tiny` role first and `smol` if tiny is unavailable or fails. Results keep the original query and show `searched as: …`. If neither model works, search continues untranslated with the reason shown. Use `--no-translate` to disable translation for one search.
 
 ### Results console
 
@@ -82,6 +84,8 @@ omp plugin config set wows-omp-plugin-find-console uiMenu half-screen
 | Setting | Values | Default | Effect |
 | --- | --- | --- | --- |
 | `uiMenu` | `fullscreen` \| `half-screen` | `fullscreen` | Choose a fullscreen console or a bottom-anchored half-screen overlay for terminal results. |
+| `autoTranslate` | boolean | `true` | Translate non-Latin queries with tiny, then smol. `--no-translate` disables it per search. |
+| `previewMode` | `full-file` \| `snippet` | `full-file` | Load the full file and focus the active refined range, or show only its surrounding context. Whole-file results have no highlights. |
 
 The layout setting is read each time the results console opens; no session restart is needed. It applies only to the terminal TUI. Tern keeps its large native glass sheet, and RPC/ACP keep the selector/editor flow. To restore fullscreen, set `uiMenu` to `fullscreen`.
 

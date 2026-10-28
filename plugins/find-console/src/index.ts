@@ -17,6 +17,8 @@ import { searchWithProgress } from "#src/progress.ts";
 import { refineHits } from "#src/refinement.ts";
 import type { ConsoleReport } from "#src/report.ts";
 import { coverageWarning, disabledReason, rankedDigest } from "#src/results.ts";
+import { readSearchSettings } from "#src/settings.ts";
+import { translateQuery } from "#src/translation.ts";
 
 export default function findConsole(pi: ExtensionAPI): void {
   pi.setLabel("Find console");
@@ -114,11 +116,24 @@ export default function findConsole(pi: ExtensionAPI): void {
         };
         const report = await searchWithProgress(ctx, args.query, controller, async (onProgress) => {
           const started = performance.now();
+          const pluginSettings = await readSearchSettings(ctx.cwd);
+          onProgress("checking query language");
+          const translated = await translateQuery({
+            query: args.query,
+            enabled: pluginSettings.autoTranslate && !args.noTranslate,
+            settings,
+            ctx,
+            signal,
+            onUsage,
+          });
+          if (translated.originalQuery) onProgress(`searched as: ${translated.query}`);
+          else if (translated.translation && "skipped" in translated.translation)
+            onProgress(`Translation skipped: ${translated.translation.skipped}`);
           const root = await resolveSearchRoot(filesystem, args.path, ctx.cwd);
           const raw = await runCascade({
             root,
             filesystem,
-            query: args.query,
+            query: translated.query,
             extraKeywords: args.keywords,
             judge,
             includeHidden: false,
@@ -130,7 +145,7 @@ export default function findConsole(pi: ExtensionAPI): void {
               ...hit,
               rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, hit.rel), ctx.cwd),
             })),
-            query: args.query,
+            query: translated.query,
             threshold: raw.threshold,
             reader,
             judge,
@@ -138,16 +153,19 @@ export default function findConsole(pi: ExtensionAPI): void {
             signal,
             onProgress,
           });
+          raw.stats.cost += translated.cost;
           const report: ConsoleReport = {
             ...raw,
-            query: args.query,
+            query: translated.query,
+            originalQuery: translated.originalQuery,
+            translation: translated.translation,
             elapsedMs: performance.now() - started,
             cwd: ctx.cwd,
             scopePath: formatPathRelativeToCwd(root.path, ctx.cwd),
             hits,
             coverage: raw.coverage === "complete" && hits.some((hit) => hit.refineFailed) ? "partial" : raw.coverage,
             cache: accounting.state,
-            previewMode: "full-file",
+            previewMode: pluginSettings.previewMode,
           };
           return report;
         });

@@ -29,7 +29,7 @@ omp plugin install find-console@wows-omp-plugins
 ### 查询、搜索范围和关键词
 
 ```text
-/find [--path PATH] [-k KEYWORD]... <query>
+/find [--path PATH] [-k KEYWORD]... [--no-cache] [--no-translate] <query>
 /find --help
 /find --cancel
 ```
@@ -46,6 +46,8 @@ omp plugin install find-console@wows-omp-plugins
 `--` 结束选项解析。路径必须由 `--path` 引入，不会将查询中的某个词猜成位置路径。隐藏文件和忽略文件遵循宿主级联的默认搜索策略。
 
 使用 `--no-cache` 完全跳过宿主判定缓存的读取和写入。报告独立于费用统计缓存回答数，显示 `all cached`、`partly cached`、`fresh`、`cache off` 或 `cache unavailable`。费用恰好为零时显示 `$0`；微小但非零的费用显示 `<$0.0001`，不会舍入成零。
+
+包含非拉丁字母的查询会在词法扫描前翻译成英文，优先使用已配置的 `tiny` 角色；tiny 不可用或失败时使用 `smol`。结果保留原始查询，并显示 `searched as: …`。两个模型均不可用时，继续搜索原文并说明原因。使用 `--no-translate` 可仅对当前搜索禁用翻译。
 
 ### 结果控制台
 
@@ -82,6 +84,8 @@ omp plugin config set wows-omp-plugin-find-console uiMenu half-screen
 | 设置 | 可选值 | 默认值 | 效果 |
 | --- | --- | --- | --- |
 | `uiMenu` | `fullscreen` \| `half-screen` | `fullscreen` | 终端结果使用全屏控制台或底部半屏覆盖层。 |
+| `autoTranslate` | boolean | `true` | 使用 tiny、smol 翻译非拉丁文字查询。`--no-translate` 仅对当前搜索禁用翻译。 |
+| `previewMode` | `full-file` \| `snippet` | `full-file` | 读取全文并定位当前细化范围，或只显示范围周围的上下文。整文件结果不高亮。 |
 
 每次打开结果控制台时都会重新读取布局设置，无需重启会话。设置仅影响终端 TUI；Tern 保持大型原生玻璃面板，RPC/ACP 保持选择器和编辑器流程。将 `uiMenu` 设为 `fullscreen` 即可恢复全屏。
 
