@@ -5,29 +5,180 @@
     <title>find-console</title>
     <link rel="stylesheet" href="banner.css" />
     <style>
-      .search-flow {
+      /* figure: the /find console — query, ranked judged hits, range preview, actions */
+      .fig {
+        padding-top: 16px;
+      }
+      .console {
+        --soft: color-mix(in srgb, var(--accent) 16%, var(--paper));
         display: grid;
+        grid-template-columns: 1fr 136px;
+        column-gap: 36px;
+        width: 484px;
+        font: 500 13px / 1 var(--mono);
+        color: var(--ink-2);
+      }
+
+      /* query line */
+      .q {
+        grid-column: 1 / 3;
+        display: flex;
+        align-items: center;
         gap: 12px;
-        font: 500 15px / 1.4 var(--mono);
-      }
-      .search-query {
-        color: var(--ink-2);
-      }
-      .search-file {
-        color: var(--accent);
-        font-weight: 700;
-      }
-      .search-source {
-        color: var(--ink-2);
-        white-space: pre;
-      }
-      .search-mark {
-        color: var(--accent);
-      }
-      .search-actions {
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--ink);
+        font-size: 15px;
         color: var(--ink);
-        padding-top: 8px;
+      }
+      .q b {
+        color: var(--accent);
+      }
+      .q .caret {
+        width: 2px;
+        height: 17px;
+        margin-left: -10px;
+        background: var(--accent);
+      }
+
+      /* ranked hits: filename + range, judge score bar, score */
+      .hits {
+        display: grid;
+        grid-template-rows: repeat(3, 40px);
+        margin-top: 12px;
+      }
+      .hit {
+        display: grid;
+        grid-template-columns: 1fr 40px;
+        align-content: center;
+        column-gap: 12px;
+        row-gap: 9px;
+        padding-left: 12px;
+        border-left: 3px solid transparent;
+      }
+      .hit.on {
+        border-left-color: var(--accent);
+      }
+      .hit .name {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        font: 600 15px / 1 var(--display);
+        letter-spacing: -0.01em;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+      .hit .name span {
+        font: 500 13px / 1 var(--mono);
+        letter-spacing: 0;
+        color: var(--ink-3);
+      }
+      .hit.on .name span {
+        color: var(--accent);
+      }
+      .hit .bar {
+        position: relative;
+        align-self: center;
+        height: 5px;
+        border-bottom: 1px solid var(--ink-3);
+      }
+      .hit .bar::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        bottom: -1px;
+        width: calc(100% * var(--s));
+        height: 5px;
+        background: var(--accent);
+      }
+      .hit .score {
+        grid-row: 1 / 3;
+        grid-column: 2;
+        align-self: end;
+        font-weight: 700;
+        text-align: right;
+        color: var(--accent);
+      }
+      .hit.plausible .bar::before {
+        background: var(--ink-2);
+      }
+      .hit.plausible .score {
+        color: var(--ink);
+      }
+      .hit.muted .name,
+      .hit.muted .score {
+        color: var(--ink-3);
+      }
+      .hit.muted .bar::before {
+        background: var(--paper);
+        border: 1px solid var(--ink-3);
+      }
+
+      /* source preview: file lines as a sketch, refined range highlighted */
+      .src {
+        display: grid;
+        grid-template-rows: repeat(7, 1fr);
+        margin-top: 12px;
+      }
+      .ln {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        align-items: center;
+        column-gap: 10px;
+        padding-left: 7px;
+        border-left: 3px solid transparent;
+        font-size: 12px;
+      }
+      .ln i {
+        font-style: normal;
+        text-align: right;
+        color: var(--ink-3);
+      }
+      .ln::after {
+        content: "";
+        width: calc(100% * var(--w));
+        height: 4px;
+        background: var(--ink-3);
+      }
+      .ln.hl {
+        background: var(--soft);
+        border-left-color: var(--accent);
+      }
+      .ln.hl i {
+        color: var(--accent);
+      }
+      .ln.hl::after {
+        background: var(--accent);
+      }
+
+      /* actions as keys */
+      .acts {
+        grid-column: 1 / 3;
+        display: flex;
+        align-items: center;
+        gap: 26px;
+        margin-top: 12px;
+        padding-top: 12px;
         border-top: 1px solid var(--ink-3);
+        font-size: 14px;
+        color: var(--ink);
+      }
+      .act {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .key {
+        min-width: 22px;
+        padding: 3px 5px;
+        border: 1px solid var(--ink);
+        font-weight: 700;
+        font-size: 12px;
+        text-align: center;
+      }
+      .act.primary .key {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--paper);
       }
     </style>
     <script>
@@ -46,14 +197,40 @@
         <div class="tag">Search by behavior. Preview judged source ranges. Choose what reaches the agent.</div>
       </div>
       <div class="fig">
-        <div class="fig-label">Query → source → reference</div>
-        <div class="search-flow" role="img" aria-label="Search results open beside a source preview, with insertion and sending actions">
-          <div class="search-query">where versions are bumped</div>
-          <div class="search-file">release-please-config.json</div>
-          <div class="search-source">packages:
-  <span class="search-mark">plugins/find-console</span>
-    extra-files</div>
-          <div class="search-actions">Preview · Insert · Send · Open</div>
+        <div class="console" role="img" aria-label="The /find console: a natural-language query, three hits ranked by judge score with their line ranges, a preview highlighting the selected hit's refined range 23 to 27, and Preview, Insert, Send and Open actions">
+          <div class="q"><b>/find</b><span>where versions are bumped</span><span class="caret"></span></div>
+          <div class="hits">
+            <div class="hit on">
+              <div class="name">release-please-config.json<span>23–27</span></div>
+              <div class="bar" style="--s: 0.94"></div>
+              <div class="score">0.94</div>
+            </div>
+            <div class="hit plausible">
+              <div class="name">marketplace.json<span>18–24</span></div>
+              <div class="bar" style="--s: 0.71"></div>
+              <div class="score">0.71</div>
+            </div>
+            <div class="hit muted">
+              <div class="name">CHANGELOG.md<span>whole file</span></div>
+              <div class="bar" style="--s: 0.34"></div>
+              <div class="score">0.34</div>
+            </div>
+          </div>
+          <div class="src">
+            <div class="ln" style="--w: 0.3"><i>22</i></div>
+            <div class="ln hl" style="--w: 0.9"><i>23</i></div>
+            <div class="ln hl" style="--w: 0.7"><i>24</i></div>
+            <div class="ln hl" style="--w: 0.8"><i>25</i></div>
+            <div class="ln hl" style="--w: 0.55"><i>26</i></div>
+            <div class="ln hl" style="--w: 0.25"><i>27</i></div>
+            <div class="ln" style="--w: 0.6"><i>28</i></div>
+          </div>
+          <div class="acts">
+            <span class="act"><span class="key">↑↓</span>Preview</span>
+            <span class="act primary"><span class="key">↵</span>Insert</span>
+            <span class="act"><span class="key">s</span>Send</span>
+            <span class="act"><span class="key">o</span>Open</span>
+          </div>
         </div>
       </div>
     </div>
