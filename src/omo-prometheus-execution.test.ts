@@ -800,7 +800,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await finish("F3");
     await finish("F4");
   };
-  if (name === "retry-fail" || name === "retry-grant-changed") {
+  if (name === "retry-fail" || name === "retry-grant-changed" || name === "retry-auto-grant") {
     const fail = (childAgentId: string) =>
       call({
         action: "fail",
@@ -846,6 +846,43 @@ async function scenario(name: string, root: string): Promise<void> {
     refused(await call({ action: "retry", id: "T1", evidence: "Different repair hypothesis" }));
     ok(await call({ action: "block", id: "T3", evidence: "Independent task needs owner credentials" }));
     const grant = () => call({ action: "retry", id: "T1", evidence: "Different repair hypothesis; unchanged acceptance" });
+    if (name === "retry-auto-grant") {
+      const text = (result: { content: { text?: string }[] }) => result.content.map((part) => part.text ?? "").join("\n");
+      await mkdir(join(root, ".omp"), { recursive: true });
+      await writeFile(
+        join(root, ".omp", "plugin-overrides.json"),
+        JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { atlasRetry: "approve", atlasAutoRetryLimit: 1 } } }),
+      );
+      await hook("session_start");
+      // The setting decides without a dialog, so the grant succeeds even with no UI.
+      interactive = false;
+      const granted = await grant();
+      ok(granted);
+      assert.match(text(granted), /The atlasRetry setting \(approve\) approved it without asking/);
+      assert.equal((await row("T1")).retry?.windows[1]?.grant?.decidedBy, "setting");
+      for (const child of ["SecondWindowA", "SecondWindowB"]) {
+        await publish(await prepare("T1"), child, { content: "acceptance scenario: expected 4, got 5" });
+        ok(await fail(child));
+      }
+      assert.equal((await row("T1")).retry?.windows[1]?.stop?.reason, "signature");
+      const declined = await grant();
+      refused(declined);
+      const limited = text(declined);
+      assert.match(limited, /The atlasRetry setting \(decline\) declined it without asking/);
+      assert.match(limited, /the atlasAutoRetryLimit of 1/);
+      assert.equal((await row("T1")).retry?.windows.length, 2);
+      // A person may still grant past the limit.
+      await writeFile(
+        join(root, ".omp", "plugin-overrides.json"),
+        JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { atlasRetry: "ask", atlasAutoRetryLimit: 1 } } }),
+      );
+      await hook("session_start");
+      interactive = true;
+      confirmAnswer = true;
+      ok(await grant());
+      assert.equal((await row("T1")).retry?.windows[2]?.grant?.decidedBy, "user");
+      return;
+    }
     interactive = false;
     refused(await grant());
     interactive = true;
@@ -2173,7 +2210,7 @@ async function scenario(name: string, root: string): Promise<void> {
     if (name === "heavy-verify") {
       assert.match(
         started.content.map((part) => part.text ?? "").join("\n"),
-        /Owner rulings — user-confirmed amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed the ceiling/,
+        /Owner rulings — amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed the ceiling/,
       );
     }
     const input = {
@@ -2426,23 +2463,23 @@ async function scenario(name: string, root: string): Promise<void> {
     const restarted = await prepare("T1");
     assert.match(restarted.startText ?? "", /T1 acceptance was amended by R1/);
     assert.match(restarted.startText ?? "", /T1 acceptance: prerequisite p95 latency stays under 250 ms \(amended by R1\)/);
-    assert.match(text(await call({ action: "status" })), /Owner rulings — user-confirmed amendments to the approved plan \(1;/);
+    assert.match(text(await call({ action: "status" })), /Owner rulings — amendments to the approved plan \(1;/);
     await publish(restarted, "Relaxed");
     ok(await done("T1", "Relaxed"));
     // The ruling is part of the shared bundle, so it survives a session restart.
     await reload();
     ok(await call({ action: "status" }));
-    assert.equal((await ledger()).version, 8);
+    assert.equal((await ledger()).version, 9);
     assert.deepEqual(
-      (await ledger()).rulings.map((entry) => entry.id),
-      ["R1"],
+      (await ledger()).rulings.map((entry) => [entry.id, entry.decidedBy]),
+      [["R1", "user"]],
     );
     assert.equal((await row("T1")).status, "done");
     await finish("T2");
     await finish("T3");
     // F1 and F4 judge against the plan plus every ruling; F2 and F3 need none.
     const rulings =
-      /Owner rulings — user-confirmed amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed/;
+      /Owner rulings — amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed/;
     assert.match((await prepare("F1")).startText ?? "", rulings);
     assert.doesNotMatch((await prepare("F2")).startText ?? "", /Owner rulings/);
     assert.match((await prepare("F4")).startText ?? "", rulings);
@@ -2671,6 +2708,7 @@ if (process.env[CHILD_ENV]) {
       "context-row-shape",
       "retry-fail",
       "retry-grant-changed",
+      "retry-auto-grant",
       "retry-pre-spawn",
       "retry-expiry-live",
       "retry-native-cancellation",

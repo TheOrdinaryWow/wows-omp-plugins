@@ -12,6 +12,7 @@ import {
   addDeferredFinding,
   addFixRow,
   amendAcceptance,
+  automaticRetryGrants,
   type ChildReceipt,
   type ExecutionLedger,
   effectiveAcceptance,
@@ -517,7 +518,7 @@ describe("Atlas shared plan storage", () => {
       await finish(f, upgraded, "session-b", "T2");
       await finish(f, upgraded, "session-b", "F4");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(8);
+      expect(saved.version).toBe(9);
       expect(saved.fixes).toEqual([]);
       expect(saved.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
@@ -538,12 +539,12 @@ describe("Atlas shared plan storage", () => {
       expect((await upgraded.details(f.root)).find((detail) => detail.plan.id === f.plan.id)?.done).toBe(2);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(8);
+      expect(resumed.version).toBe(9);
       expect(resumed.gitBaseline).toBeUndefined();
       expect(ledgerRows(resumed).map((row) => row.status)).toEqual(["done", "open", "done", "open", "open", "open", "open"]);
       await finish(f, upgraded, "session-b", "T2");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(8);
+      expect(saved.version).toBe(9);
       expect(saved.items.map((row) => row.status)).toEqual(["done", "done", "done"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
       expect(saved.items[1]?.receipt?.sessionId).toBe("session-b");
@@ -1161,7 +1162,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.rows.map((row) => row.tier)).toEqual(["light", "light", "light", undefined, undefined, undefined, undefined]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(8);
+      expect(resumed.version).toBe(9);
       expect(ledgerRows(resumed).map((row) => `${row.id}:${row.status}`)).toEqual([
         "T1:done",
         "T2:open",
@@ -1175,7 +1176,7 @@ describe("Atlas shared plan storage", () => {
       // LIGHT rows still finish on their own child's evidence, and the plan completes after its gates.
       for (const id of ["T2", "F1", "F2", "F3", "F4"]) await finish(f, upgraded, "session-b", id);
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(8);
+      expect(saved.version).toBe(9);
       expect(saved.deliveries).toEqual([]);
       expect(saved.discoveries).toEqual([]);
       expect(JSON.parse(await fs.readFile(path.join(f.plan.directory, "checkpoint.json"), "utf8")).version).toBe(2);
@@ -1229,7 +1230,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.deferred?.map((finding) => finding.id)).toEqual(["O1", "O2"]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(8);
+      expect(resumed.version).toBe(9);
       expect(resumed.items[0]?.status).toBe("done");
       expect(untriagedFindings(resumed).map((finding) => finding.id)).toEqual(["O1", "O2"]);
       // Reading alone never rewrites the previous-format bundle.
@@ -1239,7 +1240,7 @@ describe("Atlas shared plan storage", () => {
       await upgraded.transaction(f.plan.id, "session-b", (ledger) => triageFinding(ledger, "O2", "wontfix", "Tracked upstream", true));
       await finish(f, upgraded, "session-b", "T3");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(8);
+      expect(saved.version).toBe(9);
       expect(saved.deferred.map(({ id, title, triage }) => [id, title, triage?.disposition])).toEqual([
         ["O1", "Importer leaks handles", undefined],
         ["O2", "Flaky clock test", "wontfix"],
@@ -1270,7 +1271,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.rulings).toEqual([]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(8);
+      expect(resumed.version).toBe(9);
       expect(resumed.rulings).toEqual([]);
       expect(resumed.items[0]?.status).toBe("done");
       expect(resumed.deferred.map((finding) => finding.id)).toEqual(["O1"]);
@@ -1278,15 +1279,15 @@ describe("Atlas shared plan storage", () => {
       expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(6);
       expect(await fs.readFile(checkpointPath, "utf8")).toBe(checkpointBefore);
 
-      // A ruling on the upgraded bundle persists as version eight; the checkpoint binds attempts, not acceptance.
+      // A ruling on the upgraded bundle persists as version nine; the checkpoint binds attempts, not acceptance.
       await upgraded.transaction(f.plan.id, "session-b", (ledger) => {
         const t3 = ledger.items[2] as LedgerItem;
         reopenRow(ledger, t3.id, "Blocked: the measured result misses the plan's ceiling");
         t3.status = "blocked";
-        amendAcceptance(ledger, t3.id, "independent result within the relaxed tolerance", "The user relaxed the tolerance");
+        amendAcceptance(ledger, t3.id, "independent result within the relaxed tolerance", "The user relaxed the tolerance", "user");
       });
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(8);
+      expect(saved.version).toBe(9);
       expect(saved.rulings).toMatchObject([{ id: "R1", rowId: "T3", acceptance: "independent result within the relaxed tolerance" }]);
       expect(saved.items[2]?.acceptance).toBe("independent result is verified");
       expect(await fs.readFile(checkpointPath, "utf8")).toBe(checkpointBefore);
@@ -1317,7 +1318,7 @@ describe("Atlas shared plan storage", () => {
     });
   });
 
-  test("a bundle written by the previous ledger version (seven) resumes as v8 preserving proof, rulings, triage and delivery", async () => {
+  test("a bundle written by ledger version seven resumes as v9 preserving proof, rulings, triage and delivery", async () => {
     const heavy = content
       .replace("# Shared execution", "# Shared execution\n\nDelivery: ship")
       .replace("  - Acceptance: input is verified", "  - Tier: HEAVY\n  - Acceptance: input is verified");
@@ -1333,7 +1334,7 @@ describe("Atlas shared plan storage", () => {
         const row = ledger.items[0] as LedgerItem;
         const receipt = await archive(f, row, ledger, plan, verdict(ledger, row, "PASS"), true);
         recordVerification(ledger, row, { verdict: "pass", receipt, summary: "Verified", evidence: "real surface" });
-        amendAcceptance(ledger, "T3", "independent result verified within agreed tolerance", "Owner confirmed tolerance");
+        amendAcceptance(ledger, "T3", "independent result verified within agreed tolerance", "Owner confirmed tolerance", "user");
         const finding = addDeferredFinding(ledger, { title: "Outside issue", reason: "pre-existing" });
         triageFinding(ledger, finding.id, "duplicate", "T099", true);
       });
@@ -1349,7 +1350,7 @@ describe("Atlas shared plan storage", () => {
       expect((await resumedStore.details(f.root))[0]?.done).toBe(2);
       await resumedStore.acquire(f.plan.id, "session-b");
       const resumed = await resumedStore.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(8);
+      expect(resumed.version).toBe(9);
       expect(resumed.items[0]?.receipt).toEqual(before.items[0]?.receipt);
       expect(resumed.items[0]?.verification).toEqual(before.items[0]?.verification);
       expect(resumed.items[1]?.receipt).toEqual(before.items[1]?.receipt);
@@ -1390,7 +1391,7 @@ describe("Atlas shared plan storage", () => {
           tier: "HEAVY",
         });
       });
-      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(8);
+      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(9);
       expect(await fs.readFile(path.join(f.plan.directory, "approval.json"), "utf8")).toBe(approvedBytes);
       expect(await fs.readFile(f.plan.planFilePath, "utf8")).toBe(planBytes);
       await resumedStore.release(f.plan.id, "session-b");
@@ -1404,6 +1405,45 @@ describe("Atlas shared plan storage", () => {
       expect(back.rulings).toEqual(before.rulings);
       expect(back.deferred).toEqual(before.deferred);
     }, heavy);
+  });
+
+  test("a bundle written by ledger version eight resumes as v9 with every earlier grant and ruling decided by the user", async () => {
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => {
+        const row = startRow(ledger, "T1");
+        noteRetryDispatch(row);
+        const window = retryWindow(row);
+        if (window) window.openedAt = Date.now() - RETRY_LIMIT_MS;
+      });
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => {
+        const row = ledger.items[0] as LedgerItem;
+        expect(retryWindow(row)?.stop?.reason).toBe("elapsed");
+        grantRetry(ledger, row, "Owner granted another window", "user");
+        amendAcceptance(ledger, "T3", "independent result within the agreed tolerance", "Owner confirmed tolerance", "user");
+      });
+      await f.store.release(f.plan.id, "session-a");
+      const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8"));
+      delete saved.rulings[0].decidedBy;
+      delete saved.items[0].retry.windows[1].grant.decidedBy;
+      const oldBytes = JSON.stringify({ ...saved, version: 8 });
+      await fs.writeFile(f.plan.ledgerPath, oldBytes);
+      const resumedStore = new AtlasStore(f.root);
+      await resumedStore.acquire(f.plan.id, "session-b");
+      const resumed = await resumedStore.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
+      expect(resumed.version).toBe(9);
+      expect(resumed.rulings.map((ruling) => ruling.decidedBy)).toEqual(["user"]);
+      const row = resumed.items[0] as LedgerItem;
+      expect(row.retry?.windows.map((window) => window.grant?.decidedBy)).toEqual([undefined, "user"]);
+      expect(row.status).toBe("open");
+      expect(automaticRetryGrants(row)).toBe(0);
+      expect(await fs.readFile(f.plan.ledgerPath, "utf8")).toBe(oldBytes);
+      await finish(f, resumedStore, "session-b", "T3");
+      const written = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      expect(written.version).toBe(9);
+      expect(written.rulings[0]?.decidedBy).toBe("user");
+      expect(written.items[2]?.status).toBe("done");
+    });
   });
 
   test("expiry is durable before a refused mutation and diagnostic publication can resume after interruption", async () => {
@@ -1495,7 +1535,7 @@ describe("Atlas shared plan storage", () => {
           const row = ledger.items[0] as LedgerItem;
           expect(row.receipt).toEqual(implementation);
           expect(row.status).toBe("blocked");
-          grantRetry(ledger, row, "Owner confirms a new verification window");
+          grantRetry(ledger, row, "Owner confirms a new verification window", "user");
           expect(row.status).toBe("in_progress");
           expect(row.receipt).toEqual(implementation);
           startVerification(ledger, row.id);

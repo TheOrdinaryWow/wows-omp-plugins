@@ -3,8 +3,13 @@
  * long bodies become an unreadable wall. A decision is instead a `select`: the question plus a short summary, an
  * accept option and a decline option whose labels name what happens, and an optional "Review full details" option
  * that shows the complete text read-only and comes back to the same decision.
+ *
+ * Decisions Atlas raises on its own (retry grants, acceptance amendments, the completion release) follow a per-decision
+ * policy setting, so an unattended run is not held for hours by a dialog nobody sees.
  */
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+
+import type { DecidedBy } from "./ledger.ts";
 
 export interface DecisionOption {
   label: string;
@@ -29,16 +34,132 @@ export const REVIEW_DETAILS: DecisionOption = {
   description: "Shows the complete text read-only; closing it returns to this choice",
 };
 
-/** True only for the accept option; Esc, a dismissed dialog and the decline all decline. */
-export async function decide(ui: Pick<ExtensionContext["ui"], "select" | "editor">, decision: Decision): Promise<boolean> {
+type DecisionUI = Pick<ExtensionContext["ui"], "select" | "editor">;
+
+/**
+ * With `timeoutMs`, each prompt of the decision waits that long (the TUI restarts the countdown on input) and an
+ * unanswered one is `"timeout"`.
+ */
+async function prompt(ui: DecisionUI, decision: Decision, timeoutMs?: number): Promise<boolean | "timeout"> {
   const options = [decision.accept, decision.decline, ...(decision.details === undefined ? [] : [REVIEW_DETAILS])];
   const title = [decision.question, ...decision.summary].join("\n");
   const initialIndex = decision.initial === "accept" ? 0 : 1;
   while (true) {
-    const choice = await ui.select(title, options, { initialIndex });
+    let timedOut = false;
+    const choice = await ui.select(
+      title,
+      options,
+      timeoutMs === undefined ? { initialIndex } : { initialIndex, timeout: timeoutMs, onTimeout: () => (timedOut = true) },
+    );
+    if (timedOut) return "timeout";
     if (choice !== REVIEW_DETAILS.label || decision.details === undefined) return choice === decision.accept.label;
     await ui.editor(`${decision.question} (read-only)`, decision.details);
   }
+}
+
+/** True only for the accept option; Esc, a dismissed dialog and the decline all decline. */
+export async function decide(ui: DecisionUI, decision: Decision): Promise<boolean> {
+  return (await prompt(ui, decision)) === true;
+}
+
+/** How one kind of Atlas decision is settled: always ask, ask with a fallback after a timeout, or never ask. */
+export type DecisionPolicy = "ask" | "ask-then-approve" | "ask-then-decline" | "approve" | "decline";
+
+const DECISION_POLICIES: readonly DecisionPolicy[] = ["ask", "ask-then-approve", "ask-then-decline", "approve", "decline"];
+
+function parseDecisionPolicy(name: string, value: unknown): DecisionPolicy {
+  if (value === undefined) return "ask";
+  if (DECISION_POLICIES.includes(value as DecisionPolicy)) return value as DecisionPolicy;
+  throw new Error(`invalid ${name} ${JSON.stringify(value)}`);
+}
+
+function parseWholeNumber(name: string, value: unknown, fallback: number, min: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= min) return value;
+  throw new Error(`invalid ${name} ${JSON.stringify(value)}`);
+}
+
+export interface DecisionSettings {
+  retry: DecisionPolicy;
+  amend: DecisionPolicy;
+  release: DecisionPolicy;
+  /** How long an `ask-then-*` dialog waits for an answer. */
+  timeoutMs: number;
+  /** Retry windows per row a setting may grant without the user; 0 means unlimited. */
+  autoRetryLimit: number;
+}
+
+export const DEFAULT_DECISION_SETTINGS: DecisionSettings = {
+  retry: "ask",
+  amend: "ask",
+  release: "ask",
+  timeoutMs: 30 * 60_000,
+  autoRetryLimit: 1,
+};
+
+/** Reads every decision setting; an invalid one keeps its default and is reported through `warn`. */
+export function parseDecisionSettings(settings: Record<string, unknown>, warn: (message: string) => void): DecisionSettings {
+  const read = <T>(parse: () => T, fallback: T): T => {
+    try {
+      return parse();
+    } catch (error) {
+      warn(`${error instanceof Error ? error.message : String(error)}; using ${JSON.stringify(fallback)}`);
+      return fallback;
+    }
+  };
+  const defaults = DEFAULT_DECISION_SETTINGS;
+  const timeoutMinutes = defaults.timeoutMs / 60_000;
+  return {
+    retry: read(() => parseDecisionPolicy("atlasRetry", settings.atlasRetry), defaults.retry),
+    amend: read(() => parseDecisionPolicy("atlasAmend", settings.atlasAmend), defaults.amend),
+    release: read(() => parseDecisionPolicy("atlasRelease", settings.atlasRelease), defaults.release),
+    timeoutMs: read(() => parseWholeNumber("atlasAskTimeout", settings.atlasAskTimeout, timeoutMinutes, 1), timeoutMinutes) * 60_000,
+    autoRetryLimit: read(
+      () => parseWholeNumber("atlasAutoRetryLimit", settings.atlasAutoRetryLimit, defaults.autoRetryLimit, 0),
+      defaults.autoRetryLimit,
+    ),
+  };
+}
+
+/** An `approve` policy that may no longer approve on its own (the automatic retry limit) settles as its decline form. */
+export function withoutAutoApproval(policy: DecisionPolicy): DecisionPolicy {
+  if (policy === "approve") return "decline";
+  if (policy === "ask-then-approve") return "ask-then-decline";
+  return policy;
+}
+
+export interface Settled {
+  accepted: boolean;
+  decidedBy: DecidedBy;
+  /** For a setting's answer: the policy never asks, the dialog went unanswered, or no dialog exists in this mode. */
+  because?: "policy" | "timeout" | "no-dialog";
+}
+
+/**
+ * Settles `decision` under `policy`. Undefined only for `ask` without a dialog: nothing may be decided. `timeoutMs`
+ * applies to the `ask-then-*` policies.
+ */
+export async function settle(
+  ui: DecisionUI | undefined,
+  policy: DecisionPolicy,
+  decision: Decision,
+  timeoutMs: number,
+): Promise<Settled | undefined> {
+  if (policy === "approve" || policy === "decline") return { accepted: policy === "approve", decidedBy: "setting", because: "policy" };
+  const fallback = policy === "ask-then-approve";
+  if (!ui) return policy === "ask" ? undefined : { accepted: fallback, decidedBy: "setting", because: "no-dialog" };
+  const answer = await prompt(ui, decision, policy === "ask" ? undefined : timeoutMs);
+  return answer === "timeout" ? { accepted: fallback, decidedBy: "setting", because: "timeout" } : { accepted: answer, decidedBy: "user" };
+}
+
+/** One sentence for a tool result naming how a setting settled a decision; empty when the user answered. */
+export function settledBySetting(setting: string, policy: DecisionPolicy, settled: Settled, timeoutMs: number): string {
+  if (settled.decidedBy === "user") return "";
+  const verdict = settled.accepted ? "approved" : "declined";
+  if (settled.because === "timeout")
+    return `The dialog went unanswered for ${Math.round(timeoutMs / 60_000)} minute(s), so the ${setting} setting (${policy}) ${verdict} it.`;
+  if (settled.because === "no-dialog") return `No dialog is available in this mode, so the ${setting} setting (${policy}) ${verdict} it.`;
+  return `The ${setting} setting (${policy}) ${verdict} it without asking.`;
 }
 
 /** One line for a summary: whitespace collapsed, cut with an ellipsis. */

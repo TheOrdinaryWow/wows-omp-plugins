@@ -103,7 +103,7 @@ If a task needs you, Atlas marks it blocked and keeps going with everything that
 
 If you fix a blocker yourself, tell Atlas which commit or files did it. Atlas reopens the task, and a new child checks it.
 
-If your answer changes how a task's acceptance is met, for example by relaxing an unreachable ceiling or accepting a narrower result, Atlas records an owner ruling (`R1`, `R2`, …) and asks you to confirm it in a dialog. The task is then redone against the ruling. Reviewers see every ruling, and the final report lists each one as a deviation from the approved plan. If the change affects the tasks or scope, run `/atlas exit` and plan it with `/prometheus`.
+If your answer changes how a task's acceptance is met, for example by relaxing an unreachable ceiling or accepting a narrower result, Atlas records an owner ruling (`R1`, `R2`, …). By default it asks you to confirm the ruling in a dialog; the `atlasAmend` setting decides this instead when set (see [Unattended decisions](#unattended-decisions)). The task is then redone against the ruling. Reviewers see every ruling, and the final report lists each one as a deviation from the approved plan. If the change affects the tasks or scope, run `/atlas exit` and plan it with `/prometheus`.
 
 Atlas mirrors the plan into your todo list and titles the session "Atlas …" unless you named it. The [reference](REFERENCE.md#session-integration) describes how the todo list stays in step.
 
@@ -122,7 +122,7 @@ When every task is done, Atlas runs four gates in parallel. Each runs on a fresh
 | F3. Real-surface QA | `deep-low` (fallback `task`) | every verification scenario, run for real, with an artifact behind each pass |
 | F4. Success-criteria fidelity | `deep-high` (fallback `task`) | the result against each success criterion and ideal-state row. It passes unless a criterion is shown to fail |
 
-Each gate returns `PASS`, `FAIL` or `INCONCLUSIVE`. Only `PASS` counts. Non-PASS results use up the gate's retry window. Each correction becomes an X row, and only the gate that rejected the work reruns with a fresh child. Passing gates keep their proof. A gate whose window runs out blocks until you confirm a new one.
+Each gate returns `PASS`, `FAIL` or `INCONCLUSIVE`. Only `PASS` counts. Non-PASS results use up the gate's retry window. Each correction becomes an X row, and only the gate that rejected the work reruns with a fresh child. Passing gates keep their proof. A gate whose window runs out blocks until a new window is granted, by you in the dialog or by the `atlasRetry` setting (default: you are asked).
 
 ### Delivery
 
@@ -200,6 +200,11 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 | `atlasWidget` | boolean | `true` | Show the progress widget above the editor while Atlas executes. |
 | `progressReports` | boolean | `false` | Atlas posts a short chat update before each dispatch batch and after each task: progress, result, how it was checked, any problem and the next step. Useful when its child assignments are hard to read. |
 | `herdrDag` | boolean | `true` | Publish Atlas progress for the `omp-herdr-dag` viewer. |
+| `atlasRetry` | `ask` \| `ask-then-approve` \| `ask-then-decline` \| `approve` \| `decline` | `ask` | Who grants a row's next retry window: you, or the setting. See [Unattended decisions](#unattended-decisions). |
+| `atlasAmend` | same as `atlasRetry` | `ask` | Same choice for owner rulings that change a row's acceptance. |
+| `atlasRelease` | same as `atlasRetry` | `ask` | Same choice for the completion release (`atlas_release`). |
+| `atlasAskTimeout` | whole number ≥ 1, in minutes | `30` | How long a dialog stays open before an `ask-then-*` value decides. |
+| `atlasAutoRetryLimit` | whole number ≥ 0 | `1` | Retry windows per row that a setting may grant without you. `0` means unlimited. |
 
 Review levels:
 
@@ -211,6 +216,26 @@ Review levels:
 The plugin counts review rounds itself. Each dispatch of Momus, or of Momus and Oracle together, is one round, including a round where the reviewer could not read the plan. At `reviewRoundLimit` you choose between adding rounds for that plan and stopping. If you stop, Prometheus proposes the plan as it stands and lists the open blockers. Without an interactive user, review stops at the limit.
 
 User settings merge with project overrides. Settings are read at session start, so restart the session after changing them.
+
+### Unattended decisions
+
+Atlas raises three decisions by itself during execution: a retry grant (`atlas_ledger retry`), an owner ruling (`atlas_ledger amend`) and the completion release (`atlas_release`). Each has its own setting. The default `ask` waits for your answer in the dialog however long that takes. With no dialog available (no UI), it refuses, as before.
+
+- `ask-then-approve` and `ask-then-decline` show the dialog for `atlasAskTimeout` minutes, then approve or decline on their own. In the TUI, any keypress restarts the countdown. Esc or declining inside the time is your decline, never a timeout. With no dialog available, the fallback applies at once.
+- `approve` and `decline` never show a dialog.
+- `atlasAutoRetryLimit` caps how many retry windows per row a setting may grant without you (through `approve`, a timed-out `ask-then-approve`, or the no-dialog fallback). Past the limit, `approve` acts as `decline` and `ask-then-approve` as `ask-then-decline`. You can still grant in the dialog. `0` means unlimited.
+
+Each tool result says whether you or the setting decided. A setting-approved amendment is marked "approved by setting, not the user" for the reviewers, and the final report lists it as a deviation you did not confirm. A declined release keeps Atlas active until `/atlas exit`. Settings are read at session start, so restart after changing them.
+
+`atlasAmend: approve` lets Atlas relax a row's acceptance criteria without you. Use it only if you accept that risk. A fully unattended run, which still stops on problems that need you, could be set up like this:
+
+```bash
+omp plugin config set wows-omp-plugin-omo-prometheus atlasRetry ask-then-approve
+omp plugin config set wows-omp-plugin-omo-prometheus atlasAmend ask-then-decline
+omp plugin config set wows-omp-plugin-omo-prometheus atlasRelease approve
+```
+
+With `atlasRelease approve`, the release happens without your confirmation once the ledger checks pass.
 
 ## Working with other plugins
 

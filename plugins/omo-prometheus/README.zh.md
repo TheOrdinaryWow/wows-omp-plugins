@@ -103,7 +103,7 @@ Atlas 会一直工作到计划完成。如果执行记录或计划文件缺失�
 
 如果你自己解决了阻塞，请告诉 Atlas 是哪个提交或哪些文件解决的。Atlas 会重新打开该任务，并派一个新的子代理核实。
 
-如果你的回答改变了某个任务验收的达成方式，例如放宽一个实测无法达到的上限，或接受更窄的结果，Atlas 会记录一条业主裁定（`R1`、`R2`……），并在对话框中请你确认。随后该任务按裁定重做。评审者能看到每条裁定，最终报告会把每条列为偏离已批准计划的地方。如果改动影响的是任务或范围，请运行 `/atlas exit`，再用 `/prometheus` 规划这项改动。
+如果你的回答改变了某个任务验收的达成方式，例如放宽一个实测无法达到的上限，或接受更窄的结果，Atlas 会记录一条业主裁定（`R1`、`R2`……）。默认情况下，它会在对话框中请你确认；设置了 `atlasAmend` 时，由该设置决定（见[无人值守的决定](#无人值守的决定)）。随后该任务按裁定重做。评审者能看到每条裁定，最终报告会把每条列为偏离已批准计划的地方。如果改动影响的是任务或范围，请运行 `/atlas exit`，再用 `/prometheus` 规划这项改动。
 
 Atlas 会把计划同步到你的待办列表，并把会话标题设为以“Atlas …”开头，除非你自己起过名字。待办列表如何保持同步，见[参考文档](REFERENCE.zh.md#会话集成)。
 
@@ -122,7 +122,7 @@ Atlas 遵循宿主的 `task.isolation` 设置，只有一处例外：`merge: pat
 | F3. Real-surface QA | `deep-low`（回退 `task`） | 实际运行每个验证场景，每个通过都有产物作为依据 |
 | F4. Success-criteria fidelity | `deep-high`（回退 `task`） | 对照每条成功标准和理想状态行检查结果。除非某条标准被证明未达成，否则通过 |
 
-每个关口返回 `PASS`、`FAIL` 或 `INCONCLUSIVE`，只有 `PASS` 算数。非 PASS 的结果会消耗该关口的重试窗口。每个修正成为一个 X 行，只有判定不通过的关口会由新的子代理重跑。已通过的关口保留各自的证明。窗口耗尽的关口会阻塞，直到你确认新的窗口。
+每个关口返回 `PASS`、`FAIL` 或 `INCONCLUSIVE`，只有 `PASS` 算数。非 PASS 的结果会消耗该关口的重试窗口。每个修正成为一个 X 行，只有判定不通过的关口会由新的子代理重跑。已通过的关口保留各自的证明。窗口耗尽的关口会阻塞，直到有人授予新的窗口：可以是你在对话框中授予，也可以由 `atlasRetry` 设置授予（默认：询问你）。
 
 ### 交付
 
@@ -200,6 +200,11 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 | `atlasWidget` | boolean | `true` | Atlas 执行时，在编辑器上方显示进度小组件。 |
 | `progressReports` | boolean | `false` | Atlas 在每批派发前和每个任务结束后，在对话中发一段简短汇报：进度、结果、核实方式、遇到的问题和下一步。子代理的任务说明不好读时有用。 |
 | `herdrDag` | boolean | `true` | 向 `omp-herdr-dag` 查看器发布 Atlas 进度。 |
+| `atlasRetry` | `ask` \| `ask-then-approve` \| `ask-then-decline` \| `approve` \| `decline` | `ask` | 由谁授予行的下一个重试窗口：你，还是该设置。见[无人值守的决定](#无人值守的决定)。 |
+| `atlasAmend` | 同 `atlasRetry` | `ask` | 同样的选择，适用于会改变行验收的业主裁定。 |
+| `atlasRelease` | 同 `atlasRetry` | `ask` | 同样的选择，适用于完成时的释放（`atlas_release`）。 |
+| `atlasAskTimeout` | 不小于 1 的整数，单位为分钟 | `30` | `ask-then-*` 的对话框保持打开多久，之后由该设置决定。 |
+| `atlasAutoRetryLimit` | 不小于 0 的整数 | `1` | 每行可由设置在你不参与时授予的重试窗口数；`0` 表示不设上限。 |
 
 评审级别：
 
@@ -211,6 +216,26 @@ omp plugin config set wows-omp-plugin-omo-prometheus reviewLevel standard
 插件自己统计评审轮数。每派一次 Momus，或一起派一次 Momus 和 Oracle，算作一轮，包括那次没能读到计划的轮次。达到 `reviewRoundLimit` 时，你可以为这份计划增加轮数，或者就此停止。选择停止后，Prometheus 会按计划现在的样子提交提案，并列出仍未解决的阻塞项。没有可交互的用户时，评审会在达到上限时停止。
 
 用户设置会与项目覆盖设置合并。设置在会话启动时读取，修改后请重启会话。
+
+### 无人值守的决定
+
+Atlas 执行期间会自己提出三类决定：重试授权（`atlas_ledger retry`）、业主裁定（`atlas_ledger amend`）和完成释放（`atlas_release`）。每类都有各自的设置。默认值 `ask` 会一直等你在对话框中回答；没有对话框（无 UI）时，和以前一样直接拒绝。
+
+- `ask-then-approve` 和 `ask-then-decline` 会显示对话框 `atlasAskTimeout` 分钟，超时后分别批准或拒绝。TUI 中任意按键都会重新开始计时。Esc 或在时限内拒绝，都算你的拒绝，不是超时。没有对话框时，立即执行回退规则。
+- `approve` 和 `decline` 从不显示对话框。
+- `atlasAutoRetryLimit` 限制设置能在你不参与时授予的每行重试窗口数（通过 `approve`、超时的 `ask-then-approve`，或无对话框时的回退）。超过上限后，`approve` 等同于 `decline`，`ask-then-approve` 等同于 `ask-then-decline`。你仍可在对话框中授予。`0` 表示不设上限。
+
+每个工具结果都会说明是你还是设置做出的决定。由设置批准的业主裁定会标注为“由设置批准，非用户确认”，评审者能看到这一标注，最终报告会把它列为你没有确认过的偏离。释放被拒绝后，Atlas 保持激活，直到 `/atlas exit`。设置在会话启动时读取，修改后请重启会话。
+
+`atlasAmend: approve` 会让 Atlas 在你不参与的情况下放宽某行的验收标准，请只在接受这一风险时使用。下面是一个无人值守、但遇到需要你处理的问题仍会停下来的配置示例：
+
+```bash
+omp plugin config set wows-omp-plugin-omo-prometheus atlasRetry ask-then-approve
+omp plugin config set wows-omp-plugin-omo-prometheus atlasAmend ask-then-decline
+omp plugin config set wows-omp-plugin-omo-prometheus atlasRelease approve
+```
+
+`atlasRelease approve` 下，账本检查通过后会直接释放，不再等你确认。
 
 ## 与其他插件配合
 

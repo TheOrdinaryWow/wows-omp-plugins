@@ -43,13 +43,16 @@ export interface FailedOutcome {
   output?: { path: string; sha256: string };
 }
 
+/** Who settled an Atlas decision: the user in its dialog, or the plugin setting for that decision without an answer. */
+export type DecidedBy = "user" | "setting";
+
 export interface RetryWindow {
   /** Accepted dispatch starting the current product-work phase; gate reruns and verifiers start fresh clocks. */
   openedAt?: number;
   failures: FailedOutcome[];
   harnessRepair?: { failureKey: string; attempt?: string };
   stop?: { reason: "signature" | "attempts" | "elapsed" | "harness"; at: number };
-  grant?: { confirmedAt: number; note: string };
+  grant?: { confirmedAt: number; note: string; decidedBy: DecidedBy };
 }
 
 export interface LedgerItem {
@@ -103,8 +106,9 @@ export interface DeferredFinding {
 }
 
 /**
- * A user-confirmed amendment of one row's acceptance, recorded during execution. The row keeps the approved plan's
- * text; the latest ruling for a row is the acceptance in force. Every ruling is an owner-approved deviation from the plan.
+ * An amendment of one row's acceptance, recorded during execution after the user confirmed it or the `atlasAmend`
+ * setting approved it. The row keeps the approved plan's text; the latest ruling for a row is the acceptance in force.
+ * Every ruling is a deviation from the approved plan.
  */
 export interface OwnerRuling {
   /** Stable `R1`, `R2`, … in recording order. */
@@ -113,13 +117,14 @@ export interface OwnerRuling {
   rowId: string;
   /** The complete replacement acceptance text now in force for that row. */
   acceptance: string;
-  /** What changed and why, including the user's decision. */
+  /** What changed and why, including the user's decision when there was one. */
   note: string;
   confirmedAt: number;
+  decidedBy: DecidedBy;
 }
 
 export interface ExecutionLedger {
-  version: 8;
+  version: 9;
   ledgerId: string;
   planFilePath: string;
   planSha256: string;
@@ -399,7 +404,7 @@ function buildLedger(
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 8,
+    version: 9,
     ledgerId: randomUUID(),
     planFilePath,
     planSha256: planDigest(planContent),
@@ -492,10 +497,10 @@ export function isComplete(ledger: ExecutionLedger): boolean {
 export function renderOwnerRulings(ledger: ExecutionLedger): string {
   if (!ledger.rulings.length) return "";
   return [
-    `Owner rulings — user-confirmed amendments to the approved plan (${ledger.rulings.length}; judge the named rows against these, not the plan's original text, and list each as a deviation in the final report):`,
+    `Owner rulings — amendments to the approved plan (${ledger.rulings.length}; judge the named rows against these, not the plan's original text, and list each as a deviation in the final report, naming those approved by setting without the user):`,
     ...ledger.rulings.map(
       (ruling) =>
-        `- ${ruling.id} ${ruling.rowId}: ${ruling.acceptance.replace(/\s*\n\s*/g, " ")} — ${ruling.note.replace(/\s*\n\s*/g, " ")}`,
+        `- ${ruling.id} ${ruling.rowId}${ruling.decidedBy === "setting" ? " (approved by setting, not the user)" : ""}: ${ruling.acceptance.replace(/\s*\n\s*/g, " ")} — ${ruling.note.replace(/\s*\n\s*/g, " ")}`,
     ),
   ].join("\n");
 }
@@ -528,7 +533,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
       notes.push(`${item.id} acceptance: ${acceptance}`, `${item.id} evidence: ${cell(item.evidence ?? "—")}`);
       if (accepted.ruling) {
         notes.push(
-          `${item.id} ruling ${accepted.ruling.id} (user-confirmed amendment of the approved plan): ${cell(accepted.ruling.note)}`,
+          `${item.id} ruling ${accepted.ruling.id} (${accepted.ruling.decidedBy === "setting" ? "setting-approved" : "user-confirmed"} amendment of the approved plan): ${cell(accepted.ruling.note)}`,
         );
       }
     }
@@ -549,7 +554,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const window = retryWindow(item);
     if (window) {
       notes.push(
-        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total; opened ${window.openedAt ?? "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — owner-confirmed retry required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
+        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total; opened ${window.openedAt ?? "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
       );
     }
   }
@@ -582,6 +587,10 @@ function validAgent(agent: unknown): agent is string {
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function validDecidedBy(value: unknown): value is DecidedBy {
+  return value === "user" || value === "setting";
 }
 
 function validTriage(value: unknown): boolean {
@@ -728,11 +737,16 @@ export function expireRetryWindows(ledger: ExecutionLedger, now = Date.now()): b
   return changed;
 }
 
-/** Caller must obtain real owner confirmation and recheck the proposal outside/inside its transaction. */
-export function grantRetry(ledger: ExecutionLedger, row: LedgerItem, note: string, now = Date.now()): void {
+/** Retry windows on a row that a setting granted without a user's answer. */
+export function automaticRetryGrants(row: LedgerItem): number {
+  return row.retry?.windows.filter((window) => window.grant?.decidedBy === "setting").length ?? 0;
+}
+
+/** Caller must settle the grant (user dialog or `atlasRetry` setting) and recheck the proposal outside/inside its transaction. */
+export function grantRetry(ledger: ExecutionLedger, row: LedgerItem, note: string, decidedBy: DecidedBy, now = Date.now()): void {
   if (!retryWindow(row)?.stop || !note.trim()) throw new Error(`${row.id} requires an exhausted window and a reason for another retry`);
-  row.retry?.windows.push({ failures: [], grant: { confirmedAt: now, note: note.trim() } });
-  const reason = `Owner confirmed a new retry window: ${note.trim()}`;
+  row.retry?.windows.push({ failures: [], grant: { confirmedAt: now, note: note.trim(), decidedBy } });
+  const reason = `${decidedBy === "user" ? "Owner confirmed" : "The atlasRetry setting granted"} a new retry window: ${note.trim()}`;
   if (row.tier === "heavy" && row.receipt) {
     row.status = "in_progress";
     row.evidence = `${row.evidence ?? ""}\n${reason}`.trim();
@@ -740,7 +754,8 @@ export function grantRetry(ledger: ExecutionLedger, row: LedgerItem, note: strin
   } else reopenRow(ledger, row.id, reason);
 }
 
-function validRetry(value: LedgerItem["retry"]): boolean {
+/** `version` below nine predates `decidedBy`; the upgrade fills it in afterwards. */
+function validRetry(value: LedgerItem["retry"], version: number): boolean {
   if (value === undefined) return true;
   if (!value || !Array.isArray(value.windows) || !value.windows.length) return false;
   const outcomes = new Set<string>();
@@ -750,7 +765,10 @@ function validRetry(value: LedgerItem["retry"]): boolean {
       !Array.isArray(window.failures) ||
       (window.openedAt !== undefined && !Number.isFinite(window.openedAt)) ||
       (index > 0 && (!window.grant || !value.windows[index - 1]?.stop)) ||
-      (window.grant !== undefined && (!Number.isFinite(window.grant.confirmedAt) || !nonEmpty(window.grant.note))) ||
+      (window.grant !== undefined &&
+        (!Number.isFinite(window.grant.confirmedAt) ||
+          !nonEmpty(window.grant.note) ||
+          (version >= 9 && !validDecidedBy(window.grant.decidedBy)))) ||
       (window.stop !== undefined &&
         (!["signature", "attempts", "elapsed", "harness"].includes(window.stop.reason) || !Number.isFinite(window.stop.at)))
     )
@@ -805,7 +823,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     version !== 5 &&
     version !== 6 &&
     version !== 7 &&
-    version !== 8
+    version !== 8 &&
+    version !== 9
   ) {
     throw new Error("Unsupported execution ledger version");
   }
@@ -919,7 +938,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       (!legacy && planned && row.tier !== definition.tier) ||
       (!legacy && !validVerification(row.verification)) ||
       (!legacy && row.verification !== undefined && row.tier !== "heavy") ||
-      (version >= 8 && !validRetry(row.retry))
+      (version >= 8 && !validRetry(row.retry, version))
     ) {
       throw new Error(`Malformed execution ledger row ${definition?.id ?? index}`);
     }
@@ -957,7 +976,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
         !amendable.includes(ruling.rowId) ||
         !nonEmpty(ruling.acceptance) ||
         !nonEmpty(ruling.note) ||
-        !Number.isFinite(ruling.confirmedAt)
+        !Number.isFinite(ruling.confirmedAt) ||
+        (version >= 9 && !validDecidedBy(ruling.decidedBy))
       ) {
         throw new Error(`Malformed execution ledger owner ruling R${index + 1}`);
       }
@@ -985,7 +1005,12 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   if (version < 7) saved.rulings = [];
   // Version eight starts prospective accounting; never infer historical dispatch time or failures.
   if (version < 8) for (const row of rows) delete row.retry;
-  saved.version = 8;
+  // Version nine records who settled each retry grant and ruling; every earlier one went through the user's dialog.
+  if (version < 9) {
+    for (const ruling of saved.rulings) ruling.decidedBy = "user";
+    for (const row of rows) for (const window of row.retry?.windows ?? []) if (window.grant) window.grant.decidedBy = "user";
+  }
+  saved.version = 9;
   return saved;
 }
 
@@ -1033,16 +1058,17 @@ export function checkAmendment(
   const text = acceptance?.trim() ?? "";
   const reason = note?.trim() ?? "";
   if (!text) throw new Error("A ruling requires, in acceptance, the complete acceptance text now in force for the row");
-  if (!reason) throw new Error("A ruling requires, in evidence, what changed and why, including the user's decision");
+  if (!reason) throw new Error("A ruling requires, in evidence, what changed and why, including the user's decision when there was one");
   return { row, acceptance: text, note: reason };
 }
 
-/** Record a user-confirmed ruling as the next `R` id. The row's status is untouched; Atlas reopens it afterward. */
+/** Record a settled ruling as the next `R` id. The row's status is untouched; Atlas reopens it afterward. */
 export function amendAcceptance(
   ledger: ExecutionLedger,
   id: string,
   acceptance: string | undefined,
   note: string | undefined,
+  decidedBy: DecidedBy,
 ): OwnerRuling {
   const checked = checkAmendment(ledger, id, acceptance, note);
   const ruling: OwnerRuling = {
@@ -1051,6 +1077,7 @@ export function amendAcceptance(
     acceptance: checked.acceptance,
     note: checked.note,
     confirmedAt: Date.now(),
+    decidedBy,
   };
   ledger.rulings.push(ruling);
   return ruling;

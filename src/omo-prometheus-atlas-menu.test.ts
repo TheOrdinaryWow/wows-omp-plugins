@@ -179,8 +179,8 @@ test("Atlas plan view fills the terminal and expands the archived child output o
 const amended: AtlasPlanDetail = {
   ...plan,
   rulings: [
-    { id: "R1", rowId: "T1", acceptance: "The build passes in 90 s", note: "First limit", confirmedAt: 0 },
-    { id: "R2", rowId: "T1", acceptance: "The build passes in 120 s", note: "User accepted 120 s", confirmedAt: 0 },
+    { id: "R1", rowId: "T1", acceptance: "The build passes in 90 s", note: "First limit", confirmedAt: 0, decidedBy: "user" },
+    { id: "R2", rowId: "T1", acceptance: "The build passes in 120 s", note: "User accepted 120 s", confirmedAt: 0, decidedBy: "user" },
   ],
 };
 

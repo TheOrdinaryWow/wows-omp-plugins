@@ -297,7 +297,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(8);
+    expect(restored.version).toBe(9);
     expect(restored.fixes).toEqual([]);
     expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -313,7 +313,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(8);
+    expect(restored.version).toBe(9);
     expect(restored.gitBaseline).toBeUndefined();
     expect(restored.fixes.map((row) => row.id)).toEqual(["X1"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -351,7 +351,7 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(8);
+    expect(restored.version).toBe(9);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
   });
 
@@ -473,7 +473,7 @@ describe("Prometheus execution ledger", () => {
     expect(addDeferredFinding(ledger, { title: "Late finding", reason: "outside" }).id).toBe("O3");
 
     const restored = restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(8);
+    expect(restored.version).toBe(9);
     expect(restored.deferred.map((finding) => [finding.id, finding.triage?.disposition])).toEqual([
       ["O1", "duplicate"],
       ["O2", "report"],
@@ -507,31 +507,31 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(8);
+    expect(restored.version).toBe(9);
     expect(restored.deferred.map(({ id, title, triage }) => ({ id, title, triage }))).toEqual([
       { id: "O1", title: "First", triage: undefined },
       { id: "O2", title: "Second", triage: undefined },
     ]);
   });
 
-  test("owner rulings replace a T, D or X row's acceptance in force, never a gate's or P1's, and persist as version eight", () => {
+  test("owner rulings replace a T, D or X row's acceptance in force, never a gate's or P1's, and persist as version nine", () => {
     const shipped = plan.replace("# Work plan\n", "# Work plan\n\nDelivery: pr\n");
     const ledger = createLedger("local://example-plan.md", shipped, ["task", "deep-low", "sonic"]);
-    expect(ledger.version).toBe(8);
+    expect(ledger.version).toBe(9);
     expect(ledger.rulings).toEqual([]);
     expect(renderOwnerRulings(ledger)).toBe("");
     const t1 = ledger.items[0];
     if (!t1) throw new Error("Missing T1");
     expect(effectiveAcceptance(ledger, t1)).toEqual({ text: "initial behavior observed" });
 
-    expect(() => amendAcceptance(ledger, "F1", "any", "why")).toThrow("amend T, D and X rows");
-    expect(() => amendAcceptance(ledger, "P1", "any", "why")).toThrow("amend T, D and X rows");
-    expect(() => amendAcceptance(ledger, "T9", "any", "why")).toThrow("Unknown ledger row T9");
-    expect(() => amendAcceptance(ledger, "", "any", "why")).toThrow("missing id");
-    expect(() => amendAcceptance(ledger, "T1", "  ", "why")).toThrow("complete acceptance text");
-    expect(() => amendAcceptance(ledger, "T1", "p95 under 250 ms", " ")).toThrow("user's decision");
+    expect(() => amendAcceptance(ledger, "F1", "any", "why", "user")).toThrow("amend T, D and X rows");
+    expect(() => amendAcceptance(ledger, "P1", "any", "why", "user")).toThrow("amend T, D and X rows");
+    expect(() => amendAcceptance(ledger, "T9", "any", "why", "user")).toThrow("Unknown ledger row T9");
+    expect(() => amendAcceptance(ledger, "", "any", "why", "user")).toThrow("missing id");
+    expect(() => amendAcceptance(ledger, "T1", "  ", "why", "user")).toThrow("complete acceptance text");
+    expect(() => amendAcceptance(ledger, "T1", "p95 under 250 ms", " ", "user")).toThrow("user's decision");
     startRow(ledger, "T1");
-    expect(() => amendAcceptance(ledger, "T1", "p95 under 250 ms", "why")).toThrow("block or reopen it");
+    expect(() => amendAcceptance(ledger, "T1", "p95 under 250 ms", "why", "user")).toThrow("block or reopen it");
     expect(ledger.rulings).toEqual([]);
 
     reopenRow(ledger, "T1", "Blocked: the 200 ms ceiling is unreachable (measured 230–240 ms)");
@@ -541,6 +541,7 @@ describe("Prometheus execution ledger", () => {
       "T1",
       " p95 latency under 250 ms over 10 runs ",
       " The user relaxed the ceiling after three attempts measured 230–240 ms. ",
+      "user",
     );
     expect(first).toMatchObject({ id: "R1", rowId: "T1", acceptance: "p95 latency under 250 ms over 10 runs" });
     expect(first.note).toBe("The user relaxed the ceiling after three attempts measured 230–240 ms.");
@@ -561,9 +562,10 @@ describe("Prometheus execution ledger", () => {
       discovered.id,
       "parser test passes on the three fixtures",
       "The user accepted the narrowed outcome",
+      "user",
     );
     expect(second.id).toBe("R2");
-    const third = amendAcceptance(ledger, "T1", "mean latency within noise of 250 ms", "Judged by mean, not strict max");
+    const third = amendAcceptance(ledger, "T1", "mean latency within noise of 250 ms", "Judged by mean, not strict max", "user");
     expect(third.id).toBe("R3");
     expect(effectiveAcceptance(ledger, t1).ruling?.id).toBe("R3");
     expect(effectiveAcceptance(ledger, discovered).ruling?.id).toBe("R2");
@@ -571,7 +573,7 @@ describe("Prometheus execution ledger", () => {
     const full = renderLedgerSummary(ledger);
     expect(full).toContain("| mean latency within noise of 250 ms (amended by R3) |");
     expect(full).not.toContain("| initial behavior observed |");
-    expect(full).toContain("Owner rulings — user-confirmed amendments to the approved plan (3;");
+    expect(full).toContain("Owner rulings — amendments to the approved plan (3;");
     expect(full).toContain("- R1 T1: p95 latency under 250 ms over 10 runs — The user relaxed the ceiling");
     expect(full).toContain("- R2 D1: parser test passes on the three fixtures — The user accepted the narrowed outcome");
     const compact = renderLedgerSummary(ledger, undefined, "T1");
@@ -612,14 +614,14 @@ describe("Prometheus execution ledger", () => {
     }
   });
 
-  test("a version-six ledger restores in place as version eight with no rulings", () => {
+  test("a version-six ledger restores in place as version nine with no rulings", () => {
     const current = createLedger("local://example-plan.md", plan);
     addDeferredFinding(current, { title: "First", reason: "outside" });
     const { rulings: _rulings, ...rest } = structuredClone(current);
     const legacy = { ...rest, version: 6 };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(8);
+    expect(restored.version).toBe(9);
     expect(restored.rulings).toEqual([]);
     expect(restored.deferred.map((finding) => finding.id)).toEqual(["O1"]);
     // Version six carried no rulings, so a stray one is not trusted.
@@ -696,7 +698,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, content, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(8);
+    expect(restored.version).toBe(9);
     // Rows approved before tiers existed keep the LIGHT evidence rule, even where the plan text names HEAVY.
     expect([...restored.items, ...restored.fixes].map((row) => row.tier)).toEqual(["light", "light", "light", "light"]);
     expect(restored.delivery).toBe("ship");
@@ -735,10 +737,10 @@ describe("Prometheus execution ledger", () => {
     expect(row.status).toBe("blocked");
     expect(retryWindow(row)?.stop?.reason).toBe("signature");
     reopenRow(ledger, "T1");
-    amendAcceptance(ledger, "T1", "revised observable acceptance", "Owner confirmed a different tolerance");
+    amendAcceptance(ledger, "T1", "revised observable acceptance", "Owner confirmed a different tolerance", "user");
     expect(() => startRow(ledger, "T1")).toThrow("retry stopped");
     const history = structuredClone(row.retry?.windows);
-    grantRetry(ledger, row, "Owner confirmed a different repair hypothesis");
+    grantRetry(ledger, row, "Owner confirmed a different repair hypothesis", "user");
     expect(row.retry?.windows.slice(0, -1)).toEqual(history);
     expect(row.retry?.windows).toHaveLength(2);
     expect(row.status).toBe("open");
@@ -762,7 +764,7 @@ describe("Prometheus execution ledger", () => {
     expect(row.status).toBe("open");
     failed(ledger, "T1", "c", "expected 5, got 6");
     expect(retryWindow(row)?.stop?.reason).toBe("attempts");
-    grantRetry(ledger, row, "Owner grants new environment investigation");
+    grantRetry(ledger, row, "Owner grants new environment investigation", "user");
     failed(ledger, "T1", "h1", "runner unavailable", "harness");
     failed(ledger, "T1", "h2", "fixture could not initialize", "harness");
     expect(retryWindow(row)?.stop?.reason).toBe("harness");
@@ -885,7 +887,7 @@ describe("Prometheus execution ledger", () => {
     expect(row.attempt).toBe(implementation.attempt);
     expect(row.verification).toEqual({});
     expect(() => startVerification(ledger, row.id)).toThrow("retry stopped");
-    grantRetry(ledger, row, "Owner grants another independent verification", verificationTime + RETRY_LIMIT_MS);
+    grantRetry(ledger, row, "Owner grants another independent verification", "user", verificationTime + RETRY_LIMIT_MS);
     expect(row.status).toBe("in_progress");
     expect(row.receipt).toBe(implementation);
     startVerification(ledger, row.id);

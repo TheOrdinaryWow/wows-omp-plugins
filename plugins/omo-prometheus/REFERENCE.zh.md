@@ -83,7 +83,7 @@ Prometheus 根据会话 `task` 工具列出的代理制定计划，Momus 也按�
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
-ledger.json      row progress, deferred findings, owner rulings and durable retry windows (version 8), plus Git HEAD at approval
+ledger.json      row progress, deferred findings, owner rulings and durable retry windows (version 9), plus Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
@@ -95,7 +95,7 @@ Atlas 持有计划期间，会话的计划引用是 `atlas://<plan-id>/plan.md`�
 
 ## 执行记录
 
-执行记录保存每一行的验收标准、依赖、状态、请求的代理与实际使用的代理、tier、尝试和证据回执，以及计划的 SHA-256、交付方式、范围外发现（按记录顺序编号为 `O1`、`O2`……，分诊后附带处置）和业主裁定（按记录顺序编号为 `R1`、`R2`……，每条指明一个 T、D 或 X 行、该行现在生效的完整验收文本、记录用户决定的说明，以及确认时间）。行自身的 `acceptance` 始终是已批准计划的原文；指向该行的最新裁定才是判定它的验收，每条裁定都是业主批准的、对已批准计划的偏离。各行按以下顺序排列：
+执行记录保存每一行的验收标准、依赖、状态、请求的代理与实际使用的代理、tier、尝试和证据回执，以及计划的 SHA-256、交付方式、范围外发现（按记录顺序编号为 `O1`、`O2`……，分诊后附带处置）和业主裁定（按记录顺序编号为 `R1`、`R2`……，每条指明一个 T、D 或 X 行、该行现在生效的完整验收文本、决定来源 `decidedBy`（`user` 或 `setting`）、有用户决定时记录该决定的说明，以及确认时间）。行自身的 `acceptance` 始终是已批准计划的原文；指向该行的最新裁定才是判定它的验收，每条裁定都是经业主批准（你或 `atlasAmend` 设置）的、对已批准计划的偏离。各行按以下顺序排列：
 
 | 行 | 来源 | 等待 |
 | --- | --- | --- |
@@ -114,20 +114,22 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 | `done` | 记录经认证的原生最终成功。LIGHT 行和 P1 完成；HEAVY 记录实现后还需验证者 PASS。关口或验证者 FAIL/INCONCLUSIVE 会归档诊断、消耗窗口并重新打开或阻塞该行，不会通过抛错丢弃变更。 |
 | `verify` | 已记录实现的 HEAVY 行：绑定不同的全新验证者并返回严格 schema（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`，可选 `failure: {failureClass, check, firstError}`）。没有失败详情的旧输出仍有效，非 PASS 默认按 unknown 计数。替换前必须等在途原生工作结束。 |
 | `fail` | 指定 `id`、检查过的 `evidence`、`check`、`firstError`、可选 `failureClass`（product/harness/unknown）及所属原生 `childAgentId`，认证一个最终原生代次并只记录一次。只有关联的派生前原生失败可以省略子代理 id。不生成成功回执。 |
-| `retry` | 已耗尽的行加上 `evidence` 中改变的假设：锁外请业主确认，再检查所有权、历史和未变的验收，追加新窗口，仅重新打开该行。拒绝、附加状态变化、子代理仍在运行或没有对话框都不会授权。 |
+| `retry` | 已耗尽的行加上 `evidence` 中改变的假设：锁外由业主确认（或由 `atlasRetry` 决定），再检查所有权、历史和未变的验收，追加新窗口，仅重新打开该行。拒绝、附加状态变化或子代理仍在运行都不会授权；没有对话框时，只有会批准的设置才能授权。 |
 | `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），一旦有关口开始或存在修正行即被拒绝；`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
 | `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当路线图在本仓库中可用时允许。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当本仓库中没有可用的路线图时允许，引用可省略。是否可用取自一次新的路线图绑定回复中的 `usable` 标志；没有回复表示没有路线图，旧版路线图的回复不带这个标志时，`todo` 和 `report` 都接受。 |
 | `fix` | 为否决的 F1–F4 或 P1 追加正常 tier 的 X 行，只重新打开来源行。P1 对每个 X 恰好依赖一次，X 从不依赖 P1。来源额度耗尽后，没有重试授权就不能继续自动修复。 |
 | `block`、`reopen` | 只影响指定的行；依赖它的已完成行保留各自的证明。 |
-| `amend` | 为 `id` 指定的 T、D 或 X 行记录一条业主裁定：`acceptance` 是完整的替换文本，`evidence` 是说明。关口、P1、未知的行和进行中的行都会被拒绝。写入之前，插件会在确认对话框中向你展示该行、当前生效的验收、提议的验收和说明；拒绝对话框则什么都不记录；没有 UI 时工具拒绝执行，并指出路径是 `/atlas exit` 加上经 `/prometheus` 修订的计划。该行的状态、其他行和已通过的关口都不受影响。`status`、`start` 和 `verify` 显示生效的验收并标注 `amended by Rn`；F1 和 F4 的 `start` 结果以及每个 `verify` 结果列出全部裁定。 |
+| `amend` | 为 `id` 指定的 T、D 或 X 行记录一条业主裁定：`acceptance` 是完整的替换文本，`evidence` 是说明。关口、P1、未知的行和进行中的行都会被拒绝。落定方式由 `atlasAmend` 决定。默认值 `ask` 下，写入之前插件会在确认对话框中向你展示该行、当前生效的验收、提议的验收和说明；拒绝对话框则什么都不记录；没有 UI 时工具拒绝执行，并指出路径是 `/atlas exit` 加上经 `/prometheus` 修订的计划。`approve` 不显示对话框，直接记录裁定，标记 `decidedBy: "setting"`；`decline` 什么都不记录，也从不显示对话框；`ask-then-approve` 和 `ask-then-decline` 先显示 `atlasAskTimeout` 分钟的对话框，超时后执行对应的值。该行的状态、其他行和已通过的关口都不受影响。`status`、`start` 和 `verify` 显示生效的验收并标注 `amended by Rn`；F1 和 F4 的 `start` 结果以及每个 `verify` 结果列出全部裁定。 |
 
-只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执、每条范围外发现都已分诊（拒绝时会列出未分诊的发现），并且需要你明确确认。计划完成和 `atlas:completed` 从不等待分诊。
+只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执、每条范围外发现都已分诊（拒绝时会列出未分诊的发现），并且需要完成释放的确认。该确认由 `atlasRelease` 决定（默认 `ask`，即对话框）：`ask-then-approve` 和 `ask-then-decline` 在 `atlasAskTimeout` 分钟后决定，`approve` 和 `decline` 从不显示对话框。释放被拒绝后，Atlas 保持激活，直到 `/atlas exit`。计划完成和 `atlas:completed` 从不等待分诊。
 
 成功输出和原始回执复制到 `evidence/` 并校验摘要，因此原会话删除后已验证进度仍保留。最终诊断（含未通过的验证者）复制为 `failure-<outcome-digest>.md`，路径和摘要由版本化执行记录引用；它们只是上下文，不是完成证明或检查点绑定。成功证明缺失或变化只重新打开对应行。恢复时 HEAVY 保留有效实现，仅丢弃未完成的验证者绑定。检查点仍为版本 2，批准文件的字节不变。
 
 ### 重试窗口与交付修复
 
 每行可选的 `retry.windows` 保存 `openedAt`、最终失败（原生 `outcomeKey`、实现/验证尝试、工具调用/会话/子代理身份、时间、类别、原始检查/错误、规范化签名、检查过的证据及复制输出的路径和摘要）、一次环境修复预留、可选的停止原因/时间，以及业主授权说明/时间。计数由记录推导，不另存计数器。新窗口保留旧窗口。规范化移除易变的 ANSI、时间戳、临时根路径、带标签的 id 和时长，不移除普通断言值、错误码或仓库相对路径。
+
+每个重试窗口的 `grant` 都记录 `decidedBy`：你在对话框中确认时为 `user`，由 `atlasRetry` 授予时为 `setting`。由设置授予的窗口按每行计数，达到 `atlasAutoRetryLimit`（默认 `1`，`0` 表示不限）后，`approve` 等同于 `decline`，`ask-then-approve` 等同于 `ask-then-decline`；你仍可在对话框中授予。Atlas 通过 `<decision-policy>` 标签获知这一策略；设置可以批准时，它会直接请求授权，而不是先通过 `ask` 询问。
 
 连续两次计数签名相同或第三次计数失败即停止；product 和 unknown 计数。有证据的 harness 未运行产品行为失败可以有一次不计数修复，下次派发会消耗预留；任何第二次 harness 失败即停止。T/D/X 产品工作在有效原生派发后四小时停止，包括会话离线时间。每次关口重跑从新的有效派发重新计时，等待其 X 修复行不计时。HEAVY 行记录实现后，等待验证者不计时；验证者的有效派发开启新的四小时时钟。验证过期会阻塞该行，但保留已认证的实现 receipt；业主授权后继续独立验证，不必重新实现。P1 被动等待 CI/评审例外。过期会在持有所有权的恢复过程中先落盘，再允许本次变更被拒绝；恢复、宿主返回、继续执行和工作操作都会检查，而不是实时调度器。会列出活动子代理 id，供取消并观察原生最终状态。重新打开、裁定、替换子代理或新 X 不重置失败历史；已知原生失败必须在替换前记录。语义验收失败和 harness 分类仍依赖 Atlas 检查证据。远程等待、故意复现失败、取消和需要业主的阻塞本身不算产品失败周期。
 
@@ -139,6 +141,8 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 继续执行的消息是一条隐藏的 `<atlas-continuation>`，其中包含执行记录摘要；你每发一条消息最多发送八次，连续两次没有进展时，循环停止并通知你。当所有未完成的行都已阻塞或在等待阻塞的行、没有你就无法推进时，继续执行消息会列出每个阻塞行及其记录的原因，并要求 Atlas 用 `ask` 询问你，让会话等待你的回答，而不是只在聊天中留下问题就结束。
 
 旧执行记录在加载时惰性升级：v7 到 v8 保留裁定、分诊、回执及批准的计划/批准文件原字节，不虚构失败历史，也不推测首次派发时间；从下一次接受的绑定派发开始计入。只读不改写旧格式，下一次变更写 v8。v7 前裁定为空；v6 前范围外发现获得稳定 O id 并从未分诊开始；v5 前各行保持 LIGHT，交付取自批准计划；检查点 v1 升级为 v2，旧批准文件保持字节不变。共享执行记录之前的会话内格式仍需重新批准，不保留工具别名。
+
+版本 1 至 8 的执行记录在加载时升级为版本 9。原有的重试窗口授权和业主裁定都经过了对话框，因此都会标记为 `decidedBy: "user"`。
 
 `timeline.jsonl` 只用于展示：时间线缺失或损坏都不影响批准、所有权、回执或进度。旧版本的计划包显示从执行记录推导出的历史，推导出的事件从不写回。崩溃导致截断的最后一行，以及未知的未来事件类型或版本都会被忽略。
 

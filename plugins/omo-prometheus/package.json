@@ -51,6 +51,54 @@
         "default": false,
         "description": "Have Atlas tell you what each dispatch batch will do and how each task went"
       },
+      "atlasRetry": {
+        "type": "enum",
+        "values": [
+          "ask",
+          "ask-then-approve",
+          "ask-then-decline",
+          "approve",
+          "decline"
+        ],
+        "default": "ask",
+        "description": "How Atlas settles another retry window for a row that ran out of attempts: ask and wait, ask then approve or decline after atlasAskTimeout, or approve or decline without asking"
+      },
+      "atlasAmend": {
+        "type": "enum",
+        "values": [
+          "ask",
+          "ask-then-approve",
+          "ask-then-decline",
+          "approve",
+          "decline"
+        ],
+        "default": "ask",
+        "description": "How Atlas settles a change to a row's acceptance criteria; an approval without you is still listed as a deviation you did not confirm"
+      },
+      "atlasRelease": {
+        "type": "enum",
+        "values": [
+          "ask",
+          "ask-then-approve",
+          "ask-then-decline",
+          "approve",
+          "decline"
+        ],
+        "default": "ask",
+        "description": "How Atlas settles leaving execution once every row is done; decline keeps it active until /atlas exit"
+      },
+      "atlasAskTimeout": {
+        "type": "number",
+        "default": 30,
+        "min": 1,
+        "description": "Minutes an ask-then-approve or ask-then-decline decision waits for your answer before its fallback applies"
+      },
+      "atlasAutoRetryLimit": {
+        "type": "number",
+        "default": 1,
+        "min": 0,
+        "description": "Most retry windows per row granted without your answer; past it an approving atlasRetry declines instead; 0 means unlimited"
+      },
       "herdrDag": {
         "type": "boolean",
         "default": true,

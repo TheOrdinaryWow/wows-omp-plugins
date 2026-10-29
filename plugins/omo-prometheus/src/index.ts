@@ -38,7 +38,21 @@ import { type AtlasPlan, type AtlasPlanDetail, AtlasStore, deliveryResult, gateR
 import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
 import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
-import { amendDecision, decide, deleteDecision, exitEarlyDecision, releaseDecision, retryDecision } from "./decision-dialog.ts";
+import {
+  amendDecision,
+  DEFAULT_DECISION_SETTINGS,
+  type DecisionSettings,
+  decide,
+  deleteDecision,
+  exitEarlyDecision,
+  parseDecisionSettings,
+  releaseDecision,
+  retryDecision,
+  type Settled,
+  settle,
+  settledBySetting,
+  withoutAutoApproval,
+} from "./decision-dialog.ts";
 import { ChildEvidence, gateOutputSchema, parseGateOutput, parseVerifyOutput, verifyOutputSchema } from "./evidence.ts";
 import { collectComplianceEvidence, isGitWorkTree } from "./git-evidence.ts";
 import { HerdrDagContract } from "./herdr-dag-contract.ts";
@@ -49,6 +63,7 @@ import {
   addFixRow,
   amendAcceptance,
   assertRetryAvailable,
+  automaticRetryGrants,
   checkAmendment,
   type ExecutionLedger,
   effectiveAcceptance,
@@ -274,6 +289,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   const deliverySettings = new Map<string, DeliverySetting>();
   const atlasWidgets = new Map<string, boolean>();
   const progressReports = new Map<string, boolean>();
+  const decisionSettings = new Map<string, DecisionSettings>();
   const childEvidence = new ChildEvidence();
   /** The latest todo refresh call each session still owes after a ledger row changed; cleared by any non-view todo call. */
   const pendingTodoRefreshes = new Map<string, string>();
@@ -321,6 +337,10 @@ export default function prometheus(pi: ExtensionAPI): void {
       atlasWidgets.set(sessionId, true);
       pi.logger.warn("prometheus settings could not be read; using defaults", { error: errorMessage(error) });
     }
+    decisionSettings.set(
+      sessionId,
+      parseDecisionSettings(settings, (message) => pi.logger.warn(`prometheus Atlas decision setting: ${message}`)),
+    );
     try {
       reviewLevels.set(sessionId, parseReviewLevel(settings.reviewLevel));
     } catch (error) {
@@ -1700,7 +1720,11 @@ export default function prometheus(pi: ExtensionAPI): void {
       : `\n\n<execution-ledger status="paused">${pauseMessage(record)}</execution-ledger>`;
     const workspace = (await isGitWorkTree(ctx.cwd)) ? "" : `\n\n${NON_GIT_EXECUTION}`;
     const reports = progressReports.get(ctx.sessionManager.getSessionId()) ? `\n\n${PROGRESS_REPORTS_EXECUTION}` : "";
-    const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}${workspace}${reports}`;
+    const decisions = decisionSettings.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_DECISION_SETTINGS;
+    const decisionPolicy =
+      `\n\n<decision-policy retry="${decisions.retry}" amend="${decisions.amend}" release="${decisions.release}" ask-timeout-minutes="${decisions.timeoutMs / 60_000}" auto-retry-limit="${decisions.autoRetryLimit || "unlimited"}">` +
+      'Apply this session\'s decision settings as "Decision settings" describes. The plugin settles each decision and enforces the limit.</decision-policy>';
+    const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}${workspace}${reports}${decisionPolicy}`;
     try {
       return `${header}\n\n${loadPromptAsset(ATLAS_ASSET)}`;
     } catch (error) {
@@ -2031,7 +2055,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Release",
     description:
-      "After every delegated plan item and final gate has verified child evidence, request human confirmation to release Atlas. Refused while execution-ledger rows remain unfinished or any deferred finding lacks a triage; never releases without confirmation.",
+      "After every delegated plan item and final gate has verified child evidence, request the release of Atlas, settled by the user's confirmation or the atlasRelease setting. Refused while execution-ledger rows remain unfinished or any deferred finding lacks a triage; never releases unless that decision approves.",
     parameters: releaseParameters,
     ...releaseCard,
     defaultInactive: true,
@@ -2076,22 +2100,36 @@ export default function prometheus(pi: ExtensionAPI): void {
           details: { untriaged: untriaged.map((finding) => finding.id) },
         };
       }
-      if (!ctx.hasUI) {
+      const decisions = decisionSettings.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_DECISION_SETTINGS;
+      let settled: Settled | undefined = { accepted: false, decidedBy: "user" };
+      try {
+        settled = await settle(
+          ctx.hasUI ? ctx.ui : undefined,
+          decisions.release,
+          releaseDecision(params.reason.trim()),
+          decisions.timeoutMs,
+        );
+      } catch (error) {
+        pi.logger.warn("prometheus release confirmation failed", { error: errorMessage(error) });
+      }
+      if (!settled) {
         return {
           content: [{ type: "text" as const, text: "No confirmation UI is available. Ask the user to run /atlas exit." }],
           isError: true,
           details: {},
         };
       }
-      let confirmed = false;
-      try {
-        confirmed = await decide(ctx.ui, releaseDecision(params.reason.trim()));
-      } catch (error) {
-        pi.logger.warn("prometheus release confirmation failed", { error: errorMessage(error) });
-      }
-      if (!confirmed) {
+      const bySetting = settledBySetting("atlasRelease", decisions.release, settled, decisions.timeoutMs);
+      if (!settled.accepted) {
         return {
-          content: [{ type: "text" as const, text: "The user did not release the guard. Keep delegating." }],
+          content: [
+            {
+              type: "text" as const,
+              text: bySetting
+                ? `${bySetting} Atlas stays active until the user runs /atlas exit; report completion and stop dispatching.`
+                : "The user did not release the guard. Keep delegating.",
+            },
+          ],
           isError: true,
           details: {},
         };
@@ -2103,9 +2141,16 @@ export default function prometheus(pi: ExtensionAPI): void {
           if (untriagedFindings(current).length) throw new Error("A deferred finding lost its triage while awaiting confirmation");
         });
         if (record.ownership !== ownership) throw new Error("The Atlas attachment changed during confirmation");
-        await release(ctx, "human-confirmed completion release", "executing");
+        await release(ctx, bySetting ? "setting-approved completion release" : "human-confirmed completion release", "executing");
         return {
-          content: [{ type: "text" as const, text: "Atlas exited by the user; shared evidence and progress are preserved." }],
+          content: [
+            {
+              type: "text" as const,
+              text: bySetting
+                ? `Atlas exited. ${bySetting} Shared evidence and progress are preserved.`
+                : "Atlas exited by the user; shared evidence and progress are preserved.",
+            },
+          ],
           details: {},
         };
       } catch (error) {
@@ -2115,8 +2160,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   /**
-   * `atlas_ledger amend`: the user confirms the ruling in a dialog before anything is written, outside the ledger lock
-   * because the answer may take hours. Model text alone never records a ruling.
+   * `atlas_ledger amend`: the `atlasAmend` setting settles the ruling, by default through the user's dialog, before
+   * anything is written, outside the ledger lock because the answer may take hours. Model text alone never records a ruling.
    */
   const recordRuling = async (ctx: ExtensionContext, record: SessionRecord, params: LedgerParams) => {
     const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
@@ -2143,23 +2188,28 @@ export default function prometheus(pi: ExtensionAPI): void {
     } catch (error) {
       return refused(error);
     }
-    if (!ctx.hasUI) {
-      return fail(
-        `Ruling refused: no confirmation dialog is available, and an acceptance change needs the user's confirmation. ${RULING_FALLBACK}`,
-      );
-    }
-    let confirmed = false;
+    const decisions = decisionSettings.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_DECISION_SETTINGS;
+    let settled: Settled | undefined;
     try {
-      confirmed = await decide(ctx.ui, amendDecision(proposal));
+      settled = await settle(ctx.hasUI ? ctx.ui : undefined, decisions.amend, amendDecision(proposal), decisions.timeoutMs);
     } catch (error) {
       pi.logger.warn("prometheus ruling confirmation failed", { error: errorMessage(error) });
       return fail(`Ruling refused: the confirmation dialog failed, so nothing was recorded. ${RULING_FALLBACK}`);
     }
-    if (!confirmed) {
+    if (!settled) {
       return fail(
-        `The user declined the ruling for ${proposal.rowId}; nothing was recorded. The row keeps its current acceptance; take the decision back to the user or report the blocker.`,
+        `Ruling refused: no confirmation dialog is available, and an acceptance change needs the user's confirmation. ${RULING_FALLBACK}`,
       );
     }
+    const bySetting = settledBySetting("atlasAmend", decisions.amend, settled, decisions.timeoutMs);
+    if (!settled.accepted) {
+      return fail(
+        bySetting
+          ? `${bySetting} Nothing was recorded for ${proposal.rowId}; the row keeps its current acceptance. Report the blocker. ${RULING_FALLBACK}`
+          : `The user declined the ruling for ${proposal.rowId}; nothing was recorded. The row keeps its current acceptance; take the decision back to the user or report the blocker.`,
+      );
+    }
+    const decidedBy = settled.decidedBy;
     try {
       if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
       return await withExecutionLedger(ctx, record, (ledger) => {
@@ -2168,12 +2218,12 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (before.text !== proposal.current || before.ruling?.id !== proposal.currentRuling) {
           throw new Error(`${checked.row.id} changed while awaiting confirmation; amend again against its current acceptance`);
         }
-        const ruling = amendAcceptance(ledger, id, params.acceptance, params.evidence);
+        const ruling = amendAcceptance(ledger, id, params.acceptance, params.evidence, decidedBy);
         return {
           content: [
             {
               type: "text" as const,
-              text: `${ruling.id} records the user-confirmed acceptance of ${ruling.rowId}; the row stays ${checked.row.status}. Reopen it if it is blocked and dispatch a fresh child against the new acceptance; gate children and verifiers receive every ruling, and the final report lists it as a deviation from the approved plan.\n\n${ledgerSummary(ledger, ruling.rowId)}`,
+              text: `${ruling.id} records the ${bySetting ? `setting-approved acceptance of ${ruling.rowId} (${bySetting})` : `user-confirmed acceptance of ${ruling.rowId}`}; the row stays ${checked.row.status}. Reopen it if it is blocked and dispatch a fresh child against the new acceptance; gate children and verifiers receive every ruling, and the final report lists it as a deviation from the approved plan${bySetting ? " that the user did not confirm" : ""}.\n\n${ledgerSummary(ledger, ruling.rowId)}`,
             },
           ],
           details: {
@@ -2189,7 +2239,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return refused(error);
     }
   };
-  /** Like owner rulings, retry authorization happens outside the lock and is rechecked before writing. */
+  /** Like owner rulings, the `atlasRetry` setting settles the grant outside the lock, and it is rechecked before writing. */
   const recordRetryGrant = async (ctx: ExtensionContext, record: SessionRecord, params: LedgerParams) => {
     const refused = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
     const ownership = record.ownership;
@@ -2205,19 +2255,34 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (movableRows(ledger).length) throw new Error("Keep independent movable work progressing before asking for a retry grant");
         return {
           state: JSON.stringify(row.retry),
+          automaticGrants: automaticRetryGrants(row),
           acceptance: effectiveAcceptance(ledger, row).text,
           history: `${ledgerSummary(ledger, row.id)}\n\nFailure history:\n${row.retry?.windows.flatMap((window, index) => window.failures.map((failure) => `Window ${index + 1}: ${failure.failureClass}; ${failure.check}; ${failure.firstError}\nSignature: ${failure.signature}\n${failure.evidence}${failure.output ? `\n${failure.output.path}` : ""}`)).join("\n\n") || "No failed outcome; elapsed limit reached"}`,
         };
       });
-      if (!ctx.hasUI)
+      const decisions = decisionSettings.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_DECISION_SETTINGS;
+      const limited = decisions.autoRetryLimit > 0 && proposal.automaticGrants >= decisions.autoRetryLimit;
+      const policy = limited ? withoutAutoApproval(decisions.retry) : decisions.retry;
+      const settled = await settle(
+        ctx.hasUI ? ctx.ui : undefined,
+        policy,
+        retryDecision({ rowId: id as string, history: proposal.history, acceptance: proposal.acceptance, note: note as string }),
+        decisions.timeoutMs,
+      );
+      if (!settled)
         return refused(
           "Retry refused: no confirmation dialog is available. The row stays blocked; /atlas exit and a revised plan through /prometheus remain available.",
         );
-      const confirmed = await decide(
-        ctx.ui,
-        retryDecision({ rowId: id as string, history: proposal.history, acceptance: proposal.acceptance, note: note as string }),
-      );
-      if (!confirmed) return refused("The user did not grant another retry window; nothing was recorded and the row stays blocked.");
+      const limit = limited
+        ? ` ${id} already used ${proposal.automaticGrants} retry window(s) granted without the user, the atlasAutoRetryLimit of ${decisions.autoRetryLimit}.`
+        : "";
+      const bySetting = settledBySetting("atlasRetry", policy, settled, decisions.timeoutMs);
+      if (!settled.accepted)
+        return refused(
+          bySetting
+            ? `${bySetting}${limit} Nothing was recorded and the row stays blocked; report it.`
+            : "The user did not grant another retry window; nothing was recorded and the row stays blocked.",
+        );
       if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
       return await withExecutionLedger(ctx, record, (ledger) => {
         const row = ledgerRows(ledger).find((row) => row.id === id);
@@ -2225,14 +2290,14 @@ export default function prometheus(pi: ExtensionAPI): void {
           throw new Error("Retry history or acceptance changed while awaiting confirmation; request it again");
         if (childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, row.id).length)
           throw new Error("Native work became live while awaiting confirmation");
-        grantRetry(ledger, row, note as string);
+        grantRetry(ledger, row, note as string, settled.decidedBy);
         const refresh = atlasTodoRefreshCall(row);
         if (pi.getActiveTools().includes("todo")) pendingTodoRefreshes.set(ctx.sessionManager.getSessionId(), refresh);
         return {
           content: [
             {
               type: "text" as const,
-              text: `${refresh}\n\n${row.id}: owner confirmed a new retry window; previous history is preserved.\n\n${ledgerSummary(ledger, row.id)}`,
+              text: `${refresh}\n\n${row.id}: ${bySetting ? `a new retry window was granted. ${bySetting} Previous` : "owner confirmed a new retry window; previous"} history is preserved.\n\n${ledgerSummary(ledger, row.id)}`,
             },
           ],
           details: { id: row.id, status: row.status, row: ledgerCardRow(row), progress: ledgerProgress(ledger) },
@@ -2248,7 +2313,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read/update the shared approved ledger. Start before task and copy atlas_assignment. Done requires owned final native success plus inspected evidence; HEAVY then needs a fresh independent verifier PASS. Gate/verifier FAIL or INCONCLUSIVE records durable failure diagnostics. fail authenticates other terminal failures, idempotently: stop at consecutive identical counted signatures, three counted failures, repeated harness failure, or the event-bound four-hour work limit (P1 waiting exempt). retry requires owner confirmation; reopen/amend/new children do not reset budgets. fix creates an ordinary tiered X row from F1–F4 or P1, preserving other passed gates; a fresh origin child waits for repairs. discover adds D before gates or deferred O; triage disposes O; amend confirms T/D/X acceptance rulings. Missing or corrupt state pauses execution; status lists details.",
+      "Read/update the shared approved ledger. Start before task and copy atlas_assignment. Done requires owned final native success plus inspected evidence; HEAVY then needs a fresh independent verifier PASS. Gate/verifier FAIL or INCONCLUSIVE records durable failure diagnostics. fail authenticates other terminal failures, idempotently: stop at consecutive identical counted signatures, three counted failures, repeated harness failure, or the event-bound four-hour work limit (P1 waiting exempt). retry requires a grant (owner confirmation or the atlasRetry setting); reopen/amend/new children do not reset budgets. fix creates an ordinary tiered X row from F1–F4 or P1, preserving other passed gates; a fresh origin child waits for repairs. discover adds D before gates or deferred O; triage disposes O; amend records T/D/X acceptance rulings settled by the user or the atlasAmend setting. Missing or corrupt state pauses execution; status lists details.",
     parameters: ledgerParameters,
     ...ledgerCard,
     defaultInactive: true,
@@ -3257,6 +3322,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     deliverySettings.delete(sessionId);
     atlasWidgets.delete(sessionId);
     progressReports.delete(sessionId);
+    decisionSettings.delete(sessionId);
     herdrDag.forget(sessionId);
     roadmap.forget(sessionId);
     adr.forget(sessionId);

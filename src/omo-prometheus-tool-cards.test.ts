@@ -126,7 +126,7 @@ test("atlas_ledger shows the changed row and plan progress, guidance folded unti
 
 test("atlas_ledger amend shows the ruling, its row, the acceptance now in force and the user's note", () => {
   const ledger = createLedger("/plans/plan.md", planContent, ["task"]);
-  const ruling = amendAcceptance(ledger, "T1", "p95 latency stays under 250 ms", "User accepted 250 ms after measuring 230 ms");
+  const ruling = amendAcceptance(ledger, "T1", "p95 latency stays under 250 ms", "User accepted 250 ms after measuring 230 ms", "user");
   const row = ledgerRows(ledger).find((entry) => entry.id === "T1");
   if (!row) throw new Error("T1 missing");
   const card = tool("atlas_ledger").describeResult(
