@@ -15,7 +15,7 @@
       "name": "adr",
       "source": "./adr",
       "description": "Tool-managed MADR architecture decision records",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -82,7 +82,7 @@
       "name": "omp-herdr-dag",
       "source": "./omp-herdr-dag",
       "description": "Live todo, plan, Atlas DAG and subagent views in a Herdr side pane",
-      "version": "0.6.4",
+      "version": "0.6.5",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -157,7 +157,7 @@
       "name": "roadmap",
       "source": "./roadmap",
       "description": "Tool-managed project rounds, stages and TODOs, with stage-linked ADRs through the adr plugin",
-      "version": "0.7.1",
+      "version": "0.7.2",
       "author": {
         "name": "TheOrdinaryWow"
       },
