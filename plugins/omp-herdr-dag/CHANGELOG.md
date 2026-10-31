@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.5](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.6.4...omp-herdr-dag@0.6.5) (2026-10-31)
+
+
+### Bug Fixes
+
+* match /roadmap, /adr and /dag-pane completions case-insensitively ([b8edf1e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/b8edf1e6bb8c1456f9da37fd33741712c9d87644))
+
 ## [0.6.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.6.3...omp-herdr-dag@0.6.4) (2026-10-28)
 
 
