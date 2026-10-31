@@ -554,6 +554,13 @@ async function acceptance(name: string, root: string): Promise<void> {
             ?.map((option) => option.label) ?? [];
         assert.equal(new Set(labels).size, labels.length, `the menu shows every completion distinctly: ${labels.join(", ")}`);
       }
+      const values = (prefix: string) =>
+        h.runner
+          .getCommand("adr")
+          ?.getArgumentCompletions?.(prefix)
+          ?.map((option) => option.value);
+      assert.deepEqual(values("show adr-"), ["show ADR-0001"]);
+      assert.deepEqual(values("List Acc"), ["list accepted"]);
     } else if (name === "console") {
       await initialize(root, "main");
       await createMany(root, "main", [decision, { ...decision, title: "Second" }]);

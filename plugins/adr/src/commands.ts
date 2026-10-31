@@ -282,7 +282,9 @@ export function registerCommands(
         options.map(({ value, description }) => ({ value: `${word} ${value}`, description }));
       const ids = (filter: (status: string) => boolean) =>
         adrs.filter((doc) => filter(doc.status)).map((doc) => ({ value: doc.id, description: `${doc.title} (${doc.status})` }));
-      const [word] = head(prefix);
+      // Actions, statuses and ADR ids match regardless of case; accepting a completion writes their canonical spelling.
+      const typed = prefix.toLowerCase();
+      const [word] = head(typed);
       let options: Completion[] = [...ACTIONS];
       if (/\s/.test(prefix)) {
         if (word === "list")
@@ -308,7 +310,7 @@ export function registerCommands(
           );
       }
       const matches = options
-        .filter(({ value }) => value.startsWith(prefix))
+        .filter(({ value }) => value.toLowerCase().startsWith(typed))
         .map(({ value, label, description }) => ({ value, label: label ?? value, description }));
       return matches.length ? matches : null;
     },

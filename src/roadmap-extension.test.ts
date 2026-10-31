@@ -2251,6 +2251,9 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.deepEqual(complete("stage S"), ["stage S01"]);
           assert.deepEqual(complete("overlap "), ["overlap S01 "]);
           assert.deepEqual(complete("overlap S01 f"), ["overlap S01 free"]);
+          assert.deepEqual(complete("stage s"), ["stage S01"]);
+          assert.deepEqual(complete("Stage s0"), ["stage S01"]);
+          assert.deepEqual(complete("overlap s01 F"), ["overlap S01 free"]);
           const status = await call(h, "roadmap_status", { stage: "S01" });
           assert(status.ok);
           assert.match(status.handoff ?? "", /DC1/);

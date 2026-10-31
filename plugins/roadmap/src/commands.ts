@@ -539,19 +539,21 @@ export function registerCommands(
     getArgumentCompletions(prefix) {
       const prefixed = (head: string, options: readonly Completion[], tail = "") =>
         options.map(({ value, description }) => ({ value: `${head}${value}${tail}`, description }));
-      const overlap = /^overlap (\S+) /.exec(prefix);
-      const retarget = /^retarget (\S+) /.exec(prefix);
+      // Ids and keywords match regardless of case; accepting a completion writes their canonical spelling.
+      const typed = prefix.toLowerCase();
+      const [, verb, typedId = ""] = /^(overlap|retarget) (\S+) /.exec(typed) ?? [];
+      const id = [...rounds, ...stages].find(({ value }) => value.toLowerCase() === typedId)?.value ?? typedId;
       let options: Completion[];
-      if (overlap) options = prefixed(`overlap ${overlap[1]} `, OVERLAP_ANSWERS);
-      else if (prefix.startsWith("overlap ")) options = prefixed("overlap ", stages, " ");
-      else if (prefix.startsWith("stage ")) options = prefixed("stage ", stages);
-      else if (prefix.startsWith("plan-round ")) options = prefixed("plan-round ", plannedRounds);
-      else if (prefix.startsWith("drop-round ")) options = prefixed("drop-round ", plannedRounds, " ");
-      else if (retarget) options = [{ value: `retarget ${retarget[1]} none`, description: "Clear the target date" }];
-      else if (prefix.startsWith("retarget ")) options = prefixed("retarget ", [...rounds, ...stages], " ");
+      if (verb === "overlap") options = prefixed(`overlap ${id} `, OVERLAP_ANSWERS);
+      else if (typed.startsWith("overlap ")) options = prefixed("overlap ", stages, " ");
+      else if (typed.startsWith("stage ")) options = prefixed("stage ", stages);
+      else if (typed.startsWith("plan-round ")) options = prefixed("plan-round ", plannedRounds);
+      else if (typed.startsWith("drop-round ")) options = prefixed("drop-round ", plannedRounds, " ");
+      else if (verb === "retarget") options = [{ value: `retarget ${id} none`, description: "Clear the target date" }];
+      else if (typed.startsWith("retarget ")) options = prefixed("retarget ", [...rounds, ...stages], " ");
       else options = [...ACTIONS];
       const matches = options
-        .filter(({ value }) => value.startsWith(prefix))
+        .filter(({ value }) => value.toLowerCase().startsWith(typed))
         .map(({ value, label, description }) => ({ value, label: label ?? value, description }));
       return matches.length ? matches : null;
     },

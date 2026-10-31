@@ -240,7 +240,7 @@ class DagExtension {
       this.#pi.registerCommand("dag-pane", {
         description: "Open, close or toggle the Herdr DAG pane",
         getArgumentCompletions: (prefix) =>
-          PANE_ACTIONS.filter(({ value }) => value.startsWith(prefix)).map(({ value, description }) => ({
+          PANE_ACTIONS.filter(({ value }) => value.startsWith(prefix.toLowerCase())).map(({ value, description }) => ({
             value,
             label: value,
             description,
