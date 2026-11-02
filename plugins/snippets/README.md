@@ -7,7 +7,7 @@
 
 English | [简体中文](README.zh.md)
 
-Save reusable blocks of text as Markdown files and expand them by typing a short trigger word, such as `.review.`, before you send. Browse, insert, send, and manage them from `/snippet`. Snippets are plain files you can edit by hand, and your personal state (pins, disabled flags, use counts) stays outside the repository.
+Save reusable blocks of text as Markdown files and expand them by typing a short trigger word, such as `.review.`, before you send. Browse, insert, send, and manage them from `/snippets`. Snippets are plain files you can edit by hand, and your personal state (pins, disabled flags, use counts) stays outside the repository.
 
 ## Install
 
@@ -34,7 +34,7 @@ Requires OMP 18.12.0 or newer. Start a new session after installing. The plugin 
    ```
 
 2. Start a session and type `.review.` in the editor, then send. The message the agent receives, and the one shown in your history, contains the checklist instead of the trigger word.
-3. Run `/snippet` to browse every snippet, including ones that have no trigger word.
+3. Run `/snippets` to browse every snippet, including ones that have no trigger word.
 
 ## Usage
 
@@ -47,13 +47,13 @@ Requires OMP 18.12.0 or newer. Start a new session after installing. The plugin 
 
 A workspace snippet with the same key as a global one takes precedence. The global snippet stays listed, marked as shadowed, and does not expand while the workspace one exists.
 
-The key is the file name without `.md`. Use letters, digits, `_`, or `-`, up to 64 characters. Other names are reported in `/snippet` as problems and skipped.
+The key is the file name without `.md`. Use letters, digits, `_`, or `-`, up to 64 characters. Other names are reported in `/snippets` as problems and skipped.
 
 ### File format
 
 The frontmatter is optional. It may contain one `description` line, bare or quoted. Without frontmatter, the whole file is the body. Trailing newlines are trimmed. Files that cannot be parsed are skipped and reported. Other snippets keep working.
 
-Hand edits are picked up the next time you send a message or open `/snippet`.
+Hand edits are picked up the next time you send a message or open `/snippets`.
 
 ### Trigger words
 
@@ -66,7 +66,7 @@ By default, a snippet with key `review` expands from `.review.`:
 
 The default trigger is `.`. Set `trigger` to any other literal prefix. The trigger cannot contain whitespace or any of `/ ! @ ^ # : $ \` \\`. An invalid trigger shows a warning once and turns expansion off. It never falls back to `.`.
 
-Set `trigger` to an empty string to turn off expansion and highlighting. Snippets are then used only through `/snippet`.
+Set `trigger` to an empty string to turn off expansion and highlighting. Snippets are then used only through `/snippets`.
 
 ### When a trigger expands
 
@@ -84,38 +84,64 @@ Each expansion counts one use. The sent message and the chat history show the ex
 
 Trigger words glow in the editor as you type, using the host's keyword highlight. Code and shell lines are left unhighlighted, which matches what will and will not expand.
 
-### The `/snippet` console
+### The `/snippets` console
 
-Run `/snippet` to open the console. It lists global and workspace snippets, sorted with pinned ones first, then by use count, then by key. The preview shows the body, the trigger word or "menu only", the scope, the file path, and whether a snippet is shadowed or disabled.
+Run `/snippets` to open the console. It lists global and workspace snippets, sorted with pinned ones first, then by use count, then by key. The preview shows the body, the trigger word or "menu only", the scope, the file path, and whether a snippet is shadowed or disabled.
+
+In Tern, the console is a native picker sheet. The search field and the All, Global, and Workspace tabs sit at the top, the list follows, the selected snippet's preview is below the list, and an action bar holds the actions. The terminal keeps its split view, with the list beside the preview.
+
+The terminal keys are:
 
 | Key | Action |
 |---|---|
 | Up / Down, Home / End | Select a snippet |
 | PgUp / PgDn, mouse wheel | Scroll the preview |
 | Tab / Shift+Tab | Cycle the All, Global, Workspace filter |
-| Letters and digits | Search by key, description, and body. Uppercase letters without an action also search. |
-| Backspace | Edit the search text |
+| Letters and digits | Type into the search field, which matches key, description, and body. Every word you type must match. Uppercase letters without an action also search. |
+| Left / Right, Backspace, Delete | Move the caret and edit the search text, as in any text field |
 | Esc | Clear the search, then close the console |
-| Enter | Insert the snippet at the editor cursor. Clients without an editor do not show Insert. |
+| Enter | Insert the snippet at the editor cursor. With no snippets yet, Enter creates one. Clients without an editor do not show Insert. |
 | Shift+S | Send the snippet now |
 | Shift+N | Create a new snippet |
-| Shift+E | Edit the selected snippet's text, then optionally rename its key (Esc or an empty answer keeps the key) |
+| Shift+E | Edit the snippet in the form. Changing its key renames the file. |
 | Shift+D | Disable or enable the snippet |
 | Shift+P | Pin or unpin the snippet |
 | Shift+X | Delete the snippet, after confirmation |
 
-Uppercase S, E, D, P, X, and N act as the Shift shortcuts. Other uppercase letters search.
+Uppercase S, E, D, P, X, and N act as the Shift shortcuts. Other uppercase letters search. In Tern, the action bar offers the same actions with their shortcuts.
 
 Insert, send, and expansion each count one use.
+
+### New and edit form
+
+Shift+N and Shift+E open one form. It has four fields, stacked top to bottom: Key, Scope, Description, and Body. Save and Cancel sit at the bottom. The form never shows frontmatter, and it writes the file for you.
+
+- **Key** is the file name without `.md`: letters, digits, `_`, or `-`, up to 64 characters. It is checked as you type, and a key already used in the chosen scope shows an error.
+- **Scope** is Global or Workspace. Switch it with Left, Right, or Space. When you edit, the scope is shown read-only.
+- **Description** is optional and takes one line.
+- **Body** is the text the snippet inserts. It can span many lines.
+
+| Key | Action |
+|---|---|
+| Tab / Shift+Tab | Move to the next or previous field |
+| Enter | Move to the next field from Key, Scope, or Description. In Body, add a line. On Save or Cancel, press it. |
+| Ctrl+S | Save |
+| Esc | Cancel |
+
+Saving with an invalid key moves the cursor to Key and shows the reason. In Tern, click a field to edit it, or click Save or Cancel.
+
+Changing the key on an edit renames the file and keeps its pins, disabled flag, and use count.
+
+Clients without the form (RPC and ACP) ask one dialog per field: key, then scope when creating, then description, then body. On edit, an empty key or description keeps the current value, and `-` clears the description.
 
 ### Commands
 
 | Command | Effect |
 |---|---|
-| `/snippet` | Open the console. Without a UI, posts the list and any problems as a message. |
-| `/snippet <key>` | Insert the snippet into the editor. Needs a client with an editor; otherwise it shows an error pointing to `/snippet send <key>`. |
-| `/snippet send <key>` | Send the snippet as a user message. |
-| `/snippet list` | Post the list as a message. |
+| `/snippets` | Open the console. Without a UI, posts the list and any problems as a message. |
+| `/snippets <key>` | Insert the snippet into the editor. Needs a client with an editor; otherwise it shows an error pointing to `/snippets send <key>`. |
+| `/snippets send <key>` | Send the snippet as a user message. |
+| `/snippets list` | Post the list as a message. |
 
 Command forms resolve only enabled, non-shadowed snippets. The words `send` and `list` take precedence over snippets with those keys, so rename such a snippet.
 
@@ -143,16 +169,16 @@ No other marketplace plugin is required. The plugin does not register a `tool_ca
 | Host | Behavior |
 |---|---|
 | Terminal TUI | Full console, with highlights in the editor. |
-| Tern | Expansion works; the console follows the host's native dialogs. |
-| RPC and ACP | Expansion works; `/snippet` uses selector and editor dialogs. |
+| Tern | Expansion works. The console is a native picker sheet, and New and Edit open a native form. |
+| RPC and ACP | Expansion works. `/snippets` uses selector dialogs for the list and actions; New and Edit ask one dialog per field. |
 
-Without a UI, `/snippet` posts the list and problems as a message. Expansion still works.
+Without a UI, `/snippets` posts the list and problems as a message. Expansion still works.
 
 ## Known limitations
 
 - Expansion happens only at send. There is no in-place expansion while you type, so a trigger word stays as typed until you send.
 - The highlight glow uses an internal host module. A future omp release could change it and stop the glow, without affecting expansion.
-- Inserting a long snippet from the menu in the terminal TUI can collapse the text into a paste marker. Send it with `/snippet send` or check the text before sending.
+- Inserting a long snippet from the menu in the terminal TUI can collapse the text into a paste marker. Send it with `/snippets send` or check the text before sending.
 
 ## Reference
 

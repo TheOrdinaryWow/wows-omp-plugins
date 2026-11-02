@@ -70,7 +70,7 @@ export default function snippets(pi: ExtensionAPI): void {
     if (expanded.text !== event.text) return { text: expanded.text };
   });
 
-  pi.registerCommand("snippet", {
+  pi.registerCommand("snippets", {
     description: "Browse, insert, send, and manage global or workspace text snippets",
     getArgumentCompletions: (prefix) => snippetArgumentCompletions(prefix, currentStore?.entries ?? []),
     async handler(args, ctx) {

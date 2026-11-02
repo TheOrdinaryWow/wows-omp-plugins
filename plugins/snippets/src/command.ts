@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import type { ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 
@@ -10,9 +12,10 @@ import {
   SnippetConsole,
   snippetFields,
 } from "#src/console.ts";
+import { FORM_OVERLAY, KEY_HINT, type KeyTaken, keyProblem, type SnippetDraft, SnippetForm } from "#src/form.ts";
 import { triggerWord } from "#src/matching.ts";
 import type { SnippetSettings } from "#src/settings.ts";
-import { formatSnippetSource, parseSnippetSource, SNIPPET_KEY, type SnippetScope } from "#src/snippet.ts";
+import { formatSnippetSource, type SnippetScope } from "#src/snippet.ts";
 import type { SnippetEntry, SnippetStore } from "#src/store.ts";
 
 export interface SnippetCommandDeps {
@@ -24,7 +27,7 @@ export interface SnippetCommandDeps {
   changed: () => Promise<void>;
 }
 
-const USAGE = "Usage: /snippet [<key> | send <key> | list]";
+const USAGE = "Usage: /snippets [<key> | send <key> | list]";
 const BACK = "← Back";
 
 const FULLSCREEN = {
@@ -66,7 +69,7 @@ function problemLines(store: SnippetStore, settings: SnippetSettings): string[] 
 function problemNotice(store: SnippetStore, settings: SnippetSettings): ConsoleMessage | undefined {
   const [first, ...rest] = problemLines(store, settings);
   if (!first) return undefined;
-  return { text: rest.length ? `${first} (+${rest.length} more; /snippet list shows all)` : first, level: "warning" };
+  return { text: rest.length ? `${first} (+${rest.length} more; /snippets list shows all)` : first, level: "warning" };
 }
 
 function summary(entries: readonly SnippetEntry[]): string {
@@ -95,7 +98,7 @@ function listText(store: SnippetStore, settings: SnippetSettings): string {
     );
   }
   if (!store.entries.length)
-    lines.push("No snippets yet. Create one from /snippet, or add <key>.md files:", `- ${store.workspaceDir}`, `- ${store.globalDir}`);
+    lines.push("No snippets yet. Create one from /snippets, or add <key>.md files:", `- ${store.workspaceDir}`, `- ${store.globalDir}`);
   const problems = problemLines(store, settings);
   if (problems.length) lines.push("Problems:", ...problems.map((problem) => `- ${problem}`));
   lines.push(USAGE);
@@ -109,76 +112,98 @@ function consoleEntries(store: SnippetStore, settings: SnippetSettings): Console
 const idOf = (store: SnippetStore, scope: SnippetScope, key: string): string | undefined =>
   store.entries.find((entry) => entry.scope === scope && entry.key === key)?.id;
 
-/** Opens the editor until the text parses; undefined when cancelled. */
-async function editSource(ctx: ExtensionCommandContext, title: string, prefill: string): Promise<string | undefined> {
-  let shown = title;
-  let text = prefill;
+/** A key is taken by a loaded snippet, or by a file in that scope that failed to load (saving would overwrite it). */
+function keyTaken(store: SnippetStore): KeyTaken {
+  return (scope, key) => {
+    const path = join(scope === "global" ? store.globalDir : store.workspaceDir, `${key}.md`);
+    return idOf(store, scope, key) !== undefined || store.problems.some((problem) => problem.path === path);
+  };
+}
+
+/** The key, re-asked until it is valid and free, and the scope of a new snippet. Undefined when cancelled. */
+async function dialogKey(
+  ctx: ExtensionCommandContext,
+  store: SnippetStore,
+  original?: SnippetEntry,
+): Promise<{ key: string; scope: SnippetScope } | undefined> {
+  const taken = keyTaken(store);
+  const ask = original ? `Key for ${original.key}; leave empty to keep it` : "New snippet key";
+  let title = ask;
+  let scope = original?.scope;
   for (;;) {
-    const edited = await ctx.ui.editor(shown, text);
-    if (edited === undefined) return undefined;
-    try {
-      parseSnippetSource(edited);
-      return edited;
-    } catch (error) {
-      text = edited;
-      shown = `${title}: ${errorText(error)} Fix it and save again.`;
+    const typed = await ctx.ui.input(title, original?.key ?? KEY_HINT);
+    if (typed === undefined) return undefined;
+    const key = typed.trim() || original?.key || "";
+    // A new snippet's scope is chosen once its key is well-formed; a collision there re-asks only the key.
+    const shape = keyProblem(key, "global", () => false);
+    if (!shape && !scope) {
+      const scopes: Array<readonly [string, SnippetScope]> = [
+        [`Workspace: ${store.workspaceDir}`, "workspace"],
+        [`Global: ${store.globalDir}`, "global"],
+      ];
+      const picked = await ctx.ui.select(
+        `Where should ${key} live?`,
+        scopes.map(([label]) => label),
+      );
+      scope = scopes.find(([label]) => label === picked)?.[1];
+      if (!scope) return undefined;
     }
+    const problem = shape ?? (scope ? keyProblem(key, scope, taken, original?.key) : undefined);
+    if (!problem && scope) return { key, scope };
+    title = `${problem} ${ask}`;
   }
 }
 
-/** Asks for a key until it is valid and free in `scope`; `keep` is returned for an empty answer. Undefined when cancelled. */
-async function askKey(
-  ctx: ExtensionCommandContext,
-  store: SnippetStore,
-  title: string,
-  scope: SnippetScope | undefined,
-  keep?: string,
-): Promise<string | undefined> {
-  let shown = title;
-  for (;;) {
-    const typed = await ctx.ui.input(shown, keep ?? "letters, digits, _ or -, up to 64");
-    if (typed === undefined) return undefined;
-    const key = typed.trim() || keep || "";
-    if (key === keep) return key;
-    if (!SNIPPET_KEY.test(key)) shown = `"${key}" is not a valid key; use 1 to 64 letters, digits, _ or -. ${title}`;
-    else if (scope && idOf(store, scope, key)) shown = `A ${scope} snippet ${key} already exists. ${title}`;
-    else return key;
-  }
+/** Host dialogs for clients without the form: key, scope, description, then the body alone. Undefined when any step is cancelled. */
+async function dialogDraft(ctx: ExtensionCommandContext, store: SnippetStore, original?: SnippetEntry): Promise<SnippetDraft | undefined> {
+  const named = await dialogKey(ctx, store, original);
+  if (!named) return undefined;
+  const current = original?.description ?? "";
+  const typed = await ctx.ui.input(
+    current
+      ? `Description of ${named.key}; leave empty to keep "${current}", or enter - to clear it`
+      : `Description of ${named.key} (optional)`,
+    "one line",
+  );
+  if (typed === undefined) return undefined;
+  const description = typed.trim() === "-" ? "" : typed.trim() || current;
+  const body = await ctx.ui.editor(`Body of ${named.key}`, original?.body ?? "");
+  if (body === undefined) return undefined;
+  return { ...named, description, body };
+}
+
+/** The new or edited snippet from the form (terminal and Tern) or from host dialogs (RPC, ACP). */
+async function snippetDraft(ctx: ExtensionCommandContext, store: SnippetStore, original?: SnippetEntry): Promise<SnippetDraft | undefined> {
+  if (ctx.mode !== "tui" || typeof ctx.ui.custom !== "function") return dialogDraft(ctx, store, original);
+  const options = {
+    original,
+    scope: "workspace" as const,
+    dirs: { global: store.globalDir, workspace: store.workspaceDir },
+    taken: keyTaken(store),
+  };
+  return ctx.ui.custom<SnippetDraft | undefined>((tui, theme, _keys, done) => new SnippetForm(theme, tui, options, done), FORM_OVERLAY);
 }
 
 async function createSnippet(ctx: ExtensionCommandContext, store: SnippetStore): Promise<Step> {
-  const cancelled = info("No snippet created.");
-  const key = await askKey(ctx, store, "New snippet key", undefined);
-  if (key === undefined) return cancelled;
-  const scopes: Array<readonly [string, SnippetScope]> = [
-    [`Workspace: ${store.workspaceDir}`, "workspace"],
-    [`Global: ${store.globalDir}`, "global"],
-  ];
-  const picked = await ctx.ui.select(
-    `Where should ${key} live?`,
-    scopes.map(([label]) => label),
-  );
-  const scope = scopes.find(([label]) => label === picked)?.[1];
-  if (!scope) return cancelled;
-  if (idOf(store, scope, key)) return { message: { text: `A ${scope} snippet ${key} already exists; edit it instead.`, level: "error" } };
-  const source = await editSource(ctx, `New ${scope} snippet ${key}`, formatSnippetSource("", ""));
-  if (source === undefined) return cancelled;
-  await store.write(scope, key, source);
-  return { ...info(`Created ${scope} snippet ${key}.`), target: { scope, key } };
+  const draft = await snippetDraft(ctx, store);
+  if (!draft) return info("No snippet created.");
+  await store.write(draft.scope, draft.key, formatSnippetSource(draft.description, draft.body));
+  return { ...info(`Created ${draft.scope} snippet ${draft.key}.`), target: { scope: draft.scope, key: draft.key } };
 }
 
+/** A changed key renames the file (keeping its state), then changed text is written under the new key. */
 async function editSnippet(ctx: ExtensionCommandContext, store: SnippetStore, entry: SnippetEntry): Promise<Step> {
-  const original = formatSnippetSource(entry.description, entry.body);
-  const source = await editSource(ctx, `Edit ${entry.scope} snippet ${entry.key}`, original);
-  if (source === undefined) return info(`${entry.key} was not changed.`);
-  // Esc on the rename prompt keeps the key; the edited text is still saved.
-  const key = (await askKey(ctx, store, `Key for this snippet; leave empty to keep ${entry.key}`, entry.scope, entry.key)) ?? entry.key;
-  if (source === original && key === entry.key) return info(`${entry.key} was not changed.`);
-  if (source !== original) await store.write(entry.scope, entry.key, source);
-  if (key !== entry.key) await store.rename(entry.scope, entry.key, key);
+  const draft = await snippetDraft(ctx, store, entry);
+  const unchanged = info(`${entry.key} was not changed.`);
+  if (!draft) return unchanged;
+  const source = formatSnippetSource(draft.description, draft.body);
+  const textChanged = source !== formatSnippetSource(entry.description, entry.body);
+  if (draft.key === entry.key && !textChanged) return unchanged;
+  if (draft.key !== entry.key) await store.rename(entry.scope, entry.key, draft.key);
+  if (textChanged) await store.write(entry.scope, draft.key, source);
   return {
-    ...info(`Saved ${entry.scope} snippet ${key}${key === entry.key ? "" : ` (was ${entry.key})`}.`),
-    target: { scope: entry.scope, key },
+    ...info(`Saved ${entry.scope} snippet ${draft.key}${draft.key === entry.key ? "" : ` (was ${entry.key})`}.`),
+    target: { scope: entry.scope, key: draft.key },
   };
 }
 
@@ -196,7 +221,7 @@ async function use(ctx: ExtensionCommandContext, deps: SnippetCommandDeps, entry
   if (!entry.body) throw new Error(`Snippet ${entry.key} has an empty body.`);
   if (how === "insert") {
     if (!ctx.hasUI || !ctx.ui.supportsEditor)
-      throw new Error(`This client has no editor to insert into; use /snippet send ${entry.key} instead.`);
+      throw new Error(`This client has no editor to insert into; use /snippets send ${entry.key} instead.`);
     ctx.ui.pasteToEditor(entry.body);
   } else deps.send(entry.body);
   try {
@@ -333,8 +358,8 @@ async function chooseAction(ctx: ExtensionCommandContext, entry: SnippetEntry, s
 function activeEntry(store: SnippetStore, key: string): SnippetEntry {
   const entry = store.active().find((candidate) => candidate.key === key);
   if (entry) return entry;
-  if (store.entries.some((candidate) => candidate.key === key)) throw new Error(`Snippet ${key} is disabled; enable it from /snippet.`);
-  throw new Error(`Unknown snippet ${key}. Run /snippet list for keys.`);
+  if (store.entries.some((candidate) => candidate.key === key)) throw new Error(`Snippet ${key} is disabled; enable it from /snippets.`);
+  throw new Error(`Unknown snippet ${key}. Run /snippets list for keys.`);
 }
 
 export async function runSnippetCommand(args: string, ctx: ExtensionCommandContext, deps: SnippetCommandDeps): Promise<void> {
@@ -348,7 +373,7 @@ export async function runSnippetCommand(args: string, ctx: ExtensionCommandConte
       if (rest) throw new Error(USAGE);
       deps.message(listText(deps.store, await deps.settings()));
     } else if (word === "send") {
-      if (!rest || /\s/.test(rest)) throw new Error("Usage: /snippet send <key>");
+      if (!rest || /\s/.test(rest)) throw new Error("Usage: /snippets send <key>");
       await use(ctx, deps, activeEntry(deps.store, rest), "send");
     } else {
       if (rest) throw new Error(USAGE);

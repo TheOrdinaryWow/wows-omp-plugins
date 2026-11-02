@@ -54,7 +54,7 @@ A trigger word is the trigger setting, the key, and the trigger setting again (c
 
 The trigger must not contain whitespace or any of these characters: `/ ! @ ^ # : $ \` \\`. An invalid trigger disables expansion, warns once, and never falls back to `.`.
 
-An empty trigger turns off expansion and highlighting. Snippets are then usable only from `/snippet`.
+An empty trigger turns off expansion and highlighting. Snippets are then usable only from `/snippets`.
 
 ## Matching
 
@@ -96,6 +96,15 @@ Expansion runs in the extension `input` event (`pi.on("input", ...)`), which ret
 The store reloads on session start, on every `input` event, and after every console change. Highlights are re-registered after each reload and on `session_start` and `session_switch`.
 
 Highlights register each active trigger word with the host magic-keyword engine (`setMagicKeywords` from `@oh-my-pi/pi-tui/prompt/magic-keywords`), alongside the host's own keywords from `MAGIC_KEYWORDS` in `@oh-my-pi/pi-coding-agent/modes/magic-keywords`. Snippet words use hues `190` and `290`.
+
+## Console, form, and dialogs
+
+The console and the form are plugin components. Tern gets the native versions, and the terminal gets the split console and the framed form.
+
+- In Tern, the console is a native `picker` sheet with the preview below the list when the host supports `picker`. Hosts without it get a generic native layout. The terminal keeps the split view.
+- The form is a `SnippetForm` with the native overlay role `omp.overlay.snippets.form`. It resolves to a draft of `key`, `scope`, `description`, and `body`. Only the focused text field is a live input, so the caret follows the keyboard.
+- On save, the command formats the draft with `formatSnippetSource(description, body)` and writes it with `store.write`. A changed key renames the file first with `store.rename`, keeping its state, then writes the text when it changed.
+- Without the custom UI (`ctx.mode` not `tui`, or no `ctx.ui.custom`), the same draft comes from `ctx.ui.input`, `ctx.ui.select` (scope, new snippets only), and `ctx.ui.editor` (body). No path shows frontmatter.
 
 ## State file
 

@@ -54,7 +54,7 @@ description: 一行描述
 
 trigger 不能包含空白字符，也不能包含以下字符：`/ ! @ ^ # : $ \` \\`。无效的 trigger 会关闭展开、只警告一次，并且绝不会回退到 `.`。
 
-空字符串 trigger 会关闭展开和高亮，片段只能通过 `/snippet` 使用。
+空字符串 trigger 会关闭展开和高亮，片段只能通过 `/snippets` 使用。
 
 ## 匹配
 
@@ -96,6 +96,15 @@ trigger 不能包含空白字符，也不能包含以下字符：`/ ! @ ^ # : $ 
 存储会在会话启动、每次 `input` 事件以及每次控制台修改后重新加载。每次重新加载后，以及 `session_start` 和 `session_switch` 时，都会重新注册高亮。
 
 高亮通过 `@oh-my-pi/pi-tui/prompt/magic-keywords` 中的 `setMagicKeywords` 注册，与 `@oh-my-pi/pi-coding-agent/modes/magic-keywords` 中 `MAGIC_KEYWORDS` 提供的宿主关键词并列。片段触发词使用色相 `190` 和 `290`。
+
+## 控制台、表单和对话框
+
+控制台和表单都是插件组件。Tern 使用原生版本，终端使用分栏控制台和带边框的表单。
+
+- 宿主支持 `picker` 时，Tern 中的控制台是原生 `picker` 面板，预览位于列表下方。不支持的宿主使用通用原生布局。终端保留分栏视图。
+- 表单是 `SnippetForm`，原生浮层角色为 `omp.overlay.snippets.form`。它输出草稿：`key`、`scope`、`description` 和 `body`。只有获得焦点的文本字段是可编辑的输入框，因此光标跟随键盘。
+- 保存时，命令用 `formatSnippetSource(description, body)` 格式化草稿，并通过 `store.write` 写入。修改 key 时先用 `store.rename` 重命名并保留状态，正文有变化再写入。
+- 没有自定义 UI（`ctx.mode` 不是 `tui`，或没有 `ctx.ui.custom`）时，同样的草稿来自 `ctx.ui.input`、`ctx.ui.select`（仅新建时选择范围）和 `ctx.ui.editor`（正文）。任何路径都不会显示 frontmatter。
 
 ## 状态文件
 

@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionCommandContext, ExtensionUISelectItem } from "@oh-my-pi/pi-coding-agent";
-import { initTheme, type TUI, theme } from "@oh-my-pi/pi-tui";
+import { type Component, initTheme, type TUI, theme } from "@oh-my-pi/pi-tui";
 
 import { runSnippetCommand, type SnippetCommandDeps, snippetArgumentCompletions } from "../plugins/snippets/src/command.ts";
-import type { SnippetConsole } from "../plugins/snippets/src/console.ts";
 import type { SnippetSettings } from "../plugins/snippets/src/settings.ts";
 import { formatSnippetSource } from "../plugins/snippets/src/snippet.ts";
 import { SnippetStore } from "../plugins/snippets/src/store.ts";
@@ -84,7 +83,7 @@ function scripted(store: SnippetStore, script: Script = {}, currentSettings = se
     notify(text: string, level: string) {
       notifications.push({ text, level });
     },
-    custom(factory: (tui: TUI, th: typeof theme, keybindings: unknown, done: (value: unknown) => void) => SnippetConsole, opts: unknown) {
+    custom(factory: (tui: TUI, th: typeof theme, keybindings: unknown, done: (value: unknown) => void) => Component, opts: unknown) {
       const script = keys.shift();
       if (!script) throw new Error("custom must not be called");
       customOptions.push(opts);
@@ -92,7 +91,7 @@ function scripted(store: SnippetStore, script: Script = {}, currentSettings = se
       const tui = { requestRender() {}, terminal: { rows: 30 } } as unknown as TUI;
       const component = factory(tui, theme, undefined, resolve);
       frames.push(Bun.stripANSI(component.render(120).join("\n")));
-      for (const key of script) component.handleInput(key);
+      for (const key of script) component.handleInput?.(key);
       return promise;
     },
   };
@@ -185,49 +184,104 @@ test("fullscreen re-opens after pinning with filter, query and selection kept, a
   expect(run.changes).toBe(2);
 });
 
-test("new validates and re-prompts the key and source, then re-opens on the created snippet", async () => {
+/** Keystrokes typing `text` one character at a time. */
+const typed = (text: string): string[] => [...text];
+const FULLSCREEN = { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } };
+const FORM = { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "90%" } };
+
+test("new opens the form, refuses a taken key without writing, then creates the file and re-opens on it", async () => {
   const { store } = await fixture();
-  const good = formatSnippetSource("New description", "# literal Markdown\n{{not a template}}");
   const run = scripted(store, {
-    keys: [["N"], ["\x1b"]],
-    inputs: ["bad key", "fresh"],
-    answers: [/^Workspace:/],
-    edits: ["---\nunsupported: true\n---\nBody", good],
+    keys: [
+      ["N"],
+      [
+        ...typed("kyc"),
+        "\x13",
+        ...Array<string>(3).fill("\x7f"),
+        ...typed("fresh"),
+        "\t",
+        "\t",
+        ...typed("New description"),
+        "\t",
+        ...typed("# literal Markdown"),
+        "\r",
+        ...typed("{{not a template}}"),
+        "\x13",
+      ],
+      ["\x1b"],
+    ],
   });
   await runSnippetCommand("", run.ctx, run.deps);
-  expect(run.inputTitles).toHaveLength(2);
-  expect(run.inputTitles[1]).toMatch(/not a valid key/);
-  expect(run.prefills[0]).toBe(formatSnippetSource("", ""));
-  expect(run.prefills[1]).toBe("---\nunsupported: true\n---\nBody");
-  expect(run.editorTitles[1]).toMatch(/supports only description/);
+  expect(run.frames[1]).toMatch(/New snippet/);
+  expect(run.frames[1]).not.toMatch(/description:/);
+  expect(store.entries.find((entry) => entry.key === "kyc" && entry.scope === "workspace")?.body).toBe("Workspace questionnaire");
   const created = store.entries.find((entry) => entry.key === "fresh");
   expect(created).toMatchObject({ scope: "workspace", description: "New description", body: "# literal Markdown\n{{not a template}}" });
-  expect(await readFile(created?.path ?? "", "utf8")).toBe(good);
-  expect(run.frames[1]).toMatch(/fresh {2}New description/);
-  expect(run.frames[1]).toMatch(/Created workspace snippet fresh/);
+  expect(await readFile(created?.path ?? "", "utf8")).toBe(
+    formatSnippetSource("New description", "# literal Markdown\n{{not a template}}"),
+  );
+  expect(run.frames.at(-1)).toMatch(/fresh {2}New description/);
+  expect(run.frames.at(-1)).toMatch(/Created workspace snippet fresh/);
+  expect(run.customOptions).toEqual([FULLSCREEN, FORM, FULLSCREEN]);
   expect(run.changes).toBe(1);
 });
 
-test("editing passes the full source, rejects a rename collision, preserves state, and selects the renamed key", async () => {
+test("edit opens the form prefilled, refuses a rename collision inline, renames with state kept, and selects the new key", async () => {
   const { store } = await fixture();
   const entry = store.entries.find((entry) => entry.key === "sig");
   if (!entry) throw new Error("Missing fixture snippet");
   await store.setPinned(entry.id, true);
   await store.recordUse([entry.id, entry.id]);
-  const updated = formatSnippetSource("Signature", "New signoff");
+  const clear = (count: number) => Array<string>(count).fill("\x7f");
   const run = scripted(store, {
-    keys: [["E"], ["\x1b"]],
-    edits: [updated],
-    inputs: ["kyc", "signoff"],
+    keys: [
+      ["E"],
+      [...clear(3), ...typed("kyc"), "\x13", ...clear(3), ...typed("signoff"), "\t", ...clear(15), ...typed("Signature"), "\x13"],
+      ["\x1b"],
+    ],
   });
   await runSnippetCommand("", run.ctx, run.deps);
-  expect(run.prefills[0]).toBe(formatSnippetSource("Email signature", "Best regards,\nLi"));
-  expect(run.inputTitles[1]).toMatch(/already exists/);
+  expect(run.frames[1]).toMatch(/Edit sig/);
+  expect(run.frames[1]).toMatch(/Email signature/);
+  expect(run.frames[1]).toMatch(/Best regards,/);
+  expect(run.frames[1]).not.toMatch(/description:/);
   expect(store.entries.some((entry) => entry.key === "sig")).toBe(false);
-  expect(store.entries.find((entry) => entry.key === "signoff")).toMatchObject({ body: "New signoff", pinned: true, uses: 2 });
-  expect(run.frames[1]).toMatch(/signoff {2}Signature/);
-  expect(run.frames[1]).toMatch(/Saved global snippet signoff \(was sig\)/);
+  expect(store.entries.find((entry) => entry.key === "signoff")).toMatchObject({
+    description: "Signature",
+    body: "Best regards,\nLi",
+    pinned: true,
+    uses: 2,
+  });
+  expect(run.frames[2]).toMatch(/signoff {2}Signature/);
+  expect(run.frames[2]).toMatch(/Saved global snippet signoff \(was sig\)/);
   expect(run.changes).toBe(1);
+});
+
+test("non-TUI new and edit use step dialogs: key re-prompts, scope, description, then the body alone", async () => {
+  const { store } = await fixture();
+  const create = scripted(store, {
+    mode: "rpc",
+    answers: [/^New snippet/, /^Workspace:/, undefined],
+    inputs: ["bad key", "kyc", "fresh", "Greeting"],
+    edits: ["Hello\n"],
+  });
+  await runSnippetCommand("", create.ctx, create.deps);
+  expect(create.inputTitles[1]).toMatch(/not a valid key/);
+  expect(create.inputTitles[2]).toMatch(/workspace snippet named kyc already exists/);
+  expect(create.options.filter((labels) => labels.some((label) => label.startsWith("Workspace:")))).toHaveLength(1);
+  expect(create.prefills).toEqual([""]);
+  expect(store.entries.find((entry) => entry.key === "fresh")).toMatchObject({
+    scope: "workspace",
+    description: "Greeting",
+    body: "Hello",
+  });
+  expect(create.notifications.at(-1)?.text).toBe("Created workspace snippet fresh.");
+  const edit = scripted(store, { mode: "rpc", answers: [/^sig \[/, /^Edit…$/, undefined], inputs: ["", "-"], edits: ["New signoff"] });
+  await runSnippetCommand("", edit.ctx, edit.deps);
+  expect(edit.prefills).toEqual(["Best regards,\nLi"]);
+  expect(edit.inputTitles[1]).toMatch(/keep "Email signature", or enter - to clear it/);
+  expect(store.entries.find((entry) => entry.key === "sig")).toMatchObject({ description: "", body: "New signoff" });
+  expect(edit.customOptions).toEqual([]);
 });
 
 test("enable and disable change expansion eligibility, while deleting requires the named destructive choice", async () => {
@@ -268,7 +322,7 @@ test("non-TUI clients without a composer omit Insert and command insertion refus
   expect(run.options[1]).not.toContain("Insert at cursor");
   await runSnippetCommand("sig", run.ctx, run.deps);
   expect(run.pasted).toEqual([]);
-  expect(run.notifications.at(-1)?.text).toMatch(/no editor.*\/snippet send sig/);
+  expect(run.notifications.at(-1)?.text).toMatch(/no editor.*\/snippets send sig/);
   expect(store.entries.find((entry) => entry.key === "sig")?.uses).toBe(0);
 });
 
@@ -282,9 +336,9 @@ test("no-UI forms report via displayed messages, include problems, refuse editor
   expect(run.messages[0]).toMatch(/shortcuts off \(invalid trigger\)/);
   expect(run.messages[0]).toMatch(/broken\.md: Snippet frontmatter supports only/);
   expect(run.messages[0]).toMatch(/Invalid snippet trigger/);
-  expect(run.messages[0]).toMatch(/Usage: \/snippet/);
+  expect(run.messages[0]).toMatch(/Usage: \/snippets \[/);
   await runSnippetCommand("sig", run.ctx, run.deps);
-  expect(run.messages.at(-1)).toMatch(/no editor.*\/snippet send sig/);
+  expect(run.messages.at(-1)).toMatch(/no editor.*\/snippets send sig/);
   await runSnippetCommand("send kyc", run.ctx, run.deps);
   expect(run.sent).toEqual(["Workspace questionnaire"]);
   await runSnippetCommand("list", run.ctx, run.deps);

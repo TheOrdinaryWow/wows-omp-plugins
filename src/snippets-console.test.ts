@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 
-import { initTheme, type NativeChild, type NativeNode, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
+import { type DescribeContext, initTheme, type NativeChild, type NativeNode, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
 
 import { type ConsoleEntry, type ConsoleResult, type ConsoleState, SnippetConsole } from "../plugins/snippets/src/console.ts";
 import type { SnippetScope } from "../plugins/snippets/src/snippet.ts";
@@ -176,7 +176,7 @@ const acts = (root: NativeNode) =>
     .map((candidate) => (props(candidate).actions as { click?: string } | undefined)?.click)
     .filter((act) => act && act !== "select");
 
-test("Tern describes the same entries in a large glass sheet with state on the icon and the body verbatim", () => {
+test("without the picker kind Tern gets a glass sheet: fixed sidebar, state on the icon, the body as plain text", () => {
   const { component } = mount();
   expect(component.nativeOverlay).toMatchObject({ role: "omp.overlay.snippets.console", size: "lg" });
   expect(component.nativeOverlay).toBe(component.nativeOverlay);
@@ -193,10 +193,148 @@ test("Tern describes the same entries in a large glass sheet with state on the i
   expect(rows[2]?.detail).toBe("global · Email signature");
   expect(props(byKey(root, "snippets")).selected).toBe(ids[0]);
   expect(props(byKey(root, "filter")).active).toBe("all");
+  expect(props(byKey(root, "sidebar"))).toMatchObject({ min: { w: "32ch" }, max: { w: "32ch" }, shrink: 0 });
   expect(acts(root)).toEqual(expect.arrayContaining(["insert", "send", "edit", "toggle", "pin", "delete", "new", "close"]));
   component.handleNativeEvent({ type: "select", key: "split/sidebar/snippets", item: "global:sig" });
-  const code = nodes(component.describe()).find((candidate) => candidate.k === "code");
-  expect(props(code).text).toBe("Best regards,\nLi");
+  const described = nodes(component.describe());
+  expect(described.some((candidate) => candidate.k === "code")).toBe(false);
+  expect(props(described.find((candidate) => props(candidate).role === "omp.snippets.body" && candidate.k === "text")).text).toBe(
+    "Best regards,\nLi",
+  );
+
+  const plain = mount({ query: "" }, [{ snippet: snippet("note", "workspace"), trigger: undefined }]).component.describe();
+  expect(props(listItems(plain)[0]).icon).toBe("doc");
+});
+
+const pickerCx = { supports: (kind: string) => kind === "picker" } as unknown as DescribeContext;
+const pickerProps = (component: SnippetConsole) => props(component.describe(pickerCx));
+const pickerActs = (component: SnippetConsole) => (pickerProps(component).actions as Array<{ id: string }>).map(({ id }) => id);
+const previewText = (component: SnippetConsole) =>
+  nodes(component.describe(pickerCx))
+    .filter((candidate) => candidate.k === "text")
+    .map((candidate) => {
+      const p = props(candidate);
+      return typeof p.text === "string" ? p.text : ((p.spans as Array<{ t: string }>) ?? []).map(({ t }) => t).join("");
+    });
+
+test("where Tern draws pickers the console is a picker sheet: tabs, rows with state, a search field and the preview below", () => {
+  const { component } = mount();
+  expect(component.nativeSheet(pickerCx)).toBe(true);
+  expect(component.nativeSheet({ supports: () => false } as unknown as DescribeContext)).toBe(false);
+  const root = component.describe(pickerCx);
+  expect(root.k).toBe("picker");
+  expect(component.describe(pickerCx)).toBe(root);
+  const p = props(root);
+  expect(p).toMatchObject({ title: "Snippets", noun: "snippets", size: "lg", layout: "rows", preview: "below", query: "", cursor: 0 });
+  expect(p.tabs).toEqual([
+    { id: "all", label: "All", count: 4 },
+    { id: "global", label: "Global", count: 2 },
+    { id: "workspace", label: "Workspace", count: 2 },
+  ]);
+  expect(p.tab).toBe("all");
+  expect(p.selected).toBe(ids[0]);
+  expect(p.total).toBe(4);
+  expect(p.order).toEqual(ids);
+  const items = p.items as Array<Record<string, unknown>>;
+  expect(
+    items.map((row) => [
+      row.label,
+      row.detail,
+      row.icon,
+      row.tone,
+      (row.badges as Array<{ text: string }> | undefined)?.map((b) => b.text),
+    ]),
+  ).toEqual([
+    ["kyc", "Know your customer", "pin", undefined, undefined],
+    ["kyc", undefined, "globe", undefined, ["shadowed"]],
+    ["sig", "Email signature", "globe", undefined, undefined],
+    ["todo", undefined, "doc", "muted", ["disabled"]],
+  ]);
+  const actions = p.actions as Array<Record<string, unknown>>;
+  expect(actions.map((action) => [action.id, action.label])).toEqual([
+    ["insert", "Insert"],
+    ["send", "Send now"],
+    ["edit", "Edit"],
+    ["toggle", "Disable"],
+    ["pin", "Unpin"],
+    ["delete", "Delete"],
+    ["new", "New"],
+    ["close", "Close"],
+  ]);
+  expect(actions[0]).toMatchObject({ primary: true, keys: ["enter"] });
+  expect(actions[5]).toMatchObject({ danger: true, keys: ["shift", "x"] });
+  expect(actions[7]).toMatchObject({ end: true });
+  expect(previewText(component)).toEqual([
+    "kyc  Know your customer",
+    ".kyc. · workspace, shadows global · 3 uses · enabled, pinned",
+    "Body of kyc",
+    "/workspace/kyc.md",
+  ]);
+
+  // Typing edits the field: the query, its caret, the rows it keeps and the hits in their keys.
+  for (const key of "sig") component.handleInput(key);
+  component.handleInput("\x1b[D");
+  const searched = pickerProps(component);
+  expect(searched).toMatchObject({ query: "sig", cursor: 2, order: [ids[2]], selected: ids[2], hits: { [ids[2]]: [[0, 3]] } });
+  expect(pickerActs(component).at(-1)).toBe("close");
+  expect((searched.actions as Array<{ label: string }>).at(-1)?.label).toBe("Clear search");
+  expect(previewText(component)).toContain("Best regards,\nLi");
+  component.handleInput("\x1b");
+  expect(pickerProps(component)).toMatchObject({ query: "", order: ids });
+
+  const empty = mount({ query: "" }, []).component;
+  expect(pickerProps(empty)).toMatchObject({ order: [], selected: null });
+  expect(pickerActs(empty)).toEqual(["new", "close"]);
+  expect((pickerProps(empty).actions as Array<{ primary?: boolean }>)[0]?.primary).toBe(true);
+});
+
+test("picker events run the key paths: rows select and activate, tabs filter, buttons act, Close clears then closes", () => {
+  const keyed = mount();
+  for (const key of ["\x1b[B", "\x1b[B", "\r", "S", "E", "D", "P", "X", "N"]) keyed.component.handleInput(key);
+  const clicked = mount();
+  clicked.component.handleNativeEvent({ type: "select", key: "", item: ids[2] });
+  for (const act of ["insert", "send", "edit", "toggle", "pin", "delete", "new"])
+    clicked.component.handleNativeEvent({ type: "action", key: "", act, mods: [] });
+  expect(clicked.results).toEqual(keyed.results);
+  expect(clicked.results.map(({ result }) => result).slice(0, 2)).toEqual([
+    { kind: "action", action: "insert", id: ids[2] },
+    { kind: "action", action: "send", id: ids[2] },
+  ]);
+
+  const activated = mount();
+  activated.component.handleNativeEvent({ type: "activate", key: "", item: ids[3] });
+  expect(activated.results.map(({ result }) => result)).toEqual([{ kind: "action", action: "insert", id: ids[3] }]);
+
+  // The picker's own "Clear search" under an empty match list empties the field and keeps the sheet open.
+  const cleared = mount({ filter: "global", query: "long" });
+  cleared.component.handleNativeEvent({ type: "action", key: "", act: "clear", mods: [] });
+  expect(pickerProps(cleared.component)).toMatchObject({ query: "", tab: "global", order: [ids[1], ids[2]] });
+  expect(cleared.results).toEqual([]);
+
+  const tabbed = mount({ query: "kyc" });
+  tabbed.component.handleNativeEvent({ type: "action", key: "", act: "tab", value: "workspace", mods: [] });
+  expect(pickerProps(tabbed.component)).toMatchObject({ tab: "workspace", order: [ids[0]] });
+  tabbed.component.handleInput("\t");
+  expect(pickerProps(tabbed.component)).toMatchObject({ tab: "all" });
+  tabbed.component.handleNativeEvent({ type: "action", key: "", act: "close", mods: [] });
+  expect(tabbed.results).toEqual([]);
+  expect(pickerProps(tabbed.component).query).toBe("");
+  tabbed.component.handleNativeEvent({ type: "action", key: "", act: "close", mods: [] });
+  expect(tabbed.results).toEqual([{ result: { kind: "close" }, state: { filter: undefined, query: "", selectedId: ids[0] } }]);
+});
+
+test("the picker head's subtitle shows the last result beside the store problems", () => {
+  const component = new SnippetConsole(entries, { query: "" }, theme, tuiOf(24), () => {}, {
+    message: { text: "Pinned kyc", level: "info" },
+    notice: { text: "bad.md: broken", level: "warning" },
+  });
+  expect(pickerProps(component).subtitle).toEqual([
+    { t: "Pinned kyc", s: "success" },
+    { t: "  ·  ", s: "dim" },
+    { t: "bad.md: broken", s: "warning" },
+  ]);
+  component.handleInput("\x1b[B");
+  expect(pickerProps(component).subtitle).toEqual([{ t: "bad.md: broken", s: "warning" }]);
 });
 
 test("native clicks produce the same results as the keys", () => {

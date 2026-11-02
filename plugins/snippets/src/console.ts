@@ -1,11 +1,11 @@
 import {
   type Component,
-  code,
   col,
+  type DescribeContext,
   extractPrintableText,
+  Input,
   item,
   keyed,
-  kv,
   matchesKey,
   type NativeChild,
   type NativeNode,
@@ -35,6 +35,8 @@ import {
 } from "@oh-my-pi/pi-tui/chrome";
 import { leafKey } from "@oh-my-pi/pi-tui/native/node";
 import { actionBar, actionButton, escCloseButton, hintsRow, selectList } from "@oh-my-pi/pi-tui/native/overlay";
+import { CLOSE_ACTION, picker, pickerAction, pickerEvent, pickerHits } from "@oh-my-pi/pi-tui/native/picker";
+import type { TspPickerAction, TspPickerItem, TspSpan } from "@oh-my-pi/pi-wire";
 
 import type { SnippetScope } from "#src/snippet.ts";
 import type { SnippetEntry } from "#src/store.ts";
@@ -120,13 +122,73 @@ function rowDetail(snippet: SnippetEntry): string {
   return snippet.description ? `${snippet.scope} · ${snippet.description}` : snippet.scope;
 }
 
+/** Search words, lowercase: the list keeps snippets containing every one, and the picker marks them in the keys. */
+function searchWords(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
 type Tone = "accent" | "muted" | undefined;
-/** Native icon and tone: pinned, disabled and shadowed win over the scope icon. */
+
+/** Pinned snippets show the pin, the rest their scope: a globe for global, a document for workspace. */
+function snippetIcon(snippet: SnippetEntry): string {
+  if (snippet.pinned) return "pin";
+  return snippet.scope === "global" ? "globe" : "doc";
+}
+
+/** Native icon and tone of a generic list row: disabled and shadowed win over the scope icon. */
 function nativeMark(snippet: SnippetEntry): { icon: string; tone: Tone } {
   if (snippet.shadowed) return { icon: "eye-off", tone: "muted" };
   if (!snippet.enabled) return { icon: "minus", tone: "muted" };
-  if (snippet.pinned) return { icon: "pin", tone: "accent" };
-  return { icon: snippet.scope === "global" ? "globe" : "folder", tone: undefined };
+  return { icon: snippetIcon(snippet), tone: snippet.pinned ? "accent" : undefined };
+}
+
+/** A picker row: the key, the description beside it, state as tone and badges, the facts in the tooltip. */
+function pickerItem(snippet: SnippetEntry): TspPickerItem {
+  const badges = [
+    ...(snippet.enabled ? [] : [{ text: "disabled", tone: "muted" as const }]),
+    ...(snippet.shadowed
+      ? [{ text: "shadowed", tone: "muted" as const, title: "The workspace snippet with this key expands instead" }]
+      : []),
+  ];
+  return {
+    id: snippet.id,
+    label: snippet.key,
+    ...(snippet.description ? { detail: snippet.description } : {}),
+    icon: snippetIcon(snippet),
+    ...(snippet.enabled ? {} : { tone: "muted" as const }),
+    ...(badges.length ? { badges } : {}),
+    title: `${snippet.scope} · ${snippet.uses} ${snippet.uses === 1 ? "use" : "uses"}`,
+  };
+}
+
+/**
+ * The selected snippet natively: key and description, a compact facts line, the body as plain wrapped text (it is
+ * what the shortcut sends, so no Markdown or code block), then the path, truncated in the middle.
+ */
+function snippetPreview(entry: ConsoleEntry, all: readonly ConsoleEntry[]): NativeNode {
+  const { snippet, trigger } = entry;
+  const fields = new Map(snippetFields(entry, all));
+  const separator = span(" · ", "dim");
+  const facts: TspSpan[] = [
+    trigger ? span(trigger, "code") : span("menu only", "muted"),
+    separator,
+    span(fields.get("Scope") ?? snippet.scope),
+    separator,
+    span(`${snippet.uses} ${snippet.uses === 1 ? "use" : "uses"}`),
+    separator,
+    span(fields.get("State") ?? "", snippet.enabled && !snippet.shadowed ? undefined : "muted"),
+  ];
+  return col(
+    [
+      text([span(snippet.key, "strong accent"), ...(snippet.description ? [span(`  ${snippet.description}`, "muted")] : [])], {
+        wrap: "word",
+      }),
+      text(facts, { wrap: "word" }),
+      snippet.body ? text(snippet.body, { wrap: "word", role: "omp.snippets.body" }) : text([span("(empty body)", "dim")]),
+      text([span(snippet.path, "path dim")], { truncate: "middle", lines: 1 }),
+    ],
+    { gap: "sm" },
+  );
 }
 
 /** Natively the terminal scrolls the body; PgUp/PgDn still reach the program, which forwards them as a scroll request. */
@@ -270,19 +332,22 @@ function markSlots(theme: Theme): MarkSlots {
   return { pin: pad(raw.pin), disabled: pad(raw.disabled), shadowed: pad(raw.shadowed), blank: padding(width) };
 }
 
-/** Fullscreen `/snippet` console: scope filters, a searchable snippet sidebar, and the selected snippet's preview. */
+/** Fullscreen `/snippets` console: scope filters, a searchable snippet sidebar, and the selected snippet's preview. */
 export class SnippetConsole implements Component {
   readonly #frame: SplitFrame;
   readonly #marks: MarkSlots;
   #filter: SnippetScope | undefined;
-  #query: string;
+  /** The search field: typing, motion, deletion and paste edit it; its caret is the picker's. */
+  readonly #search = new Input();
   #selectedId: string | undefined;
   #message: ConsoleMessage | undefined;
   readonly #notice: ConsoleMessage | undefined;
   #scroll: BodyScroll | undefined;
   #nativeHead: { title: string; props: NonNullable<Component["nativeOverlay"]> } | undefined;
   #native: { sig: string; message: ConsoleMessage | undefined; node: NativeNode } | undefined;
-  readonly #nativeBodies = new Map<string, NativeNode>();
+  #picker: { sig: string; message: ConsoleMessage | undefined; node: NativeNode } | undefined;
+  #pickerItems: TspPickerItem[] | undefined;
+  readonly #previews = new Map<string, NativeNode>();
 
   constructor(
     readonly entries: readonly ConsoleEntry[],
@@ -295,10 +360,14 @@ export class SnippetConsole implements Component {
     this.#frame = new SplitFrame(theme);
     this.#marks = markSlots(theme);
     this.#filter = state.filter;
-    this.#query = state.query;
+    this.#search.setValue(state.query);
     this.#selectedId = state.selectedId;
     this.#message = options.message;
     this.#notice = options.notice;
+  }
+
+  get #query(): string {
+    return this.#search.getValue();
   }
 
   #count(scope: SnippetScope | undefined): number {
@@ -306,7 +375,7 @@ export class SnippetConsole implements Component {
   }
 
   #visible(): ConsoleEntry[] {
-    const words = this.#query.toLowerCase().split(/\s+/).filter(Boolean);
+    const words = searchWords(this.#query);
     return this.entries.filter(({ snippet }) => {
       if (this.#filter && snippet.scope !== this.#filter) return false;
       const haystack = `${snippet.key} ${snippet.description} ${snippet.body}`.toLowerCase();
@@ -355,7 +424,7 @@ export class SnippetConsole implements Component {
   }
 
   #escape(): void {
-    if (this.#query) this.#query = "";
+    if (this.#query) this.#search.setValue("");
     else this.#finish({ kind: "close" });
   }
 
@@ -367,6 +436,13 @@ export class SnippetConsole implements Component {
   #page(by: BodyScroll["by"]): void {
     this.#frame.scrollBy(by === "page-down" ? this.#frame.pageRows() : -this.#frame.pageRows());
     this.#scroll = { by, n: (this.#scroll?.n ?? 0) + 1 };
+  }
+
+  /** One key into the search field; a changed query starts the preview at the top. */
+  #edit(key: string): void {
+    const before = this.#query;
+    this.#search.handleInput(key);
+    if (this.#query !== before) this.#frame.scroll = 0;
   }
 
   handleInput(key: string): void {
@@ -395,19 +471,12 @@ export class SnippetConsole implements Component {
     else if (matchesKey(key, "enter")) this.#enter();
     else if (letter === NEW_KEY) this.#finish({ kind: "new" });
     else if (action) this.#act(action);
-    else if (letter) {
-      // Uppercase letters without an action still search, so `API` finds `api`.
-      this.#query += letter;
-      this.#frame.scroll = 0;
-    } else if (matchesKey(key, "backspace")) {
-      this.#query = this.#query.slice(0, -1);
-      this.#frame.scroll = 0;
-    } else {
+    // Uppercase letters without an action still search, so `API` finds `api`.
+    else if (letter) this.#edit(letter);
+    else {
+      // Leading whitespace never starts a search; everything else (text, motion, deletion, paste) edits it.
       const typed = extractPrintableText(key);
-      if (typed !== undefined && (this.#query || typed.trim())) {
-        this.#query += typed;
-        this.#frame.scroll = 0;
-      }
+      if (typed === undefined || this.#query || typed.trim()) this.#edit(key);
     }
     this.tui.requestRender();
   }
@@ -518,7 +587,12 @@ export class SnippetConsole implements Component {
     });
   }
 
-  /** In Tern the console is a large glass sheet titled like the terminal frame. */
+  /** Where Tern draws pickers the console is a picker sheet of its own, mounted without an overlay wrapper. */
+  nativeSheet(cx: DescribeContext): boolean {
+    return cx.supports("picker");
+  }
+
+  /** Without the picker kind the generic composition is a large glass sheet titled like the terminal frame. */
   get nativeOverlay(): NonNullable<Component["nativeOverlay"]> {
     const title = this.#title();
     if (this.#nativeHead?.title !== title)
@@ -526,8 +600,96 @@ export class SnippetConsole implements Component {
     return this.#nativeHead.props;
   }
 
+  describe(cx?: DescribeContext): NativeNode {
+    return cx?.supports("picker") ? this.#describePicker() : this.#describeGeneric();
+  }
+
+  /** The selected snippet's preview, built once per snippet: the entries never change while the console is open. */
+  #preview(entry: ConsoleEntry): NativeNode {
+    const id = entry.snippet.id;
+    let preview = this.#previews.get(id);
+    if (!preview) {
+      preview = keyed(snippetPreview(entry, this.entries), `preview:${id}`);
+      this.#previews.set(id, preview);
+    }
+    return preview;
+  }
+
+  /** The action bar: Insert and the per-snippet keys while one is selected, then New and Close (Clear search). */
+  #pickerActions(entry: ConsoleEntry | undefined): TspPickerAction[] {
+    const actions = entry
+      ? [
+          pickerAction("insert", "Insert", "enter", { primary: true }),
+          ...ENTRY_KEYS.map(([key, action]) =>
+            pickerAction(
+              action,
+              capitalize(actionLabel(action, entry.snippet)),
+              `shift+${key.toLowerCase()}`,
+              action === "delete" ? { danger: true } : undefined,
+            ),
+          ),
+        ]
+      : [];
+    actions.push(pickerAction("new", "New", `shift+${NEW_KEY.toLowerCase()}`, entry ? undefined : { primary: true }));
+    actions.push(this.#query ? { ...CLOSE_ACTION, label: "Clear search" } : CLOSE_ACTION);
+    return actions;
+  }
+
+  /**
+   * The picker sheet: the search field and scope tabs over the snippet rows, the selected snippet's preview below,
+   * the result and problem line, and the action bar.
+   */
+  #describePicker(): NativeNode {
+    const visible = this.#visible();
+    const { entry } = this.#current(visible);
+    const query = this.#query;
+    const cursor = this.#search.getCursor();
+    const sig = [this.#filter ?? "", query, cursor, entry?.snippet.id ?? ""].join("\n");
+    if (this.#picker?.sig === sig && this.#picker.message === this.#message) return this.#picker.node;
+
+    this.#pickerItems ??= this.entries.map(({ snippet }) => pickerItem(snippet));
+    const words = searchWords(query);
+    const hits: Record<string, [number, number][]> = {};
+    for (const { snippet } of words.length ? visible : []) {
+      const found = pickerHits(snippet.key, words);
+      if (found.length) hits[snippet.id] = found;
+    }
+    const message = [this.#message, this.#notice]
+      .filter((line): line is ConsoleMessage => line !== undefined)
+      .flatMap((line, index): TspSpan[] => [...(index ? [span("  ·  ", "dim")] : []), span(line.text, messageColor(line.level))]);
+    const described = picker(
+      {
+        title: PLUGIN,
+        noun: "snippets",
+        icon: "clipboard",
+        size: "lg",
+        layout: "rows",
+        preview: "below",
+        query,
+        cursor,
+        placeholder: "Search keys, descriptions and bodies…",
+        tabs: FILTERS.map((scope) => ({ id: scope ?? "all", label: scope ? capitalize(scope) : "All", count: this.#count(scope) })),
+        tab: this.#filter ?? "all",
+        items: this.#pickerItems,
+        order: visible.map(({ snippet }) => snippet.id),
+        ...(words.length ? { hits } : {}),
+        selected: entry?.snippet.id ?? null,
+        total: this.entries.length,
+        actions: this.#pickerActions(entry),
+        // A ready picker draws `message` nowhere; the head's subtitle carries the result and problem line.
+        ...(message.length ? { subtitle: message } : {}),
+        empty: this.entries.length
+          ? "No snippets match; Esc clears the search, a tab changes the filter"
+          : "No snippets yet; choose New to create one",
+      },
+      entry ? [this.#preview(entry)] : undefined,
+    );
+    this.#picker = { sig, message: this.#message, node: described };
+    return described;
+  }
+
   /** Filter tabs, search and New; the snippet list beside the preview; its actions, the messages and key hints. */
-  describe(): NativeNode {
+  #describeGeneric(): NativeNode {
     const visible = this.#visible();
     const { entry } = this.#current(visible);
     const sig = [this.#filter ?? "", this.#query, entry?.snippet.id ?? "", this.#scroll?.n ?? 0].join("\n");
@@ -579,11 +741,18 @@ export class SnippetConsole implements Component {
         role: "omp.snippets.list",
       },
     );
+    // The body takes the rest of the row and may shrink below its content, so long lines wrap instead of clipping.
     const body: NativeNode = {
-      ...node("col", { role: "omp.snippets.body", grow: 1, gap: "sm" }, [this.#describeBody(entry)], "body"),
+      ...node(
+        "col",
+        { role: "omp.snippets.body", grow: 1, shrink: 1, min: { w: 0 }, gap: "sm" },
+        [entry ? this.#preview(entry) : text([span("No snippet selected", "dim")])],
+        "body",
+      ),
       ...(this.#scroll ? { scroll: this.#scroll } : {}),
     };
-    const sidebar = node("col", { max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
+    // A fixed width: with only a maximum the sidebar follows its longest row and the body jumps between filters.
+    const sidebar = node("col", { min: { w: "32ch" }, max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
     const children: NativeChild[] = [
       keyed(nativeRow([tabs, search, tools], { gap: "md", align: "center", wrap: true }), "head"),
       keyed(nativeRow([sidebar, body], { gap: "lg", align: "start" }), "split"),
@@ -612,51 +781,54 @@ export class SnippetConsole implements Component {
     return described;
   }
 
-  /** The snippet as the terminal frame shows it: key and description, its facts, then the body verbatim. */
-  #describeBody(entry: ConsoleEntry | undefined): NativeNode {
-    if (!entry) return text([span("No snippet selected", "dim")]);
-    const { snippet } = entry;
-    const cached = this.#nativeBodies.get(snippet.id);
-    if (cached) return cached;
-    const children: NativeNode[] = [
-      text([span(snippet.key, "strong accent"), ...(snippet.description ? [span(`  ${snippet.description}`, "muted")] : [])], {
-        wrap: "word",
-      }),
-    ];
-    const meta = kv(snippetFields(entry, this.entries));
-    if (meta) children.push(meta);
-    children.push(snippet.body ? code(snippet.body) : text([span("(empty body)", "dim")]));
-    const described = col(children, { gap: "sm" });
-    this.#nativeBodies.set(snippet.id, described);
-    return described;
+  /**
+   * A button's key path: Close is Esc, Insert is Enter, New and the per-snippet actions their Shift letters; the
+   * picker's own Clear search (under "No snippets match") empties the field like the first Esc.
+   */
+  #run(act: string): boolean {
+    const action = ENTRY_KEYS.find(([, candidate]) => candidate === act)?.[1];
+    if (act !== "close" && act !== "clear" && act !== "insert" && act !== "new" && !action) return false;
+    this.#message = undefined;
+    if (act === "close") this.#escape();
+    else if (act === "clear") this.#search.setValue("");
+    else if (act === "insert") this.#enter();
+    else if (act === "new") this.#finish({ kind: "new" });
+    else if (action) this.#act(action);
+    return true;
   }
 
-  /** Clicks run the key paths: tabs filter, list rows select (double-click inserts), buttons act like their keys. */
+  /** A scope tab, as if Tab or Shift+Tab had landed on it. */
+  #filterTo(id: string | undefined): boolean {
+    const index = FILTERS.findIndex((scope) => (scope ?? "all") === id);
+    if (index < 0) return false;
+    this.#message = undefined;
+    this.#filter = FILTERS[index];
+    this.#frame.scroll = 0;
+    return true;
+  }
+
+  /** A row click selects like the arrows; a second click (activate) then inserts like Enter. */
+  #pick(id: string, activate: boolean): boolean {
+    const index = this.#visible().findIndex((candidate) => candidate.snippet.id === id);
+    if (index < 0) return false;
+    this.#message = undefined;
+    this.#select(index);
+    if (activate) this.#enter();
+    return true;
+  }
+
+  /** Pointer events run the key paths, from the picker sheet (root keypath) and the generic composition alike. */
   handleNativeEvent(event: NativeUiEvent): void {
-    if (event.type === "action") {
-      const action = ENTRY_KEYS.find(([, candidate]) => candidate === event.act)?.[1];
-      if (event.act !== "close" && event.act !== "insert" && event.act !== "new" && !action) return;
-      this.#message = undefined;
-      if (event.act === "close") this.#escape();
-      else if (event.act === "insert") this.#enter();
-      else if (event.act === "new") this.#finish({ kind: "new" });
-      else if (action) this.#act(action);
-    } else if (event.type === "select" || event.type === "activate") {
+    const ev = pickerEvent(event);
+    let handled = false;
+    if (ev?.kind === "action") handled = ev.act === "tab" ? this.#filterTo(ev.value) : this.#run(ev.act);
+    else if (ev) handled = this.#pick(ev.item, ev.kind === "activate");
+    else if (event.type === "action") handled = this.#run(event.act);
+    else if (event.type === "select" || event.type === "activate") {
       const leaf = leafKey(event.key);
-      if (leaf === "filter") {
-        const index = FILTERS.findIndex((scope) => (scope ?? "all") === event.item);
-        if (index < 0) return;
-        this.#message = undefined;
-        this.#filter = FILTERS[index];
-        this.#frame.scroll = 0;
-      } else if (leaf === "snippets") {
-        const index = this.#visible().findIndex((candidate) => candidate.snippet.id === event.item);
-        if (index < 0) return;
-        this.#message = undefined;
-        this.#select(index);
-        if (event.type === "activate") this.#enter();
-      } else return;
-    } else return;
-    this.tui.requestRender();
+      if (leaf === "filter") handled = this.#filterTo(event.item);
+      else if (leaf === "snippets") handled = this.#pick(event.item, event.type === "activate");
+    }
+    if (handled) this.tui.requestRender();
   }
 }

@@ -22,7 +22,7 @@
 | [`omo-ultrawork`](plugins/omo-ultrawork/README.zh.md) | OmO 的 Ultrawork 模式、`mass-ulw`、`/hyperplan` 和 `/ulw-research` |
 | [`omp-herdr-dag`](plugins/omp-herdr-dag/README.zh.md) | 在 Herdr 侧边窗格中实时展示待办、计划、Atlas 和子代理的关系图 |
 | [`roadmap`](plugins/roadmap/README.zh.md) | 通过代理工具管理项目的轮次、阶段和 TODO，并通过 adr 插件关联阶段的 ADR |
-| [`snippets`](plugins/snippets/README.zh.md) | 可复用的文本片段：`.kyc.` 这样的触发词在发送时展开，`/snippet` 用来浏览、插入和管理片段 |
+| [`snippets`](plugins/snippets/README.zh.md) | 可复用的文本片段：`.review.` 这样的触发词在发送时展开，`/snippets` 用来浏览、插入和管理片段 |
 
 每个插件都可以单独安装，只是 roadmap 需要同时安装 adr 插件。
 
