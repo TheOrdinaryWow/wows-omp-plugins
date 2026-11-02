@@ -137,7 +137,7 @@ export interface Settled {
 
 /**
  * Settles `decision` under `policy`. Undefined only for `ask` without a dialog: nothing may be decided. `timeoutMs`
- * applies to the `ask-then-*` policies.
+ * applies to the `ask-then-*` policies, whose fallback also becomes the dialog's initial choice.
  */
 export async function settle(
   ui: DecisionUI | undefined,
@@ -148,7 +148,8 @@ export async function settle(
   if (policy === "approve" || policy === "decline") return { accepted: policy === "approve", decidedBy: "setting", because: "policy" };
   const fallback = policy === "ask-then-approve";
   if (!ui) return policy === "ask" ? undefined : { accepted: fallback, decidedBy: "setting", because: "no-dialog" };
-  const answer = await prompt(ui, decision, policy === "ask" ? undefined : timeoutMs);
+  const initial = policy === "ask" ? decision.initial : fallback ? "accept" : "decline";
+  const answer = await prompt(ui, { ...decision, initial }, policy === "ask" ? undefined : timeoutMs);
   return answer === "timeout" ? { accepted: fallback, decidedBy: "setting", because: "timeout" } : { accepted: answer, decidedBy: "user" };
 }
 

@@ -123,6 +123,20 @@ describe("Atlas decision settings", () => {
     }
   });
 
+  test("ask-then-* starts the cursor on its fallback; ask keeps the decision's own default", async () => {
+    const cases = [
+      ["ask-then-approve", exitEarlyDecision("CSV import", 3), 0],
+      ["ask-then-approve", amend, 0],
+      ["ask-then-decline", exitEarlyDecision("CSV import", 3), 1],
+      ["ask", amend, 1],
+    ] as const;
+    for (const [policy, decision, index] of cases) {
+      const { ui, calls } = scripted([undefined]);
+      await settle(ui, policy, decision, minute);
+      expect(calls[0]).toMatchObject({ kind: "select", initialIndex: index });
+    }
+  });
+
   test("ask-then-* applies its fallback only when the dialog times out; an answer in time is the user's", async () => {
     for (const policy of ["ask-then-approve", "ask-then-decline"] as const) {
       const { ui, calls } = scripted([TIMEOUT]);
