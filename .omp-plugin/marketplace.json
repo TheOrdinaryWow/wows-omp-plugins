@@ -138,7 +138,7 @@
       "name": "omo-toolkit",
       "source": "./omo-toolkit",
       "description": "Port of oh-my-openagent category agents, research agents, skills, and documentation MCPs for OMP",
-      "version": "0.6.1",
+      "version": "0.6.2",
       "author": {
         "name": "TheOrdinaryWow"
       },
