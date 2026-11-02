@@ -936,7 +936,7 @@ describe("roadmap body allowlist boundaries", () => {
           if (/^h[1-6]$/.test(node.tag)) result.push(`${"#".repeat(Number(node.tag[1]))} ${proseText(node)}`);
           for (const child of node.children) visit(child);
         }
-        visit(parseHtml(Bun.markdown.html(content.replace(/^---\n[\s\S]*?\n---\n/, ""))));
+        visit(parseHtml(Bun.markdown.html(content.replace(/^---\n[\s\S]*?\n---\n/, ""), { autolinks: true })));
         return result;
       }
       async function wrote(receipt: Promise<Receipt>): Promise<Model> {
