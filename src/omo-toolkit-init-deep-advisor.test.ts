@@ -380,5 +380,14 @@ if (process.env[CHILD_ENV]) {
         }
       }, 30_000);
     }
+    test("repository without a commit is not a Git repository for the advisor", async () => {
+      const root = await mkdtemp(join(tmpdir(), "toolkit-advisor-unborn-"));
+      try {
+        await git(root, ["init", "--initial-branch=main"]);
+        expect(await gitRepository(root)).toBeNull();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   });
 }

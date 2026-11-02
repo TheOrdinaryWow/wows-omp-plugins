@@ -103,8 +103,14 @@ export async function gitRepository(cwd: string): Promise<GitRepository | null> 
   } catch {
     return null;
   }
-  const [common, head] = await Promise.all([git(root, ["rev-parse", "--git-common-dir"]), git(root, ["rev-parse", "HEAD"])]);
-  return { root, commonDir: await realpath(resolve(root, common.trim())), head: head.trim() };
+  let head: string;
+  try {
+    head = (await git(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])).trim();
+  } catch {
+    return null;
+  }
+  const common = await git(root, ["rev-parse", "--git-common-dir"]);
+  return { root, commonDir: await realpath(resolve(root, common.trim())), head };
 }
 
 /** Binary numstat entries and NUL-delimited rename source/destination records are not LOC. */
