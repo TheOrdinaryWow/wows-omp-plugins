@@ -1,0 +1,9 @@
+{
+  "name": "snippets",
+  "version": "0.1.0",
+  "description": "Reusable global and workspace text snippets with send-time shortcuts",
+  "author": {
+    "name": "TheOrdinaryWow"
+  },
+  "license": "MIT"
+}

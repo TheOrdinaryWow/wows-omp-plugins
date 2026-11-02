@@ -169,6 +169,23 @@
         "adr"
       ],
       "license": "MIT"
+    },
+    {
+      "name": "snippets",
+      "source": "./snippets",
+      "description": "Reusable text snippets with trigger words that expand at send, plus a /snippet menu",
+      "version": "0.1.0",
+      "author": {
+        "name": "TheOrdinaryWow"
+      },
+      "category": "productivity",
+      "keywords": [
+        "snippets",
+        "templates",
+        "prompts",
+        "text-expansion"
+      ],
+      "license": "MIT"
     }
   ]
 }

@@ -1,0 +1,32 @@
+{
+  "name": "wows-omp-plugin-snippets",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Reusable global and workspace text snippets with send-time shortcuts",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "settings": {
+      "trigger": {
+        "type": "string",
+        "default": ".",
+        "description": "Literal shortcut trigger; empty disables shortcuts and highlighting. Whitespace and / ! @ ^ # : $ ` \\ are forbidden."
+      },
+      "matching": {
+        "type": "enum",
+        "values": [
+          "closed",
+          "open"
+        ],
+        "default": "closed",
+        "description": "Shortcut shape: closed surrounds the key with the trigger (.key.); open uses only a prefix (.key)."
+      }
+    }
+  }
+}

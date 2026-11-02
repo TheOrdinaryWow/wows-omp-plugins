@@ -68,6 +68,13 @@
         { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
         { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='roadmap')].version" }
       ]
+    },
+    "plugins/snippets": {
+      "component": "snippets",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='snippets')].version" }
+      ]
     }
   }
 }
