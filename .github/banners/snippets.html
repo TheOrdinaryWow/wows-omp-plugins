@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en" data-banner="snippets" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <title>snippets</title>
+    <link rel="stylesheet" href="banner.css" />
+    <style>
+      /* figure: a composer line whose trigger word glows, expanded at send into the snippet body */
+      .fig {
+        padding-top: 16px;
+      }
+      .flow {
+        /* the host highlight: an HSL hue sweep 190 -> 290 across the trigger word, at the accent's saturation and lightness */
+        --glow-from: hsl(from var(--accent) 190 s l);
+        --glow-to: hsl(from var(--accent) 290 s l);
+        --glow: linear-gradient(90deg in hsl, var(--glow-from), var(--glow-to));
+        width: 484px;
+        font: 500 15px / 1 var(--mono);
+        color: var(--ink);
+      }
+      .row-label {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 10px;
+        font: 500 13px / 1 var(--mono);
+        color: var(--ink-2);
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+      .row-label span:last-child {
+        color: var(--ink-3);
+        text-transform: none;
+        letter-spacing: 0;
+      }
+
+      /* composer line */
+      .composer {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--ink);
+        font-size: 17px;
+        white-space: pre;
+      }
+      .composer b {
+        color: var(--accent);
+      }
+      .kw {
+        position: relative;
+        background: var(--glow);
+        background-clip: text;
+        color: transparent;
+        font-weight: 800;
+        filter: drop-shadow(0 0 5px color-mix(in srgb, var(--glow-to) 40%, transparent));
+      }
+      .kw::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -4px;
+        height: 2px;
+        background: var(--glow);
+      }
+      .caret {
+        width: 2px;
+        height: 20px;
+        margin-left: -7px;
+        background: var(--accent);
+      }
+
+      /* send step */
+      .send {
+        display: flex;
+        align-items: center;
+        height: 32px;
+        gap: 10px;
+        font-size: 13px;
+        color: var(--ink-2);
+      }
+      .send svg {
+        flex: none;
+        margin: 0 -1px 0 -6px;
+      }
+      .send .key {
+        padding: 3px 5px;
+        border: 1px solid var(--accent);
+        background: var(--accent);
+        color: var(--paper);
+        font-weight: 700;
+        font-size: 12px;
+      }
+      .send b {
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      /* sent message: prose, then the snippet body in place of the trigger */
+      .sent {
+        position: relative;
+        padding: 7px 0 7px 15px;
+        border-left: 1px solid var(--ink-3);
+        font-size: 14px;
+        line-height: 19px;
+        color: var(--ink-2);
+        white-space: pre;
+      }
+      .sent .body-lines {
+        position: relative;
+        margin-left: -15px;
+        padding-left: 15px;
+        color: var(--ink);
+      }
+      .sent .body-lines::before {
+        content: "";
+        position: absolute;
+        left: -2px;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: linear-gradient(180deg in hsl, var(--glow-from), var(--glow-to));
+      }
+      .sent i {
+        font-style: normal;
+        color: var(--ink-3);
+      }
+    </style>
+    <script>
+      document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
+    </script>
+  </head>
+  <body>
+    <div class="grid meta">
+      <div class="series">wows-omp-plugins</div>
+      <div>/snippet</div>
+    </div>
+    <div class="rule top"></div>
+
+    <div class="grid body">
+      <div class="lead">
+        <div class="title">snippets<span class="acc">.</span></div>
+        <div class="tag">Reusable text snippets. Type a trigger word and it expands into the full text when you send.</div>
+      </div>
+      <div class="fig">
+        <div class="flow" role="img" aria-label="A composer line where the trigger word .review. glows with a cyan-to-violet gradient; on send it is replaced by the multi-line body of the review snippet">
+          <div class="row-label"><span>Composer</span><span>review.md · workspace</span></div>
+          <div class="composer"><b>›</b><span>check this PR with <span class="kw">.review.</span></span><span class="caret"></span></div>
+          <div class="send">
+            <svg width="12" height="32" viewBox="0 0 12 32" aria-hidden="true">
+              <line class="d-accent" x1="6" y1="0" x2="6" y2="23" />
+              <path class="d-head-accent" d="M1 22 L11 22 L6 32 Z" />
+            </svg>
+            <span class="key">↵</span><span><b>send</b> · expanded once, counted as a use</span>
+          </div>
+          <div class="sent">check this PR with
+<div class="body-lines">Review checklist
+<i>1</i> correctness and edge cases
+<i>2</i> tests cover the change
+<i>3</i> naming and readability</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rule bottom"></div>
+    <div class="grid foot">
+      <div class="status">Global · workspace · expands at send</div>
+      <div>Trigger .key. · /snippet menu</div>
+    </div>
+  </body>
+</html>

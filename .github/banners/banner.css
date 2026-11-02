@@ -22,6 +22,7 @@
  *   omo-ultrawork    #D6246E   #FF5C9A   magenta
  *   omp-herdr-dag    #0E85A8   #3DB8DC   cyan
  *   roadmap          #5E7A00   #A3C93A   olive
+ *   snippets         #9C2BB5   #CF73E6   orchid
  */
 
 /* ---------- accents ---------- */
@@ -64,6 +65,10 @@
 [data-banner="roadmap"] {
   --accent-light: #5e7a00;
   --accent-dark: #a3c93a;
+}
+[data-banner="snippets"] {
+  --accent-light: #9c2bb5;
+  --accent-dark: #cf73e6;
 }
 
 /* ---------- themes ---------- */
