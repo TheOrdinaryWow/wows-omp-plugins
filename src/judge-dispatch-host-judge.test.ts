@@ -492,12 +492,21 @@ async function registerTests(): Promise<void> {
           response: "success",
           hostKey: HOST_KEY,
         });
-        const bodies = report.requests.map(
-          (request) =>
-            JSON.parse(request.body) as { state: { solutionSpace?: string }; questions: { difficulty?: { instructions?: string } } },
+        // Batch items are judged concurrently, so their requests may arrive in either order.
+        const bodies = new Map(
+          report.requests.map((request) => {
+            const body = JSON.parse(request.body) as {
+              state: { assignment: string; solutionSpace?: string };
+              questions: { difficulty?: { instructions?: string } };
+            };
+            return [body.state.assignment, body] as const;
+          }),
         );
-        expect(bodies.map((body) => body.state.solutionSpace)).toEqual(["cause open, no repro", "one fix: rename, names given", undefined]);
-        expect(bodies[0]?.questions.difficulty?.instructions).toContain("solutionSpace");
+        expect(report.requests).toHaveLength(3);
+        expect(bodies.get("Fix the flaky test")?.state.solutionSpace).toBe("cause open, no repro");
+        expect(bodies.get("Rename the helper")?.state.solutionSpace).toBe("one fix: rename, names given");
+        expect(bodies.get("Sketch the migration")?.state).not.toHaveProperty("solutionSpace");
+        expect(bodies.get("Fix the flaky test")?.questions.difficulty?.instructions).toContain("solutionSpace");
       });
     });
 
