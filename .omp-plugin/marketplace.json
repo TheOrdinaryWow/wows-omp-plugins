@@ -174,7 +174,7 @@
       "name": "snippets",
       "source": "./snippets",
       "description": "Reusable text snippets with trigger words that expand at send, plus a /snippet menu",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
