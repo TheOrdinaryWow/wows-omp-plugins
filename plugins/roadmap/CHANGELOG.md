@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.7.2...roadmap@0.8.0) (2026-11-03)
+
+
+### Features
+
+* **roadmap:** allow revising and deleting uncommitted amendments and free-work entries ([1716c8e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/1716c8ebfa61f81e950b5a82c33318f9e141c4b8))
+
 ## [0.7.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.7.1...roadmap@0.7.2) (2026-10-31)
 
 
