@@ -46,6 +46,7 @@ Repositories whose ADRs were written by the roadmap plugin 0.4.0 or earlier need
 - New decisions start as `proposed`; the agent creates an accepted one only when you explicitly agree.
 - A proposed ADR can be revised as a whole. An accepted one is never rewritten: it is deprecated, superseded by a new accepted ADR, or extended with a dated note under More Information.
 - Only the main session (you, or the main agent acting for you) accepts, rejects, deprecates or supersedes. Subagents can create proposed ADRs, revise them and add notes.
+- Dated notes at any ADR status can be revised or deleted by either actor until committed. `note` reports a zero-based index; use `revise_note` with `id`, `index`, `text`, or `delete_note` with `id`, `index`. Entries identical to those at `HEAD` remain append-only, even when other parts of the file change.
 - Only the main session can set, change or clear an existing ADR's stage link, at any status (including superseded). This changes metadata, not the decision body or status.
 
 ### Commands
@@ -94,7 +95,7 @@ In [Tern](https://docs.stencil.so/tern/), the console and the preview open as na
 | Tool | Purpose |
 | --- | --- |
 | `adr_status` | List ADRs (optional `status` filter), or read one by `id` with its full text and supersession chain. |
-| `adr_manage` | `create`, `revise`, `set_status`, `supersede`, `note`, `link`. `link` requires `id`; supply `stage` to set or change the link, or omit it to clear. |
+| `adr_manage` | `create`, `revise`, `set_status`, `supersede`, `note`, `revise_note`, `delete_note`, `link`. Note edits use a zero-based `index` and refuse committed notes. `link` requires `id`; supply `stage` to set or change the link, or omit it to clear. |
 | `adr_check` | Consistency check; `fix: true` regenerates the index table. |
 
 In a repository without `docs/adr/` management, every tool refuses and tells the agent to ask you to run `/adr init`.

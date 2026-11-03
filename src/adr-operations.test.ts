@@ -17,7 +17,7 @@ import {
   setStatus,
   supersede,
 } from "../plugins/adr/src/operations.ts";
-import { cleanupFixtures, decision, LEGACY_ADR_1, LEGACY_ADR_2, LEGACY_INDEX, repoFixture } from "./adr-fixtures.ts";
+import { cleanupFixtures, decision, git, LEGACY_ADR_1, LEGACY_ADR_2, LEGACY_INDEX, repoFixture } from "./adr-fixtures.ts";
 
 afterEach(cleanupFixtures);
 
@@ -312,5 +312,117 @@ test("cancellation writes nothing before the first file and reports files commit
   expect(disk["README.md"]).toBe(LEGACY_INDEX);
   expect((await check(adrRepo(root))).map((item) => item.rule)).toEqual(["generated"]);
   await check(adrRepo(root), { fix: true });
+  expect(await check(adrRepo(root))).toEqual([]);
+});
+
+test("dated notes revise and delete without HEAD, restoring canonical pre-append bytes", async () => {
+  const root = await repoFixture();
+  await initialize(root, "main");
+  await createMany(root, "main", [decision]);
+  const before = await bytes(root);
+  const first = await manage(root, "sub", { action: "note", id: "ADR-0001", text: "Original observation." });
+  expect(first.noteIndex).toBe(0);
+  expect(await check(adrRepo(root))).toEqual([]);
+  await manage(root, "sub", { action: "revise_note", id: "ADR-0001", index: 0, text: "Revised observation." });
+  const revised = (await bytes(root))["0001-adopt-event-sourcing.md"] as string;
+  expect(revised).toContain(`### ${today()}\n\nRevised observation.\n\n`);
+  expect(revised).not.toContain("Original observation.");
+  expect(await check(adrRepo(root))).toEqual([]);
+  await manage(root, "sub", { action: "delete_note", id: "ADR-0001", index: 0 });
+  expect(await bytes(root)).toEqual(before);
+  expect(await check(adrRepo(root))).toEqual([]);
+});
+
+test("an untracked ADR remains editable when the repository has HEAD", async () => {
+  const root = await repoFixture();
+  await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "Initial"]);
+  await initialize(root, "main");
+  await createMany(root, "main", [{ ...decision, sections: { ...decision.sections, more_info: "Existing information." } }]);
+  const before = await bytes(root);
+  expect((await note(root, "main", "ADR-0001", "First note.")).noteIndex).toBe(0);
+  expect((await note(root, "main", "ADR-0001", "Second note.")).noteIndex).toBe(1);
+  expect(await check(adrRepo(root))).toEqual([]);
+  await manage(root, "main", { action: "revise_note", id: "ADR-0001", index: 1, text: "Second note revised." });
+  expect((await bytes(root))["0001-adopt-event-sourcing.md"]).not.toContain("Second note.\n");
+  expect(await check(adrRepo(root))).toEqual([]);
+  await manage(root, "main", { action: "delete_note", id: "ADR-0001", index: 1 });
+  expect(await check(adrRepo(root))).toEqual([]);
+  await manage(root, "main", { action: "delete_note", id: "ADR-0001", index: 0 });
+  expect(await bytes(root)).toEqual(before);
+  expect(await check(adrRepo(root))).toEqual([]);
+});
+
+test("committed notes stay immutable in clean and modified tracked files, matching duplicate entries individually", async () => {
+  const root = await repoFixture();
+  await initialize(root, "main");
+  await createMany(root, "main", [{ ...decision, status: "accepted" }]);
+  await note(root, "main", "ADR-0001", "Committed observation.");
+  await git(root, ["add", "docs/adr"]);
+  await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "Record decision"]);
+  const committed = await bytes(root);
+  for (const action of ["revise_note", "delete_note"] as const) {
+    await expect(manage(root, "main", { action, id: "ADR-0001", index: 0, text: "Forbidden." })).rejects.toThrow(
+      "note is committed; append a new note instead",
+    );
+    expect(await bytes(root)).toEqual(committed);
+    expect(await check(adrRepo(root))).toEqual([]);
+  }
+  await setStatus(root, "main", "ADR-0001", "deprecated");
+  const beforeAppend = await bytes(root);
+  expect((await note(root, "sub", "ADR-0001", "Committed observation.")).noteIndex).toBe(1);
+  expect(await check(adrRepo(root))).toEqual([]);
+  const modified = await bytes(root);
+  await expect(manage(root, "sub", { action: "delete_note", id: "ADR-0001", index: 0 })).rejects.toThrow("note is committed");
+  expect(await bytes(root)).toEqual(modified);
+  await manage(root, "sub", { action: "revise_note", id: "ADR-0001", index: 1, text: "Uncommitted revised observation." });
+  expect((await bytes(root))["0001-adopt-event-sourcing.md"]?.match(/Committed observation\./g)).toHaveLength(1);
+  expect(await check(adrRepo(root))).toEqual([]);
+  await manage(root, "sub", { action: "delete_note", id: "ADR-0001", index: 1 });
+  expect(await bytes(root)).toEqual(beforeAppend);
+  expect(await check(adrRepo(root))).toEqual([]);
+});
+
+test("note actions work at every ADR status and refuse invalid selectors and structurally invalid revisions", async () => {
+  const root = await repoFixture();
+  await initialize(root, "main");
+  await createMany(
+    root,
+    "main",
+    (["proposed", "accepted", "rejected", "deprecated"] as const).map((status) => ({ ...decision, title: status, status })),
+  );
+  await supersede(root, "main", "ADR-0002", decision);
+  for (const doc of (await loadInitialized(root))?.adrs ?? []) {
+    const before = await bytes(root);
+    await note(root, "sub", doc.id, "Observation.");
+    expect(await check(adrRepo(root))).toEqual([]);
+    const appended = await bytes(root);
+    for (const index of [undefined, -1, 0.5, 1, Number.NaN]) {
+      for (const action of ["revise_note", "delete_note"] as const) {
+        await expect(manage(root, "sub", { action, id: doc.id, index, text: "Replacement." })).rejects.toBeInstanceOf(Refusal);
+        expect(await bytes(root)).toEqual(appended);
+      }
+    }
+    await expect(
+      manage(root, "sub", { action: "revise_note", id: doc.id, index: 0, text: "## Decision Outcome\nChanged" }),
+    ).rejects.toThrow("document structure");
+    expect(await bytes(root)).toEqual(appended);
+    await manage(root, "sub", { action: "revise_note", id: doc.id, index: 0, text: "Revised." });
+    expect(await check(adrRepo(root))).toEqual([]);
+    await manage(root, "sub", { action: "delete_note", id: doc.id, index: 0 });
+    expect(await bytes(root)).toEqual(before);
+    expect(await check(adrRepo(root))).toEqual([]);
+  }
+});
+
+test("note indexing ignores dated headings inside fenced examples", async () => {
+  const root = await repoFixture();
+  await initialize(root, "main");
+  await createMany(root, "main", [{ ...decision, sections: { ...decision.sections, more_info: "```\n### 2020-01-01\n\nExample.\n```" } }]);
+  const before = await bytes(root);
+  expect((await note(root, "main", "ADR-0001", "Real note.")).noteIndex).toBe(0);
+  await manage(root, "main", { action: "revise_note", id: "ADR-0001", index: 0, text: "Revised real note." });
+  expect(await check(adrRepo(root))).toEqual([]);
+  await manage(root, "main", { action: "delete_note", id: "ADR-0001", index: 0 });
+  expect(await bytes(root)).toEqual(before);
   expect(await check(adrRepo(root))).toEqual([]);
 });

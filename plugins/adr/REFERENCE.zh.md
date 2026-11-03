@@ -34,10 +34,14 @@ Read decisions with adr_status (an id gives the full text); change them only thr
 | `revise` | `id`、`sections`，可选 `title` | 仅限提议状态的 ADR。整体替换正文，元数据不变。 |
 | `set_status` | `id`、`status` | 仅限主代理。`accepted`、`rejected` 或 `deprecated`；已被取代的 ADR 会被拒绝。 |
 | `supersede` | `id` 及 `create` 的字段 | 仅限主代理。该 ADR 必须是已接受或已弃用。创建一个 `supersedes: [id]` 的已接受后继，并把旧 ADR 设为 `superseded`，写入 `superseded_by`。 |
-| `note` | `id`、`text` | 在 More Information 下追加 `### YYYY-MM-DD` 和文本，缺少该章节时自动添加。任何执行者都可以使用。 |
+| `note` | `id`、`text` | 在 More Information 下追加 `### YYYY-MM-DD` 和文本，缺少该章节时自动添加。返回 `Note index: N`，按本 ADR 中带日期备注的文件顺序从零计数。任何执行者、任何状态都可使用。 |
+| `revise_note` | `id`、`index`、`text` | 替换一条未提交备注的文本，保留日期。任何执行者、任何状态都可使用。 |
+| `delete_note` | `id`、`index` | 删除一条未提交备注。任何执行者、任何状态都可使用。 |
 | `link` | 必需 `id`，可选 `stage` | 仅限主会话，允许任何 ADR 状态，包括已被取代。设置或更改阶段关联；省略 `stage` 即清除，不需要解析器。正文、状态和取代关系不变。 |
 
 只有 `create`、`supersede` 和 `link` 接受 `stage`。设置或更改阶段关联需要通过服务契约注册的阶段解析器（roadmap 插件会注册一个）；没有解析器时，调用会以 "Stage links need the roadmap plugin" 拒绝。有解析器时，解析器必须接受该阶段 ID。用 `link` 清除现有关联不需要解析器。
+
+备注索引是按文件顺序从零计数的整数；无效索引会被拒绝且不写入。以 `HEAD` 中该文件的相同标题和正文逐条判断备注是否已提交，重复备注按数量匹配。修改已跟踪文件的其他部分不会使已提交备注可编辑。没有 `HEAD` 或文件在其中不存在时，所有备注都未提交。已提交备注会以 "ADR note is committed; append a new note instead." 拒绝修改。备注编辑与追加采用相同的验证和索引重新生成流程。
 
 如果现有 ADR 结束于一个未闭合的代码围栏中，`note` 会拒绝且不做修改。请在编辑器中修复文件后重试。
 

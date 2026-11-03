@@ -34,10 +34,14 @@ If `docs/adr/` is absent or empty, every tool refuses with "ADR management is no
 | `revise` | `id`, `sections`, optional `title` | Only a proposed ADR. Replaces the whole body; metadata stays. |
 | `set_status` | `id`, `status` | Main agent only. `accepted`, `rejected` or `deprecated`; refused for a superseded ADR. |
 | `supersede` | `id` and the `create` fields | Main agent only. The ADR must be accepted or deprecated. Creates an accepted successor with `supersedes: [id]` and sets the old ADR to `superseded` with `superseded_by`. |
-| `note` | `id`, `text` | Appends `### YYYY-MM-DD` and the text under More Information, adding that section if missing. Any actor. |
+| `note` | `id`, `text` | Appends `### YYYY-MM-DD` and the text under More Information, adding that section if missing. Reports `Note index: N`, zero-based among this ADR's dated notes in file order. Any actor, any status. |
+| `revise_note` | `id`, `index`, `text` | Replaces one uncommitted dated note's text, keeping its date. Any actor, any status. |
+| `delete_note` | `id`, `index` | Deletes one uncommitted dated note. Any actor, any status. |
 | `link` | Required `id`, optional `stage` | Main session only, at any ADR status, including superseded. Sets or changes the stage link; omitting `stage` clears it without needing a resolver. Leaves the body, status and supersession links unchanged. |
 
 `stage` is accepted only by `create`, `supersede` and `link`. Setting or changing a stage link needs a stage resolver registered through the service contract (the roadmap plugin registers one); without it the call is refused with "Stage links need the roadmap plugin". With one, the resolver must accept the stage ID. Clearing an existing link with `link` needs no resolver.
+
+Note indices are zero-based integers in file order; an invalid index refuses without writing. Committed notes are matched by identical heading and body against the file at `HEAD`, counting duplicates individually. Changes elsewhere in a tracked file do not unlock committed notes. Without `HEAD`, or when the file is absent there, all notes are uncommitted. Committed notes refuse with "ADR note is committed; append a new note instead." Note edits run the same validation and index regeneration as appends.
 
 If an existing ADR ends inside an unterminated fence, `note` refuses without changing it. Repair the file in your editor and retry.
 

@@ -94,7 +94,7 @@ export function failure(error: unknown): Extract<Receipt, { ok: false }> {
 export function written(summary: string, result: WriteResult): Receipt {
   return {
     ok: true,
-    summary,
+    summary: result.noteIndex === undefined ? summary : `${summary}\n\nNote index: ${result.noteIndex}`,
     changedFiles: result.files.map((file) => file.path),
     warnings: result.warnings,
     view: { kind: "write", ids: result.ids },
@@ -278,7 +278,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
   });
   const statusParameters = z.object({ id: z.string().optional(), status: z.enum(STATUSES).optional() });
   const manageParameters = z.object({
-    action: z.enum(["create", "revise", "set_status", "supersede", "note", "link"]),
+    action: z.enum(["create", "revise", "set_status", "supersede", "note", "revise_note", "delete_note", "link"]),
     id: z.string().optional(),
     title: z.string().optional(),
     status: z.enum(["proposed", "accepted", "rejected", "deprecated"]).optional(),
@@ -288,6 +288,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
     consulted: z.array(z.string()).optional(),
     informed: z.array(z.string()).optional(),
     text: z.string().optional(),
+    index: z.number().int().min(0).optional().describe("Zero-based dated-note index in this ADR; required by revise_note and delete_note."),
   });
   const checkParameters = z.object({ fix: z.boolean().optional() });
 
@@ -319,7 +320,7 @@ export function registerTools(pi: ExtensionAPI, changed: (ctx: ExtensionContext)
     sourcePath: TOOL_SOURCE_PATH,
     label: "ADR manage",
     description:
-      "Create MADR decisions, revise proposed ADRs, set status, supersede, append a dated note or link a stage. link requires id; stage sets or changes the link, omitted stage clears it, at any ADR status. Setting a stage needs the roadmap resolver. Subagents create only proposed ADRs and cannot set status, supersede or link.",
+      "Create MADR decisions, revise proposed ADRs, set status, supersede, manage dated notes or link a stage. note requires id and text and reports its zero-based Note index. revise_note requires id, index and text; delete_note requires id and index. Notes can be appended at any ADR status; only notes absent from HEAD can be revised or deleted. Committed notes remain append-only. link requires id; stage sets or changes the link, omitted stage clears it, at any ADR status. Setting a stage needs the roadmap resolver. Subagents create only proposed ADRs and cannot set status, supersede or link.",
     parameters: manageParameters,
     approval: "write",
     ...manageCard,

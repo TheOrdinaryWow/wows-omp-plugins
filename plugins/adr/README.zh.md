@@ -46,6 +46,7 @@ omp plugin install adr@wows-omp-plugins
 - 新决策以 `proposed` 开始；只有在你明确同意时，代理才会直接创建已接受的决策。
 - 提议状态的 ADR 可以整体修订。已接受的 ADR 不会被改写：只能被弃用、被一个新的已接受 ADR 取代，或在 More Information 下追加带日期的备注。
 - 只有主会话（你，或代表你的主代理）可以接受、拒绝、弃用或取代决策。子代理可以创建提议状态的 ADR、修订它们并添加备注。
+- 任何状态 ADR 的带日期备注在提交前都允许主代理和子代理修订或删除。`note` 返回从零开始的索引；`revise_note` 使用 `id`、`index`、`text`，`delete_note` 使用 `id`、`index`。与 `HEAD` 中相同的备注仍只能追加，即使文件其他部分已有修改。
 - 只有主会话可以设置、更改或清除现有 ADR 的阶段关联，任何状态（包括已被取代）都允许。此操作只改变元数据，不改变决策正文或状态。
 
 ### 命令
@@ -94,7 +95,7 @@ omp plugin install adr@wows-omp-plugins
 | 工具 | 用途 |
 | --- | --- |
 | `adr_status` | 列出 ADR（可用 `status` 筛选），或按 `id` 读取单个 ADR 的全文和取代链。 |
-| `adr_manage` | `create`、`revise`、`set_status`、`supersede`、`note`、`link`。`link` 必须提供 `id`；提供 `stage` 即设置或更改关联，省略即清除。 |
+| `adr_manage` | `create`、`revise`、`set_status`、`supersede`、`note`、`revise_note`、`delete_note`、`link`。备注编辑使用从零开始的 `index`，拒绝修改已提交备注。`link` 必须提供 `id`；提供 `stage` 即设置或更改关联，省略即清除。 |
 | `adr_check` | 一致性检查；`fix: true` 重新生成索引表。 |
 
 在没有启用 `docs/adr/` 管理的仓库中，所有工具都会拒绝，并告诉代理请你运行 `/adr init`。

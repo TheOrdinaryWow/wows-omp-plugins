@@ -22,6 +22,7 @@ import {
   validateBody,
   validId,
 } from "#src/documents.ts";
+import { committedFile } from "#src/git.ts";
 import { allocatedAdrs, atomicWrite, Cancelled, recordAllocated, withAdrLock } from "#src/store.ts";
 
 export type AdrActor = "main" | "sub";
@@ -52,6 +53,7 @@ export interface WriteResult {
   files: Array<{ path: string; content: string }>;
   ids: string[];
   warnings: string[];
+  noteIndex?: number;
 }
 
 export class Refusal extends Error {
@@ -162,6 +164,7 @@ class Batch {
   readonly ids: string[] = [];
   readonly warnings: string[] = [];
   #allocated?: number;
+  noteIndex?: number;
   #highest = 0;
 
   constructor(readonly model: AdrModel) {}
@@ -260,6 +263,7 @@ async function mutate(
       files: [...batch.changes].map(([file, content]) => ({ path: repoPath(repo, file), content })),
       ids: batch.ids,
       warnings: [...new Set(batch.warnings)],
+      ...(batch.noteIndex === undefined ? {} : { noteIndex: batch.noteIndex }),
     };
     if (options.dryRun) return result;
     if (options.signal?.aborted) throw new Cancelled();
@@ -433,10 +437,73 @@ export async function note(
     path,
     (batch) => {
       const current = find(batch.model, id);
+      batch.noteIndex = datedNotes(current.body).length;
       const information = markdownHeadings(current.body, /^## More Information$/gm);
       current.body += current.body.endsWith("\n\n") ? "" : current.body.endsWith("\n") ? "\n" : "\n\n";
       if (!information.length) current.body += "## More Information\n\n";
       current.body += `### ${today()}\n\n${body}\n\n`;
+      batch.put(current);
+    },
+    options,
+  );
+}
+
+function datedNotes(body: string): Array<{ start: number; end: number; heading: string; key: string }> {
+  const headings = markdownHeadings(body, /^#{1,3} .+$/gm);
+  let information = false;
+  const notes: Array<{ start: number; end: number; heading: string; key: string }> = [];
+  for (let index = 0; index < headings.length; index++) {
+    const heading = headings[index] as RegExpMatchArray;
+    if (heading[0].startsWith("## ")) information = heading[0] === "## More Information";
+    if (!information || !/^### \d{4}-\d{2}-\d{2}$/.test(heading[0])) continue;
+    const start = heading.index as number;
+    const end = headings[index + 1]?.index ?? body.length;
+    notes.push({ start, end, heading: heading[0], key: body.slice(start, end).trimEnd() });
+  }
+  return notes;
+}
+
+async function editNote(
+  path: string,
+  actor: AdrActor,
+  id: string,
+  index: number | undefined,
+  text: string | undefined,
+  remove: boolean,
+  options: WriteOptions,
+): Promise<WriteResult> {
+  assertActor(actor);
+  if (!Number.isSafeInteger(index) || (index as number) < 0) throw new Refusal("ADR note index must be a zero-based integer.");
+  const replacement = remove ? undefined : required(text, "ADR note", true);
+  if (replacement !== undefined) assertBody(replacement);
+  return mutate(
+    path,
+    (batch) => {
+      const current = find(batch.model, id);
+      const notes = datedNotes(current.body);
+      const target = notes[index as number];
+      if (!target) throw new Refusal(`ADR note index ${index} is out of range.`);
+      const committed = committedFile(batch.model.repo.repoRoot, repoPath(batch.model.repo, current.path));
+      const counts = new Map<string, number>();
+      if (committed !== undefined) {
+        for (const entry of datedNotes(parseAdr(committed, current.path).body)) counts.set(entry.key, (counts.get(entry.key) ?? 0) + 1);
+      }
+      for (let position = 0; position <= (index as number); position++) {
+        const entry = notes[position] as (typeof notes)[number];
+        const count = counts.get(entry.key) ?? 0;
+        if (!count) continue;
+        if (position === index) throw new Refusal("ADR note is committed; append a new note instead.");
+        counts.set(entry.key, count - 1);
+      }
+      const before = current.body.slice(0, target.start);
+      const after = current.body.slice(target.end);
+      current.body = before + (replacement === undefined ? "" : `${target.heading}\n\n${replacement}\n\n`) + after;
+      if (remove && notes.length === 1) {
+        const information = markdownHeadings(current.body, /^## More Information$/gm)[0];
+        if (information && !current.body.slice((information.index as number) + information[0].length).trim()) {
+          current.body = current.body.slice(0, information.index);
+        }
+      }
       batch.put(current);
     },
     options,
@@ -498,7 +565,7 @@ export async function relinkStage(
 }
 
 export interface ManageInput {
-  action: "create" | "revise" | "set_status" | "supersede" | "note" | "link";
+  action: "create" | "revise" | "set_status" | "supersede" | "note" | "revise_note" | "delete_note" | "link";
   id?: string;
   title?: string;
   status?: "proposed" | "accepted" | "rejected" | "deprecated";
@@ -508,6 +575,7 @@ export interface ManageInput {
   consulted?: string[];
   informed?: string[];
   text?: string;
+  index?: number;
 }
 
 /** The `adr_manage` tool: one action per call, with the tool's argument rules. */
@@ -539,9 +607,12 @@ export async function manage(path: string, actor: AdrActor, input: ManageInput, 
       return supersede(path, actor, required(input.id, "ADR id"), created(), options);
     case "note":
       return note(path, actor, required(input.id, "ADR id"), input.text, options);
+    case "revise_note":
+    case "delete_note":
+      return editNote(path, actor, required(input.id, "ADR id"), input.index, input.text, input.action === "delete_note", options);
     case "link":
       return link(path, actor, required(input.id, "ADR id"), input.stage, options);
     default:
-      throw new Refusal("Unknown ADR action; use create, revise, set_status, supersede, note or link.");
+      throw new Refusal("Unknown ADR action; use create, revise, set_status, supersede, note, revise_note, delete_note or link.");
   }
 }
