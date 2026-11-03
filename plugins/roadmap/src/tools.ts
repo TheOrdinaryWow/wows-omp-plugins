@@ -527,7 +527,28 @@ export function registerTools(
     target: z.string().optional(),
     scope_out: z.array(z.string()).optional(),
     done_criteria: z.array(criterion).optional(),
-    action: z.enum(["add", "edit", "amend", "start", "close", "drop", "renumber"]),
+    action: z.enum([
+      "add",
+      "edit",
+      "amend",
+      "revise_amendment",
+      "delete_amendment",
+      "revise_free_work",
+      "delete_free_work",
+      "start",
+      "close",
+      "drop",
+      "renumber",
+    ]),
+    index: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe(
+        "Zero-based index in this stage's amendments or free-work log; required for revise/delete actions. Committed entries are immutable.",
+      ),
+    intent: z.string().optional().describe("Replacement intent for revise_free_work, as in roadmap_overlap."),
     reason: z.string().optional(),
     amendments: z
       .object({
@@ -620,7 +641,7 @@ export function registerTools(
     ...roadmapToolCard("roadmap_stage"),
     label: "Roadmap stage",
     description:
-      "Manage stage lifecycle. Start or join returns the planning handoff and binds this session; in plan mode start binds a planned stage without writing, and it starts when start is called again outside plan mode. Close requires passing evidence for every done criterion and TODO dispositions, refuses while ADRs linked to the stage are proposed, and records still-unfinished linked Atlas plans under the Outcome's Deviations.",
+      "Manage stage lifecycle and uncommitted entries. amend reports its zero-based amendment index. revise_amendment/delete_amendment take id/index and only edit the latest uncommitted amendment with reversible effects; revision takes reason/amendments/target. revise_free_work/delete_free_work take id/index; revision takes intent. Entries identical to HEAD remain append-only. Start or join returns the planning handoff and binds this session; in plan mode start binds a planned stage without writing, and it starts when start is called again outside plan mode. Close requires passing evidence for every done criterion and TODO dispositions, refuses while ADRs linked to the stage are proposed, and records still-unfinished linked Atlas plans under the Outcome's Deviations.",
     parameters: stageParameters,
     approval: "write",
     async execute(_id, params: typeof stageParameters.infer, signal, _onUpdate, ctx) {
@@ -674,7 +695,7 @@ export function registerTools(
     ...roadmapToolCard("roadmap_overlap"),
     label: "Roadmap overlap",
     description:
-      "Ask the user once per stage/session whether overlapping work should use the roadmap, be logged as free work, or be treated as unrelated. Subagents do not prompt.",
+      "Ask the user once per stage/session whether overlapping work should use the roadmap, be logged as free work, or be treated as unrelated. A free-work append reports its zero-based index; use roadmap_stage revise_free_work/delete_free_work with id/index to correct uncommitted entries. Subagents do not prompt.",
     parameters: overlapParameters,
     approval: "write",
     async execute(_id, params: typeof overlapParameters.infer, signal, _onUpdate, ctx) {

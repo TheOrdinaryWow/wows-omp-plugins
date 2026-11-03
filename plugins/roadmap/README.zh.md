@@ -55,6 +55,8 @@ Plan Mode 下代理无法提交，所以在其中开始阶段只会绑定会话�
 
 活动阶段的范围或标准有变化时，用 `amend` 记录并写明原因。之后的工作记入 TODO，决策记入 ADR。
 
+提交前，可以用 `roadmap_stage` 的 `revise_amendment` 或 `delete_amendment` 修正最新一条修订，提供阶段 `id` 和 `amend` 返回的从零开始的 `index`。修改接受与追加相同的 `reason`、`amendments` 和可选 `target`；删除会撤销它对标准、范围和目标日期的影响。非最新修订以及缺少撤销信息的旧条目会被拒绝。只要 `HEAD` 已存在相同条目，即使阶段文件还有其他未提交改动，该条目也只能追加、不能改写。
+
 阶段只能从 `active` 状态关闭，并且需要满足：
 
 - 每条当前标准都有证据，包含 `result: "pass"`、实际使用的方法和摘要；
@@ -68,6 +70,8 @@ Plan Mode 下代理无法提交，所以在其中开始阶段只会绑定会话�
 ### 自由工作与重叠
 
 路线图之外的工作不需要阶段。当代理发现某个请求与一个未关闭的阶段重叠时，会在每个会话中针对该阶段询问一次：使用路线图、记为自由工作，还是视为无关。记为自由工作只会在该阶段的自由工作日志中加一行，不代表满足了任何标准。
+
+自由工作追加会返回从零开始的索引。在未关闭的阶段中，用 `roadmap_stage` 的 `revise_free_work`（`id`、`index`、替换用的 `intent`）或 `delete_free_work`（`id`、`index`）修正未提交条目。已提交条目不可修改。
 
 ### 关闭一轮
 
@@ -113,7 +117,7 @@ Plan Mode 下代理无法提交，所以在其中开始阶段只会绑定会话�
 | 工具 | 用途 |
 | --- | --- |
 | `roadmap_status` | 轮次、阶段和未关闭的 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
-| `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`。 |
+| `roadmap_stage` | `add`、`edit`、`amend`、`revise_amendment`、`delete_amendment`、`revise_free_work`、`delete_free_work`、`start`、`close`、`drop`、`renumber`。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
 | `roadmap_check` | 文档一致性检查；`fix: true` 重新生成自动生成的区块。 |
 | `roadmap_overlap` | 发起重叠询问。 |

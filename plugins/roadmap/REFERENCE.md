@@ -17,7 +17,7 @@ Mutating tools use write approval; `roadmap_status` uses read approval.
 | Tool | Inputs or actions |
 | --- | --- |
 | `roadmap_status` | No parameters for rounds, targets, actual dates, overdue flags, stages with dependencies, readiness of the active round's planned stages, the Atlas plans of unclosed stages (when omo-prometheus answers) and open TODOs by target or trigger; optional `stage` for full detail and handoff. |
-| `roadmap_stage` | `add`, `edit`, `amend`, `start`, `close`, `drop`, `renumber`. `add` accepts optional `round` and `target`; `edit` and `amend` also accept `target`. `start` and `close` ask omo-prometheus for the stage's Atlas plans. |
+| `roadmap_stage` | `add`, `edit`, `amend`, `revise_amendment`, `delete_amendment`, `revise_free_work`, `delete_free_work`, `start`, `close`, `drop`, `renumber`. `add` accepts optional `round` and `target`; `edit`, `amend` and `revise_amendment` also accept `target`. `start` and `close` ask omo-prometheus for the stage's Atlas plans. |
 | `roadmap_todo` | `add`, `update`, `resolve`, `move`. |
 | `roadmap_check` | Optional `fix: true`. Checks documents, not code/document drift. |
 | `roadmap_overlap` | `stage` and `intent`. |
@@ -34,11 +34,15 @@ Authorization comes from an explicit user command arming the main session. A suc
 | --- | --- |
 | `add` | Create a planned stage in the active round, or in an active or planned round given by `round`. Supply `title`, `objective`, `scope_in`, `scope_out` and `done_criteria` entries with `statement` and `verify`; `target`, dependencies and design constraints are optional. Dependencies may only be in the same or an earlier round. |
 | `edit` | Replace supplied fields, including `target`, of a planned stage. Use `amend` once active. |
-| `amend` | Append a dated delta with a required `reason` to an active stage. `amendments` can add, modify or remove criteria and add or remove in/out scope items; `target` records a date change. |
+| `amend` | Append a dated delta with a required `reason` to an active stage, reporting its zero-based amendment index. `amendments` can add, modify or remove criteria and add or remove in/out scope items; `target` records a date change. New log lines preserve previous verification methods and positions for undo. |
+| `revise_amendment`, `delete_amendment` | Take stage `id` and zero-based amendment `index`. Only the latest uncommitted amendment with unambiguously reversible effects can change; revision undoes it then applies replacement `reason`, `amendments` and optional `target`. Deletion undoes it, restoring the canonical pre-append stage bytes when nothing else changed. Legacy entries without required undo detail and conflicting later edits are refused. |
+| `revise_free_work`, `delete_free_work` | Take stage `id` and zero-based free-work `index` in an unclosed stage. Revision takes replacement `intent` with the same shape as `roadmap_overlap`, retaining the original date and session. Append reports the index. |
 | `start` | Requires the stage to belong to the active round, closed dependencies and no check errors; activates and binds it and returns a planning handoff. On an already active stage it joins without changing the document. |
 | `close` | Takes `id`, a `delivered` summary, optional `deviations`, and `evidence` and `todos` as described below. Refused while an ADR linked to the stage is proposed. Records the Outcome, including the linked ADRs' statuses under `### ADRs`, and the closure hash, and freezes the stage. Unfinished linked Atlas plans do not block it: the receipt warns, and a line naming them (name, plan ID, declared criteria) is appended to the Outcome's Deviations text. |
 | `drop` | Drop a planned or active stage with a required `reason`, after resolving or moving every open TODO targeting it. |
 | `renumber` | Renumber a planned stage with `new_id` and rewrite mutable references, including ADR stage links through the adr plugin. Refused when closed history holds a reference that would need changing. |
+
+Entry commitment is checked against the parsed stage file at `HEAD`, comparing identical heading/body text as a multiset so duplicate entries count correctly. A repository without commits, or a file absent at `HEAD`, has no committed entries. Unrelated edits never unlock committed entries; those refuse with append-new guidance. Out-of-range indices refuse without writing. Every successful edit runs the same validation and generated-index updates as append and lists changed files to commit; there is no buffering or automatic commit.
 
 Stage close inputs:
 

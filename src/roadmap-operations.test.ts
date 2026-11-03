@@ -222,8 +222,10 @@ describe("roadmap stage lifecycle and close gate", () => {
     expect(closed?.status).toBe("closed");
     expect(closed?.closed_sha256).toBe(stageSha256(closed as NonNullable<typeof closed>));
     expect(closed?.scope_in).toBe("- Orders and payment");
-    expect(closed?.amendments).toContain("- MODIFIED DC1 — Orders can be paid (was: Checkout works)");
-    expect(closed?.amendments).toContain("- REMOVED Scope/In: Payment");
+    expect(closed?.amendments).toContain(
+      '- MODIFIED DC1 — "Orders can be paid" · Verify: "bun test orders" · Previous statement: "Checkout works"',
+    );
+    expect(closed?.amendments).toContain('- REMOVED Scope/In: "Payment"');
     expect(closed?.outcome).toBe(
       [
         "### Delivered\n\n- Checkout shipped.",

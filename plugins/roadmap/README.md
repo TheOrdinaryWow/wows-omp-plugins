@@ -55,6 +55,8 @@ In Plan Mode the agent cannot commit, so starting a stage there only binds the s
 
 Scope or criterion changes on an active stage are recorded with `amend` and a reason. Later work goes into TODOs and decisions into ADRs through `adr_manage`.
 
+Before committing, correct the latest amendment with `roadmap_stage` actions `revise_amendment` or `delete_amendment`, supplying the stage `id` and zero-based `index` reported by `amend`. Revision takes the same `reason`, `amendments` and optional `target` as append; deletion undoes its criterion, scope and target changes. Older amendments and legacy entries without enough undo detail are refused. Once an identical entry exists at `HEAD`, it remains append-only even if the stage file has other uncommitted changes.
+
 A stage closes only from `active`, and only when:
 
 - every current criterion has evidence with `result: "pass"`, the method actually used and a summary;
@@ -68,6 +70,8 @@ A stage can be delivered by several plans, each owning some of its done criteria
 ### Free work and overlap
 
 Work outside the roadmap does not need a stage. When the agent notices that a request overlaps an unclosed stage, it asks once per stage and session whether to use the roadmap, log the request as free work, or treat it as unrelated. Logging adds one line to the stage's Free-work log and claims nothing about its criteria.
+
+Free-work appends report their zero-based index. Use `roadmap_stage` with `revise_free_work` (`id`, `index`, replacement `intent`) or `delete_free_work` (`id`, `index`) for uncommitted entries in an unclosed stage. Committed entries cannot be changed.
 
 ### Closing a round
 
@@ -113,7 +117,7 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 | Tool | Purpose |
 | --- | --- |
 | `roadmap_status` | Rounds, stages and open TODOs; with `stage`, its full detail and handoff. |
-| `roadmap_stage` | `add`, `edit`, `amend`, `start`, `close`, `drop`, `renumber`. |
+| `roadmap_stage` | `add`, `edit`, `amend`, `revise_amendment`, `delete_amendment`, `revise_free_work`, `delete_free_work`, `start`, `close`, `drop`, `renumber`. |
 | `roadmap_todo` | `add`, `update`, `resolve`, `move`. |
 | `roadmap_check` | Document consistency check; `fix: true` regenerates generated blocks. |
 | `roadmap_overlap` | Ask the overlap question. |

@@ -23,6 +23,7 @@ import {
   lf,
   loadAll,
   type Model,
+  markdownHeadings,
   parseDoneCriteria,
   parseRoadmapIndex,
   parseRound,
@@ -49,6 +50,7 @@ import {
   upgradeRoadmapIndex,
   validateBody,
 } from "./documents.ts";
+import { committedFile } from "./git.ts";
 import { renderHandoff } from "./handoff.ts";
 import { guardCancellation, guardMutation } from "./mutation-guard.ts";
 import { allocate, type IdKind, withRepoLock } from "./numbering.ts";
@@ -82,7 +84,21 @@ export interface StageInput {
 }
 
 export interface StageOperationInput extends Partial<StageInput> {
-  action: "add" | "edit" | "amend" | "start" | "close" | "drop" | "renumber";
+  action:
+    | "add"
+    | "edit"
+    | "amend"
+    | "revise_amendment"
+    | "delete_amendment"
+    | "revise_free_work"
+    | "delete_free_work"
+    | "start"
+    | "close"
+    | "drop"
+    | "renumber";
+  /** Zero-based entry index in this stage's amendment or free-work log. */
+  index?: number;
+  intent?: string;
   /** add only: the active round (default) or a planned round. */
   round?: string;
   /** YYYY-MM-DD, or none to clear on edit and amend. */
@@ -685,29 +701,39 @@ function amend(stage: StageDoc, input: StageOperationInput): void {
   }
   if (retarget === stage.target) throw new Refusal(`${stage.id} already has ${retarget === null ? "no target" : `target ${retarget}`}.`);
   let current = parseDoneCriteria(stage.done_criteria);
-  const log: string[] = [];
+  const log: string[] = [`- Previous format: ${stage.format}`];
   const touched = new Set<string>();
   for (const modification of changes.modify ?? []) {
     const criterion = current.find((item) => item.id === modification.id);
     if (!criterion || touched.has(modification.id)) throw new Refusal(`Unknown or repeated criterion ${modification.id}.`);
     touched.add(modification.id);
-    const old = criterion.statement;
+    const old = { ...criterion };
     criterion.statement = requiredBody(modification.statement, "criterion statement");
     criterion.verify = requiredBody(modification.verify, "criterion verify method");
-    log.push(`- MODIFIED ${criterion.id} — ${criterion.statement} (was: ${old}) · Verify: ${criterion.verify}`);
+    log.push(
+      `- MODIFIED ${criterion.id} — ${JSON.stringify(criterion.statement)} · Verify: ${JSON.stringify(criterion.verify)} · Previous statement: ${JSON.stringify(old.statement)} · Previous verify: ${JSON.stringify(old.verify)}`,
+    );
   }
   for (const id of changes.remove ?? []) {
     const criterion = current.find((item) => item.id === id);
     if (!criterion || touched.has(id)) throw new Refusal(`Unknown or repeated criterion ${id}.`);
     touched.add(id);
+    const position = current.indexOf(criterion);
     current = current.filter((item) => item.id !== id);
-    log.push(`- REMOVED ${id} — ${criterion.statement}`);
+    log.push(
+      `- REMOVED ${id} — ${JSON.stringify(criterion.statement)} · Verify: ${JSON.stringify(criterion.verify)} · Position: ${position}`,
+    );
   }
   if (changes.add?.length) {
     const reserved = [...new Set([stage.done_criteria, stage.amendments].join("\n").match(/\bDC[1-9]\d*\b/g) ?? [])];
     const added = criteria(changes.add, reserved);
     current.push(...added);
-    log.push(...added.map((item) => `- ADDED ${item.id} — ${item.statement} · Verify: ${item.verify}`));
+    log.push(
+      ...added.map(
+        (item) =>
+          `- ADDED ${item.id} — ${JSON.stringify(item.statement)} · Verify: ${JSON.stringify(item.verify)} · Position: ${current.indexOf(item)}`,
+      ),
+    );
   }
   if (!current.length) throw new Refusal("An active stage must retain at least one done criterion.");
   for (const scope of changes.scope ?? []) {
@@ -716,6 +742,7 @@ function amend(stage: StageDoc, input: StageOperationInput): void {
     const item = requiredBody(scope.item, "scope item");
     const bullet = `- ${item}`;
     const entries = stage[field] ? stage[field].split("\n") : [];
+    const position = scope.op === "add" ? entries.length : entries.indexOf(bullet);
     if (scope.op === "add") {
       if (entries.includes(bullet)) throw new Refusal(`Scope item already exists: ${item}.`);
       entries.push(bullet);
@@ -725,7 +752,9 @@ function amend(stage: StageDoc, input: StageOperationInput): void {
       entries.splice(index, 1);
     }
     stage[field] = entries.join("\n");
-    log.push(`- ${scope.op === "add" ? "ADDED" : "REMOVED"} Scope/${scope.side === "in" ? "In" : "Out"}: ${item}`);
+    log.push(
+      `- ${scope.op === "add" ? "ADDED" : "REMOVED"} Scope/${scope.side === "in" ? "In" : "Out"}: ${JSON.stringify(item)} · Position: ${position}`,
+    );
   }
   if (retarget !== undefined) {
     log.push(`- TARGET ${retarget ?? "none"} (was: ${stage.target ?? "none"})`);
@@ -734,6 +763,159 @@ function amend(stage: StageDoc, input: StageOperationInput): void {
   stage.done_criteria = renderCriteria(current);
   const entry = `### ${new Date().toISOString().slice(0, 10)} — ${reason}\n\n${log.join("\n")}\n- Reason: ${reason}`;
   stage.amendments = [stage.amendments, entry].filter(Boolean).join("\n\n");
+}
+
+type EntryField = "amendments" | "free_work_log";
+
+interface StageEntry {
+  start: number;
+  end: number;
+  text: string;
+}
+
+interface SelectedStageEntry {
+  entries: StageEntry[];
+  entry: StageEntry;
+  index: number;
+}
+
+function stageEntries(body: string, field: EntryField): StageEntry[] {
+  const matches = markdownHeadings(body, field === "amendments" ? /^### .+$/gm : /^- .+$/gm);
+  return matches.map((match, index) => {
+    const start = match.index as number;
+    const text = body.slice(start, matches[index + 1]?.index ?? body.length).replace(/\n+$/, "");
+    return { start, end: start + text.length, text };
+  });
+}
+
+function editableEntry(repo: Repo, current: StageDoc, field: EntryField, index: number | undefined): SelectedStageEntry {
+  const entries = stageEntries(current[field], field);
+  if (index === undefined || !Number.isInteger(index) || index < 0 || index >= entries.length)
+    throw new Refusal(`${field === "amendments" ? "Amendment" : "Free-work entry"} index is out of range (zero-based).`);
+  const head = committedFile(repo.repoRoot, relative(repo.repoRoot, current.path));
+  const committed = new Map<string, number>();
+  if (head !== undefined) {
+    for (const entry of stageEntries(parseStage(head, current.path)[field], field))
+      committed.set(entry.text, (committed.get(entry.text) ?? 0) + 1);
+  }
+  for (const [position, entry] of entries.entries()) {
+    const count = committed.get(entry.text) ?? 0;
+    if (count > 0) committed.set(entry.text, count - 1);
+    if (position === index) {
+      if (count > 0)
+        throw new Refusal(
+          `${field === "amendments" ? "Amendment" : "Free-work entry"} is committed; append a new ${field === "amendments" ? "amendment" : "entry"} instead.`,
+        );
+      return { entries, entry, index };
+    }
+  }
+  throw new Refusal("Entry index is out of range.");
+}
+
+function replaceStageEntry(body: string, selected: SelectedStageEntry, replacement?: string): string {
+  const { entries, entry, index } = selected;
+  if (replacement !== undefined) return body.slice(0, entry.start) + replacement + body.slice(entry.end);
+  const previous = entries[index - 1];
+  const next = entries[index + 1];
+  if (previous) return body.slice(0, previous.end) + body.slice(entry.end);
+  if (next) return body.slice(0, entry.start) + body.slice(next.start);
+  return "";
+}
+
+const QUOTED_AMENDMENT_TEXT = String.raw`("(?:[^"\\]|\\.)*")`;
+const CRITERION_DELTA = new RegExp(
+  `^- (ADDED|REMOVED) (DC[1-9]\\d*) — ${QUOTED_AMENDMENT_TEXT} · Verify: ${QUOTED_AMENDMENT_TEXT} · Position: (\\d+)$`,
+);
+const CRITERION_MODIFICATION = new RegExp(
+  `^- MODIFIED (DC[1-9]\\d*) — ${QUOTED_AMENDMENT_TEXT} · Verify: ${QUOTED_AMENDMENT_TEXT} · Previous statement: ${QUOTED_AMENDMENT_TEXT} · Previous verify: ${QUOTED_AMENDMENT_TEXT}$`,
+);
+const SCOPE_DELTA = new RegExp(`^- (ADDED|REMOVED) Scope/(In|Out): ${QUOTED_AMENDMENT_TEXT} · Position: (\\d+)$`);
+
+function undoAmendment(current: StageDoc, entry: string): void {
+  const lines = entry.split("\n");
+  const format = /^- Previous format: (1|2)$/.exec(lines[2] ?? "");
+  if (!format)
+    throw new Refusal(
+      "This amendment lacks reversible history; its effects cannot be reverted unambiguously. Append a new amendment instead.",
+    );
+  const criteria = parseDoneCriteria(current.done_criteria);
+  function conflict(): never {
+    throw new Refusal(
+      "Amendment effects no longer match the stage; they cannot be reverted unambiguously. Append a new amendment instead.",
+    );
+  }
+  for (const line of lines.slice(3, -1).reverse()) {
+    const delta = CRITERION_DELTA.exec(line);
+    const modification = CRITERION_MODIFICATION.exec(line);
+    const scope = SCOPE_DELTA.exec(line);
+    const retarget = /^- TARGET (none|\d{4}-\d{2}-\d{2}) \(was: (none|\d{4}-\d{2}-\d{2})\)$/.exec(line);
+    if (delta) {
+      const id = delta[2] as string;
+      const statement: string = JSON.parse(delta[3] as string);
+      const verify: string = JSON.parse(delta[4] as string);
+      const position = Number(delta[5]);
+      if (delta[1] === "ADDED") {
+        const criterion = criteria[position];
+        if (!criterion || criterion.id !== id || criterion.statement !== statement || criterion.verify !== verify) conflict();
+        criteria.splice(position, 1);
+      } else {
+        if (position > criteria.length || criteria.some((criterion) => criterion.id === id)) conflict();
+        criteria.splice(position, 0, { id, statement, verify });
+      }
+    } else if (modification) {
+      const criterion = criteria.find((item) => item.id === modification[1]);
+      if (
+        !criterion ||
+        criterion.statement !== JSON.parse(modification[2] as string) ||
+        criterion.verify !== JSON.parse(modification[3] as string)
+      )
+        conflict();
+      criterion.statement = JSON.parse(modification[4] as string);
+      criterion.verify = JSON.parse(modification[5] as string);
+    } else if (scope) {
+      const field = scope[2] === "In" ? "scope_in" : "scope_out";
+      const entries = current[field] ? current[field].split("\n") : [];
+      const bullet = `- ${JSON.parse(scope[3] as string)}`;
+      const position = Number(scope[4]);
+      if (scope[1] === "ADDED") {
+        if (entries[position] !== bullet) conflict();
+        entries.splice(position, 1);
+      } else {
+        if (position > entries.length || entries.includes(bullet)) conflict();
+        entries.splice(position, 0, bullet);
+      }
+      current[field] = entries.join("\n");
+    } else if (retarget) {
+      if (current.target !== (retarget[1] === "none" ? null : retarget[1])) conflict();
+      current.target = retarget[2] === "none" ? null : (retarget[2] as string);
+    } else conflict();
+  }
+  current.done_criteria = renderCriteria(criteria);
+  current.format = format[1] === "1" ? 1 : 2;
+}
+
+function editStageEntry(repo: Repo, current: StageDoc, input: StageOperationInput): void {
+  if (current.status !== "planned" && current.status !== "active") throw new Refusal("Only unclosed stages have editable entries.");
+  const amendment = input.action === "revise_amendment" || input.action === "delete_amendment";
+  const field = amendment ? "amendments" : "free_work_log";
+  const selected = editableEntry(repo, current, field, input.index);
+  if (amendment) {
+    if (selected.index !== selected.entries.length - 1)
+      throw new Refusal("Only the latest amendment can be revised or deleted; earlier effects cannot be reverted unambiguously.");
+    undoAmendment(current, selected.entry.text);
+    current.amendments = replaceStageEntry(current.amendments, selected);
+    if (input.action === "revise_amendment") amend(current, input);
+  } else {
+    let replacement: string | undefined;
+    if (input.action === "revise_free_work") {
+      const intent = required(input.intent, "free-work intent", true).replace(/\s+/g, " ").trim();
+      assertBody(intent, { inlineOnly: true });
+      const prefix = /^(- \d{4}-\d{2}-\d{2} · session .+? · )/.exec(selected.entry.text)?.[1];
+      if (!prefix) throw new Refusal("Free-work entry has no recognizable date and session.");
+      replacement = prefix + JSON.stringify(intent);
+    }
+    current.free_work_log = replaceStageEntry(current.free_work_log, selected, replacement);
+  }
 }
 
 function closeStage(mutation: Mutation, actor: Actor, stage: StageDoc, input: StageOperationInput, plans: readonly AtlasStagePlan[]): void {
@@ -935,8 +1117,8 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
         return `Added ${created.id} — ${created.title}${model.rounds.find((round) => round.id === created.round)?.status === "planned" ? ` to planned round ${created.round}` : ""}.`;
       }
       const current = editableStage(model, input.id);
-      if (input.target !== undefined && input.action !== "edit" && input.action !== "amend")
-        throw new Refusal("target applies only to add, edit and amend; use /roadmap retarget otherwise.");
+      if (input.target !== undefined && input.action !== "edit" && input.action !== "amend" && input.action !== "revise_amendment")
+        throw new Refusal("target applies only to add, edit, amend and revise_amendment; use /roadmap retarget otherwise.");
       if (input.action === "start") {
         const active = activeRound(model);
         if (current.round !== active.id)
@@ -990,6 +1172,11 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
         if (current.status !== "active") throw new Refusal("Only an active stage can be amended.");
         amend(current, input);
         promote(model, current);
+      } else if (["revise_amendment", "delete_amendment", "revise_free_work", "delete_free_work"].includes(input.action)) {
+        editStageEntry(repo, current, input);
+        promote(model, current);
+        mutation.put(current.path, renderStage(current));
+        return `Updated ${current.id}: ${input.action}. Entry index: ${input.index}.`;
       } else if (input.action === "close") {
         if (current.status !== "active") throw new Refusal("Only an active stage can close.");
         await checked(model);
@@ -1012,7 +1199,7 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
         return `Renumbered ${input.id} to ${current.id}; mutable references updated.`;
       } else throw new Refusal("Unknown stage action.");
       mutation.put(current.path, renderStage(current));
-      return `${input.action === "edit" ? "Edited" : input.action === "amend" ? "Amended" : "Dropped"} ${current.id} — ${current.title}.`;
+      return `${input.action === "edit" ? "Edited" : input.action === "amend" ? "Amended" : "Dropped"} ${current.id} — ${current.title}.${input.action === "amend" ? ` Amendment index: ${stageEntries(current.amendments, "amendments").length - 1}.` : ""}`;
     },
     options,
   );
@@ -1680,7 +1867,7 @@ export async function recordFreeWork(
       const entry = `- ${new Date().toISOString().slice(0, 10)} · session ${actor.sessionId} · ${JSON.stringify(intent)}`;
       current.free_work_log = [current.free_work_log, entry].filter(Boolean).join("\n");
       mutation.put(current.path, renderStage(current));
-      return `Recorded free work for ${current.id}.`;
+      return `Recorded free work for ${current.id}. Free-work index: ${stageEntries(current.free_work_log, "free_work_log").length - 1}.`;
     },
     options,
   );

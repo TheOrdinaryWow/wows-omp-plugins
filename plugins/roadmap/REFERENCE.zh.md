@@ -17,7 +17,7 @@
 | 工具 | 输入或操作 |
 | --- | --- |
 | `roadmap_status` | 不带参数时返回轮次、目标日期、实际日期、逾期标记、阶段及其依赖、活动轮次中计划阶段的就绪情况、未关闭阶段的 Atlas 计划（omo-prometheus 有回复时），以及按目标或触发条件分组的未关闭 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
-| `roadmap_stage` | `add`、`edit`、`amend`、`start`、`close`、`drop`、`renumber`。`add` 接受可选的 `round` 和 `target`；`edit` 和 `amend` 也接受 `target`。`start` 和 `close` 会向 omo-prometheus 查询该阶段的 Atlas 计划。 |
+| `roadmap_stage` | `add`、`edit`、`amend`、`revise_amendment`、`delete_amendment`、`revise_free_work`、`delete_free_work`、`start`、`close`、`drop`、`renumber`。`add` 接受可选的 `round` 和 `target`；`edit`、`amend` 和 `revise_amendment` 也接受 `target`。`start` 和 `close` 会向 omo-prometheus 查询该阶段的 Atlas 计划。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
 | `roadmap_check` | 可选 `fix: true`。只检查文档，不检查代码与文档是否一致。 |
 | `roadmap_overlap` | `stage` 和 `intent`。 |
@@ -34,11 +34,15 @@
 | --- | --- |
 | `add` | 在活动轮次中，或在 `round` 指定的活动或计划轮次中创建计划阶段。需提供 `title`、`objective`、`scope_in`、`scope_out`，以及带 `statement` 和 `verify` 的 `done_criteria` 条目；`target`、依赖和设计约束可选。依赖只能位于同一轮或更早的轮次。 |
 | `edit` | 替换计划阶段中提供的字段，包括 `target`。阶段激活后请改用 `amend`。 |
-| `amend` | 向活动阶段追加一条带日期的变更，必须写明 `reason`。`amendments` 可以新增、修改或删除标准，以及增删范围内/范围外条目；`target` 记录日期变化。 |
+| `amend` | 向活动阶段追加一条带日期的变更，必须写明 `reason`，并返回从零开始的修订索引。`amendments` 可以新增、修改或删除标准，以及增删范围内/范围外条目；`target` 记录日期变化。新日志会保留旧验证方法和条目位置，供撤销使用。 |
+| `revise_amendment`、`delete_amendment` | 接受阶段 `id` 和从零开始的修订 `index`。只有最新且影响可明确撤销的未提交修订可以修改；修改会先撤销原修订，再应用替换的 `reason`、`amendments` 和可选 `target`。删除会撤销其影响，没有其他改动时恢复追加前规范格式的阶段字节。缺少撤销信息的旧条目以及与后续编辑冲突的条目会被拒绝。 |
+| `revise_free_work`、`delete_free_work` | 接受未关闭阶段的 `id` 和从零开始的自由工作 `index`。修改接受与 `roadmap_overlap` 相同形状的替换 `intent`，保留原日期和会话。追加操作会返回索引。 |
 | `start` | 要求阶段属于活动轮次、依赖已关闭且没有检查错误；激活并绑定阶段，返回规划交接内容。对已处于活动状态的阶段，则加入而不修改文档。 |
 | `close` | 接受 `id`、`delivered` 摘要、可选的 `deviations`，以及下文所述的 `evidence` 和 `todos`。与该阶段关联的 ADR 仍处于提议状态时拒绝。记录 Outcome（在 `### ADRs` 下包含关联 ADR 的状态）和关闭哈希，并冻结阶段。关联的 Atlas 计划尚未完成时不会阻止关闭：回执会给出警告，并在 Outcome 的 Deviations 文本后追加一行，列出这些计划（名称、计划 ID、声明的标准）。 |
 | `drop` | 放弃计划中或活动的阶段，必须写明 `reason`；需先解决或移走所有指向它的未关闭 TODO。 |
 | `renumber` | 用 `new_id` 为计划阶段重新编号，并改写可变的引用，包括通过 adr 插件改写 ADR 的阶段关联。如果已关闭的历史中有需要修改的引用，则拒绝。 |
+
+是否提交按 `HEAD` 中解析出的阶段条目判断，对相同标题和正文采用多重集匹配，重复条目按数量计算。仓库尚无提交，或文件在 `HEAD` 中不存在时，所有条目均视为未提交。其他位置的修改不会解锁已提交条目；此时会拒绝并提示追加新条目。索引越界时不写入。每次成功修改都执行与追加相同的验证和索引重新生成，并列出需要提交的文件；不引入缓冲或自动提交。
 
 关闭阶段的输入：
 
