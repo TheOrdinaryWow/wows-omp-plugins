@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.3.2...adr@0.4.0) (2026-11-03)
+
+
+### Features
+
+* **adr:** allow revising and deleting uncommitted ADR notes ([0dd2cf9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0dd2cf90ad6f4f8f1f3194f7b75717d7a111d317))
+
 ## [0.3.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.3.1...adr@0.3.2) (2026-10-31)
 
 
