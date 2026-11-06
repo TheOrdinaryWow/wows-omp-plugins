@@ -18,6 +18,15 @@
 * Recognize both live task-agent roster formats without treating unknown policy as an empty list.
 * Preserve workflow-owned reviewer roles, approved Prometheus execution routes, and read-only agent capabilities when judging task calls.
 
+## [0.8.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/judge-dispatch@0.8.2...judge-dispatch@0.8.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **judge-dispatch:** read background task outcomes from the settled job row ([7101b5a](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/7101b5a16c697ba60d3323abcfa2015d8ad47f5c))
+* **judge-dispatch:** respect the session cost cap, file-backed tasks and per-item models ([2751bb2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/2751bb2dcafc02adec6aa8fe024a7a47a8178430))
+* raise supported OMP floor to 18.17.0 ([e0835f9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e0835f9b202187b0e86bb238ae21ece096e77e34))
+
 ## [0.8.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/judge-dispatch@0.8.1...judge-dispatch@0.8.2) (2026-10-28)
 
 

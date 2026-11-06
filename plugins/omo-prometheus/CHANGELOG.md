@@ -24,6 +24,14 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.27.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.27.1...omo-prometheus@0.27.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** require inline assignments and fresh output from woken children ([c2a7911](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c2a7911c5a0cf788bc03a71b974af187718810df))
+* raise supported OMP floor to 18.17.0 ([e0835f9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e0835f9b202187b0e86bb238ae21ece096e77e34))
+
 ## [0.27.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.27.0...omo-prometheus@0.27.1) (2026-11-02)
 
 
