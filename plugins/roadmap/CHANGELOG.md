@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.8.0...roadmap@0.9.0) (2026-11-06)
+
+
+### Features
+
+* **roadmap:** list stages in dependency order with a stageOrder setting and console toggle ([fdbb090](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/fdbb09062452655ba6d34ad50091c422944a7761))
+
 ## [0.8.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.7.2...roadmap@0.8.0) (2026-11-03)
 
 
