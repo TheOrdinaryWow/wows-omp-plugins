@@ -167,14 +167,24 @@ like design notes:
   `before_subagent_spawn`), host source files and functions, internal formats,
   ledger or schema versions, and why the host forces a design. Put what a
   maintainer or client author needs in `REFERENCE.md` (and `.zh.md`), linked
-  from the README. Move such facts there; do not delete them.
+  from the README. Move such facts there unless REFERENCE already has them; do
+  not delete them. Agent tools, plan grammars and internal agent names that
+  users see in a session get a plain sentence or two, with the detail in
+  REFERENCE.
 - Keep what users type or read verbatim: commands, setting keys and values,
   status text. Explain an OMP concept the first time it appears, in a clause or
   with a link.
-- Keep the shared outline: what it does, install, quick start, usage,
-  settings, working with other plugins, without the terminal UI, known
-  limitations, reference, license. Settings tables say what a value changes for
-  the user; limitations say what the user cannot do or will notice.
+- Every plugin README uses one outline: banner, name, language switch, a
+  one-line blockquote saying what the plugin is for, a short description (the
+  problem it solves and what changes in the session), then `Install`,
+  `Quick start`, `Usage` (subsections named after what the user wants to do),
+  `Settings`, `Working with other plugins`, `Known limitations`,
+  `More details` (the REFERENCE link) and `License`. Behavior in RPC, ACP, SDK
+  and headless hosts lives in REFERENCE, not the README.
+- `Settings` shows how to change a value (the `omp plugin config` command and
+  the project override) and lists every setting with its default and what each
+  value changes for the user. `Known limitations` lists only what the user
+  cannot do or will notice.
 - English is the source; the Chinese file has the same sections and facts but
   is written as natural Chinese, not translated word for word.
 

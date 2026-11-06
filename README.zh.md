@@ -7,22 +7,24 @@
 
 [English](README.md) | 简体中文
 
-一个个人维护的 [omp](https://omp.sh) 插件市场。其中几个插件移植自 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)（OmO）的工作流。
+> 一组 [omp](https://omp.sh) 插件，帮助代理规划、执行、审查和跟踪真实的项目工作。
+
+这是一个个人维护的 OMP 插件市场。有的插件提供完整的工作流，比如先规划改动、再带着证据逐项执行，或者反复审计代码直到再也查不出问题；有的是日常使用的小工具。其中几个移植自 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)（OmO）的工作流。
 
 ## 插件
 
-| 插件 | 说明 |
+| 插件 | 用途 |
 | --- | --- |
-| [`adr`](plugins/adr/README.zh.md) | 以 MADR 格式记录架构决策，通过代理工具和 `/adr` 管理 |
-| [`audit-goal`](plugins/audit-goal/README.zh.md) | `/audit`：反复进行独立的审计与修复，每轮记入审计记录 |
-| [`find-console`](plugins/find-console/README.zh.md) | `/find`：浏览语义搜索结果、预览已判定的行范围，将引用插入输入框或发送给代理 |
-| [`judge-dispatch`](plugins/judge-dispatch/README.zh.md) | 由 OMP 的 judge 角色为 `task` 调用选择子代理类型并评定难度，难度可调整思考级别或选用你配置的模型档位 |
-| [`omo-prometheus`](plugins/omo-prometheus/README.zh.md) | OmO 的 Prometheus 规划与 Atlas 计划执行 |
-| [`omo-toolkit`](plugins/omo-toolkit/README.zh.md) | OmO 的分类与调研代理、工作流技能和文档类 MCP 服务器 |
-| [`omo-ultrawork`](plugins/omo-ultrawork/README.zh.md) | OmO 的 Ultrawork 模式、`mass-ulw`、`/hyperplan` 和 `/ulw-research` |
-| [`omp-herdr-dag`](plugins/omp-herdr-dag/README.zh.md) | 在 Herdr 侧边窗格中实时展示待办、计划、Atlas 和子代理的关系图 |
-| [`roadmap`](plugins/roadmap/README.zh.md) | 通过代理工具管理项目的轮次、阶段和 TODO，并通过 adr 插件关联阶段的 ADR |
-| [`snippets`](plugins/snippets/README.zh.md) | 可复用的文本片段：`.review.` 这样的触发词在发送时展开，`/snippets` 用来浏览、插入和管理片段 |
+| [`adr`](plugins/adr/README.zh.md) | 把架构决策记录保存在仓库里；代理负责起草，你用 `/adr` 决定是否接受 |
+| [`audit-goal`](plugins/audit-goal/README.zh.md) | `/audit` 分轮审查代码，发现问题就修，查不出新问题时结束 |
+| [`find-console`](plugins/find-console/README.zh.md) | `/find` 按代码的行为搜索，显示带分数的结果，并把有用的交给代理 |
+| [`judge-dispatch`](plugins/judge-dispatch/README.zh.md) | 判定模型检查每个子代理任务该派给哪种代理、有多难，由你决定这会改变什么 |
+| [`omo-prometheus`](plugins/omo-prometheus/README.zh.md) | 用 Prometheus 规划大改动，再由 Atlas 带着证据逐个任务执行 |
+| [`omo-toolkit`](plugins/omo-toolkit/README.zh.md) | 来自 OmO 的专长代理、工作流技能和文档搜索 |
+| [`omo-ultrawork`](plugins/omo-ultrawork/README.zh.md) | 加上 `ulw`，代理会把请求做到底并拿出证据；另有 `/ulw-loop`、`/hyperplan` 和 `/ulw-research` |
+| [`omp-herdr-dag`](plugins/omp-herdr-dag/README.zh.md) | 在 Herdr 侧边窗格中实时显示待办、计划和子代理的关系图 |
+| [`roadmap`](plugins/roadmap/README.zh.md) | 放在仓库里的项目路线图：轮次、带完成标准的阶段，以及每个会话都能看到的 TODO |
+| [`snippets`](plugins/snippets/README.zh.md) | 保存好的文字片段，发送时由 `.review.` 这样的触发词展开，用 `/snippets` 管理 |
 
 每个插件都可以单独安装，只是 roadmap 需要同时安装 adr 插件。
 
@@ -48,11 +50,9 @@ omp plugin marketplace update wows-omp-plugins
 omp plugin upgrade <name>@wows-omp-plugins
 ```
 
-## 不使用终端界面时
+## 更多细节
 
-这些插件也能在 `omp --mode rpc`、`rpc-ui`、ACP 编辑器、SDK 和 headless 模式下运行。终端专用的界面会改用普通对话框，所有交互操作也都有对应的命令写法。各插件 README 里都有一小节专门说明。
-
-带工作流状态的插件还会把状态发布成 JSON 快照，详见 [REFERENCE.zh.md](REFERENCE.zh.md)。
+每个插件的 README 说明怎么使用和配置它，它的 `REFERENCE.md` 则包含技术细节，包括在 RPC、ACP 编辑器、SDK 和无界面模式下的表现。带工作流状态的插件会把状态发布成 JSON 快照，供客户端程序读取，格式见 [REFERENCE.zh.md](REFERENCE.zh.md)。
 
 ## 参与开发
 

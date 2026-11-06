@@ -7,24 +7,26 @@
 
 English | [简体中文](README.zh.md)
 
-A personal marketplace of [omp](https://omp.sh) plugins. Several of them port workflows from [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO).
+> Plugins for [omp](https://omp.sh) that help the agent plan, carry out, review and keep track of real project work.
+
+A personal marketplace of OMP plugins. Some add whole workflows, such as planning a change and executing it with proof, or auditing code until it stops turning up problems. Others are smaller tools for everyday use. Several are ports of workflows from [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO).
 
 ## Plugins
 
-| Plugin | Description |
+| Plugin | What it does |
 | --- | --- |
-| [`adr`](plugins/adr/README.md) | Architecture decision records in MADR format, managed through agent tools and `/adr` |
-| [`audit-goal`](plugins/audit-goal/README.md) | `/audit`: repeated independent audit and fix rounds, recorded in a ledger |
-| [`find-console`](plugins/find-console/README.md) | `/find`: browse semantic search hits, preview judged ranges and send references to the composer or agent |
-| [`judge-dispatch`](plugins/judge-dispatch/README.md) | OMP's judge role picks the subagent type for `task` calls and rates their difficulty, which can step thinking or select your model tiers |
-| [`omo-prometheus`](plugins/omo-prometheus/README.md) | OmO's Prometheus planning and Atlas plan execution |
-| [`omo-toolkit`](plugins/omo-toolkit/README.md) | OmO's category and research agents, workflow skills and documentation MCP servers |
-| [`omo-ultrawork`](plugins/omo-ultrawork/README.md) | OmO's ultrawork mode, `mass-ulw`, `/hyperplan` and `/ulw-research` |
-| [`omp-herdr-dag`](plugins/omp-herdr-dag/README.md) | Live todo, plan, Atlas and subagent graph in a Herdr side pane |
-| [`roadmap`](plugins/roadmap/README.md) | Project rounds, stages and TODOs managed through agent tools, with stage-linked ADRs through the adr plugin |
-| [`snippets`](plugins/snippets/README.md) | Reusable text snippets: trigger words such as `.review.` expand when you send, and `/snippets` browses, inserts and manages them |
+| [`adr`](plugins/adr/README.md) | Keep architecture decision records in your repository; the agent drafts them and you accept them with `/adr` |
+| [`audit-goal`](plugins/audit-goal/README.md) | `/audit` reviews code in rounds, fixes what it finds, and stops when no more problems turn up |
+| [`find-console`](plugins/find-console/README.md) | `/find` searches code by what it does, shows scored hits and hands the useful ones to the agent |
+| [`judge-dispatch`](plugins/judge-dispatch/README.md) | A judge model checks which agent should take each subagent task and how hard it is; you decide what that changes |
+| [`omo-prometheus`](plugins/omo-prometheus/README.md) | Plan big changes with Prometheus, then let Atlas carry them out task by task with proof |
+| [`omo-toolkit`](plugins/omo-toolkit/README.md) | Specialist agents, workflow skills and documentation search from OmO |
+| [`omo-ultrawork`](plugins/omo-ultrawork/README.md) | Add `ulw` and the agent sees the request through with evidence; plus `/ulw-loop`, `/hyperplan` and `/ulw-research` |
+| [`omp-herdr-dag`](plugins/omp-herdr-dag/README.md) | A live graph of todos, plans and subagents in a Herdr side pane |
+| [`roadmap`](plugins/roadmap/README.md) | A project roadmap in your repository: rounds, stages with done criteria, and TODOs that every session can see |
+| [`snippets`](plugins/snippets/README.md) | Saved text that expands from trigger words like `.review.` when you send, managed with `/snippets` |
 
-Each plugin installs on its own, except that roadmap requires the adr plugin.
+Each plugin installs on its own, except that roadmap needs the adr plugin.
 
 ## Install
 
@@ -48,11 +50,9 @@ omp plugin marketplace update wows-omp-plugins
 omp plugin upgrade <name>@wows-omp-plugins
 ```
 
-## Without the terminal UI
+## More details
 
-The plugins also run in `omp --mode rpc`, `rpc-ui`, ACP editors, the SDK and headless runs. Terminal-only screens fall back to plain dialogs, and every interactive action has a command form. Each README has a short section on this.
-
-Plugins with workflow state also publish it as a JSON snapshot; see [REFERENCE.md](REFERENCE.md).
+Each plugin's README explains how to use and configure it, and its `REFERENCE.md` has the technical details, including how it behaves in RPC, ACP editors, the SDK and headless runs. Plugins with workflow state publish it as a JSON snapshot for client programs; [REFERENCE.md](REFERENCE.md) describes the format.
 
 ## Contributing
 
