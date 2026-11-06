@@ -134,13 +134,8 @@ name segment — `#src/*`, not `#/*`.
    `commands/*.md`, `agents/*.md`, `hooks/pre|post/`, `tools/`, `.mcp.json`.
 4. Declare a TypeScript extension entry in `package.json` under `omp.extensions`.
    Content-only plugins omit `omp.extensions`.
-5. Write `plugins/<name>/README.md` and `README.zh.md` for the installing user,
-   following the shared outline (what it does, install, quick start, usage,
-   settings, working with other plugins, without the terminal UI, known
-   limitations, reference, license). Put schemas, event contracts, storage formats and
-   other maintainer or client-author detail in `plugins/<name>/REFERENCE.md`
-   (and `.zh.md`), linked from the README. English is the source; the Chinese
-   file mirrors its sections. Both ship with the plugin.
+5. Write `plugins/<name>/README.md` and `README.zh.md` as described in
+   "Writing READMEs" below. Both ship with the plugin.
 6. Add the entry to [.omp-plugin/marketplace.json](file:///./.omp-plugin/marketplace.json)
    with `"source": "./<name>"` — `metadata.pluginRoot` already prepends `./plugins`.
 7. Add a row to the root README plugin table pointing at the new plugin README,
@@ -156,6 +151,38 @@ name segment — `#src/*`, not `#/*`.
 dependency-free extension with manifest-backed settings;
 [plugins/omo-prometheus/](file:///./plugins/omo-prometheus/) illustrates
 runtime assets and agents.
+
+## Writing READMEs
+
+Every `README.md` and `README.zh.md` (root and plugins) is written for someone
+who uses OMP and wants to know whether to install the plugin and how to use it.
+That reader is not a plugin developer, does not know OMP's internals, and does
+not read the source. Decided by the maintainer after earlier READMEs still read
+like design notes:
+
+- Say what the plugin does for the user in plain words first: the problem it
+  solves and what changes in their session. Describe behavior through what they
+  type and see: commands, dialogs, status lines, settings and results.
+- Leave out mechanism: hook and event names (`tool_call`,
+  `before_subagent_spawn`), host source files and functions, internal formats,
+  ledger or schema versions, and why the host forces a design. Put what a
+  maintainer or client author needs in `REFERENCE.md` (and `.zh.md`), linked
+  from the README. Move such facts there; do not delete them.
+- Keep what users type or read verbatim: commands, setting keys and values,
+  status text. Explain an OMP concept the first time it appears, in a clause or
+  with a link.
+- Keep the shared outline: what it does, install, quick start, usage,
+  settings, working with other plugins, without the terminal UI, known
+  limitations, reference, license. Settings tables say what a value changes for
+  the user; limitations say what the user cannot do or will notice.
+- English is the source; the Chinese file has the same sections and facts but
+  is written as natural Chinese, not translated word for word.
+
+After changing any README, run the project skills before committing:
+`humanizer` (`.agents/skills/humanizer`) over every changed English README and
+`humanizer-zh` (`.agents/skills/humanizer-zh`) over every changed Chinese
+README, in file mode. They edit prose only and must not add, drop or soften
+facts; check the result against the source of truth before committing.
 
 ## Extension authoring gotcha
 
