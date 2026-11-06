@@ -105,6 +105,17 @@ The console and the form are plugin components. Tern gets the native versions, a
 - The form is a `SnippetForm` with the native overlay role `omp.overlay.snippets.form`. It resolves to a draft of `key`, `scope`, `description`, and `body`. Only the focused text field is a live input, so the caret follows the keyboard.
 - On save, the command formats the draft with `formatSnippetSource(description, body)` and writes it with `store.write`. A changed key renames the file first with `store.rename`, keeping its state, then writes the text when it changed.
 - Without the custom UI (`ctx.mode` not `tui`, or no `ctx.ui.custom`), the same draft comes from `ctx.ui.input`, `ctx.ui.select` (scope, new snippets only), and `ctx.ui.editor` (body). No path shows frontmatter.
+- In the terminal form, Enter moves to the next field from Key, Scope or Description, adds a line in Body, and presses Save or Cancel when one is focused. Left, Right or Space switches Scope. Saving with an invalid key moves the cursor to Key and shows the reason. In Tern, click a field to edit it.
+- In the Tern console, the search field and the All, Global and Workspace tabs sit at the top, the preview sits below the list, and an action bar holds the actions with their shortcuts.
+
+## Without the terminal UI
+
+| Host | Behavior |
+|---|---|
+| Terminal TUI | Full console, with highlights in the editor. |
+| Tern | Expansion works. The console is a native picker sheet, and New and Edit open a native form. |
+| RPC and ACP | Expansion works. `/snippets` uses selector dialogs for the list and actions. New and Edit ask one dialog per field: key, then scope when creating, then description, then body. On edit, an empty key or description keeps the current value, and `-` clears the description. Clients without an editor get no Insert action, and `/snippets <key>` shows an error pointing to `/snippets send <key>`. |
+| No UI | `/snippets` posts the list and any problems as a message. Expansion still works. |
 
 ## State file
 

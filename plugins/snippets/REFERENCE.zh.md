@@ -105,6 +105,17 @@ trigger 不能包含空白字符，也不能包含以下字符：`/ ! @ ^ # : $ 
 - 表单是 `SnippetForm`，原生浮层角色为 `omp.overlay.snippets.form`。它输出草稿：`key`、`scope`、`description` 和 `body`。只有获得焦点的文本字段是可编辑的输入框，因此光标跟随键盘。
 - 保存时，命令用 `formatSnippetSource(description, body)` 格式化草稿，并通过 `store.write` 写入。修改 key 时先用 `store.rename` 重命名并保留状态，正文有变化再写入。
 - 没有自定义 UI（`ctx.mode` 不是 `tui`，或没有 `ctx.ui.custom`）时，同样的草稿来自 `ctx.ui.input`、`ctx.ui.select`（仅新建时选择范围）和 `ctx.ui.editor`（正文）。任何路径都不会显示 frontmatter。
+- 在终端表单中，Enter 在 Key、Scope、Description 字段上跳到下一个字段，在 Body 中换行，焦点在 Save 或 Cancel 上时按下它。Left、Right 或 Space 切换 Scope。key 无效时保存，光标会回到 Key 并显示原因。在 Tern 中点击字段即可编辑。
+- 在 Tern 控制台中，搜索框和 All、Global、Workspace 标签位于顶部，预览位于列表下方，操作栏提供所有操作及其快捷键。
+
+## 不使用终端界面时
+
+| 宿主 | 行为 |
+|---|---|
+| 终端 TUI | 完整控制台，编辑器中有高亮。 |
+| Tern | 展开正常。控制台是原生选择器面板，新建和编辑打开原生表单。 |
+| RPC 和 ACP | 展开正常。`/snippets` 用选择对话框展示列表和操作。新建和编辑按字段逐个弹出对话框：key，新建时再选范围，然后是描述和正文。编辑时 key 或描述留空表示保持原值，输入 `-` 清空描述。没有编辑器的客户端不显示 Insert，`/snippets <key>` 会报错并提示改用 `/snippets send <key>`。 |
+| 无 UI | `/snippets` 以消息形式列出片段和问题。展开仍然有效。 |
 
 ## 状态文件
 
