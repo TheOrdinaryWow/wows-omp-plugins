@@ -135,13 +135,30 @@ Writes take one repository lock and atomically replace each file. A multi-file o
 
 Commit the documents according to your project's rules. The checked-out Markdown is the source of truth on each branch. Worktrees share only the lock and versioned ID counters under the git common directory's `roadmap/`; IDs are allocated above both the stored counter and IDs on disk.
 
-## Without a UI
+## Without the terminal UI
 
-A held preview's token covers exactly the shown files and lasts until the session is rebuilt (start, switch, branch, tree) or a newer preview of the same kind replaces it; any other reply declines it. `roadmap_overlap` reports no answer and names `/roadmap overlap`. `/roadmap close-round` without arguments lists the open TODOs that still need a disposition, and in format 2 asks for `outcome=<assessment>:<summary>`. Entering a format-1 session shows one notice naming `/roadmap upgrade`; `roadmap_upgrade` refuses. Notices and errors become displayed session messages.
+| Host | Behavior |
+| --- | --- |
+| RPC (`--mode rpc`, `rpc-ui`) and ACP | The inline select menus and dialogs whatever `uiMenu` says, sent as `select`, `input` and `editor` requests. ACP clients may show notices only in their log. |
+| No UI (`--no-ui`, print, JSON, SDK) | No dialogs. Bare `/roadmap` prints status and usage. Previews return a token without writing anything; confirm with `/roadmap confirm <token>`. Answer overlaps with `/roadmap overlap` and round closing with `/roadmap close-round` arguments, including the goal outcome. |
+| Tern | The console and write previews open as native sheets. Click a tab to switch sections, click a row to select it and double-click it to do what Enter does. The buttons below the panes run the same actions as their keys (Shift+O is the Order button), and the keys keep working. Roadmap tool calls show as native cards (status as tables, check diagnostics by severity, the planning handoff folded until expanded), and roadmap messages are headed by a readable title such as "Roadmap check". |
+
+A held preview's token covers exactly the shown files and lasts until the session is rebuilt (start, switch, branch, tree) or a newer preview of the same kind replaces it; any other reply declines it. The held preview lives only in memory and is lost when the process exits. `roadmap_overlap` reports no answer and names `/roadmap overlap`. `/roadmap close-round` without arguments lists the open TODOs that still need a disposition, and in format 2 asks for `outcome=<assessment>:<summary>`. Entering a format-1 session shows one notice naming `/roadmap upgrade`; `roadmap_upgrade` refuses. Notices and errors become displayed session messages.
+
+### Console details
+
+- `uiMenu: inline` gives the select menus of earlier releases. The setting is read on each use; an unknown value falls back to `fullscreen` with a warning in the log.
+- The stage list shows the active round until another round's stages are opened by jumping from that round.
+- After a check, round close, drop, target date or upgrade, the full result also goes to the chat. Closing a stage, opening a round and planning or revising one close the console; for a stage close, a notice says what to ask the agent for. Short answers, like a date, a drop reason or the round-close questions, stay small dialogs.
+- With `stageOrder: dependency`, stages that are ready together keep ID order. The setting applies to the console, the inline menu, `/roadmap` completions, `roadmap_status` and the per-turn agent context; Shift+O switches it for the rest of the session only.
+- Without the adr plugin, `/roadmap`, `/init-project` and every `roadmap_*` tool refuse with the install hint, while edits to `docs/roadmap/` stay blocked. The plugin ships the `roadmap` skill.
+- In Plan Mode the agent cannot commit, so starting a stage there only binds the session and returns the handoff; the stage stays planned and no file changes. The stage starts, and its files are committed, when implementation begins after approval. With omo-prometheus, Atlas does this before dispatching any task and refuses to dispatch until it is done (see `activation` under [Prometheus contract](#prometheus-contract)); it also commits a stage start made outside Plan Mode that nobody committed.
 
 ## Format-2 upgrade prompt
 
 In an initialized format-1 repository the main session asks once per session entry (`session_start` and `session_switch`; never on branch or tree changes, never in subagents) whether to upgrade. The dialog states that roadmap 0.2.3 and earlier can no longer read an upgraded repository and that closed history is not rewritten. Yes writes the upgrade immediately; No closes the dialog and changes nothing until the next session entry. The dialog opens after the host's session-start handlers return, so the session is usable while it is open, and it is cancelled at shutdown or when another session is entered. A repository that is already format 2, or whose roadmap cannot be read, is not asked.
+
+The upgrade changes only the root marker (`docs/roadmap/README.md`). Existing files keep format 1 until a write needs a format-2 field, and format-1 repositories that never use the format-2 features stay at format 1 byte for byte. Besides the session-entry dialog, `/roadmap upgrade`, the first `/roadmap plan-round` preview, the round-close dialog and `roadmap_upgrade` offer it; it is written only after Yes in the dialog or a confirmed `/roadmap upgrade` preview.
 
 ## State snapshot
 

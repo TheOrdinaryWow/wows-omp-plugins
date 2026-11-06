@@ -135,13 +135,30 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 
 按项目规则提交这些文档。每个分支上检出的 Markdown 就是事实来源。工作树之间只共享 git 公共目录下 `roadmap/` 中的锁和带版本的 ID 计数器；分配 ID 时会同时高于已存储的计数器和磁盘上已有的 ID。
 
-## 没有 UI 时
+## 不使用终端界面时
 
-暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO，在格式 2 中还要求提供 `outcome=<assessment>:<summary>`。进入格式 1 的会话时显示一条提到 `/roadmap upgrade` 的通知；`roadmap_upgrade` 会拒绝。通知和错误会显示为会话消息。
+| 宿主 | 行为 |
+| --- | --- |
+| RPC（`--mode rpc`、`rpc-ui`）和 ACP | 无论 `uiMenu` 怎么设，都使用内联选择菜单和对话框，以 `select`、`input` 和 `editor` 请求发送。ACP 客户端可能只把通知写进日志。 |
+| 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。不带参数的 `/roadmap` 输出状态和用法。预览只返回令牌，不写入任何内容；用 `/roadmap confirm <token>` 确认。重叠问题用 `/roadmap overlap` 回答，关闭轮次用 `/roadmap close-round` 的参数回答，包括目标结果。 |
+| Tern | 控制台和写入预览以原生面板打开。点击标签切换分区，点击一行选中，双击执行与 Enter 相同的操作。面板下方的按钮执行与按键相同的操作（Shift+O 对应 Order 按钮），按键仍然可用。roadmap 工具调用显示为原生卡片（状态以表格显示，检查诊断按严重度分组，规划交接默认折叠），roadmap 消息带有可读的标题，比如 “Roadmap check”。 |
+
+暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。暂存的预览只保存在内存里，进程退出后就会丢失。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO，在格式 2 中还要求提供 `outcome=<assessment>:<summary>`。进入格式 1 的会话时显示一条提到 `/roadmap upgrade` 的通知；`roadmap_upgrade` 会拒绝。通知和错误会显示为会话消息。
+
+### 控制台细节
+
+- `uiMenu: inline` 使用早期版本的选择菜单。设置在每次使用时读取；无法识别的值会回退到 `fullscreen`，并在日志中警告。
+- 阶段列表默认显示活跃轮次，直到你从另一个轮次跳转到它的阶段。
+- 检查、关闭轮次、放弃轮次、修改目标日期或升级之后，完整结果也会写进聊天。关闭阶段、开启轮次以及规划或修改轮次会关闭控制台；关闭阶段时会有一条通知告诉你该让代理做什么。简短的回答，比如日期、放弃原因或关闭轮次的问题，仍使用小对话框。
+- `stageOrder: dependency` 时，同时就绪的阶段保持 ID 顺序。这个设置作用于控制台、内联菜单、`/roadmap` 补全、`roadmap_status` 和每轮注入给代理的上下文；Shift+O 只在本次会话剩余时间内切换。
+- 没有 adr 插件时，`/roadmap`、`/init-project` 和所有 `roadmap_*` 工具都会拒绝并给出安装提示，而对 `docs/roadmap/` 的编辑仍被阻止。插件附带 `roadmap` 技能。
+- Plan Mode 下代理不能提交，所以在那里启动阶段只会绑定会话并返回交接内容；阶段保持 planned，文件不变。计划批准、开始实现时，阶段才真正启动并提交其文件。配合 omo-prometheus 时，Atlas 会在派发任何任务之前完成这一步，完成之前拒绝派发（见 [Prometheus 契约](#prometheus-契约) 中的 `activation`）；对于在 Plan Mode 之外启动但无人提交的阶段，它也会补上提交。
 
 ## 格式 2 升级询问
 
 在已初始化的格式 1 仓库中，主会话每次进入会话（`session_start` 和 `session_switch`；分支和树导航时不问，子代理中也从不问）都会询问一次是否升级。对话框会说明 roadmap 0.2.3 及更早版本将无法读取升级后的仓库，且已关闭的历史不会被改写。选“是”立即写入升级；选“否”关闭对话框，在下次进入会话之前不做任何改变。对话框在宿主的会话启动处理程序返回之后才打开，因此对话框打开期间会话照常可用；关闭会话或进入另一个会话时它会被取消。已是格式 2 或路线图无法读取的仓库不会被询问。
+
+升级只修改根标记（`docs/roadmap/README.md`）。现有文件保持格式 1，直到某次写入需要格式 2 的字段；从不使用格式 2 功能的格式 1 仓库会逐字节保持格式 1。除了进入会话时的对话框，`/roadmap upgrade`、第一次 `/roadmap plan-round` 的预览、关闭轮次的对话框和 `roadmap_upgrade` 也会提供升级；只有在对话框里选“是”或确认 `/roadmap upgrade` 预览后才会写入。
 
 ## 状态快照
 
