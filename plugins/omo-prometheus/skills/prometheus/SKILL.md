@@ -167,9 +167,11 @@ Write the complete plan with `write` to `local://<slug>-plan.md` while native pl
 After approval the runtime parses the plan into a durable execution ledger that drives Atlas progress, continuation, and release. Invalid grammar or an unsatisfiable dependency graph pauses execution; there is no ledger-free fallback, so Momus rejects such a plan.
 
 - A top-level `## Tasks` section where every task is one markdown checkbox row at column 0: `- [ ] T<n>. <title>`, numbered `T1`, `T2`, … in order. The task body is indented sub-bullets under its row and must contain four lines: `Agent: <name>`, `Depends on: <comma-separated T-ids, or none>`, `Tier: LIGHT` or `Tier: HEAVY`, and `Acceptance: <observable check>`. Each field appears once per task.
+- A T row body may carry one optional `Time limit: <N>h` line, an integer from 1 to 72 hours, read case-insensitively like the other fields. A duplicate or invalid value is a plan parse error. Omitting it gives the default of 4 hours, which covers every retry window of the row and its HEAVY verifier.
 - Dependencies must form a directed acyclic graph: reject unknown ids, self-dependencies, and multi-row cycles before proposal. Keep `Acceptance:` concrete; the ledger retains it for execution and review.
 - `Agent:` names the requested child agent. Use the `<available-agents>` block injected into the planning context: pick the most specific listed specialist for each task, preferring installed omo-toolkit specialists over generic `task`/`sonic`. User-defined agents are valid when listed there. An unlisted name is allowed only if it has a known fallback: `deep-low`, `deep-high`, `ultrabrain`, `architect`, `visual-engineering`, `artistry`, and `writing` → `task`; `librarian` → `scout` → `task`; `metis`, `momus`, and `oracle` → `reviewer` → `task`; `sonic`, `scout`, `reviewer`, and `security-reviewer` → `task`; `task` itself has no fallback. If the list is unavailable, use only these known names. Runtime records both the requested and resolved dispatch agent; do not invent another fallback.
 - `Tier:` sets evidence depth. Mark a task `HEAVY` when it touches authentication, security, migrations, concurrency, persistence formats, public API, or carries data-loss risk; everything else is `LIGHT`. A `LIGHT` task is done when its own child's evidence shows `Acceptance:` passing. A `HEAVY` task is done only after a separate, fresh verification child confirms that evidence. Never mark a task `LIGHT` when a HEAVY criterion applies, and never mark one `HEAVY` for caution alone.
+- **Check cost.** Give each task the focused checks its change needs and the real-surface regressions it touches. A project-wide suite that takes hours belongs to one final owner, normally F3, which runs it once after integration: name it in F3's verification section and give F3's row a `Time limit:` sized from the measured or known duration plus a margin. Expensive checks are never optional, and HEAVY never becomes LIGHT to avoid one.
 - A `## Final gates` section after it with exactly these four rows and no others:
 
 ```markdown
@@ -179,6 +181,8 @@ After approval the runtime parses the plan into a durable execution ledger that 
 - [ ] F3. Real-surface QA
 - [ ] F4. Success-criteria fidelity
 ```
+
+An F row may take the same optional indented `Time limit: <N>h` line under its checkbox, with the same format and default. The runtime reads an F-row body for that field alone.
 
 Every task also carries this contract in its body:
 
@@ -218,6 +222,8 @@ Other sections may use checkboxes freely; only rows at column 0 under these two 
 - one genuinely hard, cohesive problem delegated whole: `ultrabrain`.
 
 After all task rows are complete, independent fresh children run F1–F4 together. F1 requests `momus` with `review_kind: compliance`; F2 and F4 request `deep-high` (fallback `task`); F3 requests `deep-low` (fallback `task`). Atlas uses each ledger-resolved agent, fresh attempt binding, and the runtime-supplied structured gate outputSchema. Verification children are distinct from implementation children and from one another. The plan writes no rows beyond its T and F rows: Atlas appends correction rows for a rejecting gate (the only gate rerun), rows for in-scope defects discovered during execution, and, for `Delivery: pr` or `ship`, one delivery row after every gate and correction row, which a child performs.
+
+F3 is the usual owner of a plan's expensive project-wide suite, and F1, F2, and F4 audit its artifacts instead of rerunning it. Name that suite in F3's verification section, not in the other gates.
 
 Size the plan to the work. Implementation and its tests are one task. Prefer many small tasks when they are genuinely independent, and keep one cohesive task when splitting would sever shared reasoning. **Do not pad**: no template sections that carry no content, no invented phases, no minimum number of tasks, children, or verification lanes, and no implementation minutiae a competent worker derives from the code you already referenced. A task builds what its `Acceptance:` needs and what its `Mechanisms:` line declares, and nothing else.
 
