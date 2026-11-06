@@ -12,6 +12,22 @@ English | [简体中文](REFERENCE.zh.md)
 - If the latest ledger entry is malformed, the model can neither complete the goal nor dispatch the reserved agents. The plugin does not fall back to an older snapshot.
 - Results always carry `artifactAccepted: false`.
 - A headless session that hits a finite round limit records a noninteractive stop instead of asking.
+- While the goal is paused, the audit keeps its ledger but counts as not running: the plugin removes the loop tools it added, and refuses `audit_round` and the reserved agents with a "goal is paused" reason until the goal resumes.
+- Settings are read when `/audit` starts and stored with the audit, so a running audit keeps its intensity and limits.
+
+## Without the terminal UI
+
+`/audit <target>` starts the same audit in RPC, ACP editors, the SDK and headless runs. What differs is who starts each next turn:
+
+- The TUI continues the loop unattended by default.
+- RPC continues it only when OMP's `goal.continuationModes` setting includes `"rpc"`, for example `["interactive", "rpc"]`. The default is `["interactive"]`, which leaves RPC to the client.
+- In ACP, the SDK and print mode, the client drives every turn.
+
+Other differences:
+
+- RPC shows the round status line; ACP ignores it.
+- At a round limit, RPC and ACP clients get the add/remove/stop choice as a select dialog. Without a UI, the audit records a noninteractive stop.
+- Without a UI, usage errors and refusals appear as visible session messages.
 
 ## State snapshot
 

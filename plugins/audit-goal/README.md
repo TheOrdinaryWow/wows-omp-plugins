@@ -7,9 +7,9 @@
 
 English | [简体中文](README.zh.md)
 
-> CodeRabbit-style review that lives in OMP, fixes what it finds, and keeps looping until the audit converges.
+> A CodeRabbit-style review inside OMP that fixes what it finds and keeps going until the code stops turning up problems.
 
-`/audit <target>` starts an OMP goal that audits and fixes the code in rounds. Each round, read-only auditor subagents look for problems, the main agent checks their findings against the source, and fixer subagents repair the confirmed ones. Every round goes into a ledger, and the goal ends only when the agent records a conclusion or you stop it.
+Run `/audit` with something you want checked, such as a branch, a plan or a feature, and the agent reviews it in rounds. In each round, reviewers look for problems without touching the code, the main agent checks every finding against the source and throws out the false ones, and fixers repair the rest. The agent runs your project's checks after every round and keeps a written record of what it found and fixed. It stops when the audit converges, when a round limit you set runs out, or when you stop it.
 
 ## Install
 
@@ -17,98 +17,99 @@ English | [简体中文](README.zh.md)
 omp plugin install audit-goal@wows-omp-plugins
 ```
 
-Requires OMP 18.17.0 or newer with goal mode enabled (`goal.enabled`, on by default). Restart the session after installing.
+You need OMP 18.17.0 or newer with goal mode turned on (`goal.enabled`, on by default). Restart the session after installing.
 
 ## Quick start
 
 ```text
-/audit plan local://PLAN.md
 /audit the checkout service refactor on this branch
+/audit plan local://PLAN.md
 ```
 
-The target is free text: a plan, a branch, a feature, anything you want checked. The footer shows progress, for example `Audit 2/5 · standard`. Use `/goal` to pause, resume or inspect the audit, and `/goal drop` to stop it.
+Describe the target in your own words. The footer shows progress, for example `Audit 2/5 · standard` (round 2 of at most 5, standard intensity). The audit runs on its own from there.
 
 ## Usage
 
-### A round
+### Follow, pause or stop an audit
 
-1. The agent splits the codebase into audit domains (server, worker, database, …) and sends a read-only `audit-auditor` into each.
-2. It checks every reported finding against the source and rejects the false ones.
-3. It sends `audit-fixer` subagents to fix the rest, in lanes that never share files.
-4. It runs the project's full checks, confirms a clean tree and records the round.
+An audit runs as an OMP goal, so the usual goal commands control it:
 
-Findings are graded Critical, Major, Minor or Picky. Each ledger round lists the auditor models, coverage, checks run, verified findings with source evidence, repairs of earlier findings and reasons for rejected claims. Severity counts cover new findings; findings still open are listed separately.
+- `/goal` shows the audit's status.
+- `/goal pause` pauses it. The agent cannot run audit rounds until you resume with `/goal resume`.
+- `/goal drop` stops it for good.
 
-### Intensity
+`/goal budget` limits tokens, not rounds. To cap the number of rounds, use the `maxRounds` setting.
 
-|  | `relaxed` | `standard` | `strict` |
+### What happens in a round
+
+1. The agent splits the code into areas (server, worker, database, …) and sends a read-only reviewer into each one.
+2. It checks every reported problem against the source and rejects the ones that do not hold up.
+3. It sends fixers to repair the confirmed problems. Fixers working at the same time never edit the same file.
+4. It runs the project's full checks, makes sure nothing is left uncommitted, and records the round.
+
+Problems are graded Critical, Major, Minor or Picky. The record for each round lists which models reviewed, what they covered, which checks ran, the confirmed problems with their evidence, repairs of earlier problems, and why rejected claims were rejected.
+
+Sometimes a fix adds new code that the next round then has to review, which keeps the audit going. The agent tracks these problems caused by its own fixes separately and is told to simplify or undo what it added.
+
+### Choose how strict the audit is
+
+The `intensity` setting decides what counts as a problem, what gets fixed, and when the audit may stop:
+
+|  | `relaxed` | `standard` (default) | `strict` |
 | --- | --- | --- | --- |
-| Auditors report | visible problems: wrong behavior under normal use, failing checks, clear plan deviations | findings with a credible production trigger, across the full end-to-end chain | also toolchain, dependency and host boundaries, and rare latent bugs with a concrete trigger |
-| Fixed | Critical, Major | Critical, Major, Minor | every level |
-| Converges after | one round with no Critical or Major | two consecutive rounds with no Critical or Major | two consecutive rounds with no Critical, Major or Minor |
+| Reviewers report | visible problems: wrong behavior in normal use, failing checks, clear deviations from the plan | problems that could realistically happen in production, followed end to end | also problems at the toolchain, dependency and OMP boundaries, and rare bugs with a concrete trigger |
+| Gets fixed | Critical, Major | Critical, Major, Minor | everything |
+| Stops after | one round with no Critical or Major | two rounds in a row with no Critical or Major | two rounds in a row with no Critical, Major or Minor |
 
 ### How an audit ends
 
-The agent cannot complete the goal until it has recorded one of three conclusions:
+Before the goal can complete, the agent has to record one of three conclusions:
 
-- `threshold-convergence`: the intensity's exit condition was met. The audit stopped finding problems, which does not prove the code is bug free. Earlier Critical or Major findings stay open until a recorded repair closes them.
-- `capability-saturation`: with unlimited rounds, the same auditor models completed at least three comparable rounds across different audit angles, and the agent cites observations showing another round is unlikely to find more. Open Critical and Major findings stay open. Finding counts alone do not justify saturation.
-- `stop`: a finite round limit ran out before convergence. The agent says so and asks whether to add rounds, remove the limit or stop. Stopping records the reason and the remaining findings. Cancelling the question leaves the choice pending.
+- `threshold-convergence`: the stopping rule for the chosen intensity was met. That means the audit stopped finding problems, not that the code is bug free. Earlier Critical or Major problems stay open until a repair is recorded for them.
+- `capability-saturation`: with no round limit, the same models have done at least three comparable rounds from different angles, and the agent explains why another round is unlikely to find more. Open problems stay open, and a low count of new problems alone is not enough.
+- `stop`: the round limit ran out first. The agent asks whether to add rounds, remove the limit or stop. If you stop, it records why and what is still open. Dismissing the question leaves the choice open.
 
-None of these accepts the audited work; whether to accept it is your decision.
-
-Fixes sometimes add new mechanisms that the next round then has to audit, which keeps the loop going. The plugin records the git `HEAD` when the audit starts and tracks such loop-induced findings separately, and the agent is told to simplify or revert what it added.
-
-`/goal budget` limits tokens, not rounds. Use `maxRounds` to cap rounds.
+None of these means the audited work is accepted. That decision stays with you.
 
 ## Settings
 
-Package name for `omp plugin config`: `wows-omp-plugin-audit-goal`.
+Change a setting for your user:
 
 ```bash
-omp plugin config list wows-omp-plugin-audit-goal
 omp plugin config set wows-omp-plugin-audit-goal intensity strict
 omp plugin config set wows-omp-plugin-audit-goal maxRounds 5
+omp plugin config delete wows-omp-plugin-audit-goal maxRounds   # back to unlimited
+omp plugin config list wows-omp-plugin-audit-goal               # show current values
 ```
 
-| Setting | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `intensity` | `relaxed` \| `standard` \| `strict` | `standard` | Audit depth, which severities get fixed, and when the audit may converge. |
-| `maxRounds` | number or empty | empty | Round limit per `/audit`. Empty means unlimited. |
-| `maxParallelLanes` | number or empty | empty | Audit and fix subagents running at once. Empty means no plugin limit. |
+To change a setting for one project only, add it to `.omp/plugin-overrides.json` in that project:
 
-`maxParallelLanes` is also capped by OMP's `task.maxConcurrency`: a setting of 10 with a host limit of 3 runs three lanes.
+```json
+{ "settings": { "wows-omp-plugin-audit-goal": { "intensity": "strict" } } }
+```
+
+Each `/audit` uses the values in effect when it starts. A running audit keeps them.
+
+| Setting | Default | What it changes |
+| --- | --- | --- |
+| `intensity` | `standard` | How deep the reviewers look, which grades get fixed, and when the audit may stop: `relaxed`, `standard` or `strict` (see the table above). |
+| `maxRounds` | unset | The most rounds one `/audit` may run. Unset means no limit. |
+| `maxParallelLanes` | unset | How many reviewers or fixers may run at the same time. Unset means the plugin adds no limit. OMP's own `task.maxConcurrency` still applies, so a setting of 10 with an OMP limit of 3 runs three at a time. |
 
 ## Working with other plugins
 
-`judge-dispatch` never reroutes `audit-auditor` or `audit-fixer`, and never routes other requests to them.
-
-## Without the terminal UI
-
-`/audit <target>` starts the same audit in RPC, ACP editors, the SDK and headless runs. What differs is who starts each next turn:
-
-- The TUI continues the loop unattended by default.
-- RPC continues it only when OMP's `goal.continuationModes` setting includes `"rpc"`, for example `["interactive", "rpc"]`. The default is `["interactive"]`, which leaves RPC to the client.
-- In ACP, the SDK and print mode, the client drives every turn.
-
-Other differences:
-
-- RPC shows the round status line; ACP ignores it.
-- At a round limit, RPC and ACP clients get the add/remove/stop choice as a select dialog. Without a UI, the audit records a noninteractive stop.
-- Without a UI, usage errors and refusals appear as visible session messages.
-
-Client programs can read the audit's progress from a state snapshot; see the [reference](REFERENCE.md#state-snapshot).
+`judge-dispatch` leaves the audit's reviewers and fixers alone, and never sends other work to them.
 
 ## Known limitations
 
-- `audit-auditor` and `audit-fixer` appear in every session's `task` agent list, because OMP cannot hide plugin agents. The plugin refuses to dispatch them outside a running `/audit`.
+- The reviewer and fixer agents, `audit-auditor` and `audit-fixer`, show up in the agent list of every session because OMP cannot hide them. They only run inside an `/audit`; anywhere else the plugin refuses them.
 - `/audit` does not start in Plan Mode or vibe mode, while another goal is unfinished, or while an audit is already running.
-- If the latest ledger entry is malformed, the audit cannot continue or complete. Run `/goal drop` and start a new audit.
-- The audit follows the audited project's own commit conventions and rules from its context files.
+- If the latest round record is damaged, the audit can neither continue nor finish. Run `/goal drop` and start a new audit.
+- The audit follows the commit conventions and rules in the audited project's own context files, such as `AGENTS.md`.
 
-## Reference
+## More details
 
-[REFERENCE.md](REFERENCE.md) covers the state snapshot schema and how the plugin drives the loop.
+[REFERENCE.md](REFERENCE.md) explains how the plugin drives the loop, how the audit behaves in RPC, ACP editors, the SDK and headless runs, and the state snapshot that client programs can read.
 
 ## License
 

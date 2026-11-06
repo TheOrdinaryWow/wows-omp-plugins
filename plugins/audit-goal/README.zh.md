@@ -7,9 +7,9 @@
 
 [English](README.md) | 简体中文
 
-> 住进 OMP 的 CodeRabbit：边审边修，一轮接一轮，直到审计收敛。
+> 在 OMP 里做 CodeRabbit 式的代码审查：发现问题就修，一轮接一轮，直到再也查不出问题。
 
-`/audit <target>` 会启动一个 OMP 目标（goal），按轮次审计并修复代码。每一轮里，只读的审计子代理负责找问题，主代理对照源码核实它们的发现，再由修复子代理修好确认的问题。每轮结果都记入审计记录；只有代理记录下结论，或者你主动停止，目标才会结束。
+用 `/audit` 指定一个想检查的对象，比如一个分支、一份计划或一项功能，代理就会分轮审查它。每一轮里，审查者只看不改，负责找问题；主代理逐条对照源码核实，剔除不成立的；修复者再把确认的问题修好。每轮结束后代理会运行项目的检查，并把发现和修复写进审计记录。审计收敛、轮数上限用完，或者你主动停止时，审计才会结束。
 
 ## 安装
 
@@ -17,98 +17,99 @@
 omp plugin install audit-goal@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本，并启用目标模式（`goal.enabled`，默认开启）。安装后重启会话。
+需要 OMP 18.17.0 或更高版本，并开启目标模式（`goal.enabled`，默认开启）。安装后重启会话。
 
 ## 快速上手
 
 ```text
-/audit plan local://PLAN.md
 /audit the checkout service refactor on this branch
+/audit plan local://PLAN.md
 ```
 
-审计目标是自由文本：一份计划、一个分支、一项功能，任何你想检查的东西都行。页脚会显示进度，例如 `Audit 2/5 · standard`。用 `/goal` 暂停、恢复或查看审计，用 `/goal drop` 停止。
+用自己的话描述审计对象即可。页脚会显示进度，例如 `Audit 2/5 · standard`，意思是第 2 轮、最多 5 轮、标准强度。之后审计会自己跑下去。
 
 ## 用法
 
-### 一轮审计
+### 查看、暂停或停止审计
 
-1. 代理把代码库划分成若干审计领域（服务端、worker、数据库……），给每个领域派一个只读的 `audit-auditor`。
-2. 对照源码核实每条发现，驳回不成立的。
-3. 派 `audit-fixer` 子代理修复其余问题，各修复通道之间不会改同一个文件。
-4. 运行项目的完整检查，确认工作区干净，然后记录本轮结果。
+审计以 OMP 目标（goal）的形式运行，所以用常规的目标命令控制它：
 
-发现按 Critical、Major、Minor、Picky 分级。审计记录的每一轮会列出审计模型、覆盖范围、运行过的检查、带源码证据的已核实发现、对早先发现的修复，以及驳回的理由。严重度计数只统计新发现，仍未关闭的发现单独列出。
+- `/goal` 查看审计状态。
+- `/goal pause` 暂停审计。在你用 `/goal resume` 恢复之前，代理不能继续跑审计轮次。
+- `/goal drop` 彻底停止审计。
 
-### 强度
+`/goal budget` 限制的是 token，不是轮数。要限制轮数，请用 `maxRounds` 设置。
 
-|  | `relaxed` | `standard` | `strict` |
+### 每一轮做什么
+
+1. 代理把代码分成几个区域（服务端、worker、数据库……），给每个区域派一个只读的审查者。
+2. 对照源码核实每条问题，驳回站不住的。
+3. 派修复者修好确认的问题。同时工作的修复者不会改同一个文件。
+4. 运行项目的完整检查，确认没有遗留未提交的改动，然后记录这一轮。
+
+问题分为 Critical、Major、Minor、Picky 四级。每轮的记录会写明哪些模型参与了审查、覆盖了哪些范围、跑了哪些检查、确认的问题及其证据、对早先问题的修复，以及驳回的理由。
+
+有时修复本身会加入新代码，下一轮又得审查这些代码，审计就停不下来。代理会把这类由自己的修复引出的问题单独统计，并被要求简化或撤回它加的东西。
+
+### 选择审计的严格程度
+
+`intensity` 设置决定什么算问题、修哪些问题，以及审计什么时候可以停：
+
+|  | `relaxed` | `standard`（默认） | `strict` |
 | --- | --- | --- | --- |
-| 审计报告范围 | 明显的问题：正常使用下的错误行为、失败的检查、明显偏离计划 | 在完整端到端链路上、有可信生产触发条件的问题 | 另外还包括工具链、依赖和宿主边界，以及触发条件明确但少见的潜在 bug |
-| 会修复 | Critical、Major | Critical、Major、Minor | 所有级别 |
-| 收敛条件 | 一轮没有 Critical 或 Major | 连续两轮没有 Critical 或 Major | 连续两轮没有 Critical、Major 或 Minor |
+| 审查者报告 | 明显的问题：正常使用下的错误行为、失败的检查、明显偏离计划 | 在生产环境中确实可能发生的问题，并沿完整链路追查 | 另外还包括工具链、依赖和 OMP 边界上的问题，以及触发条件明确的罕见 bug |
+| 会修复 | Critical、Major | Critical、Major、Minor | 全部 |
+| 停止条件 | 一轮没有 Critical 或 Major | 连续两轮没有 Critical 或 Major | 连续两轮没有 Critical、Major 或 Minor |
 
-### 审计如何结束
+### 审计怎样结束
 
-代理必须先记录以下三种结论之一，才能完成目标：
+目标完成之前，代理必须记录以下三种结论之一：
 
-- `threshold-convergence`：满足了当前强度的退出条件。这只说明审计没再找到问题，并不证明代码没有 bug。早先的 Critical 或 Major 发现要等记录了修复才会关闭。
-- `capability-saturation`：在不限轮数时，同一批审计模型从不同审计角度完成了至少三轮可比的审计，代理引用观察说明再审一轮也不太可能有新发现。未关闭的 Critical 和 Major 发现保持未关闭。单凭发现数量不足以判定饱和。
-- `stop`：有限的轮数上限用完时仍未收敛。代理会说明情况，并询问你是增加轮数、取消上限还是停止。停止时会记录原因和剩余发现。取消这个问题则保持待决状态。
+- `threshold-convergence`：满足了所选强度的停止条件。这表示审计没有再找到问题，并不说明代码没有 bug。早先的 Critical 或 Major 问题要等记录了修复才会关闭。
+- `capability-saturation`：在不限轮数时，同一批模型已从不同角度做了至少三轮可比的审查，代理也说明了为什么再查一轮不太可能有新发现。未关闭的问题仍然保持打开，光凭新问题少不能下这个结论。
+- `stop`：轮数上限先用完了。代理会问你是增加轮数、取消上限还是停止。选择停止时，会记录原因和仍未关闭的问题。直接关掉这个提问，选择会保持待定。
 
-无论哪种结论，都不代表接受被审计的工作；是否接受由你决定。
-
-修复有时会引入新机制，下一轮又得审计这些机制，循环就一直停不下来。插件会在审计开始时记录 git `HEAD`，单独统计这类由循环自身引起的发现，并要求代理简化或撤回它加入的东西。
-
-`/goal budget` 限制的是 token，不是轮数。要限制轮数请用 `maxRounds`。
+哪种结论都不代表被审计的工作已被接受，接不接受由你决定。
 
 ## 设置
 
-`omp plugin config` 使用的包名：`wows-omp-plugin-audit-goal`。
+为当前用户修改设置：
 
 ```bash
-omp plugin config list wows-omp-plugin-audit-goal
 omp plugin config set wows-omp-plugin-audit-goal intensity strict
 omp plugin config set wows-omp-plugin-audit-goal maxRounds 5
+omp plugin config delete wows-omp-plugin-audit-goal maxRounds   # 恢复为不限
+omp plugin config list wows-omp-plugin-audit-goal               # 查看当前值
 ```
 
-| 设置 | 类型 | 默认值 | 作用 |
-| --- | --- | --- | --- |
-| `intensity` | `relaxed` \| `standard` \| `strict` | `standard` | 审计深度、修复哪些级别，以及何时可以收敛。 |
-| `maxRounds` | 数字或留空 | 留空 | 每次 `/audit` 的轮数上限。留空表示不限。 |
-| `maxParallelLanes` | 数字或留空 | 留空 | 同时运行的审计和修复子代理数量。留空表示插件不做限制。 |
+只想在某个项目里改，就在该项目的 `.omp/plugin-overrides.json` 中写上：
 
-`maxParallelLanes` 还受 OMP 的 `task.maxConcurrency` 约束：设置为 10、宿主上限为 3 时，实际运行三个通道。
+```json
+{ "settings": { "wows-omp-plugin-audit-goal": { "intensity": "strict" } } }
+```
+
+每次 `/audit` 使用启动时生效的设置，运行中的审计不受之后修改的影响。
+
+| 设置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `intensity` | `standard` | 审查的深度、修复哪些级别，以及审计何时可以停止：`relaxed`、`standard` 或 `strict`（见上表）。 |
+| `maxRounds` | 未设置 | 一次 `/audit` 最多跑几轮。未设置表示不限。 |
+| `maxParallelLanes` | 未设置 | 最多同时运行几个审查者或修复者。未设置表示插件不额外限制。OMP 自己的 `task.maxConcurrency` 仍然有效，所以设为 10 而 OMP 上限为 3 时，同时只会跑三个。 |
 
 ## 与其他插件配合
 
-`judge-dispatch` 不会改派 `audit-auditor` 或 `audit-fixer`，也不会把其他请求改派给它们。
-
-## 不使用终端界面时
-
-`/audit <target>` 在 RPC、ACP 编辑器、SDK 和 headless 模式下启动的是同一个审计，区别在于由谁发起下一轮：
-
-- TUI 默认会无人值守地继续循环。
-- RPC 只有在 OMP 的 `goal.continuationModes` 设置包含 `"rpc"` 时才会自动继续，例如 `["interactive", "rpc"]`。默认值是 `["interactive"]`，此时由客户端发起每一轮。
-- 在 ACP、SDK 和 print 模式下，每一轮都由客户端发起。
-
-其他差异：
-
-- RPC 会显示轮次状态行，ACP 会忽略它。
-- 到达轮数上限时，RPC 和 ACP 客户端会以选择对话框的形式询问增加、取消上限还是停止。没有 UI 时，审计会记录一次非交互式停止。
-- 没有 UI 时，用法错误和拒绝信息会以可见的会话消息显示。
-
-客户端程序可以从状态快照读取审计进度，见[参考文档](REFERENCE.zh.md#状态快照)。
+`judge-dispatch` 不会改动审计的审查者和修复者，也不会把其他任务派给它们。
 
 ## 已知限制
 
-- `audit-auditor` 和 `audit-fixer` 会出现在每个会话的 `task` 代理列表中，因为 OMP 无法隐藏插件代理。不在 `/audit` 运行期间时，插件会拒绝派发它们。
-- 在 Plan Mode 或 vibe 模式下、另一个目标尚未完成时，或者已有审计正在运行时，`/audit` 不会启动。
-- 如果最新的审计记录条目损坏，审计既无法继续也无法完成。运行 `/goal drop` 后重新开始审计。
-- 审计遵循被审计项目自己上下文文件里的提交约定和规则。
+- 审查者和修复者代理 `audit-auditor`、`audit-fixer` 会出现在每个会话的代理列表里，因为 OMP 无法隐藏它们。它们只在 `/audit` 中运行，在其他地方插件会拒绝派发。
+- 在 Plan Mode 或 vibe 模式下、另一个目标尚未完成时，或者已有审计在运行时，`/audit` 不会启动。
+- 如果最新一轮的记录损坏，审计既不能继续也无法结束。运行 `/goal drop`，然后重新开始审计。
+- 审计会遵循被审计项目自己的上下文文件（比如 `AGENTS.md`）里的提交约定和规则。
 
-## 参考
+## 更多细节
 
-[REFERENCE.zh.md](REFERENCE.zh.md) 介绍状态快照的结构，以及插件如何驱动审计循环。
+[REFERENCE.zh.md](REFERENCE.zh.md) 介绍插件如何驱动审计循环、审计在 RPC、ACP 编辑器、SDK 和 headless 模式下的表现，以及客户端程序可以读取的状态快照。
 
 ## 许可证
 
