@@ -186,12 +186,16 @@ async function discoverCandidates(ctx: ExtensionContext, settings: Settings, leg
 const JUDGE_UNAVAILABLE = Symbol("judge-unavailable");
 
 function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
+  const currentSession = AgentRegistry.global()
+    .list()
+    .find((ref) => ref.session?.sessionManager === ctx.sessionManager)?.session;
   return resolveJudge({
     settings,
     registry: ctx.modelRegistry,
     sessionId: ctx.sessionManager.getSessionId(),
     purpose: "judge-dispatch",
     onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>),
+    costGate: currentSession && isLocalAgentSession(currentSession) ? currentSession.costGate : undefined,
   });
 }
 
@@ -215,6 +219,7 @@ async function judgeRoute(
   beforeJudge: () => void,
 ): Promise<RouteOutcome | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
+  if (route.assignment === undefined) return "file-backed task";
   const spawnAgent = route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
   const candidates = config.routeAgent ? routable : routable.filter((candidate) => candidate.name === spawnAgent);
   if (candidates.length === 0) return "no alternatives";
@@ -327,6 +332,8 @@ async function routeOutcome(
   candidates: readonly RoutingCandidate[],
   signal: AbortSignal,
 ): Promise<RouteOutcome> {
+  if (route.nativeModel) return "native model";
+  if (route.assignment === undefined) return "file-backed task";
   const routable = routableCandidates(route.requestedAgent, candidates);
   if (!routable) return "workflow-owned or unknown agent";
   const escalation = route.name ? session.escalations.peek(route.name) : undefined;
@@ -546,6 +553,7 @@ function applyPins(
 ): { input: Record<string, unknown>; routes: ParsedTaskRoute[]; confirmation: string } {
   const models = routes.map((route) => {
     if (route.explicitModel === undefined) return undefined;
+    if (route.nativeModel) throw new Error("an item cannot combine its native model field with an agent@model pin; use only one");
     const label = `${route.requestedAgent ?? ""}@${route.explicitModel}`;
     if (!route.requestedAgent || !route.explicitModel) {
       throw new Error(`write the agent as <agent>@<model role> or <agent>@<provider>/<model>, not ${JSON.stringify(label)}`);
@@ -662,6 +670,10 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
           return { block: true, reason: `judge-dispatch could not pin the task model: ${errorMessage(error)}` };
         }
       }
+      const routing = routingFor(ctx);
+      for (const route of routes ?? []) {
+        if (route.name && (route.nativeModel || route.assignment === undefined)) routing.pending.add(route.name, null);
+      }
       const rawSettings = await getPluginSettings(PACKAGE_NAME, ctx.cwd);
       warnUnknownSettings(ctx, rawSettings);
       const config = parseSettings(rawSettings);
@@ -680,10 +692,12 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
       }
       if (!routes) return pinned;
       const judged = routes;
-      const routing = routingFor(ctx);
-      // The host reports each child by item position; remember the caller's own name for it, exactly as written. Pinned items run under `_jd` names and are never remembered.
+      // The host reports each child by item position; pins and unrouted items must not feed difficulty escalation.
       const names: (string | undefined)[] = [];
-      for (const route of judged) names[route.index ?? 0] = route.explicitModel === undefined ? route.name : undefined;
+      for (const route of judged) {
+        const unrouted = route.nativeModel || route.assignment === undefined;
+        names[route.index ?? 0] = !unrouted && route.explicitModel === undefined ? route.name : undefined;
+      }
       routing.dispatched.set(event.toolCallId, { at: Date.now(), names });
       for (const oldest of routing.dispatched.keys()) {
         if (routing.dispatched.size <= DISPATCH_RECORD_LIMIT) break;

@@ -198,8 +198,9 @@ silently dropping the pin. The plugin renames the pinned item to a unique spawn
 name. Do not move the pin to a separate tool or an extra item field: that
 reintroduces cross-round state or breaks under strict schemas. `eval.agent()` and
 `workpool()` remain unrouted and cannot be pinned.
-OMP 18.5.0 introduced a per-item `task.model` field, but 18.8.2 removed it, so
-the plugin no longer reads it. The plugin never changes the user's
+OMP 18.14.2 added a per-item `model` field behind `task.perCallModel`. The plugin
+leaves such an item's agent, model and thinking level exactly as written and
+refuses an item that also carries an `@` pin. The plugin never changes the user's
 global model roles or fallback settings.
 An earlier "enhanced" mode used a hypothetical routing API that no OMP release
 shipped and was removed. Build only on host surfaces exposed by released OMP.

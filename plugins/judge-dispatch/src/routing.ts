@@ -37,12 +37,15 @@ export interface RoutingCandidate {
 export interface ParsedTaskRoute {
   /** `null` identifies the flat task shape; a number identifies a batch item. */
   index: number | null;
-  assignment: string;
+  /** File-backed assignments are loaded only by the host, never by the judge. */
+  assignment?: string;
   context?: string;
   /** The caller's own description of how open the problem is. */
   solutionSpace?: string;
   /** The item sets `effort` itself, so its thinking level is never stepped. */
   explicitEffort?: true;
+  /** Native model approvals can depend on the original agent, so the whole route stays unchanged. */
+  nativeModel?: true;
   requestedAgent?: string;
   /** Model role or `provider/model` selector the caller pinned after `@` in the agent field (`scout@abliterated`). */
   explicitModel?: string;
@@ -109,7 +112,14 @@ export interface JudgedRoute {
 }
 
 /** Why a route kept its requested agent without a usable judgment. */
-export type KeptReason = "workflow-owned or unknown agent" | "no alternatives" | "judge unavailable" | "judge failed" | "timed out";
+export type KeptReason =
+  | "workflow-owned or unknown agent"
+  | "file-backed task"
+  | "native model"
+  | "no alternatives"
+  | "judge unavailable"
+  | "judge failed"
+  | "timed out";
 
 export type RouteOutcome = JudgedRoute | KeptReason;
 
@@ -242,13 +252,22 @@ function agentFields(value: unknown): Pick<ParsedTaskRoute, "requestedAgent" | "
   return { ...(requestedAgent ? { requestedAgent } : {}), explicitModel: agent.slice(at + 1).trim() };
 }
 
-/** Item fields the flat and batch shapes share. */
-function itemFields(item: Record<string, unknown>): Pick<ParsedTaskRoute, "solutionSpace" | "explicitEffort" | "name"> {
+function parseTaskItem(item: Record<string, unknown>): Omit<ParsedTaskRoute, "index" | "context"> | undefined {
+  const hasTask = item.task !== undefined;
+  const hasTaskFile = item.taskFile !== undefined;
+  if (hasTask === hasTaskFile) return undefined;
+  const assignment = optionalNonEmptyString(item.task);
+  if (hasTask && !assignment) return undefined;
+  if (hasTaskFile && !optionalNonEmptyString(item.taskFile)) return undefined;
+  if (Object.hasOwn(item, "agent") && typeof item.agent !== "string") return undefined;
   const solutionSpace = optionalNonEmptyString(item.solutionSpace);
   const name = optionalNonEmptyString(item.name);
   return {
+    ...(assignment ? { assignment } : {}),
+    ...agentFields(item.agent),
     ...(solutionSpace ? { solutionSpace } : {}),
     ...(item.effort !== undefined ? { explicitEffort: true } : {}),
+    ...(item.model !== undefined ? { nativeModel: true } : {}),
     ...(name ? { name } : {}),
   };
 }
@@ -260,27 +279,24 @@ export function parseTaskInput(input: unknown): ParsedTaskRoute[] | undefined {
 
   if (Object.hasOwn(record, "tasks")) {
     if (!Array.isArray(record.tasks) || record.tasks.length === 0) return undefined;
-    if (Object.hasOwn(record, "task")) return undefined;
+    if (Object.hasOwn(record, "task") || Object.hasOwn(record, "taskFile")) return undefined;
     const context = optionalNonEmptyString(record.context);
     if (!context) return undefined;
 
     const routes: ParsedTaskRoute[] = [];
     for (const [index, rawItem] of record.tasks.entries()) {
       if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) return undefined;
-      const item = rawItem as Record<string, unknown>;
-      const assignment = optionalNonEmptyString(item.task);
-      if (!assignment) return undefined;
-      if (Object.hasOwn(item, "agent") && typeof item.agent !== "string") return undefined;
-      routes.push({ index, assignment, context, ...agentFields(item.agent), ...itemFields(item) });
+      const item = parseTaskItem(rawItem as Record<string, unknown>);
+      if (!item) return undefined;
+      routes.push({ index, context, ...item });
     }
     return routes;
   }
 
-  const assignment = optionalNonEmptyString(record.task);
-  if (!assignment) return undefined;
-  if (Object.hasOwn(record, "agent") && typeof record.agent !== "string") return undefined;
+  const item = parseTaskItem(record);
+  if (!item) return undefined;
   const context = optionalNonEmptyString(record.context);
-  return [{ index: null, assignment, ...(context ? { context } : {}), ...agentFields(record.agent), ...itemFields(record) }];
+  return [{ index: null, ...(context ? { context } : {}), ...item }];
 }
 
 function rewriteTaskItem(item: Record<string, unknown>, choice: RouteChoice | undefined): Record<string, unknown> {
@@ -387,7 +403,7 @@ const SPAWN_SUFFIX_PATTERN = /-\d+$/;
 export class PendingSpawnRoutes {
   #routes = new Map<string, PendingSpawnRoute | null>();
 
-  add(name: string, route: PendingSpawnRoute): void {
+  add(name: string, route: PendingSpawnRoute | null): void {
     if (this.#routes.has(name)) {
       this.#routes.set(name, null);
       return;

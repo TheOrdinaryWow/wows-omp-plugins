@@ -50,9 +50,12 @@ These calls are left exactly as they are, thinking level and model included:
 - requests for `audit-*`, `metis`, `momus` or `oracle`; ordinary requests are never routed into these workflow roles either;
 - requests for OMP's bundled `seance`, which consults a saved session through its native `sourceSession` and optional `model` fields; ordinary requests are never routed to it either;
 - requests for an agent the plugin cannot find in the list, since its access level is unknown;
+- items carrying OMP's native `model` field: the exact selector, effort and original agent stay unchanged, including under tiers or retries;
 - every `task` call while an `omo-prometheus` plan is executing, because the approved plan owns those choices.
 
 Subagents started through `eval.agent()` or `workpool()` are never routed.
+
+Items using `taskFile` keep their agent because the plugin does not read their assignment. Their model pins still apply, and inline siblings in the same batch route normally. Routing judgments share the session's cost gate and usage ledger.
 
 ### Difficulty
 
@@ -102,7 +105,7 @@ task({"name":"ReviewLogic","agent":"deep-low@abliterated","task":"Review the log
 
 `<agent>@<provider>/<model>` pins one concrete model instead, such as `scout@provider/model:high`. The role must exist in OMP's `modelRoles`; a concrete model must resolve to an enabled model with credentials.
 
-The plugin removes the pin before OMP runs the call, so the child runs as `deep-low` on the role's primary model, with that role's fallback chain (or the `default` chain when the role has none). A pinned item gets no tier and no thinking step; agent routing still applies, and pins work when the `judge` role is unavailable. Task `effort` still takes precedence over a selector's thinking suffix, as everywhere in OMP.
+The plugin removes the pin before OMP runs the call, so the child runs as `deep-low` on the role's primary model, with that role's fallback chain (or the `default` chain when the role has none). A pinned item gets no tier and no thinking step; inline agent routing still applies, and pins work when the `judge` role is unavailable. Task `effort` still takes precedence over a selector's thinking suffix, as everywhere in OMP. An item cannot combine a pin with the native `model` field; that refuses the whole call.
 
 A pinned child gets a unique id such as `ReviewLogic_jd0123456789ab`, so no queued or later task that reuses the name can take its model. OMP shows and keeps the rewritten call, so the plugin also tells the parent agent which pins it applied; the task result returns the new id, and the parent should address the child by it.
 
@@ -112,7 +115,7 @@ A pin that cannot apply refuses the whole call and says why, rather than running
 
 ### What you see
 
-While the judge runs, the working message reads `judge-dispatch: routing N tasks…`. Then each routed call prints the status line shown above, with the judge's confidence for every decision: the agent, `thinking <from> → <to>`, `model <agent's model> → <tier>` or why the agent's model stays, or the bare `difficulty` when it changed nothing. An item kept without a usable judgment names the reason: `judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no confident choice`, or `workflow-owned or unknown agent`. A call that could not be judged at all gets a line starting `kept the requested agent:`.
+While the judge runs, the working message reads `judge-dispatch: routing N tasks…`. Then each routed call prints the status line shown above, with the judge's confidence for every decision: the agent, `thinking <from> → <to>`, `model <agent's model> → <tier>` or why the agent's model stays, or the bare `difficulty` when it changed nothing. An item kept without a usable judgment names the reason: `judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no confident choice`, `file-backed task`, `native model`, or `workflow-owned or unknown agent`. A call that could not be judged at all gets a line starting `kept the requested agent:`.
 
 The status line is for you only: OMP neither sends it to the model nor saves it, so it does not come back after `/resume`. Set `indicator` to `false` to hide it and the working message.
 

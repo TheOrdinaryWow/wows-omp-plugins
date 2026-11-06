@@ -35,6 +35,7 @@ interface SessionSpec {
   branch?: unknown[];
   spawns?: Record<string, unknown>[];
   steps?: HookStep[];
+  costGate?: { cap: number; spent: number };
 }
 
 interface ChildScenario {
@@ -71,6 +72,7 @@ interface SessionReport {
   modelView: unknown[];
   spawnResults: unknown[];
   steps: unknown[];
+  costSpent?: number;
 }
 
 interface ChildReport {
@@ -143,7 +145,8 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
     const { Settings, withActiveSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
     const { discoverAuthStorage } = await import("@oh-my-pi/pi-coding-agent/sdk");
     const { cfgDisabledProviders, cfgModelRoles } = await import("@oh-my-pi/pi-coding-agent/config/model-settings");
-    const { cfgRetryFallbackChains } = await import("@oh-my-pi/pi-coding-agent/session/settings");
+    const { cfgRetryFallbackChains, cfgSessionMaxCost } = await import("@oh-my-pi/pi-coding-agent/session/settings");
+    const { CostGate } = await import("@oh-my-pi/pi-coding-agent/session/cost-gate");
     const { AgentOutputManager } = await import("@oh-my-pi/pi-coding-agent/task/output-manager");
     const { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } = await import("@oh-my-pi/pi-coding-agent/task/settings");
     const { AsyncJobManager } = await import("@oh-my-pi/pi-coding-agent/async/job-manager");
@@ -165,6 +168,8 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       if (scenario.disabledProviders) cfgDisabledProviders.override(settings, scenario.disabledProviders);
       if (scenario.agentModels) cfgTaskAgentModelOverrides.override(settings, scenario.agentModels);
       if (scenario.maxEffort) cfgTaskMaxEffort.override(settings, scenario.maxEffort as never);
+      if (session.costGate) cfgSessionMaxCost.override(settings, session.costGate.cap);
+      const costGate = session.costGate ? new CostGate(settings, session.costGate.spent, () => {}) : undefined;
       const registry = new ModelRegistry(await discoverAuthStorage(agentDir), join(agentDir, "models.yml"), { settings });
       const handlers = new Map<string, TestHandler[]>();
       const report: SessionReport = {
@@ -217,12 +222,17 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       const jobOutcomes = new Map<string, PromiseWithResolvers<string>>();
       const ownerId = `fixture-parent-${sessionIndex}`;
       jobs.registerDeliverySink(ownerId, () => {});
-      if (session.steps?.some((step) => "job" in step)) {
+      if (costGate || session.steps?.some((step) => "job" in step)) {
         AgentRegistry.global().register({
           id: ownerId,
           displayName: ownerId,
           kind: "main",
-          session: { sessionManager: context.sessionManager, asyncJobManager: jobs, getSessionAgents: () => [] } as unknown as AgentSession,
+          session: {
+            sessionManager: context.sessionManager,
+            asyncJobManager: jobs,
+            costGate,
+            getSessionAgents: () => [],
+          } as unknown as AgentSession,
         });
       }
 
@@ -317,6 +327,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         context,
       )) as { messages: { customType?: string }[] };
       report.modelView = filtered.messages.map((message) => message.customType);
+      if (costGate) report.costSpent = costGate.spent;
       AgentRegistry.global().unregister(ownerId);
       await jobs.dispose();
       sessionReports.push(report);
@@ -417,6 +428,164 @@ async function registerTests(): Promise<void> {
         expect(report.sessions[0]?.usage).toEqual([expect.objectContaining({ purpose: "judge-dispatch" })]);
         expect(report.sessions[0]?.notifications).toEqual([{ message: "judge-dispatch  task → scout (0.99)", level: "info" }]);
         expect(diagnostics(report)).not.toContain(HOST_KEY);
+      });
+    });
+
+    test("routing judgments honor the local session cost gate and still journal allowed usage", async () => {
+      await withProjects([{}], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project: project as string, calls: 1, costGate: { cap: 1, spent: 1 } },
+            { project: project as string, calls: 1, costGate: { cap: 1, spent: 0 } },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+        });
+        expect(report.requests).toHaveLength(1);
+        expect(report.sessions[0]?.results, diagnostics(report)).toEqual([null]);
+        expect(report.sessions[0]?.usage).toEqual([]);
+        expect(report.sessions[0]?.costSpent).toBe(1);
+        expect(report.sessions[1]?.results).toEqual([{ input: { task: "Implement the requested repository change", agent: "scout" } }]);
+        expect(report.sessions[1]?.usage).toEqual([expect.objectContaining({ purpose: "judge-dispatch" })]);
+        const billed = report.sessions[1]?.usage[0] as { usage: { cost: { total: number } } };
+        expect(report.sessions[1]?.costSpent).toBe(billed.usage.cost.total);
+      });
+    });
+
+    test("a taskFile batch item keeps its agent and pin while inline siblings are routed", async () => {
+      const file = { name: "FromFile", agent: "task@abliterated", taskFile: "local://missing-assignment.md", effort: "lo" };
+      const plain = { name: "PlainFile", agent: "task", taskFile: "/missing/assignment.md" };
+      const inline = pinnedTask("Inline", "task");
+      const input = { context: "shared", tasks: [file, inline, plain] };
+      await withProjects([{ judgeEffort: true }], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project: project as string,
+              calls: 0,
+              steps: [
+                { call: input, id: "mixed" },
+                { spawn: taskSpawn, from: "mixed", item: 0 },
+                { spawn: { agent: "scout", patterns: ["openai/gpt-5"] }, from: "mixed", item: 1 },
+                { spawn: taskSpawn, from: "mixed", item: 2 },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"], scout: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          {
+            input: { ...input, tasks: [{ ...file, agent: "task", name: spawned("FromFile") }, { ...inline, agent: "scout" }, plain] },
+            additionalContext: pinNotice,
+          },
+          { spawnKey: spawned("FromFile"), result: roleSpawn },
+          { spawnKey: "Inline", result: { model: ["openai/gpt-5:high"], note: "judge-dispatch demanding task: thinking medium → high" } },
+          { spawnKey: "PlainFile", result: null },
+        ]);
+        expect(report.requests).toHaveLength(1);
+        expect(JSON.parse(report.requests[0]?.body ?? "{}").state.assignment).toBe(inline.task);
+      });
+    });
+
+    test("native item models keep their agent, exact selector and effort without tiers or thinking steps", async () => {
+      const native = { ...pinnedTask("Native", "task"), model: " openai/gpt-5:low " };
+      const effort = { ...pinnedTask("Effort", "task"), model: "openai/gpt-5:high", effort: "lo" };
+      const inline = pinnedTask("Inline", "task");
+      const batch = { context: "shared", tasks: [native, effort, inline] };
+      await withProjects([{ judgeEffort: true, modelTiers: "demanding=@abliterated" }], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project: project as string,
+              calls: 0,
+              steps: [
+                { call: native, id: "flat" },
+                { spawn: { ...taskSpawn, patterns: ["openai/gpt-5:low"] }, from: "flat" },
+                { call: batch, id: "batch" },
+                { spawn: { ...taskSpawn, patterns: ["openai/gpt-5:low"] }, from: "batch", item: 0 },
+                { spawn: { ...taskSpawn, patterns: ["openai/gpt-5:high"] }, from: "batch", item: 1 },
+                { spawn: { agent: "scout", patterns: ["openai/gpt-5"] }, from: "batch", item: 2 },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"], scout: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          null,
+          { spawnKey: "Native", result: null },
+          { input: { ...batch, tasks: [native, effort, { ...inline, agent: "scout" }] } },
+          { spawnKey: "Native-2", result: null },
+          { spawnKey: "Effort", result: null },
+          { spawnKey: "Inline", result: { model: roleSpawn.model, note: "judge-dispatch demanding tier @abliterated" } },
+        ]);
+        expect(report.requests).toHaveLength(1);
+      });
+    });
+
+    test("native models cannot inherit a same-named pending tier from another dispatch", async () => {
+      const routed = pinnedTask("Shared", "task");
+      const native = { ...routed, model: "openai/gpt-5" };
+      await withProjects([{ routeAgent: false, judgeEffort: true, modelTiers: "demanding=@abliterated" }], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project: project as string,
+              calls: 0,
+              steps: [
+                { call: routed, id: "routed" },
+                { call: native, id: "native" },
+                { spawn: taskSpawn, from: "native" },
+                { spawn: taskSpawn, from: "routed" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          null,
+          null,
+          { spawnKey: "Shared", result: null },
+          { spawnKey: "Shared-2", result: null },
+        ]);
+        expect(report.requests).toHaveLength(1);
+      });
+    });
+
+    test("a native model combined with an agent pin refuses the whole call without reserving pins", async () => {
+      const good = pinnedTask("Good", "task@abliterated");
+      const conflict = { ...pinnedTask("Conflict", "task@abliterated"), model: "openai/gpt-5" };
+      await withProjects([{}], async ([project]) => {
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project: project as string,
+              calls: 0,
+              steps: [
+                { call: conflict, id: "flat" },
+                { call: { context: "shared", tasks: [good, conflict] }, id: "batch" },
+                { spawn: taskSpawn, allocate: "Good" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          blocked("cannot combine its native model field with an agent@model pin"),
+          blocked("cannot combine its native model field with an agent@model pin"),
+          { spawnKey: "Good", result: null },
+        ]);
+        expect(report.requests).toEqual([]);
       });
     });
 

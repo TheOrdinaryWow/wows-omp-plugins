@@ -50,9 +50,12 @@ judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · thinking med
 - 请求 `audit-*`、`metis`、`momus` 或 `oracle` 的调用；普通请求也不会被改派到这些工作流角色；
 - 请求 OMP 内置 `seance` 的调用；它通过原生 `sourceSession` 和可选的 `model` 字段查阅已保存的会话，普通请求也不会被改派给它；
 - 请求了插件在列表中找不到的代理，因为无法确定它的权限级别；
+- 携带 OMP 原生 `model` 字段的条目：原样保留选择器、effort 和原代理，档位与重试升级也不会改变它们；
 - `omo-prometheus` 计划执行期间的所有 `task` 调用，因为这些选择由已批准的计划决定。
 
 通过 `eval.agent()` 或 `workpool()` 启动的子代理永远不会被路由。
+
+使用 `taskFile` 的条目保留原代理，因为插件不读取它的任务文件。其模型固定仍然生效，同批中的内联条目照常路由。路由判断共用会话的费用门禁和用量记录。
 
 ### 难度
 
@@ -102,7 +105,7 @@ task({"name":"ReviewLogic","agent":"deep-low@abliterated","task":"Review the log
 
 写成 `<agent>@<provider>/<model>` 则固定一个具体模型，例如 `scout@provider/model:high`。角色必须存在于 OMP 的 `modelRoles` 中；具体模型必须能解析到一个已启用且有凭据的模型。
 
-插件会在 OMP 执行调用前去掉固定标记，所以子代理仍以 `deep-low` 运行，但使用该角色的首选模型和该角色的回退链（角色没有回退链时使用 `default` 链）。被固定的条目不使用档位，也不调整思考级别；代理路由照常生效，`judge` 角色不可用时也能固定。与 OMP 其他地方一样，任务的 `effort` 仍优先于选择器的思考强度后缀。
+插件会在 OMP 执行调用前去掉固定标记，所以子代理仍以 `deep-low` 运行，但使用该角色的首选模型和该角色的回退链（角色没有回退链时使用 `default` 链）。被固定的条目不使用档位，也不调整思考级别；内联条目的代理路由照常生效，`judge` 角色不可用时也能固定。与 OMP 其他地方一样，任务的 `effort` 仍优先于选择器的思考强度后缀。条目不能同时使用固定和原生 `model` 字段，否则会拒绝整次调用。
 
 被固定的子代理会得到唯一 ID，例如 `ReviewLogic_jd0123456789ab`，因此排队中或之后复用同名的任务都拿不走它的模型。OMP 会显示并保存改写后的调用，所以插件还会告诉父代理应用了哪些固定；任务结果会返回新 ID，父代理应当用它指代该子代理。
 
@@ -112,7 +115,7 @@ task({"name":"ReviewLogic","agent":"deep-low@abliterated","task":"Review the log
 
 ### 你会看到什么
 
-judge 运行期间，工作提示显示 `judge-dispatch: routing N tasks…`。之后每个被路由的调用会打印上面那样的状态行，每项决定都带有 judge 的置信度：代理、`thinking <from> → <to>`、`model <代理的模型> → <档位>` 或保留代理模型的原因；难度没有带来任何改变时，只显示 `difficulty`。没有得到可用判断而保留原样的项会注明原因：`judge unavailable`、`judge failed`、`timed out`、`no alternatives`、`no confident choice` 或 `workflow-owned or unknown agent`。完全没能判断的调用会打印一行以 `kept the requested agent:` 开头的状态。
+judge 运行期间，工作提示显示 `judge-dispatch: routing N tasks…`。之后每个被路由的调用会打印上面那样的状态行，每项决定都带有 judge 的置信度：代理、`thinking <from> → <to>`、`model <代理的模型> → <档位>` 或保留代理模型的原因；难度没有带来任何改变时，只显示 `difficulty`。没有得到可用判断而保留原样的项会注明原因：`judge unavailable`、`judge failed`、`timed out`、`no alternatives`、`no confident choice`、`file-backed task`、`native model` 或 `workflow-owned or unknown agent`。完全没能判断的调用会打印一行以 `kept the requested agent:` 开头的状态。
 
 状态行只给你看：OMP 既不会把它发给模型，也不会保存它，所以 `/resume` 后不会再出现。把 `indicator` 设为 `false` 可以同时隐藏状态行和工作提示。
 

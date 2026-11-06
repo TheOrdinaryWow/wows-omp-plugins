@@ -93,6 +93,41 @@ describe("task input routing", () => {
     expect(input.tasks[2]).not.toHaveProperty("name");
   });
 
+  test("parses file-backed identity and pins without loading assignments or changing taskFile", () => {
+    const file = { name: "FromFile", agent: "task@abliterated", taskFile: "local://missing-assignment.md" };
+    const inline = { agent: "task", task: "Review the inline assignment" };
+    const input = { context: "shared", tasks: [file, inline] };
+    const routes = parseTaskInput(input);
+    if (!routes) throw new Error("expected valid mixed task input");
+    expect(routes).toEqual([
+      { index: 0, context: "shared", requestedAgent: "task", explicitModel: "abliterated", name: "FromFile" },
+      { index: 1, context: "shared", requestedAgent: "task", assignment: inline.task },
+    ]);
+    expect(parseTaskInput(file)).toEqual([{ index: null, requestedAgent: "task", explicitModel: "abliterated", name: "FromFile" }]);
+    expect(rewriteTaskRoutes(input, routes, [{ agent: "task", spawnName: "FromFile_jd0123456789ab" }, { agent: "scout" }])).toEqual({
+      ...input,
+      tasks: [
+        { ...file, agent: "task", name: "FromFile_jd0123456789ab" },
+        { ...inline, agent: "scout" },
+      ],
+    });
+  });
+
+  test("requires exactly one non-empty task source per flat or batch item", () => {
+    for (const source of [{}, { task: "inline", taskFile: "/tmp/task.md" }, { taskFile: " " }, { taskFile: 42 }, { task: " " }]) {
+      expect(parseTaskInput({ agent: "task", ...source })).toBeUndefined();
+      expect(parseTaskInput({ context: "shared", tasks: [{ agent: "task", ...source }] })).toBeUndefined();
+    }
+    expect(parseTaskInput({ context: "shared", taskFile: "/tmp/outer.md", tasks: [{ task: "inline" }] })).toBeUndefined();
+  });
+
+  test("marks native models without normalizing their selector or effort", () => {
+    const input = { task: "Review the boundary", agent: "task", model: " openai/gpt-5:low ", effort: "hi" };
+    const routes = parseTaskInput(input);
+    expect(routes).toEqual([{ index: null, requestedAgent: "task", assignment: input.task, nativeModel: true, explicitEffort: true }]);
+    expect(rewriteTaskRoutes(input, routes ?? [], [undefined])).toBe(input);
+  });
+
   test("leaves malformed task shapes unparsed", () => {
     expect(parseTaskInput({ context: "shared", tasks: [{ agent: "task" }] })).toBeUndefined();
     expect(parseTaskInput({ task: "valid", agent: 42 })).toBeUndefined();
