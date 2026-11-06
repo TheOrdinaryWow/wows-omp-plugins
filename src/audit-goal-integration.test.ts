@@ -96,12 +96,13 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
   let activeTools: string[] = [];
   const sessionManager = { getSessionId: () => id, getBranch: () => branch };
   const goal = { id: "g1", objective: "Audit loop (/audit): checkout restart path", status: "active" };
+  const goalMode = { enabled: true, mode: "active", goal };
   let goalHeld = true;
   let goalStartTools: string[] | undefined;
   const session = {
     sessionManager,
     settings: {},
-    getGoalModeState: () => (goalHeld ? { goal } : undefined),
+    getGoalModeState: () => (goalHeld ? goalMode : undefined),
     getPlanModeState: () => undefined,
     getVibeModeState: () => undefined,
     goalRuntime: {
@@ -109,8 +110,9 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
       createGoal: async ({ objective }: { objective: string }) => {
         goalStartTools = [...activeTools];
         Object.assign(goal, { objective, status: "active" });
+        Object.assign(goalMode, { enabled: true, mode: "active" });
         goalHeld = true;
-        return { goal: { ...goal } };
+        return { ...goalMode, goal: { ...goal } };
       },
     },
   } as unknown as AgentSession;
@@ -176,6 +178,7 @@ function harness(seed: unknown, uiChoice?: string | null, select?: () => Promise
   return {
     branch,
     goal,
+    goalMode,
     call,
     hook,
     latest,
@@ -420,6 +423,98 @@ describe("registered audit_round and goal hooks", () => {
     expect(runtime.goalStartTools()).toEqual([]);
     expect(runtime.active()).toEqual(["goal", "audit_round"]);
     expect(runtime.latest()).toMatchObject({ status: "active", goalId: "g1", addedTools: ["goal", "audit_round"] });
+  });
+
+  test("pausing keeps loop tools off across prompts and restores them only after resume", async () => {
+    const runtime = harness(initial({ rounds: [round(1, 1)] }));
+    await runtime.hook("session_start", {});
+    expect(runtime.active()).toEqual(["goal", "audit_round"]);
+    const ledger = structuredClone(runtime.latest());
+    runtime.goalMode.enabled = false;
+    runtime.goal.status = "paused";
+    await runtime.hook("goal_updated", { goal: runtime.goal });
+    expect(runtime.active()).toEqual([]);
+    runtime.setActive([]);
+    await runtime.hook("before_agent_start", {});
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual([]);
+    const refusedRound = await runtime.call({ op: "record", ...round(2) });
+    expect(refusedRound.isError).toBe(true);
+    expect(refusedRound.content[0]?.text).toContain("goal is paused");
+    for (const agent of ["audit-auditor", "audit-fixer"]) {
+      expect(
+        await runtime.hook("tool_call", { toolName: "task", toolCallId: `paused-${agent}`, input: { tasks: [{ agent }] } }),
+      ).toMatchObject({ block: true, reason: expect.stringContaining("goal is paused") });
+      expect(await runtime.hook("before_subagent_spawn", { agent, invocationKind: "task" })).toMatchObject({
+        block: true,
+        reason: expect.stringContaining("goal is paused"),
+      });
+    }
+    for (const op of ["complete", "drop"]) {
+      expect(await runtime.hook("tool_call", { toolName: "goal", toolCallId: `paused-${op}`, input: { op } })).toMatchObject({
+        block: true,
+      });
+    }
+    expect(runtime.latest()).toEqual(ledger);
+    runtime.goalMode.enabled = true;
+    runtime.goal.status = "active";
+    await runtime.hook("goal_updated", { goal: runtime.goal });
+    expect(runtime.active()).toEqual(["goal", "audit_round"]);
+    runtime.setActive(["goal"]);
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual(["goal", "audit_round"]);
+    expect((await runtime.call({ op: "record", ...round(2) })).isError).toBeUndefined();
+    expect(
+      await runtime.hook("tool_call", { toolName: "task", toolCallId: "resumed", input: { tasks: [{ agent: "audit-auditor" }] } }),
+    ).toBeUndefined();
+    expect(await runtime.hook("before_subagent_spawn", { agent: "audit-fixer", invocationKind: "task" })).toBeUndefined();
+  });
+
+  test("reattaching a paused audit preserves its ledger and removes restored owned tools", async () => {
+    const state = initial({ rounds: [round(1, 1)], addedTools: ["goal", "audit_round"] });
+    const runtime = harness(state);
+    runtime.goalMode.enabled = false;
+    runtime.goal.status = "paused";
+    runtime.setActive(["read", "goal", "audit_round"]);
+    await runtime.hook("session_start", {});
+    expect(runtime.active()).toEqual(["read"]);
+    expect(runtime.latest()).toEqual(state);
+    runtime.setActive(["read", "goal"]);
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual(["read"]);
+    expect((await runtime.call({ op: "status" })).content[0]?.text).toContain("goal is paused");
+  });
+
+  test("pausing does not remove a goal tool the audit did not add", async () => {
+    const runtime = harness(initial());
+    runtime.setActive(["read", "goal"]);
+    await runtime.hook("session_start", {});
+    expect(runtime.latest().addedTools).toEqual(["audit_round"]);
+    runtime.goalMode.enabled = false;
+    runtime.goal.status = "paused";
+    await runtime.hook("goal_updated", { goal: runtime.goal });
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual(["read", "goal"]);
+    expect(runtime.latest()).toMatchObject({ status: "active", goalId: "g1", addedTools: ["audit_round"] });
+  });
+
+  test.each([
+    { enabled: false, mode: "active", status: "active" },
+    { enabled: true, mode: "exiting", status: "active" },
+    { enabled: true, mode: "active", status: "budget-limited" },
+  ])("audit work requires an enabled active goal: %j", async ({ enabled, mode, status }) => {
+    const runtime = harness(initial());
+    await runtime.hook("session_start", {});
+    Object.assign(runtime.goalMode, { enabled, mode });
+    runtime.goal.status = status;
+    await runtime.hook("goal_updated", { goal: runtime.goal });
+    await runtime.hook("before_agent_start", {});
+    expect(runtime.active()).toEqual([]);
+    expect((await runtime.call({ op: "status" })).isError).toBe(true);
+    expect(await runtime.hook("before_subagent_spawn", { agent: "audit-auditor", invocationKind: "task" })).toMatchObject({
+      block: true,
+    });
+    expect(runtime.latest()).toMatchObject({ status: "active", goalId: "g1", conclusion: null });
   });
 
   test("before each turn the loop tools are restored while the audit runs and removed again after a host restores them", async () => {

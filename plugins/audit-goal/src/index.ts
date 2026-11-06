@@ -183,14 +183,27 @@ export default function auditGoal(pi: ExtensionAPI): void {
     }
   };
 
-  /** The loop is live only while its own goal is still the session goal and neither complete nor dropped. */
-  const liveAudit = (ctx: ExtensionContext): { session: AgentSession; state: AuditState } | undefined => {
+  /** A paused goal keeps its ledger binding and completion guards until it ends. */
+  const boundAudit = (ctx: ExtensionContext) => {
     const session = mainSession(ctx);
     const state = states.get(ctx.sessionManager.getSessionId());
     if (!session || invalidStates.has(ctx.sessionManager.getSessionId()) || state?.status !== "active") return undefined;
-    const goal = session.getGoalModeState()?.goal;
+    const goalMode = session.getGoalModeState();
+    const goal = goalMode?.goal;
     if (!goal || goal.id !== state.goalId || goal.status === "complete" || goal.status === "dropped") return undefined;
-    return { session, state };
+    return { session, state, goalMode };
+  };
+
+  const liveAudit = (ctx: ExtensionContext) => {
+    const bound = boundAudit(ctx);
+    return bound?.goalMode?.enabled && bound.goalMode.mode === "active" && bound.goalMode.goal.status === "active" ? bound : undefined;
+  };
+
+  const pausedAuditReason = (ctx: ExtensionContext): string | undefined => {
+    const goalMode = boundAudit(ctx)?.goalMode;
+    return goalMode && (!goalMode.enabled || goalMode.goal.status === "paused")
+      ? "The audit goal is paused. Resume it with /goal resume before running audit tools or dispatching audit agents."
+      : undefined;
   };
 
   const persist = (ctx: ExtensionContext, state: AuditState): void => {
@@ -234,18 +247,20 @@ export default function auditGoal(pi: ExtensionAPI): void {
   };
 
   /**
-   * Outside a live audit `audit_round` stays off, and a `goal` this audit added goes when the audit ends. Later it goes only when it
-   * is back together with `audit_round`: when a goal ends, the RPC goal controller restores the tool list it captured, which can hold
-   * both after the audit is over. A `goal` back alone belongs to the host (the TUI goal interview enables it before creating a goal),
-   * and one that another goal holds stays. `addedTools` is kept until the session holds no goal, so a late restore is still
-   * recognized. Returns whether `addedTools` changed.
+   * Outside a live audit `audit_round` stays off, and a `goal` this audit added goes while paused or when the audit ends. After ending,
+   * it goes only when back together with `audit_round`: the host can restore a snapshot holding both after the audit is over.
+   * A `goal` back alone after ending belongs to the host (the TUI goal interview enables it before creating a goal), and one that
+   * another goal holds stays. `addedTools` is kept until the session holds no goal, so a late restore is still recognized.
+   * Returns whether `addedTools` changed.
    */
   const releaseLoopTools = async (session: AgentSession, state: AuditState | undefined, ending = false): Promise<boolean> => {
     try {
       const active = pi.getActiveTools();
       const goal = session.getGoalModeState()?.goal;
       const removeGoalTool =
-        state?.addedTools.includes("goal") === true && (ending || active.includes(ROUND_TOOL)) && (!goal || goal.id === state.goalId);
+        state?.addedTools.includes("goal") === true &&
+        (ending || state.status === "active" || active.includes(ROUND_TOOL)) &&
+        (!goal || goal.id === state.goalId);
       const removing = active.filter((name) => name === ROUND_TOOL || (removeGoalTool && name === "goal"));
       if (removing.length > 0) await pi.setActiveTools(active.filter((name) => !removing.includes(name)));
     } catch (error) {
@@ -306,8 +321,9 @@ export default function auditGoal(pi: ExtensionAPI): void {
                 currentGoal.status === "dropped" ? "dropped by the user" : "completed before ledger reconciliation",
                 currentGoal.status === "complete",
               );
-            } else if ((await addLoopTools(restored)) && states.get(sessionId) === restored && !invalidStates.has(sessionId)) {
-              persist(ctx, restored);
+            } else {
+              const changed = liveAudit(ctx) ? await addLoopTools(restored) : await releaseLoopTools(session, restored);
+              if (changed && states.get(sessionId) === restored && !invalidStates.has(sessionId)) persist(ctx, restored);
             }
           } else if (restored.status === "ended" && restored.addedTools.length > 0) {
             if ((await releaseLoopTools(session, restored)) && states.get(sessionId) === restored) persist(ctx, restored);
@@ -658,7 +674,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
       if (invalidStates.has(ctx.sessionManager.getSessionId()))
         return textResult("Audit ledger is invalid or could not be saved. Do not complete or dispatch; use /goal drop explicitly.", true);
       const live = liveAudit(ctx);
-      if (!live) return textResult("No /audit loop is active in this main session.", true);
+      if (!live) return textResult(pausedAuditReason(ctx) ?? "No /audit loop is active in this main session.", true);
       if (params.op === "status") return textResult(ledgerSummary(live.state), false, roundCardDetails("status", live.state));
       if (params.op === "conclude") return conclude(ctx, live.state, params);
       if (params.op === "extend") return await extendRounds(ctx, live.state);
@@ -669,7 +685,10 @@ export default function auditGoal(pi: ExtensionAPI): void {
   const dispatchRefusal = (ctx: ExtensionContext, requested: number): string | undefined => {
     const live = liveAudit(ctx);
     if (!live) {
-      return "audit-auditor and audit-fixer are reserved for the /audit loop and cannot be dispatched here. Use another agent.";
+      return (
+        pausedAuditReason(ctx) ??
+        "audit-auditor and audit-fixer are reserved for the /audit loop and cannot be dispatched here. Use another agent."
+      );
     }
     if (live.state.conclusion)
       return "The audit has recorded its conclusion; report it and complete the goal instead of dispatching more audit work.";
@@ -685,7 +704,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
 
   pi.on("tool_call", (event, ctx) => {
     if (event.toolName === "goal") {
-      const live = liveAudit(ctx);
+      const live = boundAudit(ctx);
       const current = mainSession(ctx)?.getGoalModeState()?.goal;
       const invalidAudit = invalidStates.has(ctx.sessionManager.getSessionId()) && current?.objective.startsWith("Audit loop (/audit): ");
       if (event.input.op === "complete" && (live || invalidAudit) && (!live?.state.conclusion || invalidAudit)) {
@@ -743,6 +762,8 @@ export default function auditGoal(pi: ExtensionAPI): void {
 
   pi.on("before_subagent_spawn", (event, ctx) => {
     if (!isAuditAgent(event.agent)) return undefined;
+    const pausedReason = pausedAuditReason(ctx);
+    if (pausedReason) return { block: true, reason: pausedReason };
     if (event.invocationKind === "eval") {
       return { block: true, reason: "audit-auditor and audit-fixer are dispatched only through the task tool by the /audit loop." };
     }
@@ -773,7 +794,10 @@ export default function auditGoal(pi: ExtensionAPI): void {
       await endAudit(ctx, state, "dropped by the user", false);
       return;
     }
-    if (goal.status === "active") await addLoopTools(state);
+    const session = mainSession(ctx);
+    if (!session) return;
+    if (liveAudit(ctx)) await addLoopTools(state);
+    else await releaseLoopTools(session, state);
   });
 
   pi.on("session_compact", async (_event, ctx) => {

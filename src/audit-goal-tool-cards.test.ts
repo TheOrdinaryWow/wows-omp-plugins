@@ -64,7 +64,11 @@ async function harness(state: AuditState | undefined) {
     : [];
   const sessionManager = { getSessionId: () => id, getBranch: () => branch };
   const goal = { id: "g1", objective: "Audit loop (/audit): checkout restart path", status: "active" };
-  const session = { sessionManager, settings: {}, getGoalModeState: () => ({ goal }) } as unknown as AgentSession;
+  const session = {
+    sessionManager,
+    settings: {},
+    getGoalModeState: () => ({ enabled: true, mode: "active", goal }),
+  } as unknown as AgentSession;
   AgentRegistry.global().register({ id, displayName: id, kind: "main", session });
   registrations.push(id);
   let tool: Tool | undefined;
