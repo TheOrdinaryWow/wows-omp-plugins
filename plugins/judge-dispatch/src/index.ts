@@ -449,14 +449,18 @@ function observeTaskOutcomes(routing: SessionRouting, ctx: ExtensionContext, too
   const parent = AgentRegistry.global()
     .list()
     .find((ref) => ref.session?.sessionManager === ctx.sessionManager);
-  const session = parent?.session && isLocalAgentSession(parent.session) ? parent.session : undefined;
-  for (const job of session?.asyncJobManager?.getAllJobs({ ownerId: parent?.id }) ?? []) {
+  const manager = parent?.session && isLocalAgentSession(parent.session) ? parent.session.asyncJobManager : undefined;
+  for (const job of manager?.getAllJobs({ ownerId: parent?.id }) ?? []) {
     const childId = job.agentId;
     const name = childId === undefined ? undefined : background.get(childId);
     if (job.type !== "task" || childId === undefined || name === undefined || job.startTime < dispatch.at) continue;
     background.delete(childId);
-    const settle = () =>
-      routing.escalations.settle(name, childId, job.status !== "completed", taskResultOutput(job.resultText ?? job.errorText ?? ""));
+    // A worker-homed session's manager returns snapshots, so the terminal row is re-read after settling.
+    const settle = () => {
+      const final = manager?.getJob(job.id) ?? job;
+      if (final.status === "running") return;
+      routing.escalations.settle(name, childId, final.status !== "completed", taskResultOutput(final.resultText ?? final.errorText ?? ""));
+    };
     void job.promise.then(settle, settle);
   }
 }
