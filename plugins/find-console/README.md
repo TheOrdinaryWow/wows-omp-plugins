@@ -7,7 +7,9 @@
 
 English | [简体中文](README.zh.md)
 
-Run `/find` yourself to search by behavior, browse calibrated judge scores and preview the matching source ranges. The command runs the host's semantic search cascade in the current process, using the session's judge role and project settings. It does not ask the chat agent to search.
+> Search your code by what it does, browse the scored hits, and hand the good ones to the agent.
+
+OMP's built-in `find` tool searches code by behavior ("where are versions bumped?") instead of by exact text, but normally only the agent can run it. `/find` lets you run the same search yourself. Hits open in a console with a score for each one and a preview of the matching lines. From there you can insert a `path:start-end` reference into your message or send the hits to the agent. The agent does not take part in the search itself.
 
 ## Install
 
@@ -15,134 +17,137 @@ Run `/find` yourself to search by behavior, browse calibrated judge scores and p
 omp plugin install find-console@wows-omp-plugins
 ```
 
-Requires OMP 18.17.0 or newer and a configured native judge, such as TypeSafe jev. Start a new session after installing. The plugin has no runtime dependencies or credentials of its own.
+You need OMP 18.17.0 or newer and a judgment model behind OMP's `judge` role, such as TypeSafe's Jev. Scores come from that model, so `/find` does not run with an ordinary chat model. Start a new session after installing.
 
 ## Quick start
 
-1. Run `/find where release-please versions are bumped`. Running `/find` without text opens a query prompt.
-2. Watch the progress view. Esc or Ctrl+C cancels the search; there is no command-level search deadline.
-3. Use Up/Down to select a result and Left/Right to switch refined ranges. By default the preview loads the full file and highlights only refined ranges. A `whole-file` result has no highlights and uses a bare-path reference.
-4. Press Enter to insert the selected `path:start-end` reference into the composer, or `s` to send the selected hit to the agent. Esc closes the console without adding a transcript entry.
+1. Run `/find where release-please versions are bumped`. `/find` on its own asks for the question.
+2. Watch the progress view. Esc or Ctrl+C cancels the search.
+3. Use Up and Down to pick a hit and Left and Right to move between its matching ranges. The preview shows the whole file with the matching lines highlighted.
+4. Press Enter to insert the reference into your message, or `s` to send the hit to the agent. Esc closes the console without adding anything to the conversation.
 
 ## Usage
 
-### Query, scope and keywords
+### Ask a question
 
 ```text
 /find [--path PATH] [-k KEYWORD]... [--glob PATTERN]... [--ext EXT]... [--min-score 0.2..1] [--limit N] [--no-cache] [--no-translate] <query>
 /find --help
-/find --cancel
 /find --history
+/find --cancel
 ```
 
-`--path` (short form `-p`) is the slash-command form of the CLI's optional `[path]`: it can name a directory, one file, or an internal URL. It defaults to the session's current directory, not the process's working directory. Use `-k` (or `--keyword`) once per extra lexical keyword. Query text can remain unquoted; quote a path or keyword containing spaces. The command completes its option names.
+Write the question as plain text; it does not need quotes. The command completes its option names.
+
+| Option | What it does |
+| --- | --- |
+| `--path PATH`, `-p` | Search a directory, one file, or an OMP document such as `omp://extensions.md`, instead of the session's current directory. Quote paths with spaces. |
+| `-k KEYWORD`, `--keyword` | Add a word the matching code is likely to contain. Repeat for more. |
+| `--glob PATTERN` | Only search files matching the pattern. A pattern with `/` matches paths from the search root; one without matches file names anywhere. Repeat for alternatives. |
+| `--ext EXT` | Only search files with this extension (`ts` or `.ts`, any case). Repeat for alternatives. Combined with `--glob`, a file must match both. |
+| `--min-score` | Hide hits and ranges scored below this value, from 0.2 to 1. |
+| `--limit N` | Show at most N hits. |
+| `--no-cache` | Ask the judge again instead of reusing earlier answers. |
+| `--no-translate` | Search with the question exactly as written (see below). |
+| `--` | Everything after it is the question, even if it starts with `-`. |
 
 ```text
 /find --path plugins where version manifests are updated -k release-please
-/find --path "a directory" -k "model role" how judges are resolved
+/find --glob 'plugins/**/*.ts' --ext ts --min-score 0.7 --limit 5 where settings are read
 /find --path omp://extensions.md how user messages are queued
-/find -- --dash-leading query text
 ```
 
-`--` ends option parsing. There is no ambiguous positional path: a path is always introduced by `--path`. Hidden and ignored files follow the host cascade's default search policy.
+A question written in a non-Latin script, such as Chinese or Japanese, is translated to English first, using your `tiny` model role, or `smol` if that fails. The results show `searched as: …` next to your original question. If neither model works, the search goes ahead untranslated and tells you why.
 
-Use `--no-cache` to bypass both reads and writes in the host judgment cache. Reports count cached answers independently of cost: `all cached`, `partly cached`, `fresh`, `cache off`, or `cache unavailable`. Exactly zero costs display as `$0`; tiny non-zero costs display as `<$0.0001` rather than rounding to zero.
+### Work with the results
 
-Queries containing non-Latin letters are translated to English before the lexical scan, using the configured `tiny` role first and `smol` if tiny is unavailable or fails. Results keep the original query and show `searched as: …`. If neither model works, search continues untranslated with the reason shown. Use `--no-translate` to disable translation for one search.
-
-File filters run before lexical scanning and filename judgments. Repeat `--glob` for alternative patterns and `--ext` for alternative suffixes; glob and extension filters intersect. A glob containing `/` matches a search-root-relative path; otherwise it matches the basename at any depth. Extensions ignore case and accept an optional leading dot. `--min-score` filters both hits and refined ranges and must be at least the cascade threshold (0.2); `--limit` is a positive hit-count cap applied after score filtering. For example: `/find --glob 'plugins/**/*.ts' --ext ts --min-score 0.7 --limit 5 where settings are read`.
-
-### Recent searches and follow-up questions
-
-Recent original queries and their flags are saved per project in `.omp/.cache/find-console/history.json`, outside the installed plugin copy. The newest 50 searches are kept and duplicates replace their older flags. `/find` argument completion offers recent queries; `/find --history` or the console's Recent searches action opens a picker and reruns the selected search with its saved flags. History storage starts at version 1. It contains query text and paths, so treat it as local project data; remove the file to clear it.
-
-Press `r` (Search within results) to ask another question restricted to the current hit files, without a repository-wide rescan. Existing flags are preserved and results identify `within N files of: <previous query>`. Press `h` for recent searches. Both actions close the console before opening host input/select dialogs; cancelling those dialogs does not send anything to the agent. A history rerun also restores a saved within-results file restriction. Recent-query text completion covers ordinary searches; use the history picker for restricted follow-up searches.
-
-
-### Results console
-
-The terminal opens a fullscreen console by default, with ranked hits on the left and source context on the right. Set `uiMenu: half-screen` for a compact, bottom-anchored overlay that keeps the conversation visible above it. Both layouts support selection, source preview and the same result actions. Scores use the same strong/plausible/muted bands as the built-in find tool. They are judge probabilities, not a guarantee that the hit is correct.
+Hits are ranked by score. Scores use the same strong, plausible and muted bands as the built-in `find` tool. A score is the judge's confidence that the hit answers your question, not a guarantee. A hit marked `whole-file` matched as a whole file and has no highlighted lines.
 
 | Key | Action |
 | --- | --- |
-| Up, Down, Home, End | Select a hit. A new hit starts at its strongest range. |
-| Left, Right, Tab | Switch between the selected hit's ranges, strongest first. |
-| PgUp, PgDn | Scroll a long preview. |
+| Up, Down, Home, End | Pick a hit. A new hit opens at its strongest range. |
+| Left, Right, Tab | Move between the hit's ranges, strongest first. |
+| PgUp, PgDn | Scroll the preview. |
 | Space | Mark or unmark a hit for sending. |
-| Enter, `i` | Insert the current range reference into the composer and close. The existing draft is preserved. |
-| `s` | Send marked hits, or the selected hit when none are marked, as a user message. While the agent is streaming, queue it as a follow-up instead of interrupting it. |
-| `o` | Open the local file at the current range's first line in `$VISUAL` / `$EDITOR`, using `+line`. With no configured editor, use the OS opener. |
-| `r` | Ask a new question within only the current result files, preserving flags. |
-| `h` | Pick and rerun a recent search with its original flags. |
-| Esc, Ctrl+C | Close without sending results or recording the console in the transcript. |
+| Enter, `i` | Insert the current range's reference into your message and close. What you already typed stays. |
+| `s` | Send the marked hits, or the selected one if none are marked, as your message. If the agent is busy, it is queued instead of interrupting. |
+| `o` | Open the file at that line in `$VISUAL` or `$EDITOR`, or with your system's default app when no editor is set. |
+| `r` | Ask a follow-up question that only searches the files in these results. |
+| `h` | Pick a recent search and run it again. |
+| Esc, Ctrl+C | Close without sending anything. |
 
-In [Tern](https://docs.stencil.so/tern/), the same console opens as a large native glass sheet. Click a hit to preview it; the range, marking, insertion, sending and opening buttons run the same actions as the keys. Long paths appear in row tooltips, with the filename first in the list. The footer reports hits, cost, wall time and search accounting.
+By default the console fills the terminal. Set `uiMenu` to `half-screen` to keep the conversation visible above a smaller panel. In [Tern](https://docs.stencil.so/tern/), the console opens as a large native sheet with the same actions as buttons.
 
-### Coverage and failures
+### Recent searches
 
-- **Complete** means no judge request failed, not that every file or line was examined. The host cascade narrows candidates and applies read/window budgets.
-- **Partial coverage** stays visible above the results; failed requests and unanswered questions remain in the accounting. A partial file has additional content the judge did not see.
-- **Unavailable** means nothing was judged. The command shows an error explicitly stating that this is not evidence of absence, and opens no results console.
-- **No hits** produces a notice rather than an empty console. With partial coverage, the notice still warns that unjudged files may match.
+`/find` remembers the last 50 searches in each project, with their options. Completion after `/find` offers them, and `/find --history` or `h` in the console lets you pick one and run it again. The list is stored in `.omp/.cache/find-console/history.json` in the project. It contains your questions and paths, so delete the file if you want to clear it.
+
+### When results are incomplete
+
+The footer reports what the search covered and what it cost:
+
+- **Complete** means no judge request failed. It does not mean every line of every file was read; the search narrows candidates first.
+- **Partial coverage** is shown above the results when some requests failed or went unanswered. A file marked partial has parts the judge did not see.
+- **Unavailable** means nothing could be judged. You get an error saying so, and no results console. That is not evidence that the code you asked about does not exist.
+- **No hits** shows a notice instead of an empty console. With partial coverage, the notice warns that unjudged files might still match.
+
+The footer also shows whether answers came from the cache (`all cached`, `partly cached`, `fresh`, `cache off` or `cache unavailable`) and the cost. Answers from the cache cost nothing.
 
 ## Settings
 
-### Terminal layout
+Change a setting for your user:
 
 ```bash
 omp plugin config set wows-omp-plugin-find-console uiMenu half-screen
+omp plugin config list wows-omp-plugin-find-console
 ```
 
-| Setting | Values | Default | Effect |
-| --- | --- | --- | --- |
-| `uiMenu` | `fullscreen` \| `half-screen` | `fullscreen` | Choose a fullscreen console or a bottom-anchored half-screen overlay for terminal results. |
-| `autoTranslate` | boolean | `true` | Translate non-Latin queries with tiny, then smol. `--no-translate` disables it per search. |
-| `previewMode` | `full-file` \| `snippet` | `full-file` | Load the full file and focus the active refined range, or show only its surrounding context. Whole-file results have no highlights. |
+To change a setting for one project only, add it to `.omp/plugin-overrides.json` in that project:
 
-The layout setting is read each time the results console opens; no session restart is needed. It applies only to the terminal TUI. Tern keeps its large native glass sheet, and RPC/ACP keep the selector/editor flow. To restore fullscreen, set `uiMenu` to `fullscreen`.
+```json
+{ "settings": { "wows-omp-plugin-find-console": { "uiMenu": "half-screen" } } }
+```
 
-### Search enablement
+Changes apply the next time you run `/find`.
 
-The command reads the host's `find.enabled` setting on every call from the current session's project-scoped settings. For example, a project's `.omp/config.yml` can contain:
+| Setting | Default | What it changes |
+| --- | --- | --- |
+| `uiMenu` | `fullscreen` | `fullscreen` fills the terminal with the results console; `half-screen` shows a smaller panel at the bottom so the conversation stays visible. Only affects the terminal. |
+| `autoTranslate` | `true` | Translate non-Latin questions to English before searching. `--no-translate` turns it off for one search. |
+| `previewMode` | `full-file` | `full-file` shows the whole file and scrolls to the current range; `snippet` shows only the lines around it. |
+
+### OMP settings that affect `/find`
+
+`/find` follows OMP's own `find.enabled` setting, for example in a project's `.omp/config.yml`:
 
 ```yaml
 find:
   enabled: auto
 ```
 
-| Value | Behavior |
+| Value | Effect on `/find` |
 | --- | --- |
-| `auto` (host default) | Enable only when the first usable judge-role candidate is native. Otherwise explain the missing native judge. |
-| `on` | Pass the same enablement gate as the host tool. Non-native candidates are still refused before a judgment; the console never substitutes a chat or local text model for calibrated search scores. |
-| `off` | Refuse and name `find.enabled` as the reason. |
+| `auto` (OMP's default) | Runs when your `judge` role resolves to a judgment model; otherwise it explains what is missing. |
+| `on` | Turns `/find` on, but it still refuses a judge that is not a judgment model and never falls back to a chat model for scores. |
+| `off` | Refuses to run and says that `find.enabled` is off. |
 
-Configure models and authentication through OMP, not this plugin. Billed judgment attempts are journaled through the host's `journalJudgmentUsage`; cache hits are not billed. Judgments and remote query translation count toward the `session.maxCost` cap like native `find`, so once the cap is reached they are refused; local `tiny` translation is not charged.
+Models and logins are set up in OMP, not in this plugin. Judge requests and translations by a remote model count toward your session's `session.maxCost` limit, the same as the built-in `find`. Once the limit is reached they are refused. Translation by a local `tiny` model costs nothing.
 
 ## Working with other plugins
 
-No other marketplace plugin is required. `judge-dispatch` and this command share the host's judge configuration, but neither changes the other's routing or settings. The command registers no `tool_call` or `tool_result` hook, so it does not disable speculative reads or launches.
-
-## Without the terminal UI
-
-| Host | Behavior |
-| --- | --- |
-| RPC (`--mode rpc`, `rpc-ui`) and ACP with UI | Search progress appears through status updates with a cancel dialog. Results use a hit selector (file, score and range description), an action selector and a read-only preview editor. Preview edits are discarded. Marking, multi-hit sending, Search within results and Recent searches remain available. |
-| Host without a composer editor | Insertion is unavailable with a reason; use the send-to-agent action. RPC composers that advertise editor support can accept insertion; ACP normally cannot. |
-| No UI (print, JSON, SDK) | No dialogs or interactive actions. Supply the query in the command; ranked results, references, coverage, failures and accounting are reported through a displayed message. |
-
-If a UI host cannot mount custom components, the command uses the same selector/editor flow. Closing a dialog does not send results to the agent.
+find-console works on its own. It uses the same `judge` model as `judge-dispatch`, but the two do not change each other's settings.
 
 ## Known limitations
 
-- Internal-URL hits, including `omp://` and `skill://`, can be previewed, inserted and sent but cannot open externally; the console explains why.
-- External open runs on the machine hosting OMP. An RPC/ACP client on another machine does not gain a local editor integration. A terminal-only `$EDITOR` needs a real terminal; graphical editors and OS openers do not position reliably unless they accept `+line`.
-- Source previews are read on demand and limited to the first 4 MiB, matching the cascade's read bound. The file may have changed since judging; the preview does not freeze or edit it.
-- The command adds no 20-second timeout, but the host's underlying providers and filesystem scan retain their own limits. Cancelling cannot undo already billed judgments.
-- The host extension command API has no command-level abort signal. Use the progress view's cancel action (Esc/Ctrl+C or a dialog cancellation), or `/find --cancel`; session changes and shutdown also cancel a running search.
+- Hits inside OMP documents and skills (`omp://`, `skill://`) can be previewed, inserted and sent, but not opened in an editor.
+- `o` opens the file on the machine running OMP. An editor that only works inside a terminal needs a real terminal, and graphical editors jump to the right line only if they accept `+line`.
+- The preview reads the file when you open it, up to its first 4 MiB. If the file changed after the search, the preview shows the new content.
+- Cancelling a search does not refund judge requests that already ran.
+- `/find` itself has no time limit. Cancel with Esc, Ctrl+C or `/find --cancel`. Switching or closing the session also cancels it.
 
-## Reference
+## More details
 
-The [implementation reference](REFERENCE.md) documents refinement, translation, filters and versioned history storage. Host documentation covers [semantic find](omp://tools/find.md), [judge and find settings](omp://settings.md) and [extension UI/message delivery](omp://extensions.md).
+[REFERENCE.md](REFERENCE.md) explains how hits are refined into ranges, how translation and filters work, the history file format, and how `/find` behaves in RPC, ACP editors and headless runs. OMP's own docs cover [semantic find](omp://tools/find.md) and [the judge and find settings](omp://settings.md).
 
 ## License
 

@@ -77,3 +77,22 @@ The command API's completion callback has no context argument, so the extension 
 ## Search within results
 
 The action closes the current console, asks a new question through host input, and reruns the same cascade and refinement with unchanged flags. A synthetic directory tree is constructed only from the current hit paths and their ancestors. Both the lexical scan and filename listing see this tree through the native filesystem bridge; no repository directory enumeration occurs. File contents and metadata still resolve through the original session filesystem. Results display the preceding original query and restricted file count. Nested follow-ups narrow to their own current hits, and persisted history retains the exact file restriction for reruns.
+
+The `r` and `h` actions close the console before opening the host input or select dialog. Cancelling either dialog sends nothing to the agent.
+
+## Search scope and limits
+
+- `--path` defaults to the session's current directory, not the process working directory. There is no positional path: a path is always introduced by `--path`. Hidden and ignored files follow the host cascade's default search policy.
+- The command adds no deadline of its own (native `find` stops after 20 seconds), but the host's providers and filesystem scan keep their own limits. The extension command API has no abort signal, so cancellation comes from the progress view, `/find --cancel`, a session switch or shutdown.
+- Exactly zero costs display as `$0`; tiny non-zero costs display as `<$0.0001` instead of rounding to zero.
+- In Tern, long paths appear in row tooltips with the file name first, and the footer reports hits, cost, wall time and search accounting.
+
+## Without the terminal UI
+
+| Host | Behavior |
+| --- | --- |
+| RPC (`--mode rpc`, `rpc-ui`) and ACP with UI | Search progress appears through status updates with a cancel dialog. Results use a hit selector (file, score and range description), an action selector and a read-only preview editor. Preview edits are discarded. Marking, multi-hit sending, Search within results and Recent searches remain available. |
+| Host without a composer editor | Insertion is unavailable with a reason; use the send-to-agent action. RPC composers that advertise editor support can accept insertion; ACP normally cannot. |
+| No UI (print, JSON, SDK) | No dialogs or interactive actions. Supply the query in the command; ranked results, references, coverage, failures and accounting are reported through a displayed message. |
+
+If a UI host cannot mount custom components, the command uses the same selector/editor flow. Closing a dialog does not send results to the agent. `uiMenu` applies only to the terminal TUI; Tern keeps its native sheet and RPC/ACP keep the selector/editor flow. An RPC or ACP client on another machine gets no local editor integration from `o`.
