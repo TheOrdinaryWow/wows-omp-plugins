@@ -7,9 +7,11 @@
 
 English | [简体中文](README.zh.md)
 
-> Judge-classified subagent routing: a judge model picks the agent type for every subagent OMP spawns and rates how demanding its task is; your configuration decides what that rating changes.
+> A second opinion on every subagent: a judge model checks which kind of agent should do the task and how hard it is, and your settings decide what that changes.
 
-Lets OMP's `judge` model role classify how `task` calls spawn subagents. By default it can replace the agent type the parent asked for. It can also rate each assignment `routine`, `standard` or `demanding`: with `judgeEffort` the rating moves the child's thinking level one step, and with `modelTiers` routine or demanding work runs on models you chose. The judge never picks a model; that mapping is yours. OMP still validates every spawn, and anything the judge is unsure about stays as requested.
+When the agent hands a task to a subagent, it picks which agent type does the work (`task`, `explore`, `deep-low` and so on), and that choice is not always right. With this plugin, OMP's judge model looks at each task first. It can switch the agent type to a better fit, and it can rate the task `routine`, `standard` or `demanding`. You decide what the rating does: run easy tasks with less thinking and hard ones with more, or send them to models you pick. The judge never picks a model itself. When it is unsure, the task runs exactly as the agent asked.
+
+You can also tell the agent to run one particular task on a specific model or model role, for example "run the review on the abliterated role".
 
 ## Install
 
@@ -17,13 +19,13 @@ Lets OMP's `judge` model role classify how `task` calls spawn subagents. By defa
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-Requires OMP 18.17.0 or newer. Automatic routing needs a native judgment model behind the `judge` role (see [Quick start](#quick-start)); pinning one task's model does not. Restart the session after installing.
+You need OMP 18.17.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below); running one task on a specific model works without one.
 
 ## Quick start
 
-The plugin keeps no credentials and no model list of its own; it asks whatever model OMP's `judge` role resolves to. That model must be a native judgment model, one OMP serves through a judgment API such as TypeSafe or OpenRouter decisions, because `minimumConfidence` relies on the calibrated confidence those APIs return. TypeSafe's Jev is one such model; any other judgment model OMP supports for the `judge` role works the same way.
+The plugin uses whatever model OMP's `judge` role points to. That has to be a judgment model, such as TypeSafe's Jev or an OpenRouter decision model, because the plugin relies on the confidence score those models return. An ordinary chat model will not do.
 
-The quickest setup is a TypeSafe credential, which makes the `judge` role resolve to Jev by default (`providers.judgmentProvider: auto`):
+The quickest setup is a TypeSafe login, which points the `judge` role at Jev by default:
 
 ```bash
 omp            # then run: /login typesafe
@@ -31,145 +33,142 @@ omp            # then run: /login typesafe
 export TYPESAFE_API_KEY="your-typesafe-api-key"
 ```
 
-To use a different judgment model, assign it to the `judge` role in your OMP configuration. If the role resolves to a chat model or an on-device model, or has no credential, the plugin keeps every requested agent and warns once per session.
+To use another judgment model, assign it to the `judge` role in your OMP configuration. If the role points to a chat model, a local model or a model without credentials, the plugin keeps every task as requested and warns once per session.
 
-Once it works, each routed `task` call prints a dim status line:
+Once it works, every routed task shows a dim status line:
 
 ```text
 judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · thinking medium → high (0.92) ; #3 ultrabrain kept (0.95) · model openai/gpt-6.1 → @slow (0.88)
 ```
 
+Here task 1 was moved from `explore` to `task`, task 2 kept its agent but thinks harder, and task 3 runs on the `@slow` model role. The numbers are the judge's confidence.
+
+By default the plugin only switches agent types. To let the difficulty rating change thinking levels or models, turn on `judgeEffort` or set `modelTiers` (see [Settings](#settings)).
+
 ## Usage
 
-### Agent routing
+### Picking the right agent
 
-With `routeAgent` on (the default), the plugin may rewrite the `agent` field of ordinary `task` calls, single or batch. Candidates are the agents listed in the live `task` tool description, which OMP has already filtered by spawn policy and disabled agents. A read-only agent is only ever replaced by another read-only agent.
+The judge looks at the task and the agents available in your session, and switches the agent type when another one fits clearly better. A read-only agent is only ever replaced by another read-only agent, so a request to look at code never turns into one that changes it. Turn this off with `routeAgent: false`.
 
-These calls are left exactly as they are, thinking level and model included:
+Some tasks are always left exactly as they are, model and thinking level included:
 
-- requests for `audit-*`, `metis`, `momus` or `oracle`; ordinary requests are never routed into these workflow roles either;
-- requests for OMP's bundled `seance`, which consults a saved session through its native `sourceSession` and optional `model` fields; ordinary requests are never routed to it either;
-- requests for an agent the plugin cannot find in the list, since its access level is unknown;
-- items carrying OMP's native `model` field: the exact selector, effort and original agent stay unchanged, including under tiers or retries;
-- every `task` call while an `omo-prometheus` plan is executing, because the approved plan owns those choices.
+- tasks for the workflow agents of other plugins: audit-goal's `audit-*` agents and omo-prometheus's `metis`, `momus` and `oracle`. Other tasks are never sent to them either;
+- tasks for OMP's `seance` agent, which consults an earlier session;
+- tasks for an agent the plugin does not know;
+- tasks that already name their own model (OMP's per-task `model` field);
+- every task while an omo-prometheus plan is being carried out, because the approved plan already decided who does what.
 
-Subagents started through `eval.agent()` or `workpool()` are never routed.
+Tasks whose instructions are in a file (OMP's `taskFile`) keep their agent, since the judge cannot read them. Subagents started from `eval` scripts are not routed at all.
 
-Items using `taskFile` keep their agent because the plugin does not read their assignment. Their model pins still apply, and inline siblings in the same batch route normally. Routing judgments share the session's cost gate and usage ledger.
+### How hard is a task
 
-### Difficulty
+The judge rates how open the problem is, not how much work it is: `routine` when the fix or the steps are already known, `standard` for ordinary work whose approach is mostly clear, and `demanding` when the cause or the design is still open. It only asks for a rating when the answer would change something, that is, when `judgeEffort` is on or a tier is configured for the agent. A rating the judge is not confident about counts as `standard`, which changes nothing.
 
-The judge rates how open-ended an assignment is, not how much work it involves: `routine` when the fix or steps are given, `standard` for ordinary work whose approach is mostly settled, `demanding` when causes or designs remain open. An item's `solutionSpace`, the caller's own description of how open the problem is, is part of what it reads.
+### Adjust thinking by difficulty
 
-The plugin asks for a rating only when the answer can change something: `judgeEffort` is on and the item sets no `effort`, or a tier is configured for the agent the item finally runs as. A rating below `minimumConfidence` counts as `standard`, which changes nothing.
+With `judgeEffort` on, a `routine` task thinks one level less and a `demanding` task one level more than the agent normally would. The starting point is the agent's own configured level.
 
-### Thinking level
+- An agent with no fixed level (none, `auto`, `inherit` or `off`) is left alone.
+- The step stays within the levels the model supports, so it never turns thinking off and does nothing at either end.
+- A step up never goes past OMP's `task.maxEffort`.
+- A task that already sets its own `effort` keeps it.
 
-With `judgeEffort` on, a routine rating moves the child's thinking level one supported level down and a demanding rating one level up, starting from the level the child would run at anyway: the `:level` suffix of the agent's model selector, or else the agent's own `thinkingLevel`.
+### Run easy or hard tasks on other models
 
-- Without a starting level, or when it is `auto`, `inherit` or `off`, nothing changes.
-- The step stays within the levels the model supports, so it never reaches `off`; at either end it does nothing.
-- A step up never passes `task.maxEffort`.
-- An item that sets `effort` itself keeps it.
-
-The plugin never writes the task's `effort`, which would override every configured level. The new level goes on the spawn's model selector instead (see [the reference](REFERENCE.md#thinking-steps)).
-
-### Model tiers
-
-`modelTiers` names the models routine and demanding work runs on:
+`modelTiers` says which model runs `routine` and which runs `demanding` tasks:
 
 ```text
 routine=@smol,demanding=@slow,ultrabrain.demanding=openai/gpt-6.1:xhigh
 ```
 
-Each comma-separated entry is `[<agent>.]<routine|demanding>=<selector>`, where the selector is a model role `@<role>` or one model `provider/model[:level]`. An agent's own entry beats the entry for every agent. Standard work always runs on the agent's own model.
+Each comma-separated entry is `[<agent>.]<routine|demanding>=<model>`, where the model is a model role such as `@smol` or one model such as `provider/model[:level]`. An entry for one agent (`ultrabrain.demanding=…`) wins over the entry for all agents. `standard` tasks always run on the agent's own model.
 
-When a confident rating has a tier, the child spawns on the tier's model with that tier's fallback chain: the role's `retry.fallbackChains` entry, or the `default` chain. The thinking step then does not apply; the tier selector's own `:level`, or else the agent's `thinkingLevel`, does. A tier that resolves to the agent's own model at the same thinking level changes nothing; one that names the agent's model at another level applies that level. A tier that cannot apply, such as an unknown role or a model without credentials, keeps the agent's model, and the status line says why; it never blocks the call.
+A tier uses its model role's fallback models if the first one is unavailable. When a tier applies, its own thinking level is used and the thinking step above does not. If a tier cannot be used, for example because the role does not exist or the model has no credentials, the task keeps the agent's model and the status line says why. A tier never blocks a task.
 
-### Retrying and escalating
+### Retry or escalate a task
 
-The plugin tells the parent agent to retry or escalate a task by dispatching it again under the same `name`. It then raises that one dispatch:
+The plugin tells the agent to retry or escalate a task by sending it again under the same name, and then raises that one attempt:
 
-- After a child's final output starts with the line `ESCALATE: deep-high`, the next dispatch under its name counts as `demanding`.
-- After a child fails on a route the plugin lowered (a routine tier or a step down), the next dispatch counts one difficulty higher, which is `standard`: the agent's own model and level.
+- If a subagent's answer starts with the line `ESCALATE: deep-high`, the next attempt counts as `demanding`.
+- If a subagent fails on a route the plugin made easier (a `routine` tier or less thinking), the next attempt counts as `standard` and runs on the agent's own model and level.
 
-The raised dispatch keeps the agent the parent asked for and is not judged. Each record serves one dispatch and lives in memory for the session. The status line shows `escalated to demanding after ESCALATE: deep-high` or `raised to standard after a failed lowered run`.
+The raised attempt keeps the agent that was asked for and is not judged again. The status line shows `escalated to demanding after ESCALATE: deep-high` or `raised to standard after a failed lowered run`. These records last until OMP restarts.
 
-### Pin a model role or model for one task
+### Run one task on a specific model
 
-To run one subagent on another model role without creating a new agent type, tell the parent agent so, for example "run the review on the abliterated role". The plugin adds a short guidance to the system prompt that teaches the parent to write the task item's agent as `<agent>@<role>`:
+Tell the agent which model role or model to use for one task, for example "run the review on the abliterated role". The plugin teaches the agent to write that task's agent as `<agent>@<role>` or `<agent>@<provider>/<model>`:
 
 ```text
 task({"name":"ReviewLogic","agent":"deep-low@abliterated","task":"Review the logic"})
 ```
 
-`<agent>@<provider>/<model>` pins one concrete model instead, such as `scout@provider/model:high`. The role must exist in OMP's `modelRoles`; a concrete model must resolve to an enabled model with credentials.
+The subagent then runs as `deep-low` on that role's model, with the role's fallback models. The role must exist in your OMP `modelRoles`, and a specific model must be enabled and have credentials. A pinned task gets no tier or thinking step, though the judge may still switch its agent type. Pins work even without a judge.
 
-The plugin removes the pin before OMP runs the call, so the child runs as `deep-low` on the role's primary model, with that role's fallback chain (or the `default` chain when the role has none). A pinned item gets no tier and no thinking step; inline agent routing still applies, and pins work when the `judge` role is unavailable. Task `effort` still takes precedence over a selector's thinking suffix, as everywhere in OMP. An item cannot combine a pin with the native `model` field; that refuses the whole call.
+The subagent's ID gets a suffix such as `ReviewLogic_jd0123456789ab`, so no other task with the same name can take over its model. The agent is told about this and uses the new ID. The rewritten call is what OMP shows; that is the pin working, not an error.
 
-A pinned child gets a unique id such as `ReviewLogic_jd0123456789ab`, so no queued or later task that reuses the name can take its model. OMP shows and keeps the rewritten call, so the plugin also tells the parent agent which pins it applied; the task result returns the new id, and the parent should address the child by it.
-
-A pin that cannot apply refuses the whole call and says why, rather than running on the agent's own model: an unknown role, a model that does not resolve, a workflow-owned agent such as `metis`, or any pin while an approved Prometheus plan executes. Without this plugin, OMP itself rejects `deep-low@abliterated` as an unknown agent. A pin replaces the model list, not OMP's role identity, so OMP's credential fallback and higher-priority retry rules still apply. A pin with no fallback chain of its own is refused at spawn if OMP would otherwise retry it on the agent's original role chain. See [the reference](REFERENCE.md#from-a-pinned-agent-to-spawn).
-
-`seance@<role>` and `seance@<provider>/<model>` are also refused: OMP's bundled `seance` bypasses the spawn hook that applies pins. Put the selector in that item's native `model` field instead, or omit it to use the source session's saved model.
+If a pin cannot be applied, the whole call is refused with the reason, instead of quietly running on the agent's usual model. That happens for an unknown role, a model that cannot be used, a workflow agent such as `metis`, a task that also sets OMP's own `model` field, and any pin while an omo-prometheus plan is being carried out. For `seance`, put the model in that task's `model` field instead.
 
 ### What you see
 
-While the judge runs, the working message reads `judge-dispatch: routing N tasks…`. Then each routed call prints the status line shown above, with the judge's confidence for every decision: the agent, `thinking <from> → <to>`, `model <agent's model> → <tier>` or why the agent's model stays, or the bare `difficulty` when it changed nothing. An item kept without a usable judgment names the reason: `judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no confident choice`, `file-backed task`, `native model`, or `workflow-owned or unknown agent`. A call that could not be judged at all gets a line starting `kept the requested agent:`.
+While the judge works, the status reads `judge-dispatch: routing N tasks…`. Then each routed call shows a status line like the one above: the agent, `thinking <from> → <to>`, `model <agent's model> → <tier>` or why the model stays, with the judge's confidence for each decision. A task kept without a usable answer says why: `judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no confident choice`, `file-backed task`, `native model`, or `workflow-owned or unknown agent`. A call that could not be judged at all shows a line starting with `kept the requested agent:`.
 
-The status line is for you only: OMP neither sends it to the model nor saves it, so it does not come back after `/resume`. Set `indicator` to `false` to hide it and the working message.
+The status line is only for you. It is not sent to the model and not saved, so it does not come back after `/resume`. Set `indicator` to `false` to hide it.
 
 ### What the judge sees
 
-A judgment request contains the assignment, the item's `solutionSpace`, the optional shared context, the requested agent, and short candidate descriptions with their source and read-only status. Models, prices, the conversation and the system prompt are never sent.
+A judgment request contains the task's instructions, its description of how open the problem is, the shared context of the call (unless you turn `includeSharedContext` off), the requested agent, and a short description of each available agent. It never contains your models, prices, the conversation or the system prompt.
 
-### When judging fails
+Judge requests count toward your session's cost limit (`session.maxCost`) and its usage, like any other judgment in OMP.
 
-Anything short of a legal choice at or above `minimumConfidence` keeps the original agent, thinking level and model, and nothing is blocked. That includes a missing judge, low confidence, rejected credentials and network errors. Routing gives up after eight seconds.
+### When the judge is not available
+
+If the judge is missing, unsure, rejects its credentials or cannot be reached, the task runs with its original agent, thinking level and model. Nothing is blocked. The plugin gives up after eight seconds.
 
 ## Settings
 
-Package name for `omp plugin config`: `wows-omp-plugin-judge-dispatch`.
+Change a setting for your user:
 
 ```bash
-omp plugin config list wows-omp-plugin-judge-dispatch
 omp plugin config set wows-omp-plugin-judge-dispatch judgeEffort true
 omp plugin config set wows-omp-plugin-judge-dispatch modelTiers "routine=@smol,demanding=@slow"
+omp plugin config list wows-omp-plugin-judge-dispatch
 ```
 
-| Setting | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `routeAgent` | boolean | `true` | Lets the judge replace the requested agent type. |
-| `judgeEffort` | boolean | `false` | Moves each spawn's thinking level one step by the judged difficulty. |
-| `modelTiers` | text | empty | `[<agent>.]<routine\|demanding>=<@role or provider/model[:level]>` entries separated by commas. |
-| `minimumConfidence` | number from 0 to 1 | `0.70` | Confidence needed to replace the agent or to act on a difficulty rating. |
-| `includeSharedContext` | boolean | `true` | Sends the `task` call's shared `context` with the request. |
-| `indicator` | boolean | `true` | Shows the working message and status line. Routing works the same either way. |
+To change a setting for one project only, add it to `.omp/plugin-overrides.json` in that project:
 
-User settings merge with project overrides. They are read on every `task` call, so changes apply without a restart. An invalid value, such as a malformed `modelTiers` entry, makes the plugin keep every call as requested and log a warning. Stored settings the plugin no longer has are ignored, with a warning once per session.
+```json
+{ "settings": { "wows-omp-plugin-judge-dispatch": { "judgeEffort": true } } }
+```
+
+Settings are read on every task, so changes apply right away. If a value is invalid, such as a malformed `modelTiers` entry, the plugin keeps every task as requested and logs a warning.
+
+| Setting | Default | What it changes |
+| --- | --- | --- |
+| `routeAgent` | `true` | Lets the judge switch a task to a better-fitting agent type. |
+| `judgeEffort` | `false` | Gives routine tasks one level less thinking and demanding tasks one level more. |
+| `modelTiers` | empty | Which models run routine and demanding tasks, as `[<agent>.]<routine\|demanding>=<@role or provider/model[:level]>` entries separated by commas. Empty means every task uses its agent's model. |
+| `minimumConfidence` | `0.70` | How sure the judge must be (0 to 1) before the plugin switches an agent or acts on a difficulty rating. Higher means fewer changes. |
+| `includeSharedContext` | `true` | Whether the judge also sees the shared context of a `task` call, not just each task's instructions. |
+| `indicator` | `true` | Shows the status message and status line. Routing works the same either way. |
 
 ## Working with other plugins
 
-- `audit-goal`: its reserved `audit-*` agents are never routed.
-- `omo-prometheus`: `metis`, `momus` and `oracle` are never routed, and nothing is routed while an approved plan executes. Routing resumes once Prometheus is idle or planning again.
-- `omo-toolkit`: its `deep-low` agent answers `ESCALATE: deep-high` when a consequential choice is open. Dispatched again under the same name, the task counts as demanding.
-
-## Without the terminal UI
-
-Routing, thinking steps and tiers work the same in RPC, ACP editors, the SDK and headless runs. RPC clients receive the status as notification frames; ACP editors may only log them. Without a UI the indicators are skipped. The plugin has no dialogs or commands.
+- **audit-goal**: its reviewer and fixer agents are never rerouted.
+- **omo-prometheus**: `metis`, `momus` and `oracle` are never rerouted, and nothing is rerouted while an approved plan is being carried out. Routing resumes once the plan is done or you are planning again.
+- **omo-toolkit**: its `deep-low` agent answers `ESCALATE: deep-high` when it hits a decision it cannot settle. Sent again under the same name, the task counts as demanding.
 
 ## Known limitations
 
-- `eval.agent()` and `workpool()` children are not routed, because OMP's `before_subagent_spawn` hook can change a child's model but not its agent type.
-- Only `task` items can pin a model: OMP checks the agent name of an `eval.agent()` or `workpool()` child before any plugin hook runs, so `scout@abliterated` fails there as an unknown agent.
-- A pinned child's id carries a `_jd…` suffix instead of the name you gave it.
-- OMP folds consecutive status lines into one, so several `task` calls in one turn may show only the last line.
-- Retry and escalation records are lost on restart, and only a dispatch under the same name finds them.
-- Thinking steps need the supported thinking levels from OMP's model registry; a model without them keeps its level.
+- Subagents started from `eval` scripts (`agent()`, `workpool()`) are not routed and cannot be pinned to a model; only `task` calls can.
+- A pinned subagent's ID has a `_jd…` suffix instead of the name you gave it.
+- When the agent makes several `task` calls in one turn, OMP may show only the last status line.
+- Retry and escalation records are lost when OMP restarts, and only a retry under the same name finds them.
+- The thinking step needs OMP to know which thinking levels a model supports. A model without that information keeps its level.
 
-## Reference
+## More details
 
-[REFERENCE.md](REFERENCE.md) covers how tiers expand, the thinking step rules, the retry and escalation records, how decisions reach the spawn, and timeouts.
+[REFERENCE.md](REFERENCE.md) covers how tiers and pins expand into model lists, the exact thinking-step rules, the retry and escalation records, how decisions reach the subagent, and timeouts.
 
 ## License
 

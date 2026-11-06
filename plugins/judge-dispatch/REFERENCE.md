@@ -57,9 +57,25 @@ Ordinary task items have no native model field, and strict tool schemas keep a m
 
 For a role, the submitted patterns are the expanded `modelRoles[role]` selectors followed by `retry.fallbackChains[role]`, or by the `default` chain if the role has no entry. For a concrete model, they are that selector followed by the `default` chain. The plugin never picks among these fallbacks. OMP keeps the agent's original `modelRole` and retries a lone pattern on that role's chain (or `default`), so when a pin resolves to a single pattern while that inherited chain is nonempty, the spawn is refused instead of borrowing it. The hook cannot change the saved role identity or OMP's credential fallback, and a cold revival of a parked child may resolve the agent's own role again.
 
+A task's `effort` still takes precedence over a pinned selector's thinking suffix, as everywhere in OMP. Without this plugin, OMP itself rejects `deep-low@abliterated` as an unknown agent, so a pin never silently runs on the agent's own model.
+
+## Native per-item models and file-backed tasks
+
+With OMP's `task.perCallModel` setting on, a task item can carry its own `model`. The plugin leaves such an item's agent, selector and effort exactly as written: no agent judgment, no difficulty question, tier, thinking step or retry raise, and a same-named pending spawn decision from another dispatch cannot apply to it. An item that combines `model` with an `agent@…` pin refuses the whole call without reserving any pin. The pin still rides in the `agent` string because ordinary items have no model field unless that setting is on.
+
+With `task.file` on, an item may give its assignment as `taskFile` instead of `task`. Each item must have exactly one of the two. A file-backed item keeps its agent (the plugin never reads the file, so there is nothing to judge) and its `taskFile` is passed through untouched; its `agent@…` pin still applies, and inline siblings in the same batch are routed normally.
+
+Routing judgments resolve the current local session and pass its cost gate to `resolveJudge`, so they count toward `session.maxCost` and are refused once the cap is reached; usage is still journaled. Without a local session the plugin judges as before.
+
 ## Timeouts and failure
 
 Routing gives up after eight seconds and always finishes at least one second before the session's tool-call handler timeout. If no time is left, it skips routing. Requests, credentials and usage journaling go through OMP's `judge` role; the plugin stores no keys and does not touch the process environment.
+
+## Without the terminal UI
+
+Routing, thinking steps, tiers and pins work the same in RPC, ACP editors, the SDK and headless runs. RPC clients receive the working message and status line as notification frames; ACP editors may only log them. Without a UI the indicators are skipped. The plugin has no dialogs or commands.
+
+Children started through `eval.agent()` or `workpool()` are not routed, because OMP's `before_subagent_spawn` hook can change a child's model but not its agent type. They cannot be pinned either: OMP checks their agent name before any plugin hook runs, so `scout@abliterated` fails there as an unknown agent.
 
 ## State
 
