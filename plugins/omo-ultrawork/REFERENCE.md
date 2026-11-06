@@ -88,6 +88,18 @@ Research-shaped QA entries use `kind:"research-source"`. Every covered report/ar
 
 A foreign live/paused goal blocks start/resume. Native pause, budget limit, user completion/drop, foreign id and Plan Mode pause unfinished work without taking over the other owner. Intent recovery accepts only the exact run-marked objective; a similar-looking goal is not ownership. `/audit` and the loop therefore cannot share an active driver. `/goal` user actions remain usable, but model `goal complete` is blocked while this loop's criteria are unfinished. An approved Atlas plan retains its own ledger and isolation; ordinary ultrawork uses the loop journal instead of another notepad. The plugin keeps the existing todo-result rewrite hook and adds only the necessary native-completion tool-call guard; no passive result hook is added.
 
+Final acceptance needs every current criterion, any batch gates, real-surface or source QA, and a PASS review from a separate child of this session. Failed goals retry only with `retryFailed:true`, and blocked or empty work is not success. Resume refuses a foreign driver, and only an explicit `/ulw-loop resume` rebuilds a missing or completed driver. A bare SDK session gets no continuation controller from this plugin.
+
+## Research procedure
+
+The `/ulw-research` procedure is private and runs on OMP's native agents; it is not a skill the model can load, and natural-language research uses the same private payload. If an active `ulw-loop` owns the goal, research uses that loop's goals and evidence; otherwise it keeps its own journal and creates no loop or native goal. It builds a machine-readable claim graph from the collected sources.
+
+The five delivery gates run in order: static, fidelity and meaning, layout, visual, and proofreading. Fidelity and the meaning of changed sentences are checked again after polish. A full report needs rendered visuals with descriptive alt text, and each delivered edition needs its own fidelity check. A used-up repair budget never excuses an open fidelity blocker or a major defect.
+
+Ordinary static sources are read natively and saved as immutable snapshots. Browser evidence is required when a claim depends on rendering, login or access state, interaction, or visual state. Browser-captured HTML or text keeps its real extraction origin and is never fetched again as a substitute. This is an intentional difference from upstream OmO.
+
+The plugin caches its research scripts at load time, so a plugin upgrade does not break a running session. Research fidelity sources are pinned to [oh-my-openagent 8a8db1d](https://github.com/code-yeongyu/oh-my-openagent/tree/8a8db1d3094da8743989bf693ee5de77889de50e/packages/shared-skills/skills/ulw-research).
+
 ## Research storage and fidelity contract
 
 `#src/research-assets` exports `RESEARCH_UPSTREAM_PIN` and `materializeResearchAssets(sessionDir) -> Promise<{directory,pin,digest,durable}>`. Module import caches scripts, references, attribution, and the private procedure bytes. The snapshot key combines the full upstream pin with a SHA-256 digest of sorted `{path,bytes,sha256}` entries; `manifest.json` is version 1 and lists those entries. Materialization stages files in the same parent, atomically renames the complete directory, and validates the manifest, exact inventory, and every file hash. Existing corrupt or mixed snapshots fail closed rather than being silently replaced. Concurrent initial materializations converge on the same validated directory.
@@ -100,6 +112,9 @@ Fact ledgers, fidelity-state, claim indexes, fill maps, pairs, and run-local cal
 
 The scripts have no runtime npm dependencies. Their executable behavioral tests and fixtures live under repository `src/omo-ultrawork-research/`, not in the shipped plugin; module-lifetime, schema migration, and representative Chinese fact/quote regressions have separate repository tests. English/Korean normalization is upstream behavior, not a claim of universal-language parsing.
 
+## Without the terminal UI
+
+The keywords and all commands work in RPC, ACP editors, the SDK and headless runs. None of them needs a dialog. Without a UI, usage errors and mode changes appear as visible session messages.
 
 ## State snapshot
 
