@@ -128,6 +128,7 @@ async function scenario(name: string, root: string): Promise<void> {
     ownerId: string;
     promise: Promise<void>;
     errorText?: string;
+    agentOutputPublished?: boolean;
   };
   const nativeJobs: NativeJob[] = [];
   let settleNativeJob: (() => void) | undefined;
@@ -193,7 +194,10 @@ async function scenario(name: string, root: string): Promise<void> {
     setPlanReferencePath: (path: string) => {
       reference = path;
     },
-    asyncJobManager: { getAllJobs: ({ ownerId }: { ownerId: string }) => nativeJobs.filter((job) => job.ownerId === ownerId) },
+    asyncJobManager: {
+      getAllJobs: ({ ownerId }: { ownerId: string }) => nativeJobs.filter((job) => job.ownerId === ownerId).map((job) => ({ ...job })),
+      getJob: (id: string) => nativeJobs.find((job) => job.id === id),
+    },
     effectiveExtensionRoots: undefined,
     getSessionAgents: () => [],
   }) as AgentSession;
@@ -336,6 +340,20 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(item);
     return item;
   };
+  const dispatchTask = async (input: Record<string, unknown>) =>
+    (await hook("tool_call", { toolName: "task", toolCallId: `task-${sequence++}`, input })) as
+      | { block?: boolean; reason?: string }
+      | undefined;
+  const refuseTaskFile = async (input: Record<string, unknown>) => {
+    const result = await dispatchTask(input);
+    assert.equal(result?.block, true);
+    assert.match(result?.reason ?? "", /taskFile.*inline in task/);
+  };
+  if (name === "task-file-governance") {
+    assert.equal(await dispatchTask({ agent: "scout", taskFile: "research.md" }), undefined);
+    await refuseTaskFile({ agent: "metis", taskFile: "planning.md" });
+    await refuseTaskFile({ agent: "momus", taskFile: "review.md" });
+  }
   if (name === "plan-mode-disabled") {
     // With plan.enabled off the host refuses /plan, so Prometheus must refuse instead of claiming it started.
     const { cfgPlanEnabled } = await import("@oh-my-pi/pi-coding-agent/plan-mode/settings");
@@ -409,6 +427,14 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match(prepared.systemPrompt.join("\n"), heading);
   };
   if (name === "context-row-shape") await assertContextRowShape(/Prometheus planning workflow \(active\)/, /<available-agents/);
+  if (name === "task-file-governance") {
+    await refuseTaskFile({ agent: "metis", taskFile: "planning.md" });
+    await refuseTaskFile({ agent: "momus", taskFile: "review.md" });
+    for (let index = 0; index < 6; index++)
+      await refuseTaskFile({ context: "review_kind: high_accuracy", tasks: [{ agent: "reviewer", taskFile: "review.md" }] });
+    assert.equal(await dispatchTask({ agent: "reviewer", task: "review_kind: routine\nReview the current plan" }), undefined);
+    assert.equal(selections.length, 0);
+  }
   if (name === "review-round-limit") {
     await mkdir(join(root, ".omp"), { recursive: true });
     await writeFile(
@@ -522,6 +548,23 @@ async function scenario(name: string, root: string): Promise<void> {
   };
   if (name === "context-row-shape") {
     await assertContextRowShape(/Atlas execution \(active\)/, /<execution-ledger/);
+    return;
+  }
+  if (name === "task-file-governance") {
+    const input = { agent: "scout", taskFile: "research.md" };
+    await refuseTaskFile(input);
+    await refuseTaskFile({ context: "Inspect independent evidence", tasks: [input] });
+    assert.equal(
+      await hook("tool_call", {
+        toolName: "write",
+        toolCallId: "file-task-device",
+        input: { path: "xd://task", content: JSON.stringify(input) },
+      }),
+      undefined,
+    );
+    await refuseTaskFile(input);
+    await commands.get("atlas")?.("exit", ctx);
+    assert.equal(await dispatchTask(input), undefined);
     return;
   }
   if (name === "url-boundaries") {
@@ -1611,7 +1654,15 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T2")).status, "open");
     return;
   }
-  if (name === "wake-ownership" || name === "wake-native-success" || name === "wake-native-failure" || name === "wake-missing-lifecycle") {
+  if (
+    name === "wake-ownership" ||
+    name === "wake-native-success" ||
+    name === "wake-native-failure" ||
+    name === "wake-missing-lifecycle" ||
+    name === "wake-without-fresh-output" ||
+    name === "wake-published-after-empty"
+  ) {
+    const emptyWake = name === "wake-without-fresh-output" || name === "wake-published-after-empty";
     const prepared = await prepare("T1");
     await publish(prepared, "WokenChild", {
       asyncStatus: "completed",
@@ -1644,12 +1695,17 @@ async function scenario(name: string, root: string): Promise<void> {
       startTime: Date.now(),
       label: "IRC follow-up",
       status: "running",
+      agentOutputPublished: true,
       promise: new Promise<void>((resolve) => {
         settleWake = resolve;
       }),
     };
     nativeJobs.push(wakeJob);
-    await publish(prepared, "WokenChild", { nativeStatus: "completed", finalResult: false, content: "New output from the wake turn" });
+    await publish(prepared, "WokenChild", {
+      nativeStatus: "completed",
+      finalResult: false,
+      content: emptyWake ? "Implemented assigned behavior; command observed the expected result." : "New output from the wake turn",
+    });
     // An old synchronous final result and an old completed native job cannot authorize overwritten output.
     await hook("tool_result", {
       toolName: "task",
@@ -1660,11 +1716,12 @@ async function scenario(name: string, root: string): Promise<void> {
     });
     if (name !== "wake-ownership") refused(await done("T1", "WokenChild"));
     else await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
-    wakeJob.status = name === "wake-native-success" || name === "wake-missing-lifecycle" ? "completed" : "failed";
+    wakeJob.status = emptyWake || name === "wake-native-success" || name === "wake-missing-lifecycle" ? "completed" : "failed";
     await hook("context", { messages: [] });
     // Even a terminal-looking wake job row does not settle its retained native promise.
     if (name !== "wake-ownership") refused(await done("T1", "WokenChild"));
     else await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+    wakeJob.agentOutputPublished = !emptyWake && name !== "wake-native-failure";
     settleWake();
     await hook("tool_result", { toolName: "task", toolCallId: "unrelated", isError: false, details: {}, content: [] });
     if (name === "wake-native-success" || name === "wake-missing-lifecycle") {
@@ -1673,6 +1730,44 @@ async function scenario(name: string, root: string): Promise<void> {
       assert(receipt);
       assert.equal(await readFile(join(dirname(planFile), "evidence", `${receipt.receiptId}.md`), "utf8"), "New output from the wake turn");
     } else if (name === "wake-native-failure") refused(await done("T1", "WokenChild"));
+    if (emptyWake) {
+      const completion = await done("T1", "WokenChild");
+      refused(completion);
+      assert.match(JSON.stringify(completion), /wake settled without fresh output/);
+      const diagnostic = await call({
+        action: "fail",
+        id: "T1",
+        childAgentId: "WokenChild",
+        check: "wake output",
+        firstError: "No fresh output was published",
+        evidence: "Inspected the terminal wake job",
+      });
+      refused(diagnostic);
+      assert.match(JSON.stringify(diagnostic), /wake settled without fresh output/);
+      const item = await row("T1");
+      assert.equal(item.status, "in_progress");
+      assert.equal(item.receipt, undefined);
+      assert.equal(item.retry?.windows.flatMap((window) => window.failures).length ?? 0, 0);
+      if (name === "wake-published-after-empty") {
+        await publish(prepared, "WokenChild", { status: "running", nativeStatus: "started", finalResult: false });
+        const published = Promise.withResolvers<void>();
+        const publishedJob = {
+          ...wakeJob,
+          id: "job-WokenChild-3",
+          startTime: Date.now(),
+          status: "running",
+          agentOutputPublished: true,
+          promise: published.promise,
+        };
+        nativeJobs.push(publishedJob);
+        await publish(prepared, "WokenChild", { nativeStatus: "completed", finalResult: false, content: "Fresh output from a later wake" });
+        publishedJob.status = "completed";
+        published.resolve();
+        await hook("tool_result", { toolName: "task", toolCallId: "unrelated", isError: false, details: {}, content: [] });
+        ok(await done("T1", "WokenChild"));
+        assert((await row("T1")).receipt);
+      }
+    }
     if (name !== "wake-ownership") await commands.get("atlas")?.("exit", ctx);
     await rival.acquire(shared.id, "rival");
     await rival.release(shared.id, "rival");
@@ -2676,6 +2771,8 @@ if (process.env[CHILD_ENV]) {
       "wake-native-success",
       "wake-native-failure",
       "wake-missing-lifecycle",
+      "wake-without-fresh-output",
+      "wake-published-after-empty",
       "wake-wrapper-cancel",
       "wake-wrapper-direct-abort",
       "wake-without-job",
@@ -2695,6 +2792,7 @@ if (process.env[CHILD_ENV]) {
       "plan-mode-reentered",
       "propose-grammar",
       "review-round-limit",
+      "task-file-governance",
       "heavy-verify",
       "heavy-verify-fail",
       "heavy-verify-inconclusive",

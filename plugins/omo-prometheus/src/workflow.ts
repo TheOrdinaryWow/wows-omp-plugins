@@ -199,6 +199,16 @@ const PLAN_GATED_SPAWN_REASON =
 
 /** Return a block reason for plan-gated reviewer spawns, or undefined for an allowed/ordinary task call. */
 export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: unknown): string | undefined {
+  const args = record(input);
+  const items = Array.isArray(args?.tasks) ? args.tasks.map(record) : [args];
+  if (items.some((item) => item && Object.hasOwn(item, "taskFile"))) {
+    const gated = items.some((item) => typeof item?.agent === "string" && PLAN_GATED_AGENTS[item.agent] === true);
+    const review = [args?.context, ...items.map((item) => item?.task)].some(
+      (text) => typeof text === "string" && PLAN_REVIEW_KIND.test(text),
+    );
+    if (phase === "executing" || gated || review)
+      return "Prometheus/Atlas-governed task calls do not accept taskFile; put every assignment inline in task so review and row bindings can be checked.";
+  }
   const routes = parseTaskSpawns(input);
   if (!routes) return undefined;
   const gated = routes.filter((route) => route.requestedAgent && PLAN_GATED_AGENTS[route.requestedAgent] === true);

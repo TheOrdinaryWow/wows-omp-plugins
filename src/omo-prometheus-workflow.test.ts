@@ -199,4 +199,47 @@ describe("plan-gated reviewer spawns", () => {
       }),
     ).toContain("reviewer");
   });
+
+  test("refuses taskFile for gated agents before parsing their assignments", () => {
+    for (const phase of [undefined, "idle", "planning", "executing"] as const) {
+      for (const agent of ["metis", "momus"]) {
+        expect(taskSpawnBlockReason(phase, { agent, taskFile: "review.md" })).toContain("inline in task");
+      }
+    }
+  });
+
+  test("refuses every file-backed member of a governed batch", () => {
+    const fileTask = { agent: "scout", taskFile: "research.md" };
+    expect(
+      taskSpawnBlockReason("planning", {
+        context: "Inspect planning assumptions.",
+        tasks: [{ agent: "metis", task: "Find planning gaps" }, fileTask],
+      }),
+    ).toContain("inline in task");
+    expect(
+      taskSpawnBlockReason("planning", {
+        context: "review_kind: high_accuracy",
+        tasks: [fileTask],
+      }),
+    ).toContain("inline in task");
+    expect(
+      taskSpawnBlockReason("planning", {
+        context: "Independent reviews",
+        tasks: [{ agent: "reviewer", task: "review_kind: routine" }, fileTask],
+      }),
+    ).toContain("inline in task");
+  });
+
+  test("refuses file-backed Atlas research even with a decoy inline task", () => {
+    expect(taskSpawnBlockReason("executing", { agent: "scout", taskFile: "research.md" })).toContain("inline in task");
+    expect(taskSpawnBlockReason("executing", { agent: "scout", taskFile: "research.md", task: "Inspect read-only evidence" })).toContain(
+      "inline in task",
+    );
+  });
+
+  test("leaves ordinary taskFile calls outside workflow governance untouched", () => {
+    for (const phase of [undefined, "idle", "planning"] as const) {
+      expect(taskSpawnBlockReason(phase, { agent: "scout", taskFile: "research.md" })).toBeUndefined();
+    }
+  });
 });

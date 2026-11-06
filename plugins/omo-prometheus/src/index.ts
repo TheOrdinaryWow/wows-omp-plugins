@@ -749,6 +749,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     childEvidence.observeAsyncJobs(sessionId, {
       ownerId: parentAgentId,
       jobs: manager.getAllJobs({ ownerId: parentAgentId }),
+      getJob: (id) => manager.getJob(id),
       onSettled: () => {
         void settleDetached();
       },

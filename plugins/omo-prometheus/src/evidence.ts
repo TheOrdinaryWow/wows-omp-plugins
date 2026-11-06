@@ -47,6 +47,7 @@ interface Assignment {
 interface NativeJobs {
   ownerId: string;
   jobs: readonly unknown[];
+  getJob: (id: string) => unknown;
   onSettled: () => void;
 }
 
@@ -64,6 +65,7 @@ interface ObservedChild {
     nativeJobStart?: number;
     observingSettlement?: boolean;
     settled?: boolean;
+    agentOutputPublished?: boolean;
   };
 }
 
@@ -520,19 +522,23 @@ export class ChildEvidence {
           assignment.observingSettlement = true;
           void job.promise.then(
             () => {
+              const current = native.getJob(job.id as string);
+              const finalJob = object(current) ? current : job;
               assignment.settled = true;
-              assignment.cancelled ||= job.status === "cancelled";
-              assignment.finalStatus = job.status === "completed" && assignment.finalStatus !== "failed" ? "completed" : "failed";
+              assignment.cancelled ||= finalJob.status === "cancelled";
+              assignment.finalStatus = finalJob.status === "completed" && assignment.finalStatus !== "failed" ? "completed" : "failed";
               if (assignment.finalStatus === "failed")
                 assignment.nativeError ??=
-                  typeof job.errorText === "string" ? job.errorText : "Native async task failed during final integration";
+                  typeof finalJob.errorText === "string" ? finalJob.errorText : "Native async task failed during final integration";
               const child = this.#children.get(`${sessionId}:${job.agentId}`);
               if (child?.assignment === assignment && !child.reactivation) child.finalStatus = assignment.finalStatus;
               native.onSettled();
             },
             () => {
+              const current = native.getJob(job.id as string);
+              const finalJob = object(current) ? current : job;
               assignment.settled = true;
-              assignment.cancelled ||= job.status === "cancelled";
+              assignment.cancelled ||= finalJob.status === "cancelled";
               assignment.finalStatus = "failed";
               assignment.nativeError ??= "Native async task promise rejected";
               const child = this.#children.get(`${sessionId}:${job.agentId}`);
@@ -603,9 +609,14 @@ export class ChildEvidence {
       turn.observingSettlement = true;
       void job.promise.then(
         () => {
-          if ((job.status !== "completed" && job.status !== "failed") || abortSignal?.aborted === true) return;
+          const current = native.getJob(job.id as string);
+          const finalJob = object(current) ? current : job;
+          const finalSignal =
+            object(finalJob.abortController) && object(finalJob.abortController.signal) ? finalJob.abortController.signal : undefined;
+          if ((finalJob.status !== "completed" && finalJob.status !== "failed") || finalSignal?.aborted === true) return;
           turn.settled = true;
-          child.finalStatus = job.status;
+          turn.agentOutputPublished = finalJob.agentOutputPublished !== false;
+          child.finalStatus = finalJob.status;
           native.onSettled();
         },
         () => {
@@ -843,6 +854,11 @@ export class ChildEvidence {
     ) {
       throw new Error(
         "No native successful completion for this current assignment; use a fresh child to revalidate historical or stale work",
+      );
+    }
+    if (observed.finalStatus === "completed" && observed.reactivation?.agentOutputPublished === false) {
+      throw new Error(
+        "The child's wake settled without fresh output; its previous output cannot authorize completion or a failure diagnostic. Dispatch a fresh child with the current atlas_assignment, or wait for a later wake that publishes a result",
       );
     }
     if (observed.reactivation?.settled && observed.finalStatus === undefined) {
