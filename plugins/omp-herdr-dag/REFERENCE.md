@@ -4,7 +4,9 @@ English | [简体中文](REFERENCE.zh.md)
 
 ## Activation
 
-Pane management, the viewer, transport subscriptions and snapshot publishing require `mode: "tui"`, `hasUI: true` and all three Herdr environment variables. RPC/rpc-ui and ACP stay inactive even with `hasUI` true or inherited Herdr variables; SDK and headless sessions with `hasUI: false` never start or split panes. Noninteractive child sessions do not start a viewer. Outside Herdr, `/dag-pane` reports that the pane is unavailable; the `todo` wrapper stays registered. On Windows the plugin shows a one-time notice.
+Pane management, the viewer, transport subscriptions and snapshot publishing require `mode: "tui"`, `hasUI: true` and all three Herdr environment variables (`HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`). RPC/rpc-ui and ACP stay inactive even with `hasUI` true or inherited Herdr variables; SDK and headless sessions with `hasUI: false` never start or split panes. Noninteractive child sessions do not start a viewer. Outside Herdr, `/dag-pane` reports that the pane is unavailable; the `todo` wrapper and its `edges` field stay registered and work in every mode. On Windows the plugin shows a one-time notice.
+
+Settings are read for the session's working directory on startup, session switch and each command; they do not restart a running viewer. Upgrading the plugin removes the installed copy the running OMP loaded, so the plugin refuses to open a new pane until OMP restarts instead of opening a broken one.
 
 Bun discovery tries `bun` first, then the host executable only if its `--version` output looks like a Bun semantic version; the plugin does not assume a compiled OMP executable can run the viewer. Missing Bun produces a warning and skips pane management.
 
@@ -37,7 +39,7 @@ Orientation is portrait when `cols < 2 * rows`, landscape otherwise. The measure
 
 Herdr 0.9.3 cannot move a pane within a tab, so an orientation flip closes the recorded pane and opens a replacement with a new pane ID, resuming the saved view state and socket connection. Position and size changes alone do not recreate an open pane. Right and bottom use a direct split; left and top split and then swap. Herdr focuses the swap source; with `focusPane: false` the plugin restores OMP focus, but cannot restore an unrelated pane that was focused before the swap.
 
-With `close-with-omp`, the viewer closes its own pane and exits after three missed 2-second heartbeats. With `keep-open`, a recovery snapshot is never taken as proof that OMP is alive. `q` always closes the viewer's own pane regardless of finish behavior.
+With `close-with-omp`, the viewer closes its own pane and exits after three missed 2-second heartbeats. With `keep-open`, the pane stays open with a disconnected banner and retries the connection every second; a recovery snapshot is never taken as proof that OMP is alive. `q` always closes the viewer's own pane regardless of finish behavior.
 
 Shutdown blocks further pane launches and resize timers immediately. Pane closure, socket cleanup and snapshot flushing share one 1.8-second budget; unfinished socket startup stays cancelled. On restart, an owned pane launched for a different socket, or an older record without one, is closed and recreated.
 
@@ -51,7 +53,23 @@ The viewer consumes the `pi.events` contract published by `omo-prometheus`; the 
 
 ## Todo edges
 
-The wrapper preserves native mutations, details, hooks, approval, batch failure and rendering. A native operation error records no edges. Removing or changing tasks prunes their edges, and `init` starts a fresh generation.
+The agent declares dependencies by passing `edges` to `todo`, naming tasks by their exact text:
+
+```json
+{
+  "op": "init",
+  "list": [
+    { "phase": "Implementation", "items": ["Build parser", "Connect viewer"] },
+    { "phase": "Verification", "items": ["Check rendered output"] }
+  ],
+  "edges": [
+    { "task": "Connect viewer", "after": ["Build parser"] },
+    { "task": "Check rendered output", "after": ["Connect viewer"] }
+  ]
+}
+```
+
+The plugin strips `edges` before passing the call to the native `todo`. The wrapper preserves native mutations, details, hooks, approval, batch failure and rendering. A native operation error records no edges. Unknown, self-referencing or cyclic edges are dropped with a `Herdr DAG edges:` warning. Removing or changing tasks prunes their edges, and `init` starts a fresh generation.
 
 ## Local storage
 

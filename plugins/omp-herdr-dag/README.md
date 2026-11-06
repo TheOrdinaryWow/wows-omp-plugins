@@ -7,7 +7,9 @@
 
 English | [简体中文](README.zh.md)
 
-Shows what OMP is working on as a live graph in a Herdr side pane: native todos, approved-plan execution, `omo-prometheus` Atlas plans with their dependencies, and every subagent with its tools, output, model and cost. The viewer only observes. It never schedules work, completes todos or changes the Atlas ledger.
+> Watch what OMP is doing as a live graph in a Herdr side pane: todos, plans and every subagent at work.
+
+When the agent works through a long todo list, carries out an approved plan or runs many subagents at once, the conversation alone makes it hard to see what is happening. If you run OMP inside the Herdr terminal multiplexer, this plugin opens a pane next to it with a live dependency graph: what is done, what is running, what is waiting on what, and for each subagent its current tool, recent output, model and cost. It also shows `omo-prometheus` Atlas plans. The pane only watches; it never starts work, completes todos or changes a plan.
 
 ## Install
 
@@ -15,17 +17,17 @@ Shows what OMP is working on as a live graph in a Herdr side pane: native todos,
 omp plugin install omp-herdr-dag@wows-omp-plugins
 ```
 
-Requires:
+You need:
 
-- OMP 18.17.0 or newer, running interactively inside Herdr (`HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` must be set);
-- the `herdr` CLI on `PATH`;
-- Bun, either `bun` on `PATH` or the path in `viewerRuntime`.
+- OMP 18.17.0 or newer, started interactively inside a Herdr pane;
+- the `herdr` command on your `PATH`;
+- Bun, either `bun` on your `PATH` or set in `viewerRuntime`.
 
-Linux is supported. macOS uses the same code but has not been verified. Windows is unsupported. Restart OMP after installing.
+Linux is supported. macOS uses the same code but has not been tested. Windows is not supported. Restart OMP after installing.
 
 ## Quick start
 
-With the default settings the pane opens by itself when an approved plan starts executing. To open it any time:
+With the default settings, the pane opens by itself when an approved plan starts running. To open or close it at any time:
 
 ```text
 /dag-pane          # toggle
@@ -39,28 +41,28 @@ In the pane, use the arrow keys to move between nodes, Enter to expand one, `t` 
 
 ### When the pane opens
 
-`displayTiming` controls automatic opening:
+`displayTiming` decides when the pane opens by itself:
 
 | Value | Opens for |
 | --- | --- |
 | `never` | Nothing; use `/dag-pane`. |
-| `any-todo` | Native todos, approved-plan todos or an Atlas plan. |
-| `plan-execution` (default) | Native plan execution after approval, or an Atlas plan. |
+| `any-todo` | Any todo list, an approved plan or an Atlas plan. |
+| `plan-execution` (default) | A plan you approved in Plan Mode, or an Atlas plan. |
 | `atlas-only` | An Atlas plan only. |
 
-Subagent activity alone does not open the pane. After you close it with `q` or `/dag-pane close`, it stays closed for that run; a new run or `/dag-pane open` brings it back. `/new` and session switches reuse the same pane.
+Subagents alone do not open the pane. Once you close it with `q` or `/dag-pane close`, it stays closed for that run; a new run or `/dag-pane open` brings it back. `/new` and switching sessions reuse the same pane.
 
 ### Reading the graph
 
-Each run is colored by its source:
+Each run is colored by where it comes from:
 
-| Source | Color | Meaning |
+| Source | Color | What it shows |
 | --- | --- | --- |
-| Native todo | Blue `#4f8cff` | Todo phases form bands. Dashed separators between phases mean order, not dependency. |
-| Plan execution | Purple `#a371f7` | The first new todo list after you approve a native plan. |
-| Atlas | Green `#3fb950` | `omo-prometheus` tasks, discovered work, fixes, final gates and delivery, with their real dependency edges. |
+| Todo list | Blue `#4f8cff` | Todo phases form bands. Dashed lines between phases mean order, not dependency. |
+| Plan execution | Purple `#a371f7` | The first todo list after you approve a plan in Plan Mode. |
+| Atlas | Green `#3fb950` | An `omo-prometheus` plan: tasks, discovered work, fixes, final reviews and delivery, with their real dependencies. |
 
-Node state follows your OMP theme:
+Node icons use your OMP theme colors:
 
 | Icon | State |
 | --- | --- |
@@ -71,117 +73,105 @@ Node state follows your OMP theme:
 | `⊘` | Blocked |
 | `⊖` | Abandoned |
 
-Solid connectors are forward dependencies; the selected node's edges are drawn bold in the run's color. Dotted connectors are fix edges and backward dependencies (marked `↑ after <label>`). By default the graph hides an edge when a longer path already implies the same order; press `e` to draw every edge. The footer always lists the selected node's direct dependencies.
+Solid lines are dependencies; the selected node's lines are drawn bold. Dotted lines are fixes and dependencies that point backwards (marked `↑ after <label>`). To keep the graph readable, a line is hidden when a longer path already implies the same order; press `e` to draw them all. The footer always lists what the selected node depends on directly.
 
-Press `p` to highlight the critical path, the longest chain of explicit dependencies by elapsed time. Press `c` to fold completed layers.
+Press `p` to highlight the critical path, the longest chain of dependencies by time taken, and `c` to fold layers that are done.
 
-A running node whose subagent has made no progress for `stalledAfterSeconds` is marked `stalled` in warning color. A failed subagent does not mark its todo or ledger row failed.
+A running node whose subagent has shown no progress for `stalledAfterSeconds` is marked `stalled`. A failed subagent does not mark its todo or plan task as failed.
 
 ### Tasks and transcripts
 
-The Tasks view (`t`) lists every direct subagent from `task`, `eval` agents and `workpool`, with its current tool and arguments, recent output, model, retries, elapsed time, tokens and cost when OMP provides them. A subagent attaches to the todo that was in progress when it started. Missing metrics show as missing, never as zero.
+The Tasks view (`t`) lists every subagent the main session started, with its current tool and arguments, recent output, model, retries, time, tokens and cost where OMP reports them. A subagent is attached to the todo that was in progress when it started. Missing numbers are shown as missing, never as zero.
 
-Press `o` on a task, or on a node with an attached subagent, to read its transcript: assistant text, tool calls and short result previews, read from the existing session file.
+Press `o` on a task, or on a node with a subagent attached, to read its transcript: its messages, tool calls and short previews of the results.
 
 ### Viewer keys
 
 | Key | Action |
 | --- | --- |
 | `q`, Ctrl+C | Quit and close the pane. |
-| `t` | Toggle DAG and Tasks; from a transcript, switch to the other main view. |
+| `t` | Switch between the graph and Tasks; from a transcript, switch to the other main view. |
 | `h` | Show or hide the previous todo list (only one is kept). |
 | `[` / `]` | Previous / next run. |
-| Tab | Switch the arrow keys between selecting nodes (`NODES`) and panning the view (`PAN`). |
-| Arrows, `j` / `k` | Select the nearest node, pan, move through tasks, or scroll a transcript. |
-| PgUp / PgDn | Page through nodes, tasks or the transcript. |
+| Tab | Switch the arrow keys between selecting nodes (`NODES`) and moving the view (`PAN`). |
+| Arrows, `j` / `k` | Select the nearest node, move the view, move through tasks, or scroll a transcript. |
+| PgUp / PgDn | Page through nodes, tasks or a transcript. |
 | Enter | Expand or collapse the selected node or task. |
 | `c` | Fold completed layers. |
 | `p` | Highlight the critical path. |
-| `e` | Draw every dependency edge. |
+| `e` | Draw every dependency line. |
 | `f` | Jump to the next running node. |
 | `o` | Open the selected subagent's transcript. |
 | Esc | Leave a transcript or close help. |
 | `?` | Help. |
 
-The mouse works too: the wheel scrolls, Shift+wheel scrolls sideways, a click selects a node and a double-click opens its transcript. While the viewer runs, a plain drag no longer selects text; most terminals still select with Shift held.
+The mouse works too: the wheel scrolls, Shift+wheel scrolls sideways, a click selects a node and a double-click opens its transcript. While the viewer runs, dragging no longer selects text; in most terminals, hold Shift to select.
 
-### Explicit todo dependencies
+### Real dependencies between todos
 
-By default the graph knows only phase order. To draw real dependencies between todos, the agent can pass `edges` to `todo`, naming tasks by their exact text:
+By default, the graph only knows the order of todo phases. The agent can also say which todo has to wait for which, and the graph then draws those dependencies. You can ask for it ("mark the dependencies between the todos") or leave it to the agent. Dependencies are never guessed from the wording. A dependency on a task that does not exist, on itself or in a circle is dropped with a `Herdr DAG edges:` warning, and the todo change goes through anyway. Turn this off with `todoDependencies: false`.
 
-```json
-{
-  "op": "init",
-  "list": [
-    { "phase": "Implementation", "items": ["Build parser", "Connect viewer"] },
-    { "phase": "Verification", "items": ["Check rendered output"] }
-  ],
-  "edges": [
-    { "task": "Connect viewer", "after": ["Build parser"] },
-    { "task": "Check rendered output", "after": ["Connect viewer"] }
-  ]
-}
-```
+### Where the pane goes
 
-The plugin strips `edges` before passing the call to the native `todo`, so todo behavior is unchanged. Unknown, self-referencing or cyclic edges are dropped with a `Herdr DAG edges:` warning, and the todo change still applies. Dependencies are never guessed from wording or phase order.
+The pane goes to the right of OMP in a wide window and below it in a tall one. When the window changes shape, the plugin moves the pane. You can set the position and size for each shape.
 
-### Placement
-
-The pane goes right of OMP in a landscape window and below it in a portrait one (portrait when columns are fewer than twice the rows). When the window flips orientation, the plugin recreates the pane in the new position. Positions and sizes are configurable per orientation.
-
-When OMP exits, the pane closes too (`finishBehavior: close-with-omp`). With `keep-open`, it stays open, shows a disconnected banner and retries the connection every second.
+When OMP exits, the pane closes too. With `finishBehavior: keep-open`, it stays open, shows that it is disconnected and keeps trying to reconnect.
 
 ## Settings
 
-Package name for `omp plugin config`: `wows-omp-plugin-omp-herdr-dag`.
+Change a setting for your user:
 
 ```bash
-omp plugin config wows-omp-plugin-omp-herdr-dag
+omp plugin config set wows-omp-plugin-omp-herdr-dag displayTiming any-todo
+omp plugin config set wows-omp-plugin-omp-herdr-dag landscapeSize 0.3
+omp plugin config list wows-omp-plugin-omp-herdr-dag
 ```
 
-| Setting | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `displayTiming` | `never` \| `any-todo` \| `plan-execution` \| `atlas-only` | `plan-execution` | When the pane opens automatically. |
-| `finishBehavior` | `close-with-omp` \| `keep-open` | `close-with-omp` | What happens to the pane when OMP exits. |
-| `landscapePosition` | `left` \| `right` \| `top` \| `bottom` | `right` | Pane position in a landscape window. |
-| `portraitPosition` | `left` \| `right` \| `top` \| `bottom` | `bottom` | Pane position in a portrait window. |
-| `landscapeSize` | number from 0.15 to 0.6 | `0.35` | Pane share in landscape. |
-| `portraitSize` | number from 0.15 to 0.6 | `0.4` | Pane share in portrait. |
-| `followOrientation` | boolean | `true` | Move the pane when the window flips orientation. |
-| `focusPane` | boolean | `false` | Focus the pane when it is created. |
-| `stalledAfterSeconds` | number from 10 to 900 | `90` | Seconds without subagent progress before a task is marked stalled. |
-| `todoDependencies` | boolean | `true` | Accept explicit `edges` on `todo`. Native todo operations work either way. |
-| `atlasIntegration` | boolean | `true` | Show `omo-prometheus` Atlas plans. |
-| `followTheme` | boolean | `true` | Follow OMP theme changes. |
-| `colorTodo` | `#rrggbb` | `#4f8cff` | Todo run color. |
-| `colorPlan` | `#rrggbb` | `#a371f7` | Plan run color. |
-| `colorAtlas` | `#rrggbb` | `#3fb950` | Atlas run color. |
-| `retentionDays` | number from 1 to 365 | `14` | Delete this plugin's files for sessions older than this, at session start. |
-| `layoutAlign` | `centered` \| `left` | `centered` | Center the graph in the pane, or pack it against the left edge. |
-| `viewerRuntime` | path or empty | `""` | Bun executable for the viewer; empty means find `bun` automatically. |
+To change a setting for one project only, add it to `.omp/plugin-overrides.json` in that project:
 
-Settings are read for the session's working directory on startup, session switch and each command. An invalid field falls back to its default with a warning. Placement, size and color changes apply the next time the pane opens or the graph updates; they do not restart a running viewer.
+```json
+{ "settings": { "wows-omp-plugin-omp-herdr-dag": { "displayTiming": "atlas-only" } } }
+```
+
+Settings are read at startup, on a session switch and with each `/dag-pane` command. Position, size and color changes take effect the next time the pane opens or the graph updates. An invalid value falls back to its default with a warning.
+
+| Setting | Default | What it changes |
+| --- | --- | --- |
+| `displayTiming` | `plan-execution` | When the pane opens by itself: `never`, `any-todo`, `plan-execution` or `atlas-only` (see above). |
+| `finishBehavior` | `close-with-omp` | `close-with-omp` closes the pane when OMP exits; `keep-open` leaves it open and reconnecting. |
+| `landscapePosition` | `right` | Where the pane goes in a wide window: `left`, `right`, `top` or `bottom`. |
+| `portraitPosition` | `bottom` | Where the pane goes in a tall window: `left`, `right`, `top` or `bottom`. |
+| `landscapeSize` | `0.35` | How much of a wide window the pane takes, from 0.15 to 0.6. |
+| `portraitSize` | `0.4` | How much of a tall window the pane takes, from 0.15 to 0.6. |
+| `followOrientation` | `true` | Move the pane when the window changes from wide to tall or back. |
+| `focusPane` | `false` | Put the keyboard focus on the pane when it opens. |
+| `stalledAfterSeconds` | `90` | Seconds without subagent progress before a task is marked stalled, from 10 to 900. |
+| `todoDependencies` | `true` | Let the agent declare dependencies between todos. Todos work the same either way. |
+| `atlasIntegration` | `true` | Show `omo-prometheus` Atlas plans. |
+| `followTheme` | `true` | Follow changes to your OMP theme. |
+| `colorTodo` | `#4f8cff` | Color of todo runs (`#rrggbb`). |
+| `colorPlan` | `#a371f7` | Color of plan runs (`#rrggbb`). |
+| `colorAtlas` | `#3fb950` | Color of Atlas runs (`#rrggbb`). |
+| `retentionDays` | `14` | When a session starts, delete this plugin's files for sessions older than this many days, from 1 to 365. |
+| `layoutAlign` | `centered` | `centered` centers the graph in the pane; `left` packs it against the left edge. |
+| `viewerRuntime` | empty | The Bun executable for the viewer. Empty means find `bun` on your `PATH`. |
 
 ## Working with other plugins
 
-`omo-prometheus` Atlas plans appear as green runs when both this plugin's `atlasIntegration` and Prometheus's `herdrDag` setting are on (the default). Bands are ordered Tasks, Discovered, Fixes, Final gates, Delivery. Rows show their LIGHT/HEAVY tier badge and verification state when supplied. While an Atlas plan is shown, the todo phases Atlas mirrors (`Atlas tasks`, `Atlas discovered`, `Atlas fixes`, `Atlas final gates`, `Atlas delivery`) are hidden from the blue todo view to avoid showing the same work twice.
-
-## Without the terminal UI
-
-The pane only runs in an interactive TUI session inside Herdr. RPC, ACP, SDK and headless sessions never open a pane, even with Herdr variables set. The `todo` wrapper and its `edges` field work in every mode.
+**omo-prometheus**: its Atlas plans appear as green runs when both this plugin's `atlasIntegration` and Prometheus's `herdrDag` setting are on (the default). Bands are ordered Tasks, Discovered, Fixes, Final gates, Delivery, and tasks show their LIGHT or HEAVY tier and whether they have been verified. While an Atlas plan is shown, the matching todo phases (`Atlas tasks`, `Atlas discovered`, `Atlas fixes`, `Atlas final gates`, `Atlas delivery`) are left out of the blue todo view so the same work does not appear twice.
 
 ## Known limitations
 
-- Herdr only; no other terminal multiplexer and no Windows.
-- Subagents of subagents appear as status-only cards marked `activity unavailable`, without live tools, output or usage.
-- Upgrading the plugin removes the installed copy the running OMP loaded, so a DAG pane cannot open again until you restart OMP. The plugin says so instead of opening a broken pane; a pane that is already open keeps working.
-- Metrics and transcripts depend on what OMP reports.
-- If OMP crashes between creating the pane and recording it, an orphan pane may remain. The plugin warns but never closes panes it does not own; close it by hand.
-- The plugin's local files can contain task descriptions, tool arguments, output fragments, error messages and local paths. Treat them like session data.
+- Works only in Herdr, and not on Windows.
+- Subagents started by other subagents appear only as status cards marked `activity unavailable`, without their tools, output or usage.
+- After upgrading the plugin, the pane cannot open again until you restart OMP. The plugin tells you so; a pane that is already open keeps working.
+- Numbers and transcripts depend on what OMP reports.
+- If OMP crashes right after creating the pane, a leftover pane may stay open. The plugin warns about it but never closes panes it did not create; close it yourself.
+- The plugin's local files can contain task descriptions, tool arguments, bits of output, error messages and local paths. Treat them like session data.
 
-## Reference
+## More details
 
-[REFERENCE.md](REFERENCE.md) covers plan-execution detection, layout and placement details, the Atlas event contract and local storage.
+[REFERENCE.md](REFERENCE.md) covers when the pane can run (including RPC, ACP and headless sessions), how a plan execution is recognized, graph layout and placement rules, the format of todo dependencies, the interface with omo-prometheus, and the local files.
 
 ## License
 

@@ -7,7 +7,9 @@
 
 [English](README.md) | 简体中文
 
-在 Herdr 侧边窗格中以实时图的形式展示 OMP 正在做的事：原生待办、已批准计划的执行、`omo-prometheus` 的 Atlas 计划及其依赖关系，以及每个子代理的工具、输出、模型和费用。查看器只负责观察，从不调度工作、完成待办或修改 Atlas 执行记录。
+> 在 Herdr 侧边窗格里用一张实时图看 OMP 在做什么：待办、计划，以及每个正在干活的子代理。
+
+代理处理一长串待办、执行已批准的计划，或者同时跑很多子代理时，单看对话很难弄清进展。如果你在 Herdr 终端复用器里运行 OMP，这个插件会在旁边打开一个窗格，显示一张实时的依赖图：哪些做完了，哪些在进行，哪些在等谁；每个子代理正在用的工具、最近的输出、模型和费用也都能看到。它也会显示 `omo-prometheus` 的 Atlas 计划。窗格只负责看，从不启动工作、完成待办或修改计划。
 
 ## 安装
 
@@ -17,171 +19,159 @@ omp plugin install omp-herdr-dag@wows-omp-plugins
 
 需要：
 
-- OMP 18.17.0 或更高版本，并在 Herdr 中以交互方式运行（必须设置 `HERDR_ENV`、`HERDR_PANE_ID` 和 `HERDR_SOCKET_PATH`）；
-- `PATH` 中有 `herdr` CLI；
-- Bun：`PATH` 中有 `bun`，或在 `viewerRuntime` 中指定路径。
+- OMP 18.17.0 或更高版本，并在 Herdr 的窗格中以交互方式启动；
+- `PATH` 中有 `herdr` 命令；
+- Bun：`PATH` 中有 `bun`，或者在 `viewerRuntime` 中指定。
 
-支持 Linux。macOS 使用相同的代码，但尚未验证。不支持 Windows。安装后重启 OMP。
+支持 Linux。macOS 使用同一套代码，但没有测试过。不支持 Windows。安装后重启 OMP。
 
 ## 快速上手
 
-使用默认设置时，已批准的计划开始执行后，窗格会自动打开。随时手动打开：
+使用默认设置时，已批准的计划开始执行时窗格会自动打开。随时可以手动打开或关闭：
 
 ```text
-/dag-pane          # toggle
+/dag-pane          # 切换
 /dag-pane open
 /dag-pane close
 ```
 
-在窗格中，用方向键在节点间移动，Enter 展开节点，`t` 切换到任务视图，`o` 查看子代理的对话记录，`?` 查看帮助。
+在窗格中，用方向键在节点之间移动，Enter 展开节点，`t` 切换到 Tasks 视图，`o` 查看子代理的对话记录，`?` 查看帮助。
 
 ## 用法
 
-### 窗格何时打开
+### 窗格什么时候打开
 
-`displayTiming` 控制自动打开：
+`displayTiming` 决定窗格何时自动打开：
 
-| 值 | 何时打开 |
+| 值 | 在什么时候打开 |
 | --- | --- |
-| `never` | 从不自动打开；请用 `/dag-pane`。 |
-| `any-todo` | 原生待办、已批准计划的待办或 Atlas 计划。 |
-| `plan-execution`（默认） | 批准原生计划后的执行，或 Atlas 计划。 |
-| `atlas-only` | 仅 Atlas 计划。 |
+| `never` | 从不自动打开，用 `/dag-pane` 手动打开。 |
+| `any-todo` | 任何待办列表、已批准的计划或 Atlas 计划。 |
+| `plan-execution`（默认） | 你在 Plan Mode 中批准的计划，或 Atlas 计划。 |
+| `atlas-only` | 只在有 Atlas 计划时。 |
 
-仅有子代理活动不会打开窗格。用 `q` 或 `/dag-pane close` 关闭后，在当前这次运行中它不会再打开；出现新的运行，或执行 `/dag-pane open`，会重新打开。`/new` 和切换会话时会复用同一个窗格。
+只有子代理在运行时不会打开窗格。用 `q` 或 `/dag-pane close` 关闭后，这一轮内它不会再打开；新的一轮开始或执行 `/dag-pane open` 时会重新出现。`/new` 和切换会话会继续使用同一个窗格。
 
-### 如何读图
+### 看懂这张图
 
-每次运行按来源着色：
+每一轮按来源着色：
 
-| 来源 | 颜色 | 含义 |
+| 来源 | 颜色 | 显示内容 |
 | --- | --- | --- |
-| 原生待办 | 蓝色 `#4f8cff` | 待办阶段构成横带。阶段之间的虚线分隔表示顺序，不表示依赖。 |
-| 计划执行 | 紫色 `#a371f7` | 你批准原生计划后出现的第一份新待办列表。 |
-| Atlas | 绿色 `#3fb950` | `omo-prometheus` 的任务、新发现工作、修正、最终关口和交付，带有真实的依赖边。 |
+| 待办列表 | 蓝色 `#4f8cff` | 待办阶段形成横向分组。阶段之间的虚线表示先后顺序，不表示依赖。 |
+| 计划执行 | 紫色 `#a371f7` | 你在 Plan Mode 中批准计划后的第一份待办列表。 |
+| Atlas | 绿色 `#3fb950` | `omo-prometheus` 的计划：任务、新发现的工作、修复、最终评审和交付，以及它们真实的依赖关系。 |
 
-节点状态的颜色跟随 OMP 主题：
+节点图标使用你的 OMP 主题颜色：
 
 | 图标 | 状态 |
 | --- | --- |
-| `○` | 待处理 |
-| `◐` | 运行中 |
+| `○` | 等待中 |
+| `◐` | 进行中 |
 | `✔` | 已完成 |
 | `✖` | 失败 |
-| `⊘` | 阻塞 |
+| `⊘` | 被阻塞 |
 | `⊖` | 已放弃 |
 
-实线连接表示正向依赖；选中节点的边会以该运行的颜色加粗显示。点线连接表示修正边和反向依赖（标注 `↑ after <label>`）。默认情况下，如果一条更长的路径已经体现了同样的先后顺序，就隐藏这条边；按 `e` 显示所有边。页脚始终列出选中节点的直接依赖。
+实线表示依赖，选中节点的连线会加粗显示。点线表示修复关系和指向前面的依赖（标为 `↑ after <label>`）。为了让图保持清晰，如果一条更长的路径已经表达了同样的先后顺序，就隐藏这条线；按 `e` 可以显示全部连线。底部始终列出选中节点直接依赖的节点。
 
-按 `p` 高亮关键路径，即按已用时间计算的、由显式依赖构成的最长链。按 `c` 折叠已完成的层。
+按 `p` 高亮关键路径，也就是按耗时计算最长的那条依赖链；按 `c` 折叠已完成的层。
 
-运行中的节点如果其子代理超过 `stalledAfterSeconds` 没有进展，会以警告色标记为 `stalled`。子代理失败不会把对应的待办或执行记录行标记为失败。
+如果某个进行中节点的子代理超过 `stalledAfterSeconds` 没有进展，它会被标为 `stalled`。子代理失败不会把对应的待办或计划任务标为失败。
 
-### 任务与对话记录
+### 任务和对话记录
 
-任务视图（`t`）列出所有直接子代理，来源包括 `task`、`eval` 代理和 `workpool`，在 OMP 提供数据时显示当前工具及参数、最近输出、模型、重试、已用时间、token 和费用。子代理会挂到它启动时正在进行的那个待办上。缺失的指标显示为缺失，绝不显示为零。
+Tasks 视图（`t`）列出主会话启动的所有子代理，显示它当前的工具和参数、最近的输出、模型、重试次数、耗时、token 和费用（以 OMP 提供的为准）。子代理会挂在它启动时正在进行的那个待办下面。缺少的数字显示为缺失，从不显示为零。
 
-在任务上，或在挂有子代理的节点上按 `o`，可以查看其对话记录：助手文本、工具调用和简短的结果预览，从现有的会话文件中读取。
+在某个任务或挂有子代理的节点上按 `o`，可以查看它的对话记录：它的消息、工具调用以及结果的简短预览。
 
 ### 查看器按键
 
 | 按键 | 操作 |
 | --- | --- |
 | `q`、Ctrl+C | 退出并关闭窗格。 |
-| `t` | 在 DAG 和任务视图之间切换；在对话记录中按下时，切到另一个主视图。 |
+| `t` | 在依赖图和 Tasks 之间切换；在对话记录中按下时，切换到另一个主视图。 |
 | `h` | 显示或隐藏上一份待办列表（只保留一份）。 |
-| `[` / `]` | 上一个 / 下一个运行。 |
-| Tab | 切换方向键的作用：选择节点（`NODES`）或平移视图（`PAN`）。 |
-| 方向键、`j` / `k` | 选择最近的节点、平移视图、在任务间移动或滚动对话记录。 |
+| `[` / `]` | 上一轮 / 下一轮。 |
+| Tab | 让方向键在选择节点（`NODES`）和移动视图（`PAN`）之间切换。 |
+| 方向键、`j` / `k` | 选择最近的节点、移动视图、在任务之间移动，或滚动对话记录。 |
 | PgUp / PgDn | 按页浏览节点、任务或对话记录。 |
-| Enter | 展开或收起选中的节点或任务。 |
+| Enter | 展开或折叠选中的节点或任务。 |
 | `c` | 折叠已完成的层。 |
 | `p` | 高亮关键路径。 |
-| `e` | 显示所有依赖边。 |
-| `f` | 跳到下一个运行中的节点。 |
+| `e` | 显示全部依赖连线。 |
+| `f` | 跳到下一个进行中的节点。 |
 | `o` | 打开选中子代理的对话记录。 |
 | Esc | 离开对话记录或关闭帮助。 |
 | `?` | 帮助。 |
 
-也可以用鼠标：滚轮滚动，Shift+滚轮横向滚动，单击选中节点，双击打开它的对话记录。查看器运行期间，直接拖动不再能选中文本；大多数终端按住 Shift 仍可选择。
+鼠标也可以用：滚轮滚动，Shift+滚轮横向滚动，单击选中节点，双击打开对话记录。查看器运行时，直接拖动不再选中文字；大多数终端里按住 Shift 再拖动即可选择。
 
-### 显式的待办依赖
+### 待办之间的真实依赖
 
-默认情况下，图只知道阶段顺序。要在待办之间画出真实的依赖，代理可以给 `todo` 传入 `edges`，用任务的原文指名：
+默认情况下，这张图只知道待办阶段的先后顺序。代理也可以说明哪个待办要等哪个，图上就会画出这些依赖。你可以直接要求（“把待办之间的依赖标出来”），也可以交给代理自己决定。依赖从不根据措辞猜测。指向不存在的任务、指向自己或者形成环的依赖会被丢弃，并给出 `Herdr DAG edges:` 警告，但待办本身的改动照常生效。用 `todoDependencies: false` 可以关掉这项功能。
 
-```json
-{
-  "op": "init",
-  "list": [
-    { "phase": "Implementation", "items": ["Build parser", "Connect viewer"] },
-    { "phase": "Verification", "items": ["Check rendered output"] }
-  ],
-  "edges": [
-    { "task": "Connect viewer", "after": ["Build parser"] },
-    { "task": "Check rendered output", "after": ["Connect viewer"] }
-  ]
-}
-```
+### 窗格放在哪里
 
-插件会先去掉 `edges`，再把调用交给原生 `todo`，所以待办本身的行为不变。未知的、指向自身的或成环的边会被丢弃，并附上一条 `Herdr DAG edges:` 警告，待办的修改照常生效。插件从不根据措辞或阶段顺序猜测依赖。
+窗口较宽时，窗格放在 OMP 右边；窗口较高时，放在下面。窗口形状改变后，插件会移动窗格。两种形状下的位置和大小都可以分别设置。
 
-### 窗格位置
-
-窗口为横向时，窗格放在 OMP 右侧；为纵向时放在下方（列数少于行数的两倍即为纵向）。窗口方向改变时，插件会在新位置重建窗格。两种方向的位置和大小都可以分别配置。
-
-OMP 退出时，窗格也会关闭（`finishBehavior: close-with-omp`）。设为 `keep-open` 时，窗格保持打开，显示断开连接的横幅，并每秒重试一次连接。
+OMP 退出时窗格也会关闭。设置 `finishBehavior: keep-open` 后，它会保持打开，显示已断开连接，并不断尝试重新连接。
 
 ## 设置
 
-`omp plugin config` 使用的包名：`wows-omp-plugin-omp-herdr-dag`。
+为当前用户修改设置：
 
 ```bash
-omp plugin config wows-omp-plugin-omp-herdr-dag
+omp plugin config set wows-omp-plugin-omp-herdr-dag displayTiming any-todo
+omp plugin config set wows-omp-plugin-omp-herdr-dag landscapeSize 0.3
+omp plugin config list wows-omp-plugin-omp-herdr-dag
 ```
 
-| 设置 | 类型 | 默认值 | 作用 |
-| --- | --- | --- | --- |
-| `displayTiming` | `never` \| `any-todo` \| `plan-execution` \| `atlas-only` | `plan-execution` | 何时自动打开窗格。 |
-| `finishBehavior` | `close-with-omp` \| `keep-open` | `close-with-omp` | OMP 退出时如何处理窗格。 |
-| `landscapePosition` | `left` \| `right` \| `top` \| `bottom` | `right` | 横向窗口中窗格的位置。 |
-| `portraitPosition` | `left` \| `right` \| `top` \| `bottom` | `bottom` | 纵向窗口中窗格的位置。 |
-| `landscapeSize` | 0.15 到 0.6 之间的数字 | `0.35` | 横向时窗格所占比例。 |
-| `portraitSize` | 0.15 到 0.6 之间的数字 | `0.4` | 纵向时窗格所占比例。 |
-| `followOrientation` | boolean | `true` | 窗口方向改变时移动窗格。 |
-| `focusPane` | boolean | `false` | 创建窗格时让它获得焦点。 |
-| `stalledAfterSeconds` | 10 到 900 之间的数字 | `90` | 子代理多少秒没有进展后，将任务标记为停滞。 |
-| `todoDependencies` | boolean | `true` | 接受 `todo` 上的显式 `edges`。原生待办操作不受影响。 |
-| `atlasIntegration` | boolean | `true` | 显示 `omo-prometheus` 的 Atlas 计划。 |
-| `followTheme` | boolean | `true` | 跟随 OMP 主题变化。 |
-| `colorTodo` | `#rrggbb` | `#4f8cff` | 待办运行的颜色。 |
-| `colorPlan` | `#rrggbb` | `#a371f7` | 计划运行的颜色。 |
-| `colorAtlas` | `#rrggbb` | `#3fb950` | Atlas 运行的颜色。 |
-| `retentionDays` | 1 到 365 之间的数字 | `14` | 会话启动时，删除超过此天数的会话所对应的插件文件。 |
-| `layoutAlign` | `centered` \| `left` | `centered` | 图在窗格中居中，或靠左紧凑排列。 |
-| `viewerRuntime` | 路径或留空 | `""` | 查看器使用的 Bun 可执行文件；留空则自动查找 `bun`。 |
+只想在某个项目里改，就在该项目的 `.omp/plugin-overrides.json` 中写上：
 
-设置会在启动、切换会话和每次执行命令时，按会话的工作目录读取。无效字段回退到默认值并给出警告。位置、大小和颜色的修改会在下次打开窗格或图更新时生效，不会重启正在运行的查看器。
+```json
+{ "settings": { "wows-omp-plugin-omp-herdr-dag": { "displayTiming": "atlas-only" } } }
+```
+
+设置在启动、切换会话以及每次执行 `/dag-pane` 命令时读取。位置、大小和颜色的修改会在下次打开窗格或图更新时生效。值无效时会回退到默认值，并给出警告。
+
+| 设置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `displayTiming` | `plan-execution` | 窗格何时自动打开：`never`、`any-todo`、`plan-execution` 或 `atlas-only`（见上文）。 |
+| `finishBehavior` | `close-with-omp` | `close-with-omp` 表示 OMP 退出时关闭窗格；`keep-open` 表示保持打开并尝试重连。 |
+| `landscapePosition` | `right` | 窗口较宽时窗格的位置：`left`、`right`、`top` 或 `bottom`。 |
+| `portraitPosition` | `bottom` | 窗口较高时窗格的位置：`left`、`right`、`top` 或 `bottom`。 |
+| `landscapeSize` | `0.35` | 窗口较宽时窗格所占的比例，范围 0.15 到 0.6。 |
+| `portraitSize` | `0.4` | 窗口较高时窗格所占的比例，范围 0.15 到 0.6。 |
+| `followOrientation` | `true` | 窗口在宽和高之间变化时移动窗格。 |
+| `focusPane` | `false` | 窗格打开时把键盘焦点放到窗格上。 |
+| `stalledAfterSeconds` | `90` | 子代理多少秒没有进展就把任务标为停滞，范围 10 到 900。 |
+| `todoDependencies` | `true` | 允许代理声明待办之间的依赖。关掉后待办本身照常工作。 |
+| `atlasIntegration` | `true` | 显示 `omo-prometheus` 的 Atlas 计划。 |
+| `followTheme` | `true` | 跟随 OMP 主题的变化。 |
+| `colorTodo` | `#4f8cff` | 待办这一轮的颜色（`#rrggbb`）。 |
+| `colorPlan` | `#a371f7` | 计划这一轮的颜色（`#rrggbb`）。 |
+| `colorAtlas` | `#3fb950` | Atlas 这一轮的颜色（`#rrggbb`）。 |
+| `retentionDays` | `14` | 会话启动时，删除超过这么多天的会话所留下的本插件文件，范围 1 到 365。 |
+| `layoutAlign` | `centered` | `centered` 让图在窗格中居中；`left` 让图靠左排列。 |
+| `viewerRuntime` | 空 | 查看器使用的 Bun 可执行文件。为空表示在 `PATH` 中查找 `bun`。 |
 
 ## 与其他插件配合
 
-当本插件的 `atlasIntegration` 和 Prometheus 的 `herdrDag` 设置都开启时（默认如此），`omo-prometheus` 的 Atlas 计划会以绿色运行显示。横带依次为 Tasks、Discovered、Fixes、Final gates、Delivery。行中提供分级和验证信息时，会显示 LIGHT/HEAVY 徽标及验证状态。显示 Atlas 计划期间，Atlas 镜像的待办阶段（`Atlas tasks`、`Atlas discovered`、`Atlas fixes`、`Atlas final gates`、`Atlas delivery`）不会出现在蓝色待办视图中，以免同一份工作显示两次。
-
-## 不使用终端界面时
-
-窗格只在 Herdr 内的交互式 TUI 会话中运行。RPC、ACP、SDK 和 headless 会话即使设置了 Herdr 变量，也不会打开窗格。`todo` 包装及其 `edges` 字段在所有模式下都可用。
+**omo-prometheus**：当本插件的 `atlasIntegration` 和 Prometheus 的 `herdrDag` 设置都开启时（默认如此），它的 Atlas 计划会以绿色显示。分组顺序为 Tasks、Discovered、Fixes、Final gates、Delivery，任务会显示 LIGHT 或 HEAVY 等级以及是否已验证。显示 Atlas 计划期间，对应的待办阶段（`Atlas tasks`、`Atlas discovered`、`Atlas fixes`、`Atlas final gates`、`Atlas delivery`）不会出现在蓝色的待办视图中，避免同样的工作出现两次。
 
 ## 已知限制
 
-- 仅支持 Herdr；不支持其他终端复用器，也不支持 Windows。
-- 子代理的子代理只以状态卡片显示，标记为 `activity unavailable`，没有实时工具、输出或用量。
-- 升级插件会删除正在运行的 OMP 所加载的那份安装副本，所以在重启 OMP 之前无法再打开 DAG 面板。插件会给出提示，而不是打开一个损坏的面板；已经打开的面板不受影响。
-- 指标和对话记录取决于 OMP 报告了什么。
-- 如果 OMP 在创建窗格和记录窗格之间崩溃，可能留下孤立的窗格。插件会给出警告，但从不关闭不属于它的窗格；请手动关闭。
+- 只能在 Herdr 中使用，不支持 Windows。
+- 子代理再启动的子代理只显示为标有 `activity unavailable` 的状态卡片，看不到它们的工具、输出或用量。
+- 升级插件后，必须重启 OMP 才能再次打开窗格。插件会提示你这一点；已经打开的窗格可以继续使用。
+- 显示的数字和对话记录取决于 OMP 报告了什么。
+- 如果 OMP 在刚创建窗格后崩溃，可能会留下一个孤立的窗格。插件会发出警告，但从不关闭不是它创建的窗格，请手动关闭。
 - 插件的本地文件可能包含任务描述、工具参数、输出片段、错误信息和本地路径。请像对待会话数据一样对待它们。
 
-## 参考
+## 更多细节
 
-[REFERENCE.zh.md](REFERENCE.zh.md) 介绍计划执行的识别方式、布局与窗格位置的细节、Atlas 事件契约以及本地存储。
+[REFERENCE.zh.md](REFERENCE.zh.md) 介绍了窗格在什么条件下运行（包括 RPC、ACP 和无界面会话）、如何识别计划执行、图的布局和窗格位置规则、待办依赖的格式、与 omo-prometheus 的接口，以及本地文件。
 
 ## 许可证
 
