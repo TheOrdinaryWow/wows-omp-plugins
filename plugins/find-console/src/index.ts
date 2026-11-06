@@ -130,6 +130,7 @@ export default function findConsole(pi: ExtensionAPI): void {
                 getArtifactsDir: () => ctx.sessionManager.getArtifactsDir(),
                 getSessionId: () => ctx.sessionManager.getSessionId(),
               },
+              containSkillPaths: true,
             },
             tier: "read",
           });
