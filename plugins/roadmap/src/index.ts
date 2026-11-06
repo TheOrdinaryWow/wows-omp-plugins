@@ -4,14 +4,14 @@ import { ADR_INSTALL_HINT, AdrConnection } from "#src/adr.ts";
 import { requestPlans } from "#src/atlas.ts";
 import { registerMessageTitles } from "#src/cards.ts";
 import { registerCommands } from "#src/commands.ts";
-import { loadAll, loadRepo } from "#src/documents.ts";
+import { loadAll, loadRepo, today } from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import { renderCloseReminder, renderInjection } from "#src/handoff.ts";
 import { interceptionReason } from "#src/interception.ts";
 import { PluginStatePublisher } from "#src/plugin-state.ts";
 import { registerPrometheusContract } from "#src/prometheus.ts";
 import { RoadmapSession, type UiFactory } from "#src/ses.ts";
-import { uiMenuReader } from "#src/settings.ts";
+import { StageOrderPreference, uiMenuReader } from "#src/settings.ts";
 import { roadmapStatus } from "#src/state.ts";
 import { registerTools, toolResult, upgradeAfterDialog } from "#src/tools.ts";
 import { createTuiUi } from "#src/ui.ts";
@@ -28,7 +28,8 @@ export function __setUiFactory(factory?: UiFactory): void {
 export default function roadmap(pi: ExtensionAPI): void {
   const ses = new RoadmapSession(pi);
   const uiMenu = uiMenuReader(pi.logger);
-  const uiFor: UiFactory = (ctx) => (testUiFactory ?? ((host) => createTuiUi(host, pi, uiMenu)))(ctx);
+  const stageOrder = new StageOrderPreference(pi.logger);
+  const uiFor: UiFactory = (ctx) => (testUiFactory ?? ((host) => createTuiUi(host, pi, uiMenu, stageOrder)))(ctx);
   let warned = false;
   const warn = (error: unknown): void => {
     if (warned) return;
@@ -54,8 +55,8 @@ export default function roadmap(pi: ExtensionAPI): void {
   };
   // Roadmap reads and writes ADRs only through the adr plugin's service, and registers its stage resolver there.
   const adr = new AdrConnection(pi.events);
-  registerTools(pi, ses, uiFor, changed, adr);
-  const commands = registerCommands(pi, ses, uiFor, changed, adr);
+  registerTools(pi, ses, uiFor, changed, adr, stageOrder);
+  const commands = registerCommands(pi, ses, uiFor, changed, adr, stageOrder);
   registerPrometheusContract(pi, ses);
   registerMessageTitles(pi);
 
@@ -186,7 +187,7 @@ export default function roadmap(pi: ExtensionAPI): void {
         const unavailable = `[Roadmap status] ${connection.reason} Roadmap tools and context are unavailable in this session. ${ADR_INSTALL_HINT}`;
         return { systemPrompt: [...event.systemPrompt, unavailable] };
       }
-      const block = renderInjection(model, ses.getBinding(repo.repoRoot));
+      const block = renderInjection(model, ses.getBinding(repo.repoRoot), today(), await stageOrder.current(ctx));
       if (!block) return;
       const lines = [block];
       if (notice) lines.push(notice);

@@ -57,7 +57,7 @@ function stubUi(answers: Answer[], hasUI = true): Stub {
 }
 
 function stage(id: string, status: StageStatus, title = `Stage ${id}`): StageDoc {
-  return { format: 1, path: "", id, title, round: "R1", status } as StageDoc;
+  return { format: 1, path: "", id, title, round: "R1", status, depends_on: [] as string[], follows: null } as StageDoc;
 }
 
 function round(id: string, status: RoundDoc["status"], title = "Foundation"): RoundDoc {

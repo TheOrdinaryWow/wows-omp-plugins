@@ -25,7 +25,8 @@ import {
   upgrade,
 } from "#src/operations.ts";
 import { type ArmedKind, actor, planModeActive, type RoadmapSession, type UiFactory } from "#src/ses.ts";
-import { stageReadiness } from "#src/state.ts";
+import type { StageOrder, StageOrderPreference } from "#src/settings.ts";
+import { orderStages, stageReadiness } from "#src/state.ts";
 import type { OverlapAnswer } from "#src/ui.ts";
 
 export type ToolReceipt = Receipt & {
@@ -116,7 +117,7 @@ export async function requireRepo(ctx: ExtensionContext, adr: AdrApi, initialize
   return { ...repo, adr };
 }
 
-export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup): Promise<ToolReceipt> {
+export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup, order: StageOrder = "dependency"): Promise<ToolReceipt> {
   const model = await loadAll(repo);
   const on = today();
   if (id?.startsWith("R")) {
@@ -152,8 +153,9 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
     };
   }
   const open = model.todos.flatMap((doc) => doc.items.filter((item) => item.status === "open"));
+  const stages = orderStages(model.stages, order);
   const readinessOf = new Map(
-    model.stages.filter((current) => current.status === "planned").map((current) => [current.id, stageReadiness(model, current)]),
+    stages.filter((current) => current.status === "planned").map((current) => [current.id, stageReadiness(model, current)]),
   );
   const readiness = [...readinessOf].flatMap(([stageId, ready]) => {
     if (ready.startable) return [`- ${stageId} startable`];
@@ -161,14 +163,14 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
   });
   const summary = [
     model.index.title,
-    renderInjection(model) || "No active round. ADR management remains available.",
+    renderInjection(model, undefined, on, order) || "No active round. ADR management remains available.",
     "Rounds (target versus actual):",
     ...model.rounds.map(
       (round) =>
         `- ${round.id} [${round.status}] ${round.title} — target ${round.target ?? "none"}; opened ${round.opened ?? "—"}; closed ${round.closed ?? "—"}${overdue(round, on) ? "; overdue" : ""}; ${model.stages.filter((stage) => stage.round === round.id).length} stages`,
     ),
     "Stages:",
-    ...model.stages.map(
+    ...stages.map(
       (current) =>
         `- ${current.id} [${current.status}] ${current.title} (${current.round})${current.target ? ` — target ${current.target}${overdue(current, on) ? "; overdue" : ""}` : ""}; started ${current.started ?? "—"}; closed ${current.closed ?? "—"}${current.depends_on.length ? `; depends on ${current.depends_on.join(", ")}` : ""}`,
     ),
@@ -179,7 +181,7 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
   if (answered) {
     planRows = [];
     // Plans of unclosed stages only: closed and dropped stages no longer take plan work.
-    const lines = model.stages
+    const lines = stages
       .filter((current) => current.status === "planned" || current.status === "active")
       .flatMap((current) => {
         const bound = answered.filter((plan) => plan.stage === current.id);
@@ -217,7 +219,7 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup)
         overdue: overdue(round, on),
         stages: model.stages.filter((current) => current.round === round.id).length,
       })),
-      stages: model.stages.map((current) => {
+      stages: stages.map((current) => {
         const ready = readinessOf.get(current.id);
         return {
           id: current.id,
@@ -474,6 +476,7 @@ export function registerTools(
   uiFor: UiFactory,
   changed: (ctx: ExtensionContext) => void,
   adr: AdrConnection,
+  stageOrder: StageOrderPreference,
 ): void {
   const z = pi.zod;
   const overlapFlights = new Map<string, Promise<ToolReceipt>>();
@@ -632,7 +635,8 @@ export function registerTools(
     parameters: statusParameters,
     approval: "read",
     async execute(_id, params: typeof statusParameters.infer, _signal, _onUpdate, ctx) {
-      return run(ctx, (repo) => statusReceipt(repo, params.stage, planLookup(pi.events, ctx, repo.repoRoot)));
+      const order = await stageOrder.current(ctx);
+      return run(ctx, (repo) => statusReceipt(repo, params.stage, planLookup(pi.events, ctx, repo.repoRoot), order));
     },
   });
   pi.registerTool({

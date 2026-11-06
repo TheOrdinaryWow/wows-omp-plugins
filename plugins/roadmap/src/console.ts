@@ -45,7 +45,8 @@ import { actionBar, actionButton, actionHint, hintsRow, itemIndex, type NativeHi
 import { type AtlasStagePlan, type StageCoverage, stageCoverage } from "#src/atlas.ts";
 import { type Model, overdue, type RoundDoc, type StageDoc, type StageStatus, type TodoItem, today } from "#src/documents.ts";
 import { planLabel } from "#src/handoff.ts";
-import { byId, plannedRoundCounts, roundActual, schedule, stageReadiness } from "#src/state.ts";
+import type { StageOrder } from "#src/settings.ts";
+import { byId, orderStages, plannedRoundCounts, roundActual, schedule, stageReadiness } from "#src/state.ts";
 import type { PreviewFile } from "#src/ui.ts";
 
 export type ConsoleSection = "stages" | "rounds" | "todos";
@@ -70,6 +71,8 @@ export interface ConsoleState {
   message?: ConsoleMessage;
   /** YYYY-MM-DD deciding which unfinished targets are overdue; defaults to today. */
   on?: string;
+  /** How the Stages section and a round's stage list are ordered; defaults to dependency. Shift+O switches it. */
+  order?: StageOrder;
 }
 
 /** What the console asks the command to do: the status menu's actions plus the typed planning actions it offers by key. */
@@ -573,6 +576,7 @@ export class RoadmapConsole extends SplitPane {
   /** Atlas plans per stage, asked once per showing. */
   readonly #plans = new Map<string, readonly AtlasStagePlan[] | undefined>();
   #stageRound: string | undefined;
+  #order: StageOrder;
   #section: ConsoleSection;
   #query: string;
   #visible: Entry[] = [];
@@ -585,9 +589,12 @@ export class RoadmapConsole extends SplitPane {
     tui: TUI,
     readonly done: (choice: ConsoleChoice | undefined) => void,
     readonly plans?: StagePlans,
+    /** Told the new order whenever Shift+O switches it, so later lists in the session follow it. */
+    readonly onOrder?: (order: StageOrder) => void,
   ) {
     super(theme, tui);
     this.#on = state.on ?? today();
+    this.#order = state.order ?? "dependency";
     this.#active = model.rounds.find((round) => round.status === "active");
     this.#nextPlanned = model.rounds.filter((round) => round.status === "planned").sort(byId)[0];
     const scope = state.view?.stageRound;
@@ -608,10 +615,19 @@ export class RoadmapConsole extends SplitPane {
   }
 
   #stageEntries(): Entry[] {
-    return this.model.stages
-      .filter((stage) => stage.round === this.#stageRound)
-      .sort(byId)
-      .map((stage) => ({ kind: "stage", id: stage.id, title: stage.title, stage }));
+    return orderStages(
+      this.model.stages.filter((stage) => stage.round === this.#stageRound),
+      this.#order,
+    ).map((stage) => ({ kind: "stage", id: stage.id, title: stage.title, stage }));
+  }
+
+  /** Shift+O: dependency order and id order trade places for the rest of the session; the selection stays on its item. */
+  #toggleOrder(): void {
+    this.#order = this.#order === "dependency" ? "id" : "dependency";
+    this.onOrder?.(this.#order);
+    this.#entries.stages = this.#stageEntries();
+    if (this.#section === "stages") this.#refilter(this.#current()?.id);
+    this.message = { text: `Stages are listed in ${this.#order} order for the rest of this session`, level: "info" };
   }
 
   #activeStages(): StageDoc[] {
@@ -787,6 +803,7 @@ export class RoadmapConsole extends SplitPane {
     else if (key === "D" || matchesKey(key, "shift+d")) this.handleAction("drop");
     else if (key === "T" || matchesKey(key, "shift+t")) this.handleAction("retarget");
     else if (key === "U" || matchesKey(key, "shift+u")) this.handleAction("upgrade");
+    else if (key === "O" || matchesKey(key, "shift+o")) this.handleAction("order");
     else if (matchesKey(key, "backspace")) {
       if (!this.#query) return;
       this.#query = [...this.#query].slice(0, -1).join("");
@@ -809,6 +826,7 @@ export class RoadmapConsole extends SplitPane {
     else if (act === "drop") this.#onPlannedRound("drop-round", "drop");
     else if (act === "retarget") this.#retarget();
     else if (act === "upgrade") this.#upgrade();
+    else if (act === "order") this.#toggleOrder();
   }
 
   /** A click on a section tab switches to it as Tab does. */
@@ -957,6 +975,7 @@ export class RoadmapConsole extends SplitPane {
         : []),
       { act: "plan-round", key: "shift+p", label: "plan a round" },
       ...(this.model.index.format === 1 ? [{ act: "upgrade", key: "shift+u", label: "upgrade to format 2" } as const] : []),
+      { act: "order", key: "shift+o", label: `order: ${this.#order}` },
       { act: "check", key: "shift+c", label: "check" },
     ];
   }
@@ -1115,7 +1134,10 @@ export class RoadmapConsole extends SplitPane {
     const actual = roundActual(round);
     if (actual) detail.field("Dates", actual);
     detail.field("File", [ink(this.model.repo ? relative(this.model.repo.repoRoot, round.path) : round.path, "dim")]);
-    const stages = this.model.stages.filter((stage) => stage.round === round.id).sort(byId);
+    const stages = orderStages(
+      this.model.stages.filter((stage) => stage.round === round.id),
+      this.#order,
+    );
     const settled = stages.filter((stage) => stage.status === "closed" || stage.status === "dropped").length;
     detail.field("Stages", stages.length ? `${settled}/${stages.length} settled` : [ink("none yet", "dim")]);
     detail.list(
@@ -1154,7 +1176,7 @@ export class RoadmapConsole extends SplitPane {
   }
 
   protected nativeSignature(): string {
-    return [this.#section, this.#query, this.#stageRound ?? ""].join("\u0000");
+    return [this.#section, this.#query, this.#stageRound ?? "", this.#order].join("\u0000");
   }
 
   protected describeTop(): NativeChild[] {

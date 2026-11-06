@@ -1751,6 +1751,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             hasUI: true,
             mode: "tui",
             cwd: ctx.cwd,
+            sessionManager: ctx.sessionManager,
             ui: {
               ...ctx.ui,
               input: async (title) => {
@@ -2338,6 +2339,7 @@ async function acceptance(name: string, root: string): Promise<void> {
                   hasUI: true,
                   mode: ctx.mode,
                   cwd: ctx.cwd,
+                  sessionManager: ctx.sessionManager,
                   ui: {
                     ...ctx.ui,
                     select: async (title, options) => {

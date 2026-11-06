@@ -8,7 +8,14 @@ import { initTheme, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { AtlasStagePlan } from "../plugins/roadmap/src/atlas.ts";
 import { type ConsoleChoice, type ConsoleState, type PreviewRequest, PreviewView, RoadmapConsole } from "../plugins/roadmap/src/console.ts";
 import { type Model, renderRound, renderStage } from "../plugins/roadmap/src/documents.ts";
-import { PACKAGE_NAME, parseUiMenu, type UiMenu, uiMenuReader } from "../plugins/roadmap/src/settings.ts";
+import {
+  PACKAGE_NAME,
+  parseUiMenu,
+  type StageOrder,
+  StageOrderPreference,
+  type UiMenu,
+  uiMenuReader,
+} from "../plugins/roadmap/src/settings.ts";
 import { createTuiUi, HeadlessUi, type RoadmapUiContext } from "../plugins/roadmap/src/ui.ts";
 import { consoleModelFixture, planFixture } from "./roadmap-fixtures.ts";
 
@@ -56,6 +63,7 @@ const PLANS: Readonly<Record<string, AtlasStagePlan[]>> = {
 function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}, rows = 24) {
   const choices: Array<ConsoleChoice | undefined> = [];
   const asked: string[] = [];
+  const orders: StageOrder[] = [];
   const component = new RoadmapConsole(
     model,
     { on: ON, ...state },
@@ -66,11 +74,13 @@ function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}, r
       asked.push(stage);
       return PLANS[stage];
     },
+    (order) => orders.push(order),
   );
   return {
     component,
     choices,
     asked,
+    orders,
     screen: (width = 100) => text(component.render(width)),
     type: (...keys: string[]) => {
       for (const key of keys) component.handleInput(key);
@@ -87,6 +97,14 @@ function sidebar(screen: string): string[] {
 }
 
 const EMPTY: Model = { index: { format: 2, path: "", title: "Fresh", body: "" }, rounds: [], stages: [], todos: [] };
+
+/** R2 with S06 waiting on the later-numbered S07, so dependency order lists S07 before S06. */
+function laterDependencyModel(): Model {
+  const model = consoleModelFixture();
+  return { ...model, stages: model.stages.map((stage) => (stage.id === "S06" ? { ...stage, depends_on: ["S07"] } : stage)) };
+}
+
+const stageIds = (rows: readonly string[]): string[] => rows.flatMap((row) => /\b(S0\d) /.exec(row)?.[1] ?? []);
 
 test("console frames fill 80x24 and 160x48 exactly in every section and item, long titles included", () => {
   for (const [width, rows] of [
@@ -356,6 +374,29 @@ test("console reopens on the saved view with the last result, and handles an emp
   expect(empty.choices.map((choice) => choice?.action)).toEqual(["new-round"]);
 });
 
+test("console lists stages in dependency order; Shift+O switches to id order, keeping the selection and the round detail in step", () => {
+  const { screen, type, orders } = mount(laterDependencyModel(), {}, 48);
+  const detail = (shown: string) => shown.split("\n").map((line) => line.split("│")[2]?.trim() ?? "");
+  expect(stageIds(sidebar(screen(160)))).toEqual(["S04", "S05", "S07", "S06", "S08"]);
+  expect(screen(160)).toMatch(/order: dependency/);
+  type(KEY.down);
+  expect(sidebar(screen(160)).find((row) => row.includes("❯"))).toMatch(/S07 Checkout analytics/);
+
+  type("O");
+  expect(orders).toEqual(["id"]);
+  const shown = screen(160);
+  expect(stageIds(sidebar(shown))).toEqual(["S04", "S05", "S06", "S07", "S08"]);
+  expect(sidebar(shown).find((row) => row.includes("❯"))).toMatch(/S07 Checkout analytics/);
+  expect(shown).toMatch(/Stages are listed in id order for the rest of this session/);
+  expect(shown).toMatch(/order: id/);
+  type(KEY.tab);
+  expect(stageIds(detail(screen(160)))).toEqual(["S04", "S05", "S06", "S07", "S08"]);
+
+  type("O");
+  expect(orders).toEqual(["id", "dependency"]);
+  expect(stageIds(detail(screen(160)))).toEqual(["S04", "S05", "S07", "S06", "S08"]);
+});
+
 test("console wheel over the sidebar moves the selection and over the detail scrolls it", () => {
   const { component, screen } = mount(undefined, {}, 24);
   const detailTop = () => screen(100).split("\n")[5] ?? "";
@@ -472,6 +513,7 @@ test("preview answers once: Write or Shift+W writes, Cancel or Esc declines, Ent
 interface Stub {
   ctx: RoadmapUiContext;
   selects: string[];
+  options: string[][];
   customs: unknown[];
   reads: string[];
   reader: (cwd: string) => Promise<UiMenu>;
@@ -480,12 +522,14 @@ interface Stub {
 /** A terminal UI whose custom components receive `keys`; select answers Write so the inline path ends. */
 function stub(mode: "tui" | "rpc", setting: UiMenu, keys: string[] = []): Stub {
   const selects: string[] = [];
+  const options: string[][] = [];
   const customs: unknown[] = [];
   const reads: string[] = [];
   const ui = {
-    select: async (title: string, options: string[]) => {
+    select: async (title: string, labels: string[]) => {
       selects.push(title);
-      return options[0];
+      options.push(labels);
+      return labels[0];
     },
     editor: async () => undefined,
     input: async () => undefined,
@@ -501,8 +545,9 @@ function stub(mode: "tui" | "rpc", setting: UiMenu, keys: string[] = []): Stub {
       }),
   };
   return {
-    ctx: { hasUI: true, mode, cwd: "/work/shop", ui } as unknown as RoadmapUiContext,
+    ctx: { hasUI: true, mode, cwd: "/work/shop", ui, sessionManager: { getSessionId: () => "session-1" } } as unknown as RoadmapUiContext,
     selects,
+    options,
     customs,
     reads,
     reader: async (cwd) => {
@@ -558,6 +603,26 @@ test("RPC-style hosts and headless sessions never read the setting and keep thei
   expect(await headless.fullscreenMenu()).toBe(false);
   expect(await headless.statusConsole(EMPTY, {})).toBeUndefined();
   expect(reads).toEqual([]);
+});
+
+test("the stage order preference orders the inline menu and the console, and Shift+O sets it for the session", async () => {
+  const root = await projectWith({ stageOrder: "id" });
+  const preference = new StageOrderPreference({ warn() {} });
+  const menu = stub("rpc", "inline");
+  const inline = createTuiUi({ ...menu.ctx, cwd: root }, pi, menu.reader, preference);
+  await inline.statusMenu(laterDependencyModel(), ON);
+  expect(stageIds(menu.options[0] ?? [])).toEqual(["S04", "S05", "S06", "S07", "S08"]);
+
+  // The console opens in the setting's id order, so Shift+O switches it to dependency order for the session.
+  const fullscreen = stub("tui", "fullscreen", ["O", "C"]);
+  const choice = await createTuiUi({ ...fullscreen.ctx, cwd: root }, pi, fullscreen.reader, preference).statusConsole(
+    laterDependencyModel(),
+    { on: ON },
+  );
+  expect(choice?.action).toBe("check");
+  expect(await preference.current({ ...menu.ctx, cwd: root })).toBe("dependency");
+  await inline.statusMenu(laterDependencyModel(), ON);
+  expect(stageIds(menu.options[1] ?? [])).toEqual(["S04", "S05", "S07", "S06", "S08"]);
 });
 
 const temporary: string[] = [];

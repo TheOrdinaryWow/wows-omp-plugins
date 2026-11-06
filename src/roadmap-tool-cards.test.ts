@@ -10,6 +10,7 @@ import type { AdrConnection } from "../plugins/roadmap/src/adr.ts";
 import { MESSAGE_TITLES, registerMessageTitles } from "../plugins/roadmap/src/cards.ts";
 import { type Actor, todo } from "../plugins/roadmap/src/operations.ts";
 import type { RoadmapSession, UiFactory } from "../plugins/roadmap/src/ses.ts";
+import { StageOrderPreference } from "../plugins/roadmap/src/settings.ts";
 import { checkReceipt, registerTools, statusReceipt, type ToolReceipt, toolResult } from "../plugins/roadmap/src/tools.ts";
 import { cleanupFixtures, diskFixture, planFixture } from "./roadmap-fixtures.ts";
 
@@ -41,6 +42,7 @@ function tools(): Map<string, Tool> {
     (() => undefined) as unknown as UiFactory,
     () => {},
     {} as AdrConnection,
+    new StageOrderPreference({ warn() {} }),
   );
   return registered;
 }

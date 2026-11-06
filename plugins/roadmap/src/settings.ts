@@ -28,3 +28,48 @@ export function uiMenuReader(logger: Pick<ExtensionAPI["logger"], "warn">): UiMe
     }
   };
 }
+
+/** `dependency` lists stages in execution order (dependencies first, ties by id); `id` lists them by stage number. */
+export type StageOrder = "dependency" | "id";
+
+const DEFAULT_STAGE_ORDER: StageOrder = "dependency";
+
+export function parseStageOrder(value: unknown): StageOrder {
+  if (value === undefined) return DEFAULT_STAGE_ORDER;
+  if (value === "dependency" || value === "id") return value;
+  throw new Error(`invalid stageOrder ${JSON.stringify(value)}`);
+}
+
+interface StageOrderContext {
+  cwd: string;
+  sessionManager: { getSessionId(): string };
+}
+
+/**
+ * The stage order every on-screen and agent-facing list uses: a console toggle overrides the project setting for the rest of
+ * the session, and the setting is read on every call otherwise. Committed Markdown never depends on it.
+ */
+export class StageOrderPreference {
+  #session: string | undefined;
+  #override: StageOrder | undefined;
+
+  constructor(private readonly logger: Pick<ExtensionAPI["logger"], "warn">) {}
+
+  async current(ctx: StageOrderContext): Promise<StageOrder> {
+    if (this.#override && this.#session === ctx.sessionManager.getSessionId()) return this.#override;
+    try {
+      return parseStageOrder((await getPluginSettings(PACKAGE_NAME, ctx.cwd)).stageOrder);
+    } catch (error) {
+      this.logger.warn("roadmap stageOrder setting is invalid or unreadable; using dependency", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return DEFAULT_STAGE_ORDER;
+    }
+  }
+
+  /** Session-only; never written back to the settings. */
+  set(ctx: StageOrderContext, order: StageOrder): void {
+    this.#session = ctx.sessionManager.getSessionId();
+    this.#override = order;
+  }
+}

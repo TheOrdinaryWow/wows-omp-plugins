@@ -4,7 +4,8 @@ import type { AdrRecord } from "./adr.ts";
 import { type AtlasStagePlan, type StageCoverage, stageCoverage } from "./atlas.ts";
 import { type Model, overdue, parseDoneCriteria, renderStage, type StageDoc, today } from "./documents.ts";
 import type { PendingClose } from "./ses.ts";
-import { byId, plannedRoundCounts, roundActual, schedule, stageActual, stageReadiness } from "./state.ts";
+import type { StageOrder } from "./settings.ts";
+import { byId, orderStages, plannedRoundCounts, roundActual, schedule, stageActual, stageReadiness } from "./state.ts";
 
 export interface StageBinding {
   stage: string;
@@ -197,12 +198,13 @@ function capped(items: readonly string[], cap: number): string {
 const STAGE_CAP = 12;
 const PLANNED_ROUND_CAP = 3;
 
-export function renderInjection(model: Model, binding?: StageBinding, on = today()): string {
+export function renderInjection(model: Model, binding?: StageBinding, on = today(), order: StageOrder = "dependency"): string {
   const round = model.rounds.find((candidate) => candidate.status === "active");
   if (!round) return "";
-  const stages = model.stages
-    .filter((stage) => stage.round === round.id && (stage.status === "planned" || stage.status === "active"))
-    .sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+  const stages = orderStages(
+    model.stages.filter((stage) => stage.round === round.id && (stage.status === "planned" || stage.status === "active")),
+    order,
+  );
   const todos = model.todos.filter((doc) => doc.round === round.id).flatMap((doc) => doc.items.filter((item) => item.status === "open"));
   const roundDates = schedule(round, null, on);
   const tag = (stage: StageDoc) => {

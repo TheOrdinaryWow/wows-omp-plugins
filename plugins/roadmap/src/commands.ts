@@ -25,6 +25,8 @@ import {
   type RoundCloseInput,
 } from "#src/operations.ts";
 import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
+import type { StageOrderPreference } from "#src/settings.ts";
+import { orderStages } from "#src/state.ts";
 import {
   applyPreview,
   awaitConfirmation,
@@ -156,13 +158,17 @@ export function registerCommands(
   uiFor: UiFactory,
   changed: (ctx: ExtensionContext) => void,
   adr: AdrConnection,
+  stageOrder: StageOrderPreference,
 ): RoadmapCommands {
   let stages: Completion[] = [];
   let plannedRounds: Completion[] = [];
   let rounds: Completion[] = [];
 
-  function rememberStages(model: Model): void {
-    stages = model.stages.map((stage) => ({ value: stage.id, description: `${stage.title} (${stage.status})` }));
+  async function rememberStages(ctx: ExtensionContext, model: Model): Promise<void> {
+    stages = orderStages(model.stages, await stageOrder.current(ctx)).map((stage) => ({
+      value: stage.id,
+      description: `${stage.title} (${stage.status})`,
+    }));
   }
 
   async function refresh(ctx: ExtensionContext): Promise<void> {
@@ -172,7 +178,7 @@ export function registerCommands(
     const repo = await loadRepo(ctx.cwd);
     if (repo) {
       const model = await loadAll(repo);
-      rememberStages(model);
+      await rememberStages(ctx, model);
       const sorted = [...model.rounds].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
       rounds = sorted.map((round) => ({ value: round.id, description: `${round.title} (${round.status})` }));
       plannedRounds = sorted.filter((round) => round.status === "planned").map((round) => ({ value: round.id, description: round.title }));
@@ -438,7 +444,7 @@ export function registerCommands(
     for (;;) {
       // Every showing reads the files again, and the round it shows is the one a close from it may close.
       const model = await loadAll(repo);
-      rememberStages(model);
+      await rememberStages(ctx, model);
       const reviewed = reviewedRound(model);
       const choice = await ui.statusConsole(model, state, planLookup(pi.events, ctx, repo.repoRoot));
       if (!choice) return;
@@ -500,11 +506,11 @@ export function registerCommands(
       }
       const repo = await requireRepo(ctx, api);
       const model = await loadAll(repo);
-      rememberStages(model);
+      await rememberStages(ctx, model);
       if (action) await perform(ctx, ui, repo, { action, words, selected: words[1], model }, notify);
       else {
         if (!ui.interactive) {
-          show("wows-omp-roadmap.status", await statusReceipt(repo), USAGE);
+          show("wows-omp-roadmap.status", await statusReceipt(repo, undefined, undefined, await stageOrder.current(ctx)), USAGE);
           return;
         }
         if (await ui.fullscreenMenu()) {

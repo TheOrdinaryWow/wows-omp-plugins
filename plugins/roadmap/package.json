@@ -21,6 +21,15 @@
         ],
         "default": "fullscreen",
         "description": "Open /roadmap as a fullscreen console with fullscreen write previews, or keep the inline select menus"
+      },
+      "stageOrder": {
+        "type": "enum",
+        "values": [
+          "dependency",
+          "id"
+        ],
+        "default": "dependency",
+        "description": "List stages in dependency order (dependencies first, ties by id) or by stage id in consoles, menus, completions and agent status"
       }
     }
   }

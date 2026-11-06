@@ -14,8 +14,8 @@ import {
   type TodoItem,
   today,
 } from "#src/documents.ts";
-import type { UiMenuReader } from "#src/settings.ts";
-import { byId, plannedRoundCounts, roundActual, schedule, stageActual } from "#src/state.ts";
+import type { StageOrderPreference, UiMenuReader } from "#src/settings.ts";
+import { byId, orderStages, plannedRoundCounts, roundActual, schedule, stageActual } from "#src/state.ts";
 
 export type OverlapAnswer = "roadmap" | "free" | "unrelated";
 export type StatusMenuAction = "check" | "stage" | "new-round" | "plan-round" | "round" | "close-round" | "close";
@@ -74,7 +74,7 @@ export interface RoadmapUi {
   notify(message: string, level: "info" | "warning" | "error"): void;
 }
 
-export type RoadmapUiContext = Pick<ExtensionContext, "ui" | "hasUI" | "mode" | "cwd">;
+export type RoadmapUiContext = Pick<ExtensionContext, "ui" | "hasUI" | "mode" | "cwd" | "sessionManager">;
 export type RoadmapMessenger = Pick<ExtensionAPI, "sendMessage">;
 export const NOTICE_TYPE = "wows-omp-roadmap.notice";
 
@@ -197,8 +197,16 @@ const FULLSCREEN = {
   overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true },
 } as const;
 
-/** `uiMenu` reads the setting on every use; without one the setting's default, fullscreen, applies. */
-export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger, uiMenu?: UiMenuReader): RoadmapUi {
+/**
+ * `uiMenu` reads the setting on every use; without one the setting's default, fullscreen, applies. `stageOrder` orders the
+ * console and the status menu and takes the console's Shift+O for the session; without one stages list in dependency order.
+ */
+export function createTuiUi(
+  ctx: RoadmapUiContext,
+  pi: RoadmapMessenger,
+  uiMenu?: UiMenuReader,
+  stageOrder?: StageOrderPreference,
+): RoadmapUi {
   if (!ctx.hasUI) return new HeadlessUi(pi);
   const ui = ctx.ui;
   // RPC and ACP report hasUI but render no custom components, so they keep the select/editor dialogs.
@@ -238,12 +246,18 @@ export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger, uiMenu?
 
     fullscreenMenu: fullscreen,
 
-    statusConsole: (m, state, plans) =>
-      ui.custom<ConsoleChoice | undefined>((tui, theme, _keys, done) => new RoadmapConsole(m, state, theme, tui, done, plans), FULLSCREEN),
+    async statusConsole(m, state, plans) {
+      const order = stageOrder ? await stageOrder.current(ctx) : "dependency";
+      return ui.custom<ConsoleChoice | undefined>(
+        (tui, theme, _keys, done) =>
+          new RoadmapConsole(m, { ...state, order }, theme, tui, done, plans, (next) => stageOrder?.set(ctx, next)),
+        FULLSCREEN,
+      );
+    },
 
     input: (title, placeholder) => ui.input(title, placeholder),
 
-    statusMenu(m, on = today()) {
+    async statusMenu(m, on = today()) {
       const round = m.rounds.find((candidate) => candidate.status === "active");
       const planned = m.rounds.filter((candidate) => candidate.status === "planned").sort(byId);
       const options: Array<readonly [string, StatusMenuChoice]> = [];
@@ -252,7 +266,10 @@ export function createTuiUi(ctx: RoadmapUiContext, pi: RoadmapMessenger, uiMenu?
       );
       let title: string;
       if (round) {
-        const stages = m.stages.filter((stage) => stage.round === round.id).sort(byId);
+        const stages = orderStages(
+          m.stages.filter((stage) => stage.round === round.id),
+          stageOrder ? await stageOrder.current(ctx) : "dependency",
+        );
         const todos = m.todos.filter((doc) => doc.round === round.id).flatMap((doc) => doc.items.filter((item) => item.status === "open"));
         const untargeted = todos.filter((item) => !stages.some((stage) => stage.id === item.target)).length;
         title = `Roadmap ${round.id} ${round.title} [active] · ${plural(stages.length, "stage")} · ${plural(todos.length, "open TODO")}`;

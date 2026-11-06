@@ -137,6 +137,9 @@ omp plugin config set wows-omp-plugin-roadmap uiMenu inline
 | Setting | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `uiMenu` | `fullscreen` \| `inline` | `fullscreen` | How `/roadmap` and write previews look in the terminal. |
+| `stageOrder` | `dependency` \| `id` | `dependency` | The order stages are listed in on screen and in agent status. |
+
+With `dependency`, the console, the inline menu, `/roadmap` completions, `roadmap_status` and the per-turn agent context list each round's stages in execution order: a stage comes after the stages it depends on or follows, and stages that are ready together keep id order. A stage added later to sit between two others therefore shows where it runs, not at the end. With `id`, stages are listed by number. The stage tables written into the round README files always stay in id order, so the setting never changes committed files.
 
 With `fullscreen`, `/roadmap` opens a console that fills the terminal. Tab switches between stages, rounds and open TODOs, and typing searches the list. The right pane shows the selected item in full: status, dates, dependencies, linked ADRs, open TODOs and its text. With `omo-prometheus` installed it also shows which Atlas plans cover each done criterion. Enter jumps between related items: a stage to its round, a round to its stages, a TODO to its stage. The stage list shows the active round until you open another round's stages this way.
 
@@ -151,6 +154,7 @@ With `fullscreen`, `/roadmap` opens a console that fills the terminal. Tab switc
 | Shift+T | Change the target date of the selected round or stage. |
 | Shift+U | Upgrade a format-1 repository to format 2. |
 | Shift+C | Run the check. |
+| Shift+O | Switch the stage order between dependency and id for the rest of this session; Tern shows it as an Order button. |
 | Esc | Clear the search, then close the console. |
 
 Checks, round closes, drops, target dates and upgrades finish in the console. Once you answer the write preview, the console comes back on the same item with a one-line result, and the full result also goes to the chat. Closing a stage, opening a round and planning or revising one need the agent, so the console closes and you carry on in the chat. For a stage close, a notice tells you what to ask for. Short answers, like a date, a drop reason or the round-close questions, stay small dialogs.

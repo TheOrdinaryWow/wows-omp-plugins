@@ -1,5 +1,6 @@
 import { type Format, type Model, overdue, type RoundDoc, type StageDoc, type StageStatus, today } from "#src/documents.ts";
 import { type Binding, bindable } from "#src/ses.ts";
+import type { StageOrder } from "#src/settings.ts";
 
 export const ROADMAP_STATUS_KIND = "roadmap/status";
 
@@ -37,6 +38,41 @@ export interface RoadmapStatusPayload {
 
 export function byId(a: { id: string }, b: { id: string }): number {
   return Number(a.id.replace(/\D/g, "")) - Number(b.id.replace(/\D/g, "")) || a.id.localeCompare(b.id);
+}
+
+/**
+ * `id` sorts by stage id. `dependency` takes rounds in id order and, within a round, a topological order over `depends_on`
+ * and `follows` that places the lowest-numbered ready stage first; edges leaving the round are ignored and a cycle falls
+ * back to id order.
+ */
+export function orderStages<T extends Pick<StageDoc, "id" | "round" | "depends_on" | "follows">>(
+  stages: readonly T[],
+  order: StageOrder,
+): T[] {
+  if (order === "id") return [...stages].sort(byId);
+  const byRound = [...stages].sort((a, b) => byId({ id: a.round }, { id: b.round }) || byId(a, b));
+  const result: T[] = [];
+  for (let start = 0; start < byRound.length; ) {
+    let end = start;
+    while (end < byRound.length && byRound[end]?.round === byRound[start]?.round) end++;
+    const pending = byRound.slice(start, end);
+    const placed = new Set<string>();
+    const local = new Set(pending.map((stage) => stage.id));
+    while (pending.length) {
+      const index = Math.max(
+        0,
+        pending.findIndex((stage) =>
+          [...stage.depends_on, ...(stage.follows ? [stage.follows] : [])].every((id) => !local.has(id) || placed.has(id)),
+        ),
+      );
+      const [next] = pending.splice(index, 1);
+      if (!next) break;
+      placed.add(next.id);
+      result.push(next);
+    }
+    start = end;
+  }
+  return result;
 }
 
 /** Target versus actual dates, empty without a target so untargeted views render as before. */

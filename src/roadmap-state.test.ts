@@ -1,8 +1,12 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { renderHandoff, renderInjection } from "../plugins/roadmap/src/handoff.ts";
 import type { Binding } from "../plugins/roadmap/src/ses.ts";
-import { roadmapStatus } from "../plugins/roadmap/src/state.ts";
+import { PACKAGE_NAME, StageOrderPreference } from "../plugins/roadmap/src/settings.ts";
+import { orderStages, roadmapStatus } from "../plugins/roadmap/src/state.ts";
 import { modelFixture, roundFixture, stageFixture, todoFixture } from "./roadmap-fixtures.ts";
 
 const binding = (stage: string): Binding => ({ v: 1, repoRoot: "/repo", stage, at: "2026-10-07T00:00:00.000Z" });
@@ -218,4 +222,48 @@ test("handoff shows stage and round target versus actual dates and flags overdue
   const early = renderHandoff(model, stage, "2026-09-15");
   expect(early).toContain("Stage schedule: target 2026-10-05, started 2026-09-03\n");
   expect(early).toContain("Round schedule: target 2026-10-01, opened 2026-09-02\n");
+});
+
+test("dependency order puts a later-numbered prerequisite first, groups rounds and survives cycles; id order ignores edges", () => {
+  const stages = [
+    stageFixture({ id: "S03", round: "R2", depends_on: ["S05"] }),
+    stageFixture({ id: "S02", round: "R2", depends_on: ["S01"] }),
+    stageFixture({ id: "S05", round: "R2", depends_on: ["S02"] }),
+    stageFixture({ id: "S04", round: "R2", follows: "S03" }),
+    stageFixture({ id: "S06", round: "R10" }),
+    stageFixture({ id: "S01", round: "R1" }),
+    stageFixture({ id: "S08", round: "R3", depends_on: ["S07"] }),
+    stageFixture({ id: "S07", round: "R3", depends_on: ["S08"] }),
+  ];
+  const ids = (order: "dependency" | "id") => orderStages(stages, order).map((stage) => stage.id);
+  expect(ids("dependency")).toEqual(["S01", "S02", "S05", "S03", "S04", "S07", "S08", "S06"]);
+  expect(ids("id")).toEqual(["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08"]);
+});
+
+const temporary: string[] = [];
+afterAll(async () => {
+  for (const path of temporary) await rm(path, { recursive: true, force: true });
+});
+
+test("stageOrder defaults to dependency, a session toggle overrides the setting only in that session, invalid values warn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roadmap-stage-order-"));
+  temporary.push(root);
+  const configure = async (value: unknown) => {
+    await mkdir(join(root, ".omp"), { recursive: true });
+    await writeFile(join(root, ".omp/plugin-overrides.json"), JSON.stringify({ settings: { [PACKAGE_NAME]: { stageOrder: value } } }));
+  };
+  const session = (id: string) => ({ cwd: root, sessionManager: { getSessionId: () => id } });
+  const warnings: unknown[] = [];
+  const preference = new StageOrderPreference({ warn: (...args: unknown[]) => void warnings.push(args) });
+
+  expect(await preference.current(session("a"))).toBe("dependency");
+  await configure("id");
+  expect(await preference.current(session("a"))).toBe("id");
+  preference.set(session("a"), "dependency");
+  expect(await preference.current(session("a"))).toBe("dependency");
+  expect(await preference.current(session("b"))).toBe("id");
+  expect(warnings).toEqual([]);
+  await configure("sideways");
+  expect(await preference.current(session("b"))).toBe("dependency");
+  expect(warnings).toHaveLength(1);
 });

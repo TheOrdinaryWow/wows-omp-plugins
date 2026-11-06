@@ -5,6 +5,7 @@ import { initTheme, type NativeChild, type NativeNode, type NativeUiEvent, type 
 import type { AtlasStagePlan } from "../plugins/roadmap/src/atlas.ts";
 import { type ConsoleChoice, type ConsoleState, type PreviewRequest, PreviewView, RoadmapConsole } from "../plugins/roadmap/src/console.ts";
 import { type Model, renderRound } from "../plugins/roadmap/src/documents.ts";
+import type { StageOrder } from "../plugins/roadmap/src/settings.ts";
 import { consoleModelFixture, planFixture } from "./roadmap-fixtures.ts";
 
 beforeAll(async () => {
@@ -89,6 +90,7 @@ function buttons(root: NativeNode): Map<string, NativeNode> {
 
 function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}) {
   const choices: Array<ConsoleChoice | undefined> = [];
+  const orders: StageOrder[] = [];
   const component = new RoadmapConsole(
     model,
     { on: ON, ...state },
@@ -96,12 +98,14 @@ function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}) {
     TUI_STUB,
     (choice) => choices.push(choice),
     (stage) => PLANS[stage],
+    (order) => orders.push(order),
   );
   const describe = () => component.describe();
   const itemsPath = () => byKey(describe(), "items").path;
   return {
     component,
     choices,
+    orders,
     describe,
     select: (id: string, type: "select" | "activate" = "select") => {
       const index = items(describe()).findIndex((entry) => plain(props(entry).label).includes(id));
@@ -244,6 +248,39 @@ test("console close button clears a search first, like Esc", () => {
   expect(items(describe())).toHaveLength(5);
   act("close");
   expect(choices).toEqual([undefined]);
+});
+
+test("console order button switches the stage order like Shift+O and names the current order", () => {
+  const model = consoleModelFixture();
+  const laterDependency: Model = {
+    ...model,
+    stages: model.stages.map((stage) => (stage.id === "S06" ? { ...stage, depends_on: ["S07"] } : stage)),
+  };
+  const ids = (root: NativeNode) => items(root).flatMap((entry) => /\b(S0\d) /.exec(plain(props(entry).label))?.[1] ?? []);
+  const clicked = mount(laterDependency);
+  expect(ids(clicked.describe())).toEqual(["S04", "S05", "S07", "S06", "S08"]);
+  expect(plain(buttons(clicked.describe()).get("order"))).toMatch(/Order: dependency/);
+  clicked.select("S07");
+  clicked.act("order");
+  expect(clicked.orders).toEqual(["id"]);
+  const root = clicked.describe();
+  expect(ids(root)).toEqual(["S04", "S05", "S06", "S07", "S08"]);
+  expect(selectedLabel(root)).toMatch(/S07 Checkout analytics/);
+  expect(plain(buttons(root).get("order"))).toMatch(/Order: id/);
+  expect(plain(byKey(root, "message").node)).toMatch(/Stages are listed in id order for the rest of this session/);
+
+  const keyed = mount(laterDependency);
+  keyed.select("S07");
+  keyed.component.handleInput("O");
+  expect(keyed.orders).toEqual(clicked.orders);
+  expect(items(keyed.describe()).map((entry) => plain(props(entry).label))).toEqual(
+    items(clicked.describe()).map((entry) => plain(props(entry).label)),
+  );
+
+  clicked.tab("rounds");
+  expect(plain(byKey(clicked.describe(), "body").node)).toMatch(/S06 Order confirmation emails[\s\S]*S07 Checkout analytics/);
+  clicked.act("order");
+  expect(plain(byKey(clicked.describe(), "body").node)).toMatch(/S07 Checkout analytics[\s\S]*S06 Order confirmation emails/);
 });
 
 const ROOT = "/work/shop";
