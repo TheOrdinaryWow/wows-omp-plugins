@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.1...audit-goal@0.4.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* **audit-goal:** suspend audit tools and dispatch while the goal is paused ([4cf725a](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/4cf725a45bb62796d79fda142421f8e891f80993))
+* raise supported OMP floor to 18.17.0 ([e0835f9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e0835f9b202187b0e86bb238ae21ece096e77e34))
+
 ## [0.4.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.0...audit-goal@0.4.1) (2026-10-28)
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.2.0...find-console@0.2.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **find-console:** count search requests toward the session cost cap ([0394ecb](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0394ecb4ffd92f377a2d2078410acbc5279327c7))
+* **find-console:** keep skill-scoped searches inside the skill root ([c794e93](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c794e938b4c0f0fc6d9afaa7d9232b982e47c7be))
+* raise supported OMP floor to 18.17.0 ([e0835f9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e0835f9b202187b0e86bb238ae21ece096e77e34))
+
 ## [0.2.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.1.0...find-console@0.2.0) (2026-10-28)
 
 
