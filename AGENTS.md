@@ -48,14 +48,15 @@ REFERENCE*.md                  plugin-state snapshot envelope shared by plugins
   no test reads those files. Lint still runs on them, because Biome checks the
   banner HTML and CSS. If a test starts reading one, narrow the filter in the
   `scope` job.
-- `ci.yml` jobs run on boat sandboxes (`runs-on: boat`, 4 vCPU / 8 GB) through
-  the boat CI GitHub App. Boat's public-repo allow-list holds only the repository
-  owner and refuses any run whose author or starter is someone else, so the
-  `runs-on` expression sends those runs to `ubuntu-latest` instead of leaving
-  them queued. Keep the three jobs' expressions identical; widen them only
-  together with `boat ci public TheOrdinaryWow --users …`. Only direct CI runs
-  use boat: when `release.yml` calls `ci.yml` (`inputs.ref` set), every job, like
-  `release.yml`'s own, stays on GitHub-hosted runners.
+- Only the slow `Types and tests` job in `ci.yml` runs on boat sandboxes
+  (`runs-on: boat`, 4 vCPU / 8 GB) through the boat CI GitHub App; `Decide test
+  scope` and `Lint and catalog` stay on `ubuntu-latest`. Boat's public-repo
+  allow-list holds only the repository owner and refuses any run whose author or
+  starter is someone else, so the test job's `runs-on` expression sends those
+  runs to `ubuntu-latest` instead of leaving them queued. Widen it only together
+  with `boat ci public TheOrdinaryWow --users …`. When `release.yml` calls
+  `ci.yml` (`inputs.ref` set), every job, like `release.yml`'s own, stays on
+  GitHub-hosted runners.
 - `.github/workflows/release.yml` runs release-please on `main`. Versions come
   from Conventional Commits scoped by path: a `feat`/`fix` touching
   `plugins/<name>/` bumps that plugin only. The release PR updates the plugin's

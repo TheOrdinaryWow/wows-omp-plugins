@@ -18,13 +18,10 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Boat runs this public repo's jobs only when the run's author and the user who started it
-# are both on its allow-list (the repository owner). Anyone else's run would be refused and
-# sit queued forever, so it falls back to a GitHub-hosted runner.
 jobs:
   scope:
     name: Decide test scope
-    runs-on: ${{ (!inputs.ref && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && (github.event.pull_request.user.login || github.repository_owner) == github.repository_owner) && 'boat' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     outputs:
       tests: ${{ steps.scope.outputs.tests }}
     steps:
@@ -57,7 +54,7 @@ jobs:
 
   lint:
     name: Lint and catalog
-    runs-on: ${{ (!inputs.ref && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && (github.event.pull_request.user.login || github.repository_owner) == github.repository_owner) && 'boat' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
@@ -73,6 +70,9 @@ jobs:
     name: Types and tests (omp ${{ matrix.omp }})
     needs: scope
     if: needs.scope.outputs.tests == 'true'
+    # Boat runs this public repo's jobs only when the run's author and the user who started it
+    # are both on its allow-list (the repository owner). Anyone else's run would be refused and
+    # sit queued forever, so it falls back to a GitHub-hosted runner.
     runs-on: ${{ (!inputs.ref && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && (github.event.pull_request.user.login || github.repository_owner) == github.repository_owner) && 'boat' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
