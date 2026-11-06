@@ -53,8 +53,9 @@ REFERENCE*.md                  plugin-state snapshot envelope shared by plugins
   owner and refuses any run whose author or starter is someone else, so the
   `runs-on` expression sends those runs to `ubuntu-latest` instead of leaving
   them queued. Keep the three jobs' expressions identical; widen them only
-  together with `boat ci public TheOrdinaryWow --users …`. `release.yml`'s own
-  job stays on GitHub-hosted runners.
+  together with `boat ci public TheOrdinaryWow --users …`. Only direct CI runs
+  use boat: when `release.yml` calls `ci.yml` (`inputs.ref` set), every job, like
+  `release.yml`'s own, stays on GitHub-hosted runners.
 - `.github/workflows/release.yml` runs release-please on `main`. Versions come
   from Conventional Commits scoped by path: a `feat`/`fix` touching
   `plugins/<name>/` bumps that plugin only. The release PR updates the plugin's
