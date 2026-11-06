@@ -149,7 +149,7 @@ Settings are read on every task, so changes apply right away. If a value is inva
 | `judgeEffort` | `false` | Gives routine tasks one level less thinking and demanding tasks one level more. |
 | `modelTiers` | empty | Which models run routine and demanding tasks, as `[<agent>.]<routine\|demanding>=<@role or provider/model[:level]>` entries separated by commas. Empty means every task uses its agent's model. |
 | `minimumConfidence` | `0.70` | How sure the judge must be (0 to 1) before the plugin switches an agent or acts on a difficulty rating. Higher means fewer changes. |
-| `includeSharedContext` | `true` | Whether the judge also sees the shared context of a `task` call, not just each task's instructions. |
+| `includeSharedContext` | `true` | Whether the judge also sees the shared context of a `task` call, in addition to each task's instructions. |
 | `indicator` | `true` | Shows the status message and status line. Routing works the same either way. |
 
 ## Working with other plugins
