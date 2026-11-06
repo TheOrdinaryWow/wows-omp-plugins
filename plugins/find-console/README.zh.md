@@ -15,7 +15,7 @@
 omp plugin install find-console@wows-omp-plugins
 ```
 
-需要 OMP 18.12.0 或更高版本，并配置原生 judge，例如 TypeSafe jev。安装后启动新会话。插件没有运行时依赖，也不单独保存凭据。
+需要 OMP 18.17.0 或更高版本，并配置原生 judge，例如 TypeSafe jev。安装后启动新会话。插件没有运行时依赖，也不单独保存凭据。
 
 ## 快速开始
 

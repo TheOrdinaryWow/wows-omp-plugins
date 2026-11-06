@@ -15,7 +15,7 @@ Run `/find` yourself to search by behavior, browse calibrated judge scores and p
 omp plugin install find-console@wows-omp-plugins
 ```
 
-Requires OMP 18.12.0 or newer and a configured native judge, such as TypeSafe jev. Start a new session after installing. The plugin has no runtime dependencies or credentials of its own.
+Requires OMP 18.17.0 or newer and a configured native judge, such as TypeSafe jev. Start a new session after installing. The plugin has no runtime dependencies or credentials of its own.
 
 ## Quick start
 

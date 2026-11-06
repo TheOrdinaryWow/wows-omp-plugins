@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 import { getThemeEpoch } from "@oh-my-pi/pi-tui/theme";
 
 import { shouldDisplay } from "./display-timing.ts";
@@ -451,7 +452,7 @@ class DagExtension {
     const live = AgentRegistry.global()
       .list()
       .find((ref) => ref.kind === "main" && ref.session?.sessionManager === ctx.sessionManager)?.session;
-    this.#plan.beforeAgentStart(prompt, live?.getPlanReferencePath(), handoffAt);
+    this.#plan.beforeAgentStart(prompt, live && isLocalAgentSession(live) ? live.getPlanReferencePath() : undefined, handoffAt);
     this.#publish();
     await this.#evaluate();
   }

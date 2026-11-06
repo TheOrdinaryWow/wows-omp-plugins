@@ -126,5 +126,6 @@ export function emptyCascade(): CascadeResult {
       mapCards: 0,
       failures: [],
     },
+    ranking: { ranker: "judge", candidates: 0, read: [], judgeRequestsSaved: 0 },
   };
 }

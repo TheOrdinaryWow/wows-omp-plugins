@@ -8,6 +8,7 @@ import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugi
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
@@ -388,11 +389,10 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
     try {
-      return (
-        AgentRegistry.global()
-          .list()
-          .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager)?.session ?? undefined
-      );
+      const session = AgentRegistry.global()
+        .list()
+        .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager)?.session;
+      return session && isLocalAgentSession(session) ? session : undefined;
     } catch (error) {
       pi.logger.warn("prometheus could not resolve the main session", { error: errorMessage(error) });
       return undefined;
@@ -790,7 +790,8 @@ export default function prometheus(pi: ExtensionAPI): void {
     const parent = AgentRegistry.global()
       .list()
       .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
-    if (parent?.session) observeNativeJobs(ctx.sessionManager.getSessionId(), parent.session, parent.id);
+    if (parent?.session && isLocalAgentSession(parent.session))
+      observeNativeJobs(ctx.sessionManager.getSessionId(), parent.session, parent.id);
     void settleDetached();
   };
 

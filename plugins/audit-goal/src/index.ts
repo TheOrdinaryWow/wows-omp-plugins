@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 
 import { auditPayload, invalidAuditPayload } from "#src/audit-payload.ts";
 import { readHostSetting } from "#src/host-settings.ts";
@@ -172,11 +173,10 @@ export default function auditGoal(pi: ExtensionAPI): void {
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
     try {
-      return (
-        AgentRegistry.global()
-          .list()
-          .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager)?.session ?? undefined
-      );
+      const session = AgentRegistry.global()
+        .list()
+        .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager)?.session;
+      return session && isLocalAgentSession(session) ? session : undefined;
     } catch (error) {
       pi.logger.warn("audit-goal could not resolve the main session", { error: errorMessage(error) });
       return undefined;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import type { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { AgentRegistryApi } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 import {
   assertRetryAvailable,
@@ -123,7 +123,7 @@ function failureDetails(result: Record<string, unknown>): FailureDetails | undef
 }
 
 interface CaptureOptions {
-  registry: AgentRegistry;
+  registry: AgentRegistryApi;
   parentAgentId: string;
   sessionId: string;
   artifactsDir: string;

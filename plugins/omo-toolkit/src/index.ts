@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { cfgModelTags, type ModelTagDef } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 
 import { registerCommentChecker } from "#src/comment-checker.ts";
 import { registerFallbackArchitect } from "#src/fallback-architect.ts";
@@ -33,7 +34,7 @@ export default function omoToolkit(pi: ExtensionAPI): void {
       const main = AgentRegistry.global()
         .list()
         .find((candidate) => candidate.kind === "main" && candidate.session?.sessionManager === ctx.sessionManager);
-      if (main?.session) registerToolkitModelRoles(main.session.settings);
+      if (main?.session && isLocalAgentSession(main.session)) registerToolkitModelRoles(main.session.settings);
     } catch (error) {
       pi.logger.warn("omo-toolkit could not register its model roles", { error: error instanceof Error ? error.message : String(error) });
     }

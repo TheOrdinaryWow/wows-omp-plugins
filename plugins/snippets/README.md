@@ -15,7 +15,7 @@ Save reusable blocks of text as Markdown files and expand them by typing a short
 omp plugin install wows-omp-plugins/snippets
 ```
 
-Requires OMP 18.12.0 or newer. Start a new session after installing. The plugin has no runtime dependencies or credentials of its own.
+Requires OMP 18.17.0 or newer. Start a new session after installing. The plugin has no runtime dependencies or credentials of its own.
 
 ## Quick start
 

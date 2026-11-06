@@ -13,6 +13,7 @@ import { findScopedSettings, type Settings } from "@oh-my-pi/pi-coding-agent/con
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { type ChainJudge, type JudgmentUsageLedger, journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
 import { MAX_THINKING_SUFFIX_OPTIONS, splitThinkingSuffix } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
@@ -448,7 +449,8 @@ function observeTaskOutcomes(routing: SessionRouting, ctx: ExtensionContext, too
   const parent = AgentRegistry.global()
     .list()
     .find((ref) => ref.session?.sessionManager === ctx.sessionManager);
-  for (const job of parent?.session?.asyncJobManager?.getAllJobs({ ownerId: parent.id }) ?? []) {
+  const session = parent?.session && isLocalAgentSession(parent.session) ? parent.session : undefined;
+  for (const job of session?.asyncJobManager?.getAllJobs({ ownerId: parent?.id }) ?? []) {
     const childId = job.agentId;
     const name = childId === undefined ? undefined : background.get(childId);
     if (job.type !== "task" || childId === undefined || name === undefined || job.startTime < dispatch.at) continue;
