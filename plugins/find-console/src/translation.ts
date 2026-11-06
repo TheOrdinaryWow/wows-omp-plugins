@@ -4,6 +4,7 @@ import { resolveModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-re
 import { formatModelRoleAlias, roleCandidatePool } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { JudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
+import type { CostGateApi } from "@oh-my-pi/pi-coding-agent/session/cost-gate";
 import { tinyModelClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 
 import type { ConsoleReport } from "#src/report.ts";
@@ -29,10 +30,11 @@ export async function translateQuery(options: {
   settings: Settings;
   ctx: Pick<ExtensionContext, "modelRegistry" | "sessionManager">;
   signal: AbortSignal;
+  costGate?: CostGateApi;
   onUsage?: (usage: JudgmentUsage) => void;
   onProgress?: (message: string) => void;
 }): Promise<QueryTranslation> {
-  const { query, enabled, settings, ctx, signal, onUsage, onProgress } = options;
+  const { query, enabled, settings, ctx, signal, costGate, onUsage, onProgress } = options;
   if (!needsTranslation(query)) return { query, cost: 0 };
   if (!enabled) return { query, cost: 0, translation: { skipped: "disabled by autoTranslate or --no-translate" } };
   const reasons: string[] = [];
@@ -56,6 +58,7 @@ export async function translateQuery(options: {
           { signal, maxTokens: 128 },
         );
       } else {
+        costGate?.admit();
         const message = await completeSimple(
           model,
           { systemPrompt: [TRANSLATION_PROMPT], messages: [{ role: "user", content: query, timestamp: Date.now() }] },
@@ -66,6 +69,7 @@ export async function translateQuery(options: {
             signal,
           },
         );
+        costGate?.record(message.usage.cost.total);
         cost += message.usage.cost.total;
         onUsage?.({
           purpose: "find-translate",

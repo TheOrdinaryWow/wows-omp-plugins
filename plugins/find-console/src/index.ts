@@ -3,6 +3,8 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-
 import { findScopedSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlFilesystem } from "@oh-my-pi/pi-coding-agent/internal-urls/url-filesystem";
 import { hasNativeJudge, journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "@oh-my-pi/pi-coding-agent/judgment";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 import { runCascade } from "@oh-my-pi/pi-coding-agent/tools/jfind/cascade";
 import { resolveSearchRoot } from "@oh-my-pi/pi-coding-agent/tools/jfind/tree";
 import { formatPathRelativeToCwd, resolveSearchResultPath } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
@@ -138,6 +140,10 @@ export default function findConsole(pi: ExtensionAPI): void {
           const onUsage = journalJudgmentUsage(ctx.sessionManager);
           if (!onUsage) pi.logger.warn("Find judge usage cannot be journaled: this host's session manager has no appendModelUsage method.");
           const usage = trackJudgmentUsage(onUsage);
+          const session = AgentRegistry.global()
+            .list()
+            .find((candidate) => candidate.session?.sessionManager === ctx.sessionManager)?.session;
+          const costGate = session && isLocalAgentSession(session) ? session.costGate : undefined;
           const accounting = accountCache(args.noCache ? undefined : sharedJudgmentCache(), args.noCache);
           const chain = resolveJudge({
             settings,
@@ -145,6 +151,7 @@ export default function findConsole(pi: ExtensionAPI): void {
             sessionId: ctx.sessionManager.getSessionId(),
             purpose: "find",
             onUsage: usage.onUsage,
+            costGate,
             ...(accounting.cache ? { cache: accounting.cache } : {}),
           });
           const judge: Judge = {
@@ -169,6 +176,7 @@ export default function findConsole(pi: ExtensionAPI): void {
               settings,
               ctx,
               signal,
+              costGate,
               onUsage,
               onProgress,
             });

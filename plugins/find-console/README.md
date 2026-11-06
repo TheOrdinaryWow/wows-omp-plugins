@@ -116,7 +116,7 @@ find:
 | `on` | Pass the same enablement gate as the host tool. Non-native candidates are still refused before a judgment; the console never substitutes a chat or local text model for calibrated search scores. |
 | `off` | Refuse and name `find.enabled` as the reason. |
 
-Configure models and authentication through OMP, not this plugin. Billed judgment attempts are journaled through the host's `journalJudgmentUsage` when its session manager provides the usage ledger; cache hits are not billed. Hosts without that ledger still show the cascade's reported cost in the footer.
+Configure models and authentication through OMP, not this plugin. Billed judgment attempts are journaled through the host's `journalJudgmentUsage`; cache hits are not billed. Judgments and remote query translation count toward the `session.maxCost` cap like native `find`, so once the cap is reached they are refused; local `tiny` translation is not charged.
 
 ## Working with other plugins
 
