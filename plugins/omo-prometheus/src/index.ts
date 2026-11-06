@@ -66,6 +66,7 @@ import {
   assertRetryAvailable,
   automaticRetryGrants,
   checkAmendment,
+  currentAttempt,
   type ExecutionLedger,
   effectiveAcceptance,
   type FailedOutcome,
@@ -294,6 +295,27 @@ export default function prometheus(pi: ExtensionAPI): void {
   const childEvidence = new ChildEvidence();
   /** The latest todo refresh call each session still owes after a ledger row changed; cleared by any non-view todo call. */
   const pendingTodoRefreshes = new Map<string, string>();
+  /** Rows whose live child waits on a user-only step, per session, bound to the attempt that was running when marked. */
+  const awaitingUser = new Map<string, Map<string, { attempt?: string; question: string }>>();
+  /** A mark lapses by itself once the row's attempt ends or no native work for it is live any more. */
+  const awaitingRows = (sessionId: string, ledger: ExecutionLedger): LedgerItem[] => {
+    const marks = awaitingUser.get(sessionId);
+    if (!marks?.size) return [];
+    return ledgerRows(ledger).filter((row) => {
+      const mark = marks.get(row.id);
+      return (
+        mark !== undefined &&
+        row.status === "in_progress" &&
+        mark.attempt === currentAttempt(row) &&
+        childEvidence.pendingRowChildren(sessionId, ledger.ledgerId, row.id).length > 0
+      );
+    });
+  };
+  /** Rows that can progress without the user; a row whose child waits on the user cannot. */
+  const movableWithoutUser = (sessionId: string, ledger: ExecutionLedger): LedgerItem[] => {
+    const waiting = new Set(awaitingRows(sessionId, ledger).map((row) => row.id));
+    return movableRows(ledger).filter((row) => !waiting.has(row.id));
+  };
   const stores = new Map<string, AtlasStore>();
   const ownerships = new Set<Ownership>();
   const liveModels = new Map<string, AtlasLive>();
@@ -1913,9 +1935,9 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
   const ledgerParameters = z.object({
     action: z
-      .enum(["status", "start", "done", "fail", "retry", "verify", "block", "reopen", "fix", "discover", "triage", "amend"])
+      .enum(["status", "start", "done", "fail", "retry", "verify", "block", "reopen", "await", "fix", "discover", "triage", "amend"])
       .describe(
-        "status shows every row; start, done, fail, block, and reopen change id; fail authenticates a terminal native outcome and charges its durable retry budget once; retry opens a new window only after an owner confirmation dialog; verify binds a fresh HEAVY verifier; fix appends an X row for rejecting F1–F4 or P1; discover records scope in as D or scope out as deferred O; triage disposes O; amend confirms an owner ruling replacing a T/D/X acceptance",
+        "status shows every row; start, done, fail, block, and reopen change id; await marks an in-progress row whose live child waits on a user-only step, keeping the child running; fail authenticates a terminal native outcome and charges its durable retry budget once; retry opens a new window only after an owner confirmation dialog; verify binds a fresh HEAVY verifier; fix appends an X row for rejecting F1–F4 or P1; discover records scope in as D or scope out as deferred O; triage disposes O; amend confirms an owner ruling replacing a T/D/X acceptance",
       ),
     id: z
       .string()
@@ -1927,7 +1949,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       .string()
       .optional()
       .describe(
-        "Inspected evidence required for done, fail, block, fix (the origin's rejection), and discover (scope reason). retry: the changed hypothesis/reason for another window; acceptance remains unchanged. triage: TODO id, duplicate reference, wontfix reason, or optional report note. amend: what changed and why. Structured gate/verifier verdicts come from native output, not this text",
+        "Inspected evidence required for done, fail, block, fix (the origin's rejection), and discover (scope reason). await: the question or user-only step the child waits on. retry: the changed hypothesis/reason for another window; acceptance remains unchanged. triage: TODO id, duplicate reference, wontfix reason, or optional report note. amend: what changed and why. Structured gate/verifier verdicts come from native output, not this text",
       ),
     childAgentId: z
       .string()
@@ -1970,7 +1992,20 @@ export default function prometheus(pi: ExtensionAPI): void {
       ),
   });
   type LedgerParams = {
-    action: "status" | "start" | "done" | "fail" | "retry" | "verify" | "block" | "reopen" | "fix" | "discover" | "triage" | "amend";
+    action:
+      | "status"
+      | "start"
+      | "done"
+      | "fail"
+      | "retry"
+      | "verify"
+      | "block"
+      | "reopen"
+      | "await"
+      | "fix"
+      | "discover"
+      | "triage"
+      | "amend";
     id?: string;
     evidence?: string;
     childAgentId?: string;
@@ -2254,7 +2289,8 @@ export default function prometheus(pi: ExtensionAPI): void {
           throw new Error("retry needs an exhausted row and evidence describing the changed hypothesis for another window");
         const pending = childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, row.id);
         if (pending.length) throw new Error(`Cancel and observe native terminal settlement first: ${pending.join(", ")}`);
-        if (movableRows(ledger).length) throw new Error("Keep independent movable work progressing before asking for a retry grant");
+        if (movableWithoutUser(ctx.sessionManager.getSessionId(), ledger).length)
+          throw new Error("Keep independent movable work progressing before asking for a retry grant");
         return {
           state: JSON.stringify(row.retry),
           automaticGrants: automaticRetryGrants(row),
@@ -2377,6 +2413,32 @@ export default function prometheus(pi: ExtensionAPI): void {
           }
           const item = ledgerRows(ledger).find((entry) => entry.id === id);
           if (!item) throw new Error(`Unknown ledger row ${id || "(missing id)"}`);
+          if (params.action === "await") {
+            const sessionId = ctx.sessionManager.getSessionId();
+            if (!evidence) throw new Error("await requires the question or user-only step the child waits on in evidence");
+            if (item.status !== "in_progress") throw new Error(`${item.id} is ${item.status}; await applies only to a row in progress`);
+            const children = childEvidence.pendingRowChildren(sessionId, ledger.ledgerId, item.id);
+            if (!children.length)
+              throw new Error(
+                `${item.id} has no live native child; record its final result, or block the row when the user must act before a fresh attempt`,
+              );
+            const marks = awaitingUser.get(sessionId) ?? new Map();
+            marks.set(item.id, { attempt: currentAttempt(item), question: evidence });
+            awaitingUser.set(sessionId, marks);
+            const movable = movableWithoutUser(sessionId, ledger);
+            const next = movable.length
+              ? `ask stays held back while ${movable.map((row) => row.id).join(", ")} can still move: keep them moving, and ask once nothing else can.`
+              : "Nothing else can move without the user: call ask now with this question.";
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `${item.id} waits on the user; ${children.join(", ")} keeps running and the ask guard no longer counts ${item.id} as movable. ${next} After the answer, tell the child through write agent://<id> what changed; the user's answer to the next ask ends the mark.\n\n${ledgerSummary(ledger, item.id)}`,
+                },
+              ],
+              details: { id: item.id, status: item.status, awaiting: evidence, row: ledgerCardRow(item), progress: ledgerProgress(ledger) },
+            };
+          }
           if (
             ["start", "verify", "fix", "reopen", "block"].includes(params.action) &&
             childEvidence.unrecordedFailures(ctx.sessionManager.getSessionId(), ledger).includes(item.id)
@@ -2995,12 +3057,12 @@ export default function prometheus(pi: ExtensionAPI): void {
     // While the stage's start is owed no row can move, so a failed start can always reach the user.
     if (!detail && event.toolName === "ask" && !stageActivationBlock(ctx, record)) {
       const ledger = await readLedger(ctx, record);
-      const movable = ledger ? movableRows(ledger) : [];
+      const movable = ledger ? movableWithoutUser(ctx.sessionManager.getSessionId(), ledger) : [];
       if (movable.length) {
         const rows = movable.map((item) => `${item.id} (${item.status === "in_progress" ? "in progress" : "dispatchable"})`).join(", ");
         return {
           block: true,
-          reason: `Atlas ask guard: ask is held back, not denied. It blocks this session until the user answers, and the user may be away for hours, so while it is open no finished child would be recorded and no row dispatched. These rows can still move without the user: ${rows}. If any plausible answer could change what a row delivers, how its acceptance is met, the approved scope, or an irreversible step, the question is blocking: record atlas_ledger block on that row (stopping its child first if one is running) with the question in evidence, keep the other rows moving, and ask once every unfinished row is blocked or waits on a blocked row; the continuation will then tell you to ask. Never work around a blocker or treat it as optional to get past this guard. Only a question whose every answer leaves the approved work valid goes in your reply, with the assumption you proceed under.`,
+          reason: `Atlas ask guard: ask is held back, not denied. It blocks this session until the user answers, and the user may be away for hours, so while it is open no finished child would be recorded and no row dispatched. These rows can still move without the user: ${rows}. If any plausible answer could change what a row delivers, how its acceptance is met, the approved scope, or an irreversible step, the question is blocking: record atlas_ledger block on that row (stopping its child first if one is running) with the question in evidence, keep the other rows moving, and ask once every unfinished row is blocked, waits on a blocked row, or awaits the user; the continuation will then tell you to ask. When a running child itself waits on a user-only step (a service to start, a login, a credential) whose answer leaves its work unchanged, record atlas_ledger await on its row with that step in evidence instead: the child keeps running. Never work around a blocker or treat it as optional to get past this guard. Only a question whose every answer leaves the approved work valid goes in your reply, with the assumption you proceed under.`,
         };
       }
     }
@@ -3192,6 +3254,11 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("message_end", (_event, ctx) => observeFinalJobs(ctx));
 
+  // Notification-only: the user's answer ends every user-wait mark, so the waiting rows count as movable again.
+  pi.on("tool_execution_end", (event, ctx) => {
+    if (event.toolName === "ask" && !event.isError) awaitingUser.delete(ctx.sessionManager.getSessionId());
+  });
+
   pi.on("session_stop", async (_event, ctx) => {
     if (!mainSession(ctx)) return undefined;
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
@@ -3209,9 +3276,19 @@ export default function prometheus(pi: ExtensionAPI): void {
       return undefined;
     }
     record.lastContinuationLedgerStamp = stamp;
-    const blocked = movableRows(ledger).length ? [] : ledgerRows(ledger).filter((item) => item.status === "blocked");
-    const next = blocked.length
-      ? `Nothing can move without the user: every unfinished row is blocked or waits on a blocked row (${blocked.map((item) => `${item.id}: ${item.evidence ?? "no reason recorded"}`).join("; ")}). Call ask now with one question per blocker, so the session waits for the user instead of ending with a chat-only question. Then reopen and dispatch the rows the answers unblock.`
+    const sessionId = ctx.sessionManager.getSessionId();
+    const waiting = movableWithoutUser(sessionId, ledger).length
+      ? []
+      : [
+          ...ledgerRows(ledger)
+            .filter((item) => item.status === "blocked")
+            .map((item) => `${item.id}: ${item.evidence ?? "no reason recorded"}`),
+          ...awaitingRows(sessionId, ledger).map(
+            (item) => `${item.id} (child live, waiting): ${awaitingUser.get(sessionId)?.get(item.id)?.question ?? ""}`,
+          ),
+        ];
+    const next = waiting.length
+      ? `Nothing can move without the user: every unfinished row is blocked, waits on a blocked row, or has a live child waiting on the user (${waiting.join("; ")}). Call ask now with one question per blocker, so the session waits for the user instead of ending with a chat-only question. Then reopen and dispatch the blocked rows the answers unblock, and tell each waiting child what changed.`
       : "Dispatch the next unblocked items with task; record progress with atlas_ledger; call atlas_release only when every row is done.";
     return {
       continue: true,

@@ -1528,6 +1528,22 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match(stalled, /Call ask now/);
     ok(await call({ action: "reopen", id: "T3", evidence: "Integrated by the user in commit abc123" }));
     assert.match((await asked()) ?? "", /T3 \(dispatchable\)/);
+    ok(await call({ action: "start", id: "T3" }));
+    refused(await call({ action: "await", id: "T3", evidence: "Start Docker so the database tests can run" }));
+    const waiting = await row("T3");
+    const current = await ledger();
+    const dispatch = {
+      agent: waiting.dispatchAgent,
+      task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { T3: waiting.attempt } })}\nPerform ${waiting.title}`,
+      solutionSpace: "Known scoped assignment",
+    };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: `dispatch-${sequence++}`, input: dispatch }), undefined);
+    refused(await call({ action: "await", id: "T1", evidence: "Which storage backend should T1 use?" }));
+    ok(await call({ action: "await", id: "T3", evidence: "Start Docker so the database tests can run" }));
+    assert.equal(await asked(), undefined, "a row whose live child waits on the user no longer holds ask back");
+    assert.match(await continuation(), /T3 \(child live, waiting\): Start Docker so the database tests can run/);
+    await hook("tool_execution_end", { toolName: "ask", toolCallId: "ask-answered", result: {}, isError: false });
+    assert.match((await asked()) ?? "", /T3 \(in progress\)/, "the user's answer ends the mark");
     return;
   }
   if (name === "gate-fix") {
