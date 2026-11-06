@@ -1492,6 +1492,58 @@ describe("Atlas shared plan storage", () => {
     });
   });
 
+  test("harness verifier failures retain implementation proof across pending and stopped disk resumes", async () => {
+    const heavy = content.replace("  - Acceptance: input is verified", "  - Tier: HEAVY\n  - Acceptance: input is verified");
+    await fixture(async (f) => {
+      await f.store.acquire(f.plan.id, "session-a");
+      await f.store.transaction(f.plan.id, "session-a", (ledger) => noteRetryDispatch(startRow(ledger, "T1")));
+      const implementation = await f.store.transaction(f.plan.id, "session-a", async (ledger, plan) => {
+        const row = ledger.items[0] as LedgerItem;
+        recordReceipt(row, await archive(f, row, ledger, plan, "Authenticated implementation"), "implementation evidence");
+        return structuredClone(row);
+      });
+      let store = f.store;
+      for (let index = 0; index < 2; index += 1) {
+        await store.transaction(f.plan.id, "session-a", async (ledger, plan) => {
+          const row = startVerification(ledger, "T1");
+          noteRetryDispatch(row);
+          const failure: FailedOutcome = {
+            outcomeKey: `verifier-${index}`,
+            attempt: row.attempt as string,
+            verifyAttempt: row.verification?.attempt,
+            toolCallId: `verify-${index}`,
+            sessionId: "session-a",
+            childAgentId: `Verifier${index}`,
+            at: Date.now(),
+            failureClass: "harness",
+            check: "preflight",
+            firstError: "Missing required dependency",
+            signature: "",
+            evidence: "Observed preflight error",
+          };
+          await store.saveFailure(plan, row, failure, "Required dependency is missing from the verification checkout");
+          recordFailure(ledger, row, failure);
+        });
+        await store.release(f.plan.id, "session-a");
+        store = new AtlasStore(f.root);
+        await store.acquire(f.plan.id, "session-a");
+        await store.transaction(
+          f.plan.id,
+          "session-a",
+          (ledger) => {
+            const row = ledger.items[0] as LedgerItem;
+            for (const key of ["attempt", "startedAt", "childAgentId", "receipt", "evidence"] as const)
+              expect(row[key]).toEqual(implementation[key]);
+            expect(row.status).toBe(index === 0 ? "in_progress" : "blocked");
+            expect(row.verification).toEqual({});
+            expect(retryWindow(row)?.failures).toHaveLength(index + 1);
+          },
+          { resume: true },
+        );
+      }
+    }, heavy);
+  });
+
   test("expired verification keeps an authenticated implementation across disk resume and another verifier grant", async () => {
     const heavy = content.replace("  - Acceptance: input is verified", "  - Tier: HEAVY\n  - Acceptance: input is verified");
     await fixture(async (f) => {

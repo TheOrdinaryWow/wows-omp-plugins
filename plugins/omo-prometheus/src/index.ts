@@ -1937,7 +1937,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     action: z
       .enum(["status", "start", "done", "fail", "retry", "verify", "block", "reopen", "await", "fix", "discover", "triage", "amend"])
       .describe(
-        "status shows every row; start, done, fail, block, and reopen change id; await marks an in-progress row whose live child waits on a user-only step, keeping the child running; fail authenticates a terminal native outcome and charges its durable retry budget once; retry opens a new window only after an owner confirmation dialog; verify binds a fresh HEAVY verifier; fix appends an X row for rejecting F1–F4 or P1; discover records scope in as D or scope out as deferred O; triage disposes O; amend confirms an owner ruling replacing a T/D/X acceptance",
+        "status shows every row; start, done, fail, block, and reopen change id; await marks an in-progress row whose live child waits on a user-only step, keeping the child running; fail authenticates a terminal native outcome and charges its durable retry budget once; retry opens a granted window; verify binds a fresh HEAVY verifier and lists archived verifier diagnostics, directly replacing a cancelled verifier after native settlement; harness verifier failure retains implementation, product/unknown reopens it; reopen deliberately discards implementation; fix appends an X row for rejecting F1–F4 or P1; discover records scope in as D or scope out as deferred O; triage disposes O; amend confirms an owner ruling replacing a T/D/X acceptance",
       ),
     id: z
       .string()
@@ -2351,7 +2351,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read/update the shared approved ledger. Start before task and copy atlas_assignment. Done requires owned final native success plus inspected evidence; HEAVY then needs a fresh independent verifier PASS. Gate/verifier FAIL or INCONCLUSIVE records durable failure diagnostics. fail authenticates other terminal failures, idempotently: stop at consecutive identical counted signatures, three counted failures, repeated harness failure, or the event-bound four-hour work limit (P1 waiting exempt). retry requires a grant (owner confirmation or the atlasRetry setting); reopen/amend/new children do not reset budgets. fix creates an ordinary tiered X row from F1–F4 or P1, preserving other passed gates; a fresh origin child waits for repairs. discover adds D before gates or deferred O; triage disposes O; amend records T/D/X acceptance rulings settled by the user or the atlasAmend setting. Missing or corrupt state pauses execution; status lists details.",
+      "Read/update the shared approved ledger. Start before task and copy atlas_assignment. Done requires owned final native success plus inspected evidence; HEAVY then needs a fresh independent verifier PASS. Gate/verifier FAIL or INCONCLUSIVE records durable failure diagnostics; harness verification retains implementation, product/unknown reopens it. verify lists earlier verifier diagnostic paths and replaces a cancelled verifier directly after native settlement; reopen discards implementation. fail authenticates other terminal failures, idempotently: stop at consecutive identical counted signatures, three counted failures, repeated harness failure, or the event-bound four-hour work limit (P1 waiting exempt). retry requires a grant (owner confirmation or the atlasRetry setting); reopen/amend/new children do not reset budgets. fix creates an ordinary tiered X row from F1–F4 or P1, preserving other passed gates; a fresh origin child waits for repairs. discover adds D before gates or deferred O; triage disposes O; amend records T/D/X acceptance rulings settled by the user or the atlasAmend setting. Missing or corrupt state pauses execution; status lists details.",
     parameters: ledgerParameters,
     ...ledgerCard,
     defaultInactive: true,
@@ -2531,6 +2531,12 @@ export default function prometheus(pi: ExtensionAPI): void {
             schema = verifyOutputSchema(ledger, item);
             rulings = renderOwnerRulings(ledger);
             planBinding = `\nVerifier binding for a fresh ${item.verification?.dispatchAgent} child (copy literally): atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, verify: { [item.id]: item.verification?.attempt } })}`;
+            const diagnostics =
+              item.retry?.windows.flatMap((window) =>
+                window.failures.flatMap((failure) => (failure.verifyAttempt && failure.output ? [failure.output.path] : [])),
+              ) ?? [];
+            if (diagnostics.length)
+              note = `\nEarlier verifier diagnostics (inspect preserved output before judging reuse):\n${diagnostics.join("\n")}`;
           } else if (params.action === "done" || params.action === "fail") {
             const childAgentId = params.childAgentId?.trim();
             if (!evidence || (params.action === "done" && !childAgentId))
@@ -2604,7 +2610,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               await store.saveFailure(plan, item, failure, diagnostic.output);
               if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while diagnostic output was copied");
               recordFailure(ledger, item, failure);
-              note = `\nAuthenticated failure recorded (${failure.failureClass}); ${item.status === "blocked" ? "retry limit reached — retain/inventory unverified commits and files; delivery blocked; owner confirmation required" : "give this diagnostic to a fresh repair attempt"}: ${firstError}`;
+              note = `\nAuthenticated failure recorded (${failure.failureClass}); ${item.status === "blocked" ? "retry limit reached — retain/inventory unverified commits and files; delivery blocked; owner confirmation required" : verifying && item.receipt ? "implementation retained; bind a fresh verifier with atlas_ledger verify" : "give this diagnostic to a fresh repair attempt"}: ${firstError}`;
             } else {
               if (!childAgentId) throw new Error("done requires childAgentId");
               const nativeOutput = path.join(captureOptions.artifactsDir, `${childAgentId}.md`);

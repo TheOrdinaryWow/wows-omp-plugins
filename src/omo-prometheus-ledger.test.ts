@@ -683,6 +683,20 @@ describe("Prometheus execution ledger", () => {
     );
   });
 
+  test("recordVerification retains implementation on a harness failure and permits a fresh verifier", () => {
+    const ledger = createLedger("local://example-plan.md", heavyPlan);
+    if (ledger.items[0]) ledger.items[0].status = "done";
+    const row = startRow(ledger, "T2");
+    recordReceipt(row, receiptFor(row, row.attempt ?? "", "Implementer"), "implementation evidence");
+    const implementation = structuredClone(row);
+    startVerification(ledger, row.id);
+    const attempt = row.verification?.attempt;
+    recordVerification(ledger, row, { verdict: "fail", childAgentId: "Verifier", summary: "Runner unavailable", failureClass: "harness" });
+    expect(row).toEqual({ ...implementation, verification: {}, updatedAt: row.updatedAt });
+    startVerification(ledger, row.id);
+    expect(row.verification?.attempt).not.toBe(attempt);
+  });
+
   test("upgrades a version-four ledger to LIGHT rows and derives delivery from the approved plan", () => {
     const content = plan
       .replace("## Tasks", "Delivery: ship\n\n## Tasks")

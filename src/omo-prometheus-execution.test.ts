@@ -2281,6 +2281,92 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
 
+  if (name === "heavy-harness-retry" || name === "heavy-cancel-verify") {
+    await publish(await prepare("T1"), "Implementer");
+    ok(await done("T1", "Implementer"));
+    const implementation = await row("T1");
+    const verify = async (): Promise<PreparedAssignment> => {
+      const started = await call({ action: "verify", id: "T1" });
+      ok(started);
+      const item = await row("T1");
+      const current = await ledger();
+      const input = {
+        agent: item.verification?.dispatchAgent,
+        task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, verify: { T1: item.verification?.attempt } })}\nVerify independently without fixes`,
+        outputSchema: started.details?.outputSchema,
+        schemaMode: "strict",
+      };
+      const toolCallId = `verify-${sequence++}`;
+      assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
+      return { item, current, toolCallId, input, startText: started.content.map((part) => part.text ?? "").join("\n") };
+    };
+    const unchanged = async () => {
+      const current = await row("T1");
+      for (const key of ["attempt", "startedAt", "childAgentId", "receipt", "evidence"] as const)
+        assert.deepEqual(current[key], implementation[key]);
+      refused(await call({ action: "start", id: "T2" }));
+    };
+    const first = await verify();
+    if (name === "heavy-cancel-verify") {
+      await publish(first, "CancelledVerifier", {
+        createdAt: first.item.verification?.startedAt,
+        status: "running",
+        nativeStatus: "started",
+        asyncStatus: "running",
+      });
+      const job = nativeJobs.find((job) => job.agentId === "CancelledVerifier");
+      assert(job && settleNativeJob);
+      job.status = "cancelled";
+      refused(await call({ action: "verify", id: "T1" }));
+      settleNativeJob();
+      await publish(first, "CancelledVerifier", { status: "aborted", nativeStatus: "aborted", finalResult: false });
+      await hook("context", { messages: [] });
+      const next = await verify();
+      assert.notEqual(next.item.verification?.attempt, first.item.verification?.attempt);
+      refused(await done("T1", "CancelledVerifier"));
+      await unchanged();
+      assert.equal((await row("T1")).retry?.windows[0]?.failures.length, 0);
+      return;
+    }
+    for (const [index, prepared] of [
+      [0, first],
+      [1, undefined],
+    ] as const) {
+      const verifier = prepared ?? (await verify());
+      await publish(verifier, `HarnessVerifier${index}`, {
+        createdAt: verifier.item.verification?.startedAt,
+        content: JSON.stringify({
+          rowId: "T1",
+          planSha256: verifier.current.planSha256,
+          attempt: verifier.item.verification?.attempt,
+          verdict: index === 0 ? "FAIL" : "INCONCLUSIVE",
+          summary: "Acceptance could not start",
+          evidence: ["Exact checkout is missing required dependencies"],
+          failure: { failureClass: "harness", check: "runner preflight", firstError: "Required dependency is absent" },
+        }),
+      });
+      ok(await done("T1", `HarnessVerifier${index}`));
+      await unchanged();
+      const current = await row("T1");
+      assert.equal(current.status, index === 0 ? "in_progress" : "blocked");
+      assert.deepEqual(current.verification, {});
+      assert.equal(current.retry?.windows[0]?.failures.length, index + 1);
+      await reload();
+      await unchanged();
+    }
+    refused(await call({ action: "verify", id: "T1" }));
+    ok(await call({ action: "block", id: "T3", evidence: "Requires owner credentials" }));
+    ok(await call({ action: "retry", id: "T1", evidence: "Prepare the verifier checkout before rerunning acceptance" }));
+    assert((await row("T1")).evidence?.startsWith(implementation.evidence ?? "missing"));
+    implementation.evidence = (await row("T1")).evidence;
+    const next = await verify();
+    const current = await row("T1");
+    for (const failure of current.retry?.windows[0]?.failures ?? []) assert(next.startText?.includes(failure.output?.path ?? "missing"));
+    assert.notEqual(next.item.verification?.attempt, first.item.verification?.attempt);
+    refused(await done("T1", "HarnessVerifier0"));
+    await unchanged();
+    return;
+  }
   if (name === "heavy-verify" || name === "heavy-verify-fail" || name === "heavy-verify-inconclusive") {
     // A ruling recorded before the row starts reaches both the implementation child and its verifier.
     if (name === "heavy-verify") {
@@ -2352,7 +2438,15 @@ async function scenario(name: string, root: string): Promise<void> {
     const verdict = name === "heavy-verify" ? "PASS" : name === "heavy-verify-inconclusive" ? "INCONCLUSIVE" : "FAIL";
     await publish(verifier, "Verifier", {
       createdAt: verifyStartedAt,
-      content: JSON.stringify({ rowId: "T1", planSha256, attempt, verdict, summary: `Verifier ${verdict}`, evidence: ["reproduced"] }),
+      content: JSON.stringify({
+        rowId: "T1",
+        planSha256,
+        attempt,
+        verdict,
+        summary: `Verifier ${verdict}`,
+        evidence: ["reproduced"],
+        ...(verdict === "FAIL" ? { failure: { failureClass: "product", check: "acceptance", firstError: `Verifier ${verdict}` } } : {}),
+      }),
     });
     ok(await done("T1", "Verifier"));
     current = await row("T1");
@@ -2812,6 +2906,8 @@ if (process.env[CHILD_ENV]) {
       "heavy-verify",
       "heavy-verify-fail",
       "heavy-verify-inconclusive",
+      "heavy-harness-retry",
+      "heavy-cancel-verify",
       "research-children",
       "structured-results",
       "isolation-required",

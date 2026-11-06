@@ -115,20 +115,22 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 | --- | --- |
 | `status` | 所有行及其生效的验收（裁定替换了计划原文时标注 `amended by Rn`）、业主裁定、带编号和分诊结果的范围外发现、交付方式和可派发的行。 |
 | `start` | 预留一个前置条件已完成的开放行并返回尝试绑定；关口还会得到 `outputSchema`，HEAVY 行会得到上一次验证失败。 |
-| `done` | 记录经认证的原生最终成功。LIGHT 行和 P1 完成；HEAVY 记录实现后还需验证者 PASS。关口或验证者 FAIL/INCONCLUSIVE 会归档诊断、消耗窗口并重新打开或阻塞该行，不会通过抛错丢弃变更。 |
-| `verify` | 已记录实现的 HEAVY 行：绑定不同的全新验证者并返回严格 schema（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`，可选 `failure: {failureClass, check, firstError}`）。没有失败详情的旧输出仍有效，非 PASS 默认按 unknown 计数。替换前必须等在途原生工作结束。 |
+| `done` | 记录经认证的原生最终成功。LIGHT 行和 P1 完成；HEAVY 记录实现后还需验证者 PASS。关口或验证者 FAIL/INCONCLUSIVE 会归档诊断，并按重试规则处理。验证者因 harness 未通过时保留实现，仅把验证恢复为待验证；窗口停止时该行转为阻塞。product/unknown 失败仍会重新打开实现。 |
+| `verify` | 已记录实现的 HEAVY 行：绑定不同的全新验证者并返回严格 schema（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`，可选 `failure: {failureClass, check, firstError}`）。结果会列出该行所有重试窗口中已归档的验证者诊断路径，供新验证者独立判断哪些检查结果仍适用。没有失败详情的旧输出仍有效，非 PASS 默认按 unknown 计数。替换前必须等在途原生工作结束。取消结束后直接调用 `verify`；`reopen` 会主动丢弃实现。 |
 | `fail` | 指定 `id`、检查过的 `evidence`、`check`、`firstError`、可选 `failureClass`（product/harness/unknown）及所属原生 `childAgentId`，认证一个最终原生代次并只记录一次。只有关联的派生前原生失败可以省略子代理 id。不生成成功回执。 |
 | `retry` | 已耗尽的行加上 `evidence` 中改变的假设：锁外由业主确认（或由 `atlasRetry` 决定），再检查所有权、历史和未变的验收，追加新窗口，仅重新打开该行。拒绝、附加状态变化或子代理仍在运行都不会授权；没有对话框时，只有会批准的设置才能授权。 |
 | `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），一旦有关口开始或存在修正行即被拒绝；`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
 | `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当路线图在本仓库中可用时允许。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当本仓库中没有可用的路线图时允许，引用可省略。是否可用取自一次新的路线图绑定回复中的 `usable` 标志；没有回复表示没有路线图，旧版路线图的回复不带这个标志时，`todo` 和 `report` 都接受。 |
 | `fix` | 为否决的 F1–F4 或 P1 追加正常 tier 的 X 行，只重新打开来源行。P1 对每个 X 恰好依赖一次，X 从不依赖 P1。来源额度耗尽后，没有重试授权就不能继续自动修复。 |
-| `block`、`reopen` | 只影响指定的行；依赖它的已完成行保留各自的证明。 |
+| `block`、`reopen` | 丢弃指定行的实现尝试和回执；依赖它的已完成行保留各自的证明。不要仅为替换已结束的取消验证者而使用这两个操作，应直接调用 `verify`。 |
 | `await` | 标记一个进行中的行：它的子代理还活着，正在等一个只有你能做的步骤（启动某个服务、登录等），`evidence` 写明这个步骤。执行记录不变，子代理继续运行。标记只存在于当前进程中，你回答下一个 `ask`、该行这次尝试结束，或者该行不再有运行中的原生工作时，标记就失效。不在进行中的行和没有存活子代理的行会被拒绝。 |
 | `amend` | 为 `id` 指定的 T、D 或 X 行记录一条业主裁定：`acceptance` 是完整的替换文本，`evidence` 是说明。关口、P1、未知的行和进行中的行都会被拒绝。落定方式由 `atlasAmend` 决定。默认值 `ask` 下，写入之前插件会在确认对话框中向你展示该行、当前生效的验收、提议的验收和说明；拒绝对话框则什么都不记录；没有 UI 时工具拒绝执行，并指出路径是 `/atlas exit` 加上经 `/prometheus` 修订的计划。`approve` 不显示对话框，直接记录裁定，标记 `decidedBy: "setting"`；`decline` 什么都不记录，也从不显示对话框；`ask-then-approve` 和 `ask-then-decline` 先显示 `atlasAskTimeout` 分钟的对话框，超时后执行对应的值。该行的状态、其他行和已通过的关口都不受影响。`status`、`start` 和 `verify` 显示生效的验收并标注 `amended by Rn`；F1 和 F4 的 `start` 结果以及每个 `verify` 结果列出全部裁定。 |
 
 只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执、每条范围外发现都已分诊（拒绝时会列出未分诊的发现），并且需要完成释放的确认。该确认由 `atlasRelease` 决定（默认 `ask`，即对话框）：`ask-then-approve` 和 `ask-then-decline` 在 `atlasAskTimeout` 分钟后决定，`approve` 和 `decline` 从不显示对话框。释放被拒绝后，Atlas 保持激活，直到 `/atlas exit`。计划完成和 `atlas:completed` 从不等待分诊。
 
 成功输出和原始回执复制到 `evidence/` 并校验摘要，因此原会话删除后已验证进度仍保留。最终诊断（含未通过的验证者）复制为 `failure-<outcome-digest>.md`，路径和摘要由版本化执行记录引用；它们只是上下文，不是完成证明或检查点绑定。成功证明缺失或变化只重新打开对应行。恢复时 HEAVY 保留有效实现，仅丢弃未完成的验证者绑定。检查点仍为版本 2，批准文件的字节不变。
+
+验证者因 harness 未通过时，实现尝试、开始时间、子代理 id、回执和实现证据都会保留，但该行不会因此完成。失败历史和第二次 harness 失败即停止的规则仍然生效。报告中只要有产品失败，就必须归为 product/unknown，不能因为最先出现的是环境错误而归为 harness。新验证者可以采用先前独立验证中的检查结果，但必须引用保存的输出，并说明其间的源码、依赖、生成资源、配置和验收变更为何不可能影响该项检查。仅有提交 SHA 不够，实现者自己的证据也不能代替独立验证。
 
 ### 重试窗口与交付修复
 

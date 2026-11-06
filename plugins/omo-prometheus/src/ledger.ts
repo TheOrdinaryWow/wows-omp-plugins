@@ -697,12 +697,17 @@ export function recordFailure(ledger: ExecutionLedger, row: LedgerItem, failure:
     if (counted.length >= 2 && counted.at(-2)?.signature === diagnostic.signature) window.stop ??= { reason: "signature", at: failure.at };
     else if (counted.length >= 3) window.stop ??= { reason: "attempts", at: failure.at };
   }
-  if (failure.verifyAttempt) row.verification = { verdict: "fail", childAgentId: failure.childAgentId, summary: failure.firstError };
-  reopenRow(
-    ledger,
-    row.id,
-    `${failure.verifyAttempt ? "Verification failed" : "Failed"}: ${failure.firstError}\n${failure.evidence}${failure.output ? `\nDiagnostic: ${failure.output.path}` : ""}`,
-  );
+  if (failure.verifyAttempt && failure.failureClass === "harness" && row.receipt) {
+    row.status = window.stop ? "blocked" : "in_progress";
+    resetVerification(row);
+  } else {
+    if (failure.verifyAttempt) row.verification = { verdict: "fail", childAgentId: failure.childAgentId, summary: failure.firstError };
+    reopenRow(
+      ledger,
+      row.id,
+      `${failure.verifyAttempt ? "Verification failed" : "Failed"}: ${failure.firstError}\n${failure.evidence}${failure.output ? `\nDiagnostic: ${failure.output.path}` : ""}`,
+    );
+  }
   expireRetryWindows(ledger, failure.at);
   return true;
 }
@@ -1330,16 +1335,13 @@ export function startVerification(
   return row;
 }
 
-/**
- * Record the verifier's authenticated verdict. PASS completes the row; FAIL reopens it for a new implementation
- * attempt and keeps the verifier's summary for that attempt's assignment.
- */
+/** Record independent verification: harness failure retains the implementation; product/unknown failure reopens it. */
 export function recordVerification(
   ledger: ExecutionLedger,
   row: LedgerItem,
   result:
     | { verdict: "pass"; receipt: ChildReceipt; summary: string; evidence: string }
-    | { verdict: "fail"; childAgentId: string; summary: string },
+    | { verdict: "fail"; childAgentId: string; summary: string; failureClass?: FailureClass },
 ): void {
   const verification = row.verification;
   if (row.tier !== "heavy" || row.status !== "in_progress" || !verification?.attempt || verification.verdict !== undefined) {
@@ -1356,6 +1358,11 @@ export function recordVerification(
     row.evidence = `${row.evidence ?? ""}\nVerified: ${result.evidence}`.trim();
     row.status = "done";
     row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
+    return;
+  }
+  if (result.failureClass === "harness" && row.receipt) {
+    row.status = retryWindow(row)?.stop ? "blocked" : "in_progress";
+    resetVerification(row);
     return;
   }
   row.verification = { verdict: "fail", summary: result.summary, childAgentId: result.childAgentId };
