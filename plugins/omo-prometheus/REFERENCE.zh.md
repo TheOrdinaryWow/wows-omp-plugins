@@ -8,6 +8,10 @@
 
 Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execute”会开启一个新会话；为了让交接在切换后仍然有效，插件会在提出计划时把一个标记写入 `local://prometheus/<slug>.proposal.json`，OMP 会把它和计划一起复制到新会话。普通 Plan Mode 批准的计划没有这个标记，插件不会处理它们。
 
+遇到开放的边界或拆分问题时，Prometheus 会咨询 `architect`；遇到困难且独立的算法或契约问题时，会咨询 `ultrabrain`。只有当前代理列表中有完全同名的代理时才会咨询；简单计划和普通的 Standard 计划两者都不咨询，不可用的顾问会被跳过。顾问是只读的，不能代替 Metis、Oracle 或用户的决定。理想状态的每一行都写明利益相关者和需求来源（请求、已确认的决定或有证据的现有契约）；每个任务都有 `Mechanisms:` 行，计划有 `## Must not build` 一节，评审可以因构建过多而驳回计划。
+
+评审轮数由插件自己计算。每派出一次 Momus，或 Momus 与 Oracle 一起，算一轮，包括评审者读不到计划的那一轮。达到 `reviewRoundLimit` 时，用户可以选择为这个计划增加轮数，或者停止；停止时 Prometheus 会按现状提出计划，并列出尚未解决的阻塞问题。没有可交互的用户时，评审在达到上限后停止。
+
 ## 计划语法
 
 - `## Tasks`：从 `T1` 开始编号的 `- [ ] T<n>. <title>` 行，每行带缩进的 `Agent:`、`Depends on:`、`Acceptance:`，以及可选的 `Tier: LIGHT | HEAVY`（不区分大小写）。缺少 tier 即为 LIGHT，旧计划行为不变。其他取值或重复字段都是解析错误。规划技能要求的其他正文行（`Closes:`、`References:`、`Mechanisms:`、`QA happy:`、`QA failure:`、`Commit:`）只供子代理和评审者阅读，解析器会忽略它们。
@@ -149,6 +153,30 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 ## 最终关口的输入
 
 F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）、执行记录摘要，以及从计划基线提交以来以只读方式收集的 Git 证据（`git diff --stat`、`git log --oneline`、`git status --short`），无法获取时写明“unavailable”。`momus` 以 `review_kind: compliance` 运行 F1。只有格式匹配的结构化 `PASS` 才算通过。关口子代理只报告、从不修复。
+
+每个关口返回 `PASS`、`FAIL` 或 `INCONCLUSIVE`；非 PASS 结果会消耗该关口的重试窗口。每项修正都成为一个以该关口为来源的 X 行，之后只有这个关口由新的子代理重跑。重试窗口用尽的关口会阻塞，直到通过对话框或 `atlasRetry` 授予新的窗口。
+
+## 交付策略
+
+计划中的 `Delivery:` 行决定执行方式，推送和合并始终由子代理完成。`ship` 会持续跟踪同一个 PR 的 CI 和评审；范围内的失败成为以 P1 为来源的 X 修复行，受影响的测试和 QA 会重新运行。交付子代理从不直接修改产品代码。合并遵循仓库要求的检查、评审和合并策略，并且不能有未解决的阻塞性修改请求。Atlas 从不批准自己的工作，也不会自行规定评审人数下限。缺少权限、需要人工批准、PR 分支不明确或策略不兼容都会阻塞交付，范围或验收的变更仍需用户决定。PR 的 head 和 base 必须明确。Atlas 核对子代理报告的远程 CI、评审和合并证据，不会轮询 GitHub。
+
+## Git、隔离与发现
+
+- Atlas 遵循宿主的 `task.isolation` 设置，唯一的例外是：Atlas 运行期间把 `merge: patch` 改为 `branch`，并在退出、释放、执行外会话恢复或关闭时还原。
+- 不在 Git 仓库中时，不使用 Git：计划写 `Commit: none`，交付方式为 `direct`，不要求隔离，F1 在没有 Git 历史的情况下检查计划。
+- 延后发现按 `todo`（Roadmap TODO）、`duplicate`、`wontfix` 或 `report` 分类。存在可用 roadmap 时拒绝 `report`；仓库没有 roadmap 时选用 `report`。
+- 已记录的失败在重启和会话交接后仍然保留；Atlas 尚未记录的失败则不会。被阻塞的工作保持未完成：Atlas 会保留并列出能追溯到子代理的未验证提交或文件，从不回滚它们；仍有缺口时不能进入交付。
+- 从 Atlas Dispatch 或 `/atlas <plan>` 启动计划时，Atlas 会自己发出第一条执行消息。
+
+## 不使用终端界面时
+
+| 宿主 | `/atlas` 行为 |
+| --- | --- |
+| RPC（`--mode rpc`、rpc-ui） | Atlas Dispatch 变成一串选择对话框（选计划，然后选 Start、Resume、View details、Rename、Delete 或 Back）。小组件以文本行发送。 |
+| ACP 编辑器 | 通过表单询问显示同样的对话框。没有小组件。 |
+| SDK、`--no-ui`、print | 没有对话框，请使用子命令。删除需要 `--yes`。`/atlas resume` 只能从唯一执行过该计划的会话中使用；否则会列出可以打开的会话。 |
+
+Prometheus 规划需要 Plan Mode 的交互式批准，所以只能在 TUI、RPC 和 ACP 中运行。在 Tern 中，Atlas Dispatch 和计划视图以原生面板覆盖在对话之上，进度小组件显示原生进度条。单击选中，双击打开，标签、按钮和按键都可以使用。Atlas 和 Prometheus 的工具调用显示为原生卡片，模型的指引默认折叠，展开卡片才会显示。
 
 ## 所有权
 

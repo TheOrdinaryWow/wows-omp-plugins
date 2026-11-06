@@ -8,6 +8,10 @@ Only the planner's `ask` question with the header `Prometheus`, whose second opt
 
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session, so the plugin writes a marker to `local://prometheus/<slug>.proposal.json` at proposal time and OMP copies it into the new session with the plan. Plans approved in ordinary Plan Mode have no marker and are left alone.
 
+Prometheus calls `architect` for an open boundary or decomposition question, and `ultrabrain` for a hard, independent algorithm or contract question. It calls an advisor only when that exact name is in the live agent list; trivial and ordinary Standard plans call neither, and an unavailable advisor is skipped. Advisors are read-only and do not replace Metis, Oracle or the user's decisions. Ideal-state rows name the stakeholder and the source of each requirement (the request, a confirmed decision or an evidenced existing contract); every task carries a `Mechanisms:` line and the plan a `## Must not build` section, and reviewers can reject a plan for building too much.
+
+The plugin counts review rounds itself. Each dispatch of Momus, or of Momus and Oracle together, is one round, including a round where the reviewer could not read the plan. At `reviewRoundLimit` the user chooses between adding rounds for that plan and stopping; stopping makes Prometheus propose the plan as it stands with the open blockers listed. Without an interactive user, review stops at the limit.
+
 ## Plan grammar
 
 - `## Tasks`: rows `- [ ] T<n>. <title>` numbered from `T1`, each with indented `Agent:`, `Depends on:`, `Acceptance:` and an optional `Tier: LIGHT | HEAVY` (case-insensitive). A missing tier means LIGHT, so older plans keep their behavior. Any other value or a repeated field is a parse error. The other body lines the planning skill requires (`Closes:`, `References:`, `Mechanisms:`, `QA happy:`, `QA failure:`, `Commit:`) are read by children and reviewers only; the parser ignores them.
@@ -149,6 +153,30 @@ Ledgers at versions 1 to 8 upgrade to version 9 on load. Their existing retry-wi
 ## Final gate inputs
 
 F1 reads the hash-verified `plan.md` (its path is printed when F1 starts), the ledger summary, and read-only Git evidence since the plan's baseline commit (`git diff --stat`, `git log --oneline`, `git status --short`) or a plain "unavailable". `momus` runs F1 with `review_kind: compliance`. Only a matching structured `PASS` counts. Gate children report and never fix.
+
+Each gate returns `PASS`, `FAIL` or `INCONCLUSIVE`; non-PASS results use up the gate's retry window. Each correction becomes an X row whose origin is that gate, and only that gate reruns with a fresh child. A gate whose window runs out blocks until a new window is granted, in the dialog or through `atlasRetry`.
+
+## Delivery policy
+
+The plan's `Delivery:` line governs execution, and children always do the pushes and merges. `ship` keeps the same PR under watch through CI and review; in-scope failures become X repair rows with P1 as their origin, and affected tests and QA run again. The delivery child never fixes product code in place. Merging follows the repository's required checks, review and merge policy with no unresolved blocking change request. Atlas never approves its own work or invents a reviewer minimum. Missing access, a required human approval, an ambiguous PR branch or an incompatible policy blocks delivery, and scope or acceptance changes still need the user's decision. PR head and base must be explicit. Atlas checks the remote CI, review and merge evidence children report and does not poll GitHub.
+
+## Git, isolation and findings
+
+- Atlas follows the host's `task.isolation` settings, except that `merge: patch` is switched to `branch` while Atlas runs and restored on exit, release, out-of-execution resume or shutdown.
+- Outside a Git repository nothing uses Git: plans say `Commit: none`, delivery is `direct`, isolation is not required, and F1 checks the plan without Git history.
+- Deferred findings are triaged as `todo` (a Roadmap TODO), `duplicate`, `wontfix` or `report`. `report` is refused while a usable roadmap exists, and is the choice when the repository has none.
+- Recorded failures survive restarts and session handoffs; a failure Atlas had not recorded yet does not. Blocked work stays unfinished: Atlas keeps and lists unverified commits or files it can trace to a child and never rolls them back, and delivery cannot proceed while gaps remain.
+- Starting a plan from Atlas Dispatch or `/atlas <plan>` makes Atlas send the first execution message itself.
+
+## Without the terminal UI
+
+| Host | `/atlas` behavior |
+| --- | --- |
+| RPC (`--mode rpc`, rpc-ui) | Atlas Dispatch becomes a chain of select dialogs (pick a plan, then Start, Resume, View details, Rename, Delete or Back). The widget is sent as text lines. |
+| ACP editors | The same dialogs through form elicitation. No widget. |
+| SDK, `--no-ui`, print | No dialogs; use the subcommands. Deleting needs `--yes`. `/atlas resume` works only from the one session that executed the plan; otherwise it names the sessions to open. |
+
+Prometheus planning needs Plan Mode's interactive approval, so it runs only in the TUI, RPC and ACP. In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation and the progress widget shows a native progress bar. Clicks select, double-clicks open, and the tabs, buttons and keys all work. Atlas and Prometheus tool calls appear as native cards, and the model's guidance stays folded until a card is expanded.
 
 ## Ownership
 
