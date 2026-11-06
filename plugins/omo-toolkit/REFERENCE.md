@@ -1,6 +1,34 @@
 # Runtime reference
 
-Contracts behind the optional runtime helpers in [README.md](README.md). User-facing behavior is documented there.
+Details behind the agents, skills and optional runtime helpers in [README.md](README.md). User-facing behavior is documented there.
+
+## Agents
+
+Category agents start from the same worker prompt as OMP's bundled `task` agent, with OmO's category guidance added. Model roles are tried in order.
+
+`librarian` declares only `read`, `glob`, `grep`, `find` and `web_search`, so OMP's native classifier treats it as read-only and judge-dispatch offers it only read-only destinations. It reads HTTPS documentation, raw GitHub files, and GitHub blob, tree and commit pages with `read`. Issues, pull requests and diffs come through `issue://<N>`, `pr://<N>` and `pr://<N>/diff`; cross-repository forms add `<owner>/<repo>/`. Documentation MCP servers that the host grants stay available. Native readers may use the host's configured authentication. The read-only tool list does not sandbox MCP servers or extension capabilities the host grants; those stay under host policy.
+
+### Selection protocol
+
+Before each turn, the plugin adds a selection protocol adapted from OmO's category selection protocol to the main agent's system prompt. It appears only when the `task` tool is active and its agent list includes an omo-toolkit agent, and it names only the omo-toolkit agents in that list. It tells the main agent which lane each listed agent covers, to pick `deep-low` when unsure, and to run independent goals as parallel `task` items. When a child's result starts with `ESCALATE: deep-high`, the main agent applies a decision the user already recorded; otherwise it re-dispatches the goal to `deep-high` under the same `name`, or asks the user if `deep-high` is not listed. When `deep-high` returns `ESCALATE: parent`, the main agent asks the user. Model-role and protocol registration do not depend on the runtime settings. A `modelTags` entry the user sets for `designer` or `writer` overrides the plugin's label.
+
+## Skill helpers
+
+Skills are read through `skill://<name>`. Some run helper scripts with `node`, `bun`, `python3` or `uv`, as each skill documents.
+
+- `frontend` covers pre-edit baselines, required-content checks, a dependency-free Bun draft guard, component-catalog license and access gates, and an exception for small changes to existing surfaces. The draft guard runs as `bun <frontend-skill-directory>/scripts/perfection/check-draft-guard.ts <files-or-dirs> [--json]`. Exit codes: 0 clean, 1 findings, 2 usage error or an unreadable explicit target. Run it before visual QA; it does not replace rendered inspection.
+- `visual-qa` captures each enumerated case at 390 and 1440 CSS pixels (plus 1920 for page layouts) in light and dark. For fixes to existing UI it freezes the case list and captures `before` first. Each item gets PASS, FAIL or N/A. Low-risk work gets two review rounds and product surfaces three; defects still open at the limit end as NEEDS HUMAN REVIEW.
+- Lighthouse (optional) needs Node, a local Chrome and a `lighthouse` package the target project can resolve. Without them the audit stops with an explicit message.
+- `coding-agent-sessions` uses only Python's standard library. Run it with `python3 -B` from the skill directory OMP returns; the copied plugin tree is not modified. OMP recall starts with the native archive, and selected raw transcripts remain the evidence.
+- `onboarding` covers installed features, configuration mapping, bounded history review, estimated prompt-cache discounts, user-selected native-memory writes and an eligible `init-deep` offer. It has no first-run hook and no automatic import. Accepting the tour does not authorize history inspection, settings migration, memory writes or guidance generation; each consequential step asks separately, and declining skips it without repeated offers. History review defaults to the current project, the last seven days, 20 candidate sessions and five full transcripts. The cache-discount helper reports an estimated discount, not an invoiced cost or a saving this plugin caused. Memory writes need an enabled, compatible native memory tool; without one nothing is saved.
+- `give-me-tips` reads installed docs, live schemas, configuration and source. It adds no rotating startup tips.
+- `data-scientist` picks resident, streaming or spill execution and includes an explicitly invoked quick-query helper. `programming` has optional policy checkers, no mandatory size gates and no automatic refactors. Their helpers run only when the model calls them; the extension does not import them and they do not run at install. Generators write only to a new target directory and refuse existing destinations. The optional cache helper writes only to `OMP_DATA_SCIENTIST_CACHE`, and only when it is set.
+- `ultimate-browsing` routes blocked hosts, platform-native reading and dated archive provenance through `read` and the OMP browser. It ships no extraction engine, cookie export, decryption or injection tools.
+- `visualize` writes one standalone HTML file with inline assets and its own light and dark palette. Before delivery it runs the frontend draft guard and checks the page in a browser at narrow and intended report widths.
+
+## Without the terminal UI
+
+Agents, skills and MCP servers work the same in every OMP mode. Comment feedback works without a UI: warnings go to the plugin log, and with a UI they also show as a notification. The init-deep advisor needs a terminal or RPC UI to offer anything; without one it stays silent, but `/init-deep-advisor` still replies with visible messages. The fallback hint does not depend on the UI.
 
 ## Settings and hooks
 
