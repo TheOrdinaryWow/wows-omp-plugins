@@ -158,9 +158,17 @@ Writes take one lock, `<git common dir>/adr/lock`, and replace each file atomica
 
 IDs come from `<git common dir>/adr/counters.json`, `{"v":1,"adr":N}`, shared by every worktree of a clone. A new ID is one above the largest of that counter, the `adr` counter the roadmap plugin kept in `<git common dir>/roadmap/counters.json` (read, never written) and every ID on disk. An unreadable counter file pauses allocation rather than risking a reused ID. The checked-out Markdown is the source of truth on each branch.
 
-## Without a UI
+## Without the terminal UI
 
-`/adr init` returns the rendered preview and a `/adr confirm <token>` command without writing. The token covers exactly the shown files and lasts until the session is rebuilt (start, switch, branch, tree) or a newer `/adr init` preview replaces it; confirming rechecks that initialization still produces the same files. Bare `/adr` prints the list and usage. Notices and errors become displayed session messages.
+| Host | Behavior |
+| --- | --- |
+| RPC (`--mode rpc`, `rpc-ui`) and ACP | The inline menu and dialogs whatever `uiMenu` says, sent as `select`, `input` and `editor` requests. ACP clients may show notices only in their log. |
+| No UI (`--no-ui`, print, JSON, SDK) | No dialogs. Bare `/adr` prints the list and usage; use the subcommands. Notices and errors become displayed session messages. |
+| Tern | The console and the `/adr init` preview open as native sheets: click a status tab to filter, click an ADR or file to select it (double-click to choose it), and use the buttons for the same actions as the keys. The keys keep working. `adr_*` tool calls show as native cards (an ADR table with colored statuses, one ADR's metadata over a foldable record, changed files, check diagnostics), and `/adr` messages carry readable titles such as "ADR check". |
+
+Without a UI, `/adr init` returns the rendered preview and a `/adr confirm <token>` command without writing. The token covers exactly the shown files and lasts until the session is rebuilt (start, switch, branch, tree) or a newer `/adr init` preview replaces it; confirming rechecks that initialization still produces the same files. The held preview lives only in memory and is lost when the process exits.
+
+In the terminal console, cancelling the topic dialog of a new decision or a supersession returns to the console. The plugin ships the `adr` skill and a pinned MADR 4.0 template in `assets/madr/`.
 
 ## State snapshot
 
