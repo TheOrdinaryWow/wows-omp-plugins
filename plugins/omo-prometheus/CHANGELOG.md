@@ -24,6 +24,20 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.29.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.28.0...omo-prometheus@0.29.0) (2026-11-07)
+
+
+### Features
+
+* **omo-prometheus:** add time-limit grammar and cost-aware check rules to Atlas prompts ([2e030e3](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/2e030e3df284d31d313d80d8e486a14bcff35d54))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** approve execution limits and exempt rejected native dispatches ([9f4471d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/9f4471d99bc95a4cb7ad24640934fcb6f6ea6d63))
+* **omo-prometheus:** keep concurrent gates from waiting on the expensive suite ([84f58b8](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/84f58b8f1d751b5b7208001dda3b244e3ee4f4d2))
+* **omo-prometheus:** preserve implementation proof after harness verification failures ([62cc5ad](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/62cc5adf2c4119088d8a6acaaeceb2994cbb6d8e))
+
 ## [0.28.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.27.2...omo-prometheus@0.28.0) (2026-11-06)
 
 
