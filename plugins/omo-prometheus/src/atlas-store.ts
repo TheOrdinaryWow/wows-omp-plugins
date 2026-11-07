@@ -1116,7 +1116,7 @@ export class AtlasStore {
     planId: string,
     sessionId: string,
     run: (ledger: ExecutionLedger, plan: AtlasPlan) => Promise<T> | T,
-    options?: { resume?: boolean; assertActive?: () => void },
+    options?: { resume?: boolean; assertActive?: () => void; observeDispatches?: (ledger: ExecutionLedger) => boolean },
   ): Promise<T> {
     safeId(planId);
     return await withLedgerLock(path.join(this.#root, planId, "ledger.json"), async () => {
@@ -1145,7 +1145,11 @@ export class AtlasStore {
               changed = true;
             }
           }
-        } else if (row.status === "in_progress" && (options?.resume || !sameAttempt)) {
+        } else if (
+          row.status === "in_progress" &&
+          (options?.resume || !sameAttempt) &&
+          !(sameAttempt && retryWindow(row)?.dispatchReservation === row.attempt)
+        ) {
           reopenRow(ledger, row.id, "Interrupted or invalidated attempt reopened; dispatch a fresh child.");
           changed = true;
         }
@@ -1159,6 +1163,7 @@ export class AtlasStore {
           changed = true;
         }
       }
+      if (options?.observeDispatches?.(ledger)) changed = true;
       if (expireRetryWindows(ledger)) changed = true;
       // Recovery is committed before calling user code; a refused mutation cannot undo invalidation.
       if (changed) {

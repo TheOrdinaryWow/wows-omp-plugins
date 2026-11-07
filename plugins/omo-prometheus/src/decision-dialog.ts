@@ -265,11 +265,12 @@ export interface RetryProposal {
   history: string;
   acceptance: string;
   note: string;
+  timeLimit?: string;
 }
 
 export const retryDecision = (proposal: RetryProposal): Decision => ({
   question: `Open a new retry window for ${proposal.rowId}?`,
-  summary: [`Reason: ${oneLine(proposal.note)}`, "Acceptance and scope stay unchanged."],
+  summary: [`Reason: ${oneLine(proposal.note)}`, `Time limit: ${proposal.timeLimit ?? "4h"}; acceptance and scope stay unchanged.`],
   accept: {
     label: `Open retry window for ${proposal.rowId}`,
     description: "More attempts only; acceptance unchanged, failures kept, no rollback",
@@ -278,6 +279,10 @@ export const retryDecision = (proposal: RetryProposal): Decision => ({
   details: [
     section("Row and failure history", proposal.history),
     section("Unchanged acceptance", proposal.acceptance),
+    section(
+      "Execution time limit",
+      `${proposal.timeLimit ?? "4h"} per product-work phase from this window onward. A changed limit applies only if the user selects the accept option; a setting cannot approve it.`,
+    ),
     section("Reason / changed hypothesis", proposal.note),
     section(
       "What a new window grants",

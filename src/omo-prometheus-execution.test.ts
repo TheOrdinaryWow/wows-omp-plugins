@@ -396,11 +396,15 @@ async function scenario(name: string, root: string): Promise<void> {
     sourcePlanFile,
     name === "cycle"
       ? plan.replace("Depends on: none", "Depends on: T2")
-      : name.startsWith("heavy-")
+      : name === "time-limit-long-run"
         ? heavyPlan
-        : name.startsWith("delivery-")
-          ? plan.replace("## Tasks", `Delivery: ${name === "delivery-pr" ? "pr" : "ship"}\n\n## Tasks`)
-          : plan,
+            .replace("  - Tier: HEAVY", "  - Time limit: 14h\n  - Tier: HEAVY")
+            .replace("- [ ] F3. Real-surface QA", "- [ ] F3. Real-surface QA\n  - Time limit: 14h")
+        : name.startsWith("heavy-")
+          ? heavyPlan
+          : name.startsWith("delivery-")
+            ? plan.replace("## Tasks", `Delivery: ${name === "delivery-pr" ? "pr" : "ship"}\n\n## Tasks`)
+            : plan,
   );
   await commands.get("prometheus")?.("", ctx);
   // Magic Context fences the provider request against the rows it prepared, so the context hook keeps their count and order.
@@ -888,7 +892,8 @@ async function scenario(name: string, root: string): Promise<void> {
     refused(await call({ action: "start", id: "T1" }));
     refused(await call({ action: "retry", id: "T1", evidence: "Different repair hypothesis" }));
     ok(await call({ action: "block", id: "T3", evidence: "Independent task needs owner credentials" }));
-    const grant = () => call({ action: "retry", id: "T1", evidence: "Different repair hypothesis; unchanged acceptance" });
+    const grant = () =>
+      call({ action: "retry", id: "T1", evidence: "Different repair hypothesis; unchanged acceptance", timeLimit: "14h" });
     if (name === "retry-auto-grant") {
       const text = (result: { content: { text?: string }[] }) => result.content.map((part) => part.text ?? "").join("\n");
       await mkdir(join(root, ".omp"), { recursive: true });
@@ -903,6 +908,7 @@ async function scenario(name: string, root: string): Promise<void> {
       ok(granted);
       assert.match(text(granted), /The atlasRetry setting \(approve\) approved it without asking/);
       assert.equal((await row("T1")).retry?.windows[1]?.grant?.decidedBy, "setting");
+      assert.equal((await row("T1")).retry?.windows[1]?.timeLimitHours, 4);
       for (const child of ["SecondWindowA", "SecondWindowB"]) {
         await publish(await prepare("T1"), child, { content: "acceptance scenario: expected 4, got 5" });
         ok(await fail(child));
@@ -924,6 +930,8 @@ async function scenario(name: string, root: string): Promise<void> {
       confirmAnswer = true;
       ok(await grant());
       assert.equal((await row("T1")).retry?.windows[2]?.grant?.decidedBy, "user");
+      assert.equal((await row("T1")).retry?.windows[2]?.timeLimitHours, 14);
+      assert(confirmTitles.some((title) => title.includes("Open a new retry window")));
       return;
     }
     interactive = false;
@@ -949,49 +957,176 @@ async function scenario(name: string, root: string): Promise<void> {
     ok(await grant());
     assert.equal((await row("T1")).status, "open");
     assert.equal((await row("T1")).retry?.windows.length, 2);
+    assert.equal((await row("T1")).retry?.windows[1]?.timeLimitHours, 14);
+    assert(decisions.some((decision) => decision.title.includes("14h")));
     assert.deepEqual((await row("T1")).retry?.windows[0], history);
     await finish("T1");
     assert.equal((await row("T1")).status, "done");
     return;
   }
-  if (name === "retry-pre-spawn") {
+  if (name === "retry-pre-spawn" || name === "retry-context-validation") {
     const prepared = await prepare("T1");
+    const historicalInput = { ...prepared.input, taskFile: "" };
+    // The current guard rejects this input. Replay the older native outcome against its retained dispatch binding.
+    await refuseTaskFile(historicalInput);
+    const error =
+      name === "retry-context-validation"
+        ? "Missing `context`. Provide the shared background for this batch — goal, constraints, and any contract the tasks share."
+        : "The call must provide exactly one of `task` or `taskFile`.";
     const fail = () =>
       call({
         action: "fail",
         id: "T1",
-        check: "native spawn",
-        firstError: "runner could not start",
+        check: "native dispatch",
+        firstError: error,
         failureClass: "harness",
-        evidence: "Native executor failed before any product code ran",
+        evidence: "Inspected native task parameter validation before any child ran",
       });
     refused(await fail());
+    for (let index = 0; index < 2; index += 1) {
+      const toolCallId = index === 0 ? prepared.toolCallId : `malformed-${sequence++}`;
+      if (index > 0) assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input: prepared.input }), undefined);
+      await hook("tool_result", {
+        toolName: "task",
+        toolCallId,
+        input: historicalInput,
+        isError: true,
+        details: { results: [] },
+        content: [{ type: "text", text: error }],
+      });
+      const guard = (await hook("tool_call", { toolName: "wait", toolCallId: `guard-${sequence++}`, input: {} })) as {
+        block?: boolean;
+        reason?: string;
+      };
+      assert.equal(guard.block, true);
+      assert(guard.reason?.includes(toolCallId));
+      assert(guard.reason?.includes(`${sessionId}:${toolCallId}:0`));
+      ok(await fail());
+      const current = await row("T1");
+      assert.equal(current.status, "in_progress");
+      assert.equal(current.attempt, prepared.item.attempt);
+      assert.equal(current.startedAt, prepared.item.startedAt);
+      assert.equal(current.retry?.windows[0]?.failures[index]?.origin, "dispatch");
+      assert.equal(current.retry?.windows[0]?.failures[index]?.childAgentId, undefined);
+      assert.equal(current.retry?.windows[0]?.openedAt, undefined);
+      assert.equal(current.retry?.windows[0]?.harnessRepair, undefined);
+      assert.equal(current.retry?.windows[0]?.stop, undefined);
+      ok(await fail());
+      await reload();
+      ok(await fail());
+      assert.equal((await row("T1")).retry?.windows[0]?.failures.length, index + 1);
+      assert.equal((await row("T1")).attempt, prepared.item.attempt);
+      assert.equal(await hook("tool_call", { toolName: "wait", toolCallId: `cleared-${sequence++}`, input: {} }), undefined);
+    }
+    const { taskFile: _taskFile, ...corrected } = prepared.input;
+    const next = { ...prepared, input: corrected, toolCallId: `corrected-${sequence++}` };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: next.toolCallId, input: corrected }), undefined);
+    await publish(next, "CorrectedWorker");
+    ok(await done("T1", "CorrectedWorker"));
+    assert.equal((await row("T1")).status, "done");
+    assert.equal((await row("T1")).attempt, prepared.item.attempt);
+    assert.equal((await row("T1")).retry?.windows[0]?.harnessRepair, undefined);
+    return;
+  }
+  if (name === "retry-batch-validation" || name === "retry-batch-after-spawn") {
+    const items: LedgerItem[] = [];
+    for (const id of ["T1", "T3"]) {
+      ok(await call({ action: "start", id }));
+      items.push(await row(id));
+    }
+    const current = await ledger();
+    const input = {
+      context: "Independent implementation assignments",
+      tasks: items.map((item) => ({
+        agent: item.dispatchAgent,
+        task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { [item.id]: item.attempt } })}\nImplement ${item.title}`,
+      })),
+    };
+    const toolCallId = `batch-${sequence++}`;
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
+    const error = "Task 2 must provide exactly one of `task` or `taskFile`.";
+    const first = { item: items[0] as LedgerItem, current, input, toolCallId };
+    if (name === "retry-batch-after-spawn") await publish(first, "BatchSucceeded", { finalResult: false });
     await hook("tool_result", {
       toolName: "task",
-      toolCallId: prepared.toolCallId,
-      input: prepared.input,
+      toolCallId,
+      input: { ...input, tasks: input.tasks.map((task, index) => (index === 1 ? { ...task, taskFile: "" } : task)) },
       isError: true,
-      details: { results: [] },
-      content: [{ type: "text", text: "runner could not start" }],
+      details: { results: name === "retry-batch-after-spawn" ? [{ id: "BatchSucceeded", index: 0, exitCode: 0 }] : [] },
+      content: [{ type: "text", text: error }],
     });
-    ok(await fail());
-    const current = await row("T1");
-    assert.equal(current.status, "open");
-    assert.equal(current.retry?.windows[0]?.failures[0]?.failureClass, "harness");
-    assert.equal(current.retry?.windows[0]?.failures[0]?.childAgentId, undefined);
-    ok(await fail());
-    assert.equal((await row("T1")).retry?.windows[0]?.failures.length, 1);
-    const next = await prepare("T1");
-    await hook("tool_result", {
-      toolName: "task",
-      toolCallId: next.toolCallId,
-      input: next.input,
-      isError: true,
-      details: { results: [{ id: "Unspawned", index: 0, exitCode: 1, error: "runner startup rejected before registry creation" }] },
-      content: [],
-    });
-    ok(await fail());
-    assert.equal((await row("T1")).retry?.windows[0]?.stop?.reason, "harness");
+    if (name === "retry-batch-after-spawn") ok(await done("T1", "BatchSucceeded"));
+    for (const item of items.filter((item) => name === "retry-batch-validation" || item.id === "T3")) {
+      ok(
+        await call({
+          action: "fail",
+          id: item.id,
+          check: "native batch",
+          firstError: error,
+          failureClass: "harness",
+          evidence: "Inspected native batch result and lifecycle observations",
+        }),
+      );
+      const updated = await row(item.id);
+      assert.equal(updated.retry?.windows[0]?.failures[0]?.origin, name === "retry-batch-validation" ? "dispatch" : "execution");
+      assert.equal(updated.status, name === "retry-batch-validation" ? "in_progress" : "open");
+      if (name === "retry-batch-validation") {
+        assert.equal(updated.attempt, item.attempt);
+        assert.equal(updated.retry?.windows[0]?.openedAt, undefined);
+        assert.equal(updated.retry?.windows[0]?.harnessRepair, undefined);
+      } else assert(updated.retry?.windows[0]?.harnessRepair);
+    }
+    if (name === "retry-batch-validation") {
+      const correctedCall = `corrected-batch-${sequence++}`;
+      assert.equal(await hook("tool_call", { toolName: "task", toolCallId: correctedCall, input }), undefined);
+      for (const [index, item] of items.entries())
+        await publish({ item, current, input, toolCallId: correctedCall }, `CorrectedBatch${index}`, { index, finalResult: false });
+      await hook("tool_result", {
+        toolName: "task",
+        toolCallId: correctedCall,
+        input,
+        isError: false,
+        details: { results: items.map((_, index) => ({ id: `CorrectedBatch${index}`, index, exitCode: 0 })) },
+        content: [],
+      });
+      for (const [index, item] of items.entries()) {
+        ok(await done(item.id, `CorrectedBatch${index}`));
+        assert.equal((await row(item.id)).status, "done");
+      }
+    }
+    return;
+  }
+  if (name === "retry-post-spawn" || name === "retry-ambiguous-spawn") {
+    for (let index = 0; index < 2; index += 1) {
+      const prepared = await prepare("T1");
+      const error = "The call must provide exactly one of `task` or `taskFile`.";
+      const childAgentId = `Executed${index}`;
+      if (name === "retry-post-spawn") await publish(prepared, childAgentId, { finalError: error });
+      else
+        await hook("tool_result", {
+          toolName: "task",
+          toolCallId: prepared.toolCallId,
+          input: prepared.input,
+          isError: true,
+          details: { results: [] },
+          content: [{ type: "text", text: "runner could not start" }],
+        });
+      ok(
+        await call({
+          action: "fail",
+          id: "T1",
+          ...(name === "retry-post-spawn" ? { childAgentId } : {}),
+          failureClass: "harness",
+          check: "native execution",
+          firstError: error,
+          evidence: "Inspected owned native failure",
+        }),
+      );
+      const current = await row("T1");
+      assert.equal(current.retry?.windows[0]?.failures[index]?.origin, "execution");
+      assert(current.retry?.windows[0]?.harnessRepair);
+      assert.equal(current.status, index === 0 ? "open" : "blocked");
+    }
     return;
   }
   if (name === "retry-expiry-live") {
@@ -2281,7 +2416,68 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
 
-  if (name === "heavy-harness-retry" || name === "heavy-cancel-verify") {
+  if (name === "time-limit-long-run") {
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    try {
+      const implementation = await prepare("T1");
+      await publish(implementation, "LongImplementer", { status: "running", nativeStatus: "started", finalResult: false });
+      now += 12 * 60 * 60 * 1000;
+      await publish(implementation, "LongImplementer");
+      ok(await done("T1", "LongImplementer"));
+      const receipt = (await row("T1")).receipt;
+      assert(receipt);
+      const started = await call({ action: "verify", id: "T1" });
+      ok(started);
+      const item = await row("T1");
+      const current = await ledger();
+      const input = {
+        agent: item.verification?.dispatchAgent,
+        task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, verify: { T1: item.verification?.attempt } })}\nIndependently run long acceptance`,
+        outputSchema: started.details?.outputSchema,
+        schemaMode: "strict",
+      };
+      const verifier = { item, current, input, toolCallId: `long-verify-${sequence++}` };
+      assert.equal(await hook("tool_call", { toolName: "task", toolCallId: verifier.toolCallId, input }), undefined);
+      await publish(verifier, "LongVerifier", {
+        createdAt: item.verification?.startedAt,
+        status: "running",
+        nativeStatus: "started",
+        finalResult: false,
+      });
+      now += 12 * 60 * 60 * 1000;
+      await publish(verifier, "LongVerifier", {
+        createdAt: item.verification?.startedAt,
+        content: JSON.stringify({
+          rowId: "T1",
+          planSha256: current.planSha256,
+          attempt: item.verification?.attempt,
+          verdict: "PASS",
+          summary: "Twelve-hour suite passed independently",
+          evidence: ["12h command output"],
+        }),
+      });
+      ok(await done("T1", "LongVerifier"));
+      assert.equal((await row("T1")).status, "done");
+      assert.deepEqual((await row("T1")).receipt, receipt);
+      await finish("T2");
+      await finish("T3");
+      const gate = await prepare("F3");
+      await publish(gate, "LongQA", { status: "running", nativeStatus: "started", finalResult: false });
+      now += 12 * 60 * 60 * 1000;
+      await publish(gate, "LongQA");
+      ok(await done("F3", "LongQA"));
+      assert.equal((await row("F3")).status, "done");
+      await reload();
+      assert.equal((await row("T1")).timeLimitHours, 14);
+      assert.equal((await row("F3")).retry?.windows[0]?.timeLimitHours, 14);
+    } finally {
+      Date.now = originalNow;
+    }
+    return;
+  }
+  if (name === "heavy-harness-retry" || name === "heavy-cancel-verify" || name === "heavy-pre-spawn") {
     await publish(await prepare("T1"), "Implementer");
     ok(await done("T1", "Implementer"));
     const implementation = await row("T1");
@@ -2307,6 +2503,55 @@ async function scenario(name: string, root: string): Promise<void> {
       refused(await call({ action: "start", id: "T2" }));
     };
     const first = await verify();
+    if (name === "heavy-pre-spawn") {
+      await refuseTaskFile({ ...first.input, taskFile: "" });
+      const error = "The call must provide exactly one of `task` or `taskFile`.";
+      await hook("tool_result", {
+        toolName: "task",
+        toolCallId: first.toolCallId,
+        input: { ...first.input, taskFile: "" },
+        isError: true,
+        details: { results: [] },
+        content: [{ type: "text", text: error }],
+      });
+      const fail = () =>
+        call({
+          action: "fail",
+          id: "T1",
+          check: "native verifier dispatch",
+          firstError: error,
+          failureClass: "harness",
+          evidence: "Native validation rejected the assignment before a child ran",
+        });
+      ok(await fail());
+      await unchanged();
+      assert.deepEqual((await row("T1")).verification, {});
+      assert.equal((await row("T1")).retry?.windows[0]?.openedAt, undefined);
+      await reload();
+      ok(await fail());
+      await unchanged();
+      const next = await verify();
+      assert.notEqual(next.item.verification?.attempt, first.item.verification?.attempt);
+      await publish(next, "CorrectedVerifier", {
+        createdAt: next.item.verification?.startedAt,
+        content: JSON.stringify({
+          rowId: "T1",
+          planSha256: next.current.planSha256,
+          attempt: next.item.verification?.attempt,
+          verdict: "PASS",
+          summary: "Independent acceptance passed",
+          evidence: ["Observed native command results"],
+        }),
+      });
+      ok(await done("T1", "CorrectedVerifier"));
+      const current = await row("T1");
+      assert.equal(current.status, "done");
+      assert.deepEqual(current.receipt, implementation.receipt);
+      assert.equal(current.retry?.windows[0]?.failures.length, 1);
+      assert.equal(current.retry?.windows[0]?.failures[0]?.origin, "dispatch");
+      assert.equal(current.retry?.windows[0]?.harnessRepair, undefined);
+      return;
+    }
     if (name === "heavy-cancel-verify") {
       await publish(first, "CancelledVerifier", {
         createdAt: first.item.verification?.startedAt,
@@ -2674,7 +2919,7 @@ async function scenario(name: string, root: string): Promise<void> {
     // The ruling is part of the shared bundle, so it survives a session restart.
     await reload();
     ok(await call({ action: "status" }));
-    assert.equal((await ledger()).version, 9);
+    assert.equal((await ledger()).version, 10);
     assert.deepEqual(
       (await ledger()).rulings.map((entry) => [entry.id, entry.decidedBy]),
       [["R1", "user"]],
@@ -2920,6 +3165,13 @@ if (process.env[CHILD_ENV]) {
       "retry-grant-changed",
       "retry-auto-grant",
       "retry-pre-spawn",
+      "retry-context-validation",
+      "retry-post-spawn",
+      "retry-ambiguous-spawn",
+      "retry-batch-validation",
+      "retry-batch-after-spawn",
+      "heavy-pre-spawn",
+      "time-limit-long-run",
       "retry-expiry-live",
       "retry-native-cancellation",
       "delivery-repair",

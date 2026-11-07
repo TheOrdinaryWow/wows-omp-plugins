@@ -36,6 +36,8 @@ export interface FailedOutcome {
   childAgentId?: string;
   at: number;
   failureClass: FailureClass;
+  /** Only native pre-execution validation authenticates `dispatch`; absent historical origins retain execution accounting. */
+  origin?: "dispatch" | "execution";
   check: string;
   firstError: string;
   signature: string;
@@ -49,8 +51,12 @@ export type DecidedBy = "user" | "setting";
 export interface RetryWindow {
   /** Accepted dispatch starting the current product-work phase; gate reruns and verifiers start fresh clocks. */
   openedAt?: number;
+  /** Fixed for this window; only a user-confirmed grant may change the limit. */
+  timeLimitHours?: number;
   failures: FailedOutcome[];
   harnessRepair?: { failureKey: string; attempt?: string };
+  /** An implementation reservation with a recorded dispatch rejection, not yet accepted for execution. */
+  dispatchReservation?: string;
   stop?: { reason: "signature" | "attempts" | "elapsed" | "harness"; at: number };
   grant?: { confirmedAt: number; note: string; decidedBy: DecidedBy };
 }
@@ -60,6 +66,8 @@ export interface LedgerItem {
   title: string;
   agent: string;
   acceptance: string;
+  /** Plan-approved limit (default 4h); retry windows may carry a user-confirmed override. */
+  timeLimitHours?: number;
   /** Resolved against the live spawnable roster. */
   dispatchAgent?: string;
   dependsOn: string[];
@@ -124,7 +132,9 @@ export interface OwnerRuling {
 }
 
 export interface ExecutionLedger {
-  version: 9;
+  version: 10;
+  /** Earlier plans did not approve Time limit fields, even if their free text contained them. */
+  planTimeLimits: boolean;
   ledgerId: string;
   planFilePath: string;
   planSha256: string;
@@ -228,7 +238,7 @@ export interface ParsedPlan {
 export function parsePlanChecklist(
   planContent: string,
   availableAgents?: readonly string[],
-  options: { legacy?: boolean } = {},
+  options: { legacy?: boolean; ignoreTimeLimits?: boolean } = {},
 ): ParsedPlan {
   const legacy = options.legacy === true;
   const items: ParsedItem[] = [];
@@ -240,6 +250,7 @@ export function parsePlanChecklist(
   const field = legacy
     ? /^\s+(?:-\s*)?(Agent|Depends on|Acceptance):\s*(.*?)\s*$/i
     : /^\s+(?:-\s*)?(Agent|Depends on|Acceptance|Tier):\s*(.*?)\s*$/i;
+  const timeLimitField = /^\s+(?:-\s*)?Time limit:\s*(.*?)\s*$/i;
   let section: "tasks" | "gates" | undefined;
   let hasTasks = false;
   let hasGates = false;
@@ -248,7 +259,27 @@ export function parsePlanChecklist(
   let fence: { marker: string; length: number } | undefined;
 
   const finishTask = () => {
-    if (!current || section !== "tasks") return;
+    if (!current) return;
+    current.timeLimitHours = 4;
+    if (!options.ignoreTimeLimits) {
+      let seen = false;
+      for (const line of body) {
+        const match = timeLimitField.exec(line);
+        if (!match) continue;
+        if (seen) errors.push(`${current.id}: duplicate Time limit field`);
+        seen = true;
+        try {
+          current.timeLimitHours = parseTimeLimit(match[1] ?? "");
+        } catch (error) {
+          errors.push(`${current.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    if (section !== "tasks") {
+      body = [];
+      current = undefined;
+      return;
+    }
     const fields = new Map<string, string>();
     for (const line of body) {
       const match = field.exec(line);
@@ -345,8 +376,9 @@ export function parsePlanChecklist(
         }
         entry.agent = expected?.agent ?? "task";
         gates.push(entry);
+        current = entry;
       }
-    } else if (current && section === "tasks") {
+    } else if (current) {
       body.push(line);
     }
   }
@@ -390,21 +422,24 @@ function buildLedger(
   availableAgents: readonly string[] | undefined,
   gitBaseline: string | undefined,
   legacy: boolean,
+  ignoreTimeLimits = false,
 ): ExecutionLedger {
   if (gitBaseline !== undefined && !GIT_SHA.test(gitBaseline)) throw new Error("Invalid Git baseline commit");
-  const parsed = parsePlanChecklist(planContent, availableAgents, { legacy });
+  const parsed = parsePlanChecklist(planContent, availableAgents, { legacy, ignoreTimeLimits });
   if (parsed.errors.length) throw new Error(parsed.errors.join("; "));
   const now = Date.now();
   const withDispatch = (item: ParsedItem): LedgerItem => ({
     ...item,
     dispatchAgent: resolveAgent(item.agent, availableAgents).dispatchAgent,
+    timeLimitHours: item.timeLimitHours ?? 4,
     // Plan checkboxes are not receipts. Even checked rows require execution evidence.
     status: "open",
     updatedAt: now,
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 9,
+    version: 10,
+    planTimeLimits: !ignoreTimeLimits,
     ledgerId: randomUUID(),
     planFilePath,
     planSha256: planDigest(planContent),
@@ -530,7 +565,11 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const acceptance = `${cell(accepted.text)}${accepted.ruling ? ` (amended by ${accepted.ruling.id})` : ""}`;
     lines.push(compact ? row : `${row} ${acceptance} | ${cell(item.evidence ?? "—")} |`);
     if (item.id === changedId) {
-      notes.push(`${item.id} acceptance: ${acceptance}`, `${item.id} evidence: ${cell(item.evidence ?? "—")}`);
+      notes.push(
+        `${item.id} acceptance: ${acceptance}`,
+        `${item.id} time limit: ${effectiveTimeLimitHours(item)}h`,
+        `${item.id} evidence: ${cell(item.evidence ?? "—")}`,
+      );
       if (accepted.ruling) {
         notes.push(
           `${item.id} ruling ${accepted.ruling.id} (${accepted.ruling.decidedBy === "setting" ? "setting-approved" : "user-confirmed"} amendment of the approved plan): ${cell(accepted.ruling.note)}`,
@@ -554,7 +593,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const window = retryWindow(item);
     if (window) {
       notes.push(
-        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total; opened ${window.openedAt ?? "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
+        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total diagnostics; time limit ${effectiveTimeLimitHours(item)}h; opened ${window.openedAt ?? "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
       );
     }
   }
@@ -625,12 +664,27 @@ function validVerification(value: unknown): boolean {
 /** Product-work clock is checked at host events; P1's passive remote waiting is exempt. */
 export const RETRY_LIMIT_MS = 4 * 60 * 60 * 1000;
 
+/** One syntax for plan fields and user-confirmed retry overrides. */
+export function parseTimeLimit(value: string): number {
+  if (!/^(?:[1-9]|[1-6]\d|7[0-2])h$/i.test(value)) throw new Error("Time limit must be <N>h with integer hours from 1 to 72");
+  return Number(value.slice(0, -1));
+}
+
+function validTimeLimit(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 72;
+}
+
+/** Every phase, including independent verification, uses its current window's approved limit. */
+export function effectiveTimeLimitHours(row: LedgerItem): number {
+  return retryWindow(row)?.timeLimitHours ?? row.timeLimitHours ?? 4;
+}
+
 export function retryWindow(row: LedgerItem): RetryWindow | undefined {
   return row.retry?.windows.at(-1);
 }
 
 function countedFailures(window: RetryWindow): FailedOutcome[] {
-  return window.failures.filter((failure) => failure.failureClass !== "harness");
+  return window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass !== "harness");
 }
 
 /** Strip volatile log metadata narrowly; product paths, assertion values and error codes stay meaningful. */
@@ -658,19 +712,22 @@ export function assertRetryAvailable(row: LedgerItem, now = Date.now()): void {
     (!row.id.startsWith("F") || row.status === "in_progress") &&
     (!row.receipt || row.verification?.attempt !== undefined) &&
     window?.openedAt !== undefined &&
-    now - window.openedAt >= RETRY_LIMIT_MS &&
+    now - window.openedAt >= effectiveTimeLimitHours(row) * 60 * 60 * 1000 &&
     row.status !== "done"
   ) {
-    throw new Error(`${row.id} retry stopped (elapsed four-hour product-work limit); an owner-confirmed retry is required`);
+    throw new Error(
+      `${row.id} retry stopped (elapsed ${effectiveTimeLimitHours(row)}h product-work limit); an owner-confirmed retry is required`,
+    );
   }
 }
 
-/** Called only once the complete native assignment batch has validated. */
+/** Called only after native execution was observed; rejected dispatches never start a clock or consume harness repair. */
 export function noteRetryDispatch(row: LedgerItem, now = Date.now()): void {
   assertRetryAvailable(row, now);
-  row.retry ??= { windows: [{ failures: [] }] };
+  row.retry ??= { windows: [{ failures: [], timeLimitHours: row.timeLimitHours ?? 4 }] };
   const window = retryWindow(row) as RetryWindow;
   window.openedAt ??= now;
+  delete window.dispatchReservation;
   if (window.harnessRepair && window.harnessRepair.attempt === undefined) window.harnessRepair.attempt = currentAttempt(row);
 }
 
@@ -685,10 +742,16 @@ export function recordFailure(ledger: ExecutionLedger, row: LedgerItem, failure:
   ) {
     throw new Error(`${row.id} failure does not match its current attempt`);
   }
-  row.retry ??= { windows: [{ failures: [] }] };
+  row.retry ??= { windows: [{ failures: [], timeLimitHours: row.timeLimitHours ?? 4 }] };
   const window = retryWindow(row) as RetryWindow;
   const diagnostic = { ...failure, signature: failureSignature(failure.check, failure.firstError) };
   window.failures.push(diagnostic);
+  if (failure.origin === "dispatch") {
+    if (!failure.verifyAttempt) window.dispatchReservation = row.attempt;
+    if (failure.verifyAttempt) resetVerification(row);
+    row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
+    return true;
+  }
   if (failure.failureClass === "harness") {
     if (window.harnessRepair) window.stop ??= { reason: "harness", at: failure.at };
     else window.harnessRepair = { failureKey: failure.outcomeKey };
@@ -725,12 +788,11 @@ export function expireRetryWindows(ledger: ExecutionLedger, now = Date.now()): b
       !window ||
       window.stop ||
       window.openedAt === undefined ||
-      now - window.openedAt < RETRY_LIMIT_MS
+      now - window.openedAt < effectiveTimeLimitHours(row) * 60 * 60 * 1000
     )
       continue;
     window.stop = { reason: "elapsed", at: now };
-    const reason =
-      "Four-hour product-work phase expired at this host event. Cancel any live children and observe native terminal settlement before further work.";
+    const reason = `${effectiveTimeLimitHours(row)}h product-work phase expired at this host event. Cancel any live children and observe native terminal settlement before further work.`;
     if (row.tier === "heavy" && row.receipt) {
       row.status = "blocked";
       row.evidence =
@@ -748,9 +810,19 @@ export function automaticRetryGrants(row: LedgerItem): number {
 }
 
 /** Caller must settle the grant (user dialog or `atlasRetry` setting) and recheck the proposal outside/inside its transaction. */
-export function grantRetry(ledger: ExecutionLedger, row: LedgerItem, note: string, decidedBy: DecidedBy, now = Date.now()): void {
+export function grantRetry(
+  ledger: ExecutionLedger,
+  row: LedgerItem,
+  note: string,
+  decidedBy: DecidedBy,
+  now = Date.now(),
+  timeLimit?: string,
+): void {
   if (!retryWindow(row)?.stop || !note.trim()) throw new Error(`${row.id} requires an exhausted window and a reason for another retry`);
-  row.retry?.windows.push({ failures: [], grant: { confirmedAt: now, note: note.trim(), decidedBy } });
+  if (timeLimit !== undefined && decidedBy !== "user")
+    throw new Error("A retry timeLimit requires explicit user confirmation in the dialog");
+  const timeLimitHours = timeLimit === undefined ? effectiveTimeLimitHours(row) : parseTimeLimit(timeLimit);
+  row.retry?.windows.push({ failures: [], timeLimitHours, grant: { confirmedAt: now, note: note.trim(), decidedBy } });
   const reason = `${decidedBy === "user" ? "Owner confirmed" : "The atlasRetry setting granted"} a new retry window: ${note.trim()}`;
   if (row.tier === "heavy" && row.receipt) {
     row.status = "in_progress";
@@ -760,7 +832,7 @@ export function grantRetry(ledger: ExecutionLedger, row: LedgerItem, note: strin
 }
 
 /** `version` below nine predates `decidedBy`; the upgrade fills it in afterwards. */
-function validRetry(value: LedgerItem["retry"], version: number): boolean {
+function validRetry(value: LedgerItem["retry"], version: number, approvedLimit = 4): boolean {
   if (value === undefined) return true;
   if (!value || !Array.isArray(value.windows) || !value.windows.length) return false;
   const outcomes = new Set<string>();
@@ -768,7 +840,13 @@ function validRetry(value: LedgerItem["retry"], version: number): boolean {
     if (
       !window ||
       !Array.isArray(window.failures) ||
+      (version >= 10 && !validTimeLimit(window.timeLimitHours)) ||
+      (version >= 10 &&
+        (index === 0
+          ? window.timeLimitHours !== approvedLimit
+          : window.timeLimitHours !== value.windows[index - 1]?.timeLimitHours && window.grant?.decidedBy !== "user")) ||
       (window.openedAt !== undefined && !Number.isFinite(window.openedAt)) ||
+      (window.dispatchReservation !== undefined && !nonEmpty(window.dispatchReservation)) ||
       (index > 0 && (!window.grant || !value.windows[index - 1]?.stop)) ||
       (window.grant !== undefined &&
         (!Number.isFinite(window.grant.confirmedAt) ||
@@ -792,6 +870,7 @@ function validRetry(value: LedgerItem["retry"], version: number): boolean {
         ].every(nonEmpty) ||
         !Number.isFinite(failure.at) ||
         !["product", "harness", "unknown"].includes(failure.failureClass) ||
+        (failure.origin !== undefined && !["dispatch", "execution"].includes(failure.origin)) ||
         !nonEmpty(failure.signature) ||
         outcomes.has(failure.outcomeKey) ||
         (failure.verifyAttempt !== undefined && !nonEmpty(failure.verifyAttempt)) ||
@@ -805,12 +884,17 @@ function validRetry(value: LedgerItem["retry"], version: number): boolean {
     const repeated = counted.length >= 2 && counted.at(-2)?.signature === counted.at(-1)?.signature;
     if (
       !window.stop &&
-      (counted.length >= 3 || repeated || window.failures.filter((failure) => failure.failureClass === "harness").length >= 2)
+      (counted.length >= 3 ||
+        repeated ||
+        window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass === "harness").length >= 2)
     )
       return false;
     return (
       window.harnessRepair === undefined ||
-      (window.failures.some((failure) => failure.outcomeKey === window.harnessRepair?.failureKey && failure.failureClass === "harness") &&
+      (window.failures.some(
+        (failure) =>
+          failure.outcomeKey === window.harnessRepair?.failureKey && failure.origin !== "dispatch" && failure.failureClass === "harness",
+      ) &&
         (window.harnessRepair.attempt === undefined || nonEmpty(window.harnessRepair.attempt)))
     );
   });
@@ -829,7 +913,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     version !== 6 &&
     version !== 7 &&
     version !== 8 &&
-    version !== 9
+    version !== 9 &&
+    version !== 10
   ) {
     throw new Error("Unsupported execution ledger version");
   }
@@ -851,7 +936,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
         !["direct", "pr", "ship"].includes(saved.delivery))) ||
     (version >= 7 && !Array.isArray(saved.rulings)) ||
     !Number.isFinite(saved.createdAt) ||
-    (version !== 1 && saved.gitBaseline !== undefined && (typeof saved.gitBaseline !== "string" || !GIT_SHA.test(saved.gitBaseline)))
+    (version !== 1 && saved.gitBaseline !== undefined && (typeof saved.gitBaseline !== "string" || !GIT_SHA.test(saved.gitBaseline))) ||
+    (version >= 10 && typeof saved.planTimeLimits !== "boolean")
   ) {
     throw new Error("Malformed execution ledger rows, creation time, or Git baseline");
   }
@@ -861,6 +947,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     saved.items.map((item) => item?.agent),
     undefined,
     legacy,
+    version < 10 || !saved.planTimeLimits,
   );
   if (
     saved.items.length !== expected.items.length ||
@@ -943,7 +1030,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       (!legacy && planned && row.tier !== definition.tier) ||
       (!legacy && !validVerification(row.verification)) ||
       (!legacy && row.verification !== undefined && row.tier !== "heavy") ||
-      (version >= 8 && !validRetry(row.retry, version))
+      (version >= 10 && (!validTimeLimit(row.timeLimitHours) || row.timeLimitHours !== (planned ? definition.timeLimitHours : 4))) ||
+      (version >= 8 && !validRetry(row.retry, version, row.timeLimitHours))
     ) {
       throw new Error(`Malformed execution ledger row ${definition?.id ?? index}`);
     }
@@ -1015,7 +1103,15 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     for (const ruling of saved.rulings) ruling.decidedBy = "user";
     for (const row of rows) for (const window of row.retry?.windows ?? []) if (window.grant) window.grant.decidedBy = "user";
   }
-  saved.version = 9;
+  // Version ten adds prospective dispatch origins and limits; never reclassify historical failures.
+  if (version < 10) {
+    saved.planTimeLimits = false;
+    for (const row of rows) {
+      row.timeLimitHours = 4;
+      for (const window of row.retry?.windows ?? []) window.timeLimitHours = 4;
+    }
+  }
+  saved.version = 10;
   return saved;
 }
 
@@ -1125,6 +1221,7 @@ export function addFixRow(
     agent,
     acceptance,
     dispatchAgent: resolveAgent(agent, availableAgents).dispatchAgent,
+    timeLimitHours: 4,
     dependsOn: [],
     status: "open",
     tier,
@@ -1172,6 +1269,7 @@ export function addDiscoveredRow(
     agent,
     acceptance,
     dispatchAgent: resolveAgent(agent, availableAgents).dispatchAgent,
+    timeLimitHours: 4,
     dependsOn: [],
     status: "open",
     tier: checkedTier(found.tier),

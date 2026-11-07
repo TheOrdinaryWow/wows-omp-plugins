@@ -14,6 +14,7 @@ import {
   ledgerRows,
   noteRetryDispatch,
   planDigest,
+  retryWindow,
   verificationStatus,
 } from "./ledger.ts";
 
@@ -23,6 +24,8 @@ interface Assignment {
   toolCallId: string;
   outcomeKey: string;
   nativeError?: string;
+  /** Native validation rejection observed before any member acquired a child or job. */
+  dispatchRejected?: boolean;
   cancelled?: boolean;
   ledgerId: string;
   sessionId: string;
@@ -85,6 +88,17 @@ function suppliesObjectSchema(value: unknown): boolean {
     return false;
   }
 }
+/** These native task validation returns happen before the host derives or schedules any spawns. */
+const DISPATCH_REJECTIONS = [
+  /^(?:The call|Task \d+(?: \(`[^`]+`\))?) must provide exactly one of `task` or `taskFile`\.$/,
+  /^Missing `context`\. Provide the shared background for this batch — goal, constraints, and any contract the tasks share\.$/,
+  /^Missing `tasks`\. Provide (?:at least one task item with `task` or `taskFile`|a `tasks` array \(one subagent per item\) with a shared `context`)\.$/,
+  /^Top-level `(?:task` or `taskFile|agent)` is not part of the batch shape\. (?:Put the work in `tasks\[\]` items|Set `tasks\[\]\.agent` instead)\.$/,
+  /^Duplicate task name `[^`]+`(?: \/ `[^`]+`)?\. Provided names must be unique within a call \(case-insensitive\)\.$/,
+  /^task\.file is disabled, so the task tool does not accept `taskFile`\.$/,
+  /^The task tool uses `outputSchema`; rename the stale `schema` field\.$/,
+];
+
 interface FailureDetails {
   failureClass: FailureClass;
   check: string;
@@ -341,8 +355,13 @@ export class ChildEvidence {
       if (row && this.pendingRowChildren(sessionId, ledger.ledgerId, id).length)
         throw new Error(`${id} still has live native work; wait for terminal settlement before replacement`);
       if (row && this.unrecordedFailures(sessionId, ledger).includes(id))
-        throw new Error(`${id} has an unrecorded native failure; record atlas_ledger fail before replacement`);
-      if (row) noteRetryDispatch(row, dispatchedAt);
+        throw new Error(
+          `${id} has an unrecorded native failure (${this.unrecordedOutcomeDetails(sessionId, ledger)
+            .filter((outcome) => outcome.rowId === id)
+            .map((outcome) => `${outcome.toolCallId}, outcome ${outcome.outcomeKey}`)
+            .join("; ")}); record atlas_ledger fail before replacement`,
+        );
+      if (row) row.retry ??= { windows: [{ failures: [], timeLimitHours: row.timeLimitHours ?? 4 }] };
     }
     this.#dispatches.set(`${sessionId}:${toolCallId}`, assignments);
   }
@@ -434,9 +453,30 @@ export class ChildEvidence {
   }
 
   observeTaskResult(sessionId: string, toolCallId: string, details: unknown, isError = false, nativeError?: string): void {
+    // Only known native preflight returns prove rejection before execution. Tool arguments, a missing registry entry,
+    // or an empty result array alone never establish dispatch origin.
     const assignments = this.#dispatches.get(`${sessionId}:${toolCallId}`);
     if (!assignments) return;
     for (const assignment of assignments) assignment.returnedAt ??= Date.now();
+    if (
+      isError &&
+      typeof nativeError === "string" &&
+      DISPATCH_REJECTIONS.some((pattern) => pattern.test(nativeError.trim())) &&
+      (!object(details) || ((!Array.isArray(details.results) || !details.results.length) && !details.async && !details.progress)) &&
+      assignments.every(
+        (assignment) =>
+          !assignment.nativeChildId &&
+          !assignment.nativeJobId &&
+          ![...this.#children.values()].some((child) => child.assignment === assignment),
+      )
+    ) {
+      for (const assignment of assignments) {
+        assignment.dispatchRejected = true;
+        assignment.finalStatus = "failed";
+        assignment.nativeError = nativeError.trim();
+      }
+      return;
+    }
     // The tool-level flag ORs every member's payload, so it can decide only a call without result details.
     if (!object(details)) {
       if (isError)
@@ -649,12 +689,54 @@ export class ChildEvidence {
     );
   }
 
+  /** Persist clocks only after a native execution observation (ambiguous terminal outcomes retain normal accounting). */
+  noteObservedDispatches(sessionId: string, ledger: ExecutionLedger): boolean {
+    let changed = false;
+    for (const assignments of this.#dispatches.values())
+      for (const assignment of assignments) {
+        if (assignment.sessionId !== sessionId || assignment.ledgerId !== ledger.ledgerId || assignment.dispatchRejected) continue;
+        if (
+          !assignment.nativeChildId &&
+          assignment.finalStatus === undefined &&
+          ![...this.#children.values()].some((child) => child.assignment === assignment)
+        )
+          continue;
+        for (const [id, attempt] of Object.entries(assignment.rows)) {
+          const row = ledgerRows(ledger).find((row) => row.id === id);
+          if (
+            row?.status !== "in_progress" ||
+            (assignment.verify ? row.verification?.attempt : row.attempt) !== attempt ||
+            (!assignment.verify && row.receipt) ||
+            row.retry?.windows.at(-1)?.stop
+          )
+            continue;
+          const window = retryWindow(row);
+          if (
+            window?.openedAt !== undefined &&
+            window.dispatchReservation === undefined &&
+            (!window.harnessRepair || window.harnessRepair.attempt !== undefined)
+          )
+            continue;
+          noteRetryDispatch(row, assignment.dispatchedAt);
+          changed = true;
+        }
+      }
+    return changed;
+  }
+
   /**
    * In-progress rows whose current attempt has a final native outcome Atlas has not recorded with atlas_ledger. A row
    * with another child of that attempt still running (a replacement or a woken child) is still being worked, and a
    * HEAVY row waiting for `verify` has no child to report. Observation only: it never authenticates completion.
    */
   unrecordedOutcomes(sessionId: string, ledger: ExecutionLedger): string[] {
+    return [...new Set(this.unrecordedOutcomeDetails(sessionId, ledger).map((outcome) => outcome.rowId))];
+  }
+
+  unrecordedOutcomeDetails(
+    sessionId: string,
+    ledger: ExecutionLedger,
+  ): Array<{ rowId: string; toolCallId: string; outcomeKey: string; status: string }> {
     const assignments = [...this.#dispatches.values()]
       .flat()
       .filter((assignment) => assignment.sessionId === sessionId && assignment.ledgerId === ledger.ledgerId);
@@ -666,8 +748,20 @@ export class ChildEvidence {
       const verifying = verificationStatus(row) === "running";
       if (row.status !== "in_progress" || (row.receipt && !verifying)) return [];
       const attempt = verifying ? row.verification?.attempt : row.attempt;
-      const own = assignments.filter((assignment) => assignment.verify === verifying && assignment.rows[row.id] === attempt);
-      return own.length && !own.some(running) ? [row.id] : [];
+      const own = assignments.filter(
+        (assignment) =>
+          assignment.verify === verifying &&
+          assignment.rows[row.id] === attempt &&
+          !row.retry?.windows.some((window) => window.failures.some((failure) => failure.outcomeKey === assignment.outcomeKey)),
+      );
+      return own.length && !own.some(running)
+        ? own.map((assignment) => ({
+            rowId: row.id,
+            toolCallId: assignment.toolCallId,
+            outcomeKey: assignment.outcomeKey,
+            status: assignment.finalStatus ?? "unknown",
+          }))
+        : [];
     });
   }
   /** Excludes deliberate cancellation, which is an external blocker rather than a failed product cycle. */
@@ -714,11 +808,22 @@ export class ChildEvidence {
   /** Replay only the exact already-authenticated generation; a wake changes the outcome identity. */
   recordedFailure(sessionId: string, row: LedgerItem, childAgentId?: string): FailedOutcome | undefined {
     const child = childAgentId ? this.#children.get(`${sessionId}:${childAgentId}`) : undefined;
+    const pendingFailure = [...this.#dispatches.values()]
+      .flat()
+      .some(
+        (assignment) =>
+          assignment.sessionId === sessionId &&
+          assignment.rows[row.id] !== undefined &&
+          assignment.finalStatus === "failed" &&
+          !row.retry?.windows.some((window) => window.failures.some((failure) => failure.outcomeKey === assignment.outcomeKey)),
+      );
+    if (!childAgentId && pendingFailure) return undefined;
     return row.retry?.windows
       .flatMap((window) => window.failures)
       .find((failure) => {
         if (failure.sessionId !== sessionId || failure.childAgentId !== childAgentId) return false;
         if (child) return failure.outcomeKey === this.#outcomeKey(child);
+        if (!childAgentId && failure.origin === "dispatch" && failure.attempt === row.attempt) return true;
         if (row.status !== "in_progress") return true;
         if (failure.attempt !== row.attempt || failure.verifyAttempt !== row.verification?.attempt) return false;
         return (
@@ -738,7 +843,10 @@ export class ChildEvidence {
 
   /** Failed native results and successful children with failed acceptance share correlation, never success receipts. */
   async diagnostic(options: Omit<CaptureOptions, "childAgentId"> & { childAgentId?: string }): Promise<{
-    binding: Pick<FailedOutcome, "outcomeKey" | "attempt" | "verifyAttempt" | "toolCallId" | "sessionId" | "childAgentId" | "at">;
+    binding: Pick<
+      FailedOutcome,
+      "outcomeKey" | "attempt" | "verifyAttempt" | "toolCallId" | "sessionId" | "childAgentId" | "at" | "origin"
+    >;
     output: string;
     nativeStatus: "completed" | "failed";
   }> {
@@ -753,7 +861,8 @@ export class ChildEvidence {
             assignment.rows[row.id] === (options.verify ? row.verification?.attempt : row.attempt) &&
             (!assignment.nativeChildId || !options.registry.get(assignment.nativeChildId)) &&
             assignment.finalStatus === "failed" &&
-            assignment.nativeError,
+            assignment.nativeError &&
+            !row.retry?.windows.some((window) => window.failures.some((failure) => failure.outcomeKey === assignment.outcomeKey)),
         );
       if (matches.length !== 1 || !row.attempt || (matches[0]?.observingSettlement && !matches[0]?.settled))
         throw new Error("No unique terminal pre-spawn native failure for this assignment");
@@ -766,6 +875,7 @@ export class ChildEvidence {
           toolCallId: assignment.toolCallId,
           sessionId,
           at: Date.now(),
+          origin: assignment.dispatchRejected ? "dispatch" : "execution",
         },
         output: assignment.nativeError as string,
         nativeStatus: "failed",
@@ -781,6 +891,7 @@ export class ChildEvidence {
         sessionId,
         childAgentId: options.childAgentId,
         at: Date.now(),
+        origin: "execution",
       },
       output:
         captured.observed.finalStatus === "failed"
