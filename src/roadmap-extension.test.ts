@@ -241,7 +241,7 @@ async function createHarness(
   extensionsResult.runtime.sendMessage = (message) => {
     const content = typeof message === "string" ? message : message.content;
     assert.equal(typeof content, "string");
-    if (typeof content === "string") messages.push(content);
+    if (typeof content === "string" && (typeof message === "string" || message.display !== false)) messages.push(content);
   };
   for (const name of [
     "write",
@@ -1637,7 +1637,7 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.equal(stored.answer, "free");
 
         await command(h, "roadmap");
-        assert.match(h.messages.at(-1) ?? "", /Stages:\n- S01 \[planned\]/);
+        assert.match(h.messages.at(-1) ?? "", /Shop: 1 rounds, 1 stages, 0 open TODOs/);
         assert.match(h.messages.at(-1) ?? "", /Usage: \/roadmap/);
 
         assert(

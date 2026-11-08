@@ -1,17 +1,20 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { initTheme } from "@oh-my-pi/pi-tui";
 import type { NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
 import { z } from "zod";
 
 import type { AdrConnection } from "../plugins/roadmap/src/adr.ts";
 import { MESSAGE_TITLES, registerMessageTitles } from "../plugins/roadmap/src/cards.ts";
+import { registerCommands } from "../plugins/roadmap/src/commands.ts";
+import { renderRound, renderStage } from "../plugins/roadmap/src/documents.ts";
 import { type Actor, todo } from "../plugins/roadmap/src/operations.ts";
 import type { RoadmapSession, UiFactory } from "../plugins/roadmap/src/ses.ts";
 import { StageOrderPreference } from "../plugins/roadmap/src/settings.ts";
 import { checkReceipt, registerTools, statusReceipt, type ToolReceipt, toolResult } from "../plugins/roadmap/src/tools.ts";
+import { HeadlessUi } from "../plugins/roadmap/src/ui.ts";
 import { cleanupFixtures, diskFixture, planFixture } from "./roadmap-fixtures.ts";
 
 type Result = { content: { type: string; text: string }[]; details?: unknown; isError?: boolean };
@@ -94,7 +97,7 @@ describe("roadmap tool cards", () => {
     }
   });
 
-  test("a write receipt shows summary, warnings, handoff and changed files", async () => {
+  test("a write receipt keeps model instructions folded while showing operation facts", async () => {
     const { repo } = await diskFixture();
     const written = await todo(repo, main, {
       action: "add",
@@ -112,10 +115,13 @@ describe("roadmap tool cards", () => {
     expect(view.tone).toBe("warning");
     expect(text).toContain(written.summary);
     expect(text).toContain("Target stage is overdue.");
-    expect(text).toContain("Ship the payment flow.");
-    expect(text).toContain("Planning handoff");
+    expect(text).not.toContain("Ship the payment flow.");
+    expect(text).not.toContain("Model text");
     for (const file of written.changedFiles) expect(text).toContain(file.split("/").at(-1) as string);
-    expect(view.preview).toEqual({ lines: expect.any(Number) });
+    const expanded = tool("roadmap_todo").describeResult(toolResult(receipt), { ...options, expanded: true }, { action: "add" });
+    const folded = expanded.body?.find((child) => typeof child === "object" && child && "key" in child && child.key === "model-text");
+    expect(folded).toMatchObject({ p: { collapsible: true, collapsed: true } });
+    expect(JSON.stringify(folded)).toContain("Ship the payment flow.");
   });
 
   test("an error receipt is an error card with the reason and hints", () => {
@@ -130,14 +136,31 @@ describe("roadmap tool cards", () => {
     expect(shown(view)).toContain("Call roadmap_status for stage ids.");
   });
 
-  test("results without a receipt fall back to their text", () => {
+  test("results without a receipt keep model text folded and formatted", () => {
     const view = tool("roadmap_status").describeResult(
       { content: [{ type: "text", text: "Roadmap is not initialized." }], details: undefined, isError: true },
       options,
       {},
     );
     expect(view.tone).toBe("error");
-    expect(shown(view)).toContain("Roadmap is not initialized.");
+    expect(shown(view)).not.toContain("Roadmap is not initialized.");
+    const expanded = tool("roadmap_status").describeResult(
+      {
+        content: [
+          {
+            type: "text",
+            text: 'Roadmap is not initialized.\nCall: {"stage":"S01"}\n| Stage | Status |\n| --- | --- |\n| S01 | planned |',
+          },
+        ],
+        isError: true,
+      },
+      { ...options, expanded: true },
+      {},
+    );
+    expect(shown(expanded)).toContain("Roadmap is not initialized.");
+    expect(shown(expanded)).toContain('"k":"code"');
+    expect(shown(expanded)).toContain('"k":"table"');
+    expect(shown(expanded)).toContain('"collapsed":true');
   });
 
   test("status lists rounds, stages, plans and TODOs as tables with status tones", async () => {
@@ -159,7 +182,7 @@ describe("roadmap tool cards", () => {
     if (active) expect(text).toContain(JSON.stringify({ t: "active", s: "accent" }));
   });
 
-  test("a stage request shows the stage detail with its handoff, without front matter or managed comments", async () => {
+  test("a stage request shows only structured facts, with the full model handoff folded on expansion", async () => {
     const { repo, model } = await diskFixture();
     const stage = model.stages[0];
     if (!stage) throw new Error("fixture stage");
@@ -170,9 +193,26 @@ describe("roadmap tool cards", () => {
     expect(view.tool?.badges?.[0]?.text).toBe(stage.status);
     const text = shown(view);
     expect(text).toContain(stage.title);
-    expect(text).toContain("Planning handoff");
-    expect(text).not.toContain("closed_sha256");
-    expect(text).not.toContain("<!--");
+    expect(text).toContain("Criteria");
+    expect(text).toContain("DC1");
+    expect(text).toContain("T001");
+    expect(text).toContain("ADR-0001");
+    expect(text).not.toContain("Planning handoff");
+    expect(text).not.toContain(stage.objective);
+    const expanded = tool("roadmap_status").describeResult(toolResult(receipt), { ...options, expanded: true }, { stage: stage.id });
+    const folded = expanded.body?.find((child) => typeof child === "object" && child && "key" in child && child.key === "model-text");
+    expect(folded).toMatchObject({ p: { collapsible: true, collapsed: true } });
+    expect(JSON.stringify(folded)).toContain("Planning handoff");
+    const outside = expanded.body?.filter((child) => child !== folded);
+    expect(JSON.stringify(outside)).not.toContain("Closing guidance");
+    if (!receipt.ok || !receipt.focus) throw new Error("missing focus");
+    const old = {
+      ...receipt,
+      focus: { kind: receipt.focus.kind, id: stage.id, title: stage.title, status: stage.status, target: null, overdue: false },
+    };
+    const oldView = tool("roadmap_status").describeResult(toolResult(old), options, { stage: stage.id });
+    expect(shown(oldView)).toContain(stage.title);
+    expect(shown(oldView)).not.toContain("Planning handoff");
   });
 
   test("check shows diagnostics with severity tones", async () => {
@@ -209,6 +249,9 @@ describe("roadmap tool cards", () => {
     expect(text).toContain("/roadmap confirm 0123456789ab");
     expect(text).toContain("docs/roadmap/README.md");
     expect(text).toContain("# Shop");
+    expect(view.body?.filter((child) => typeof child === "object" && child && "k" in child && child.k === "section")).toEqual([
+      expect.objectContaining({ p: expect.objectContaining({ collapsed: true }) }),
+    ]);
   });
 });
 
@@ -236,6 +279,76 @@ describe("roadmap message titles", () => {
       expect(lines).toContain(title);
       expect(lines).not.toContain(customType);
       expect(lines).toContain("Roadmap check passed.");
+    }
+  });
+
+  test("legacy displayed handoffs stay folded and formatted in native messages", () => {
+    const renderers = new Map<string, Renderer>();
+    registerMessageTitles({
+      registerMessageRenderer: (name: string, renderer: Renderer) => renderers.set(name, renderer),
+    } as unknown as ExtensionAPI);
+    const content = `# Planning handoff: S01\n\n${"Large charter paragraph.\n".repeat(50)}\nCall: {"stage":"S01"}`;
+    for (const expanded of [false, true]) {
+      const component = renderers.get("wows-omp-roadmap.status")?.(
+        { role: "custom", customType: "wows-omp-roadmap.status", content, display: true, timestamp: 0 },
+        { expanded },
+        undefined,
+      ) as { describe: () => unknown; render: (width: number) => string[] };
+      const native = JSON.stringify(component.describe());
+      expect(native.includes("Large charter paragraph")).toBe(expanded);
+      if (expanded) {
+        expect(native).toContain('"collapsed":true');
+        expect(native).toContain('"k":"code"');
+      }
+      expect(component.render(80).join("\n")).not.toContain("Large charter paragraph");
+    }
+  });
+
+  test("RPC and headless commands display receipt facts and preserve the exact full model message", async () => {
+    const { repo, model } = await diskFixture();
+    const stage = model.stages[0];
+    const round = model.rounds[0];
+    if (!stage || !round) throw new Error("missing fixture");
+    stage.objective = "Large stage objective.\n".repeat(100);
+    round.goal = "Large round charter.\n".repeat(100);
+    await writeFile(stage.path, renderStage(stage));
+    await writeFile(round.path, renderRound(round));
+    const expected = toolResult(await statusReceipt(repo, stage.id)).content[0]?.text;
+    for (const hasUI of [true, false]) {
+      const commands = new Map<string, { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }>();
+      const messages: Array<{ content: string; display: boolean; details?: unknown }> = [];
+      const pi = {
+        events: { on: () => () => {}, emit() {} },
+        registerCommand: (name: string, definition: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }) =>
+          commands.set(name, definition),
+        sendMessage: (message: { content: string; display: boolean; details?: unknown }) => messages.push(message),
+      };
+      const ctx = {
+        cwd: repo.repoRoot,
+        mode: "rpc",
+        hasUI,
+        agent: { kind: "main" },
+        sessionManager: { getSessionId: () => "cards" },
+      } as unknown as ExtensionCommandContext;
+      registerCommands(
+        pi as unknown as ExtensionAPI,
+        {} as RoadmapSession,
+        () => new HeadlessUi(pi as unknown as ExtensionAPI),
+        () => {},
+        { require: () => repo.adr } as unknown as AdrConnection,
+        new StageOrderPreference({ warn() {} }),
+      );
+      await commands.get("roadmap")?.handler(`stage ${stage.id}`, ctx);
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ content: expected, display: false });
+      const displayed = messages[1];
+      expect(displayed?.display).toBe(true);
+      expect(displayed?.content).toContain(stage.id);
+      expect(displayed?.content).toContain("DC1");
+      expect(displayed?.content).toContain("T001");
+      expect(displayed?.content.length).toBeLessThan(500);
+      expect(displayed?.content).not.toContain("Large round charter");
+      expect(displayed?.content).not.toContain("Large stage objective");
     }
   });
 });

@@ -7,7 +7,18 @@ import { ADR_INSTALL_HINT, type AdrApi, type AdrConnection, type ContractEvents 
 import { type AtlasStagePlan, requestPlans, stageCoverage } from "#src/atlas.ts";
 import { roadmapToolCard } from "#src/cards.ts";
 import { check, type Diagnostics } from "#src/check.ts";
-import { loadAll, loadRepo, type Model, overdue, type Repo, renderRound, renderStage, type StageDoc, today } from "#src/documents.ts";
+import {
+  loadAll,
+  loadRepo,
+  type Model,
+  overdue,
+  parseDoneCriteria,
+  type Repo,
+  renderRound,
+  renderStage,
+  type StageDoc,
+  today,
+} from "#src/documents.ts";
 import { discoverRepo } from "#src/git.ts";
 import { planLabel, renderHandoff, renderInjection } from "#src/handoff.ts";
 import { withRepoLock } from "#src/numbering.ts";
@@ -69,6 +80,14 @@ export interface StatusFocus {
   overdue: boolean;
   round?: string;
   dependsOn?: string[];
+  /** Optional for receipts persisted before native cards had structured stage facts. */
+  criteria?: string[];
+  todos?: string[];
+  adrIds?: string[];
+  started?: string | null;
+  closed?: string | null;
+  opened?: string | null;
+  stages?: number;
 }
 
 export interface HeldPreview {
@@ -117,6 +136,66 @@ export async function requireRepo(ctx: ExtensionContext, adr: AdrApi, initialize
   return { ...repo, adr };
 }
 
+/** Facts of this stage only; the full charter, TODO bodies and ADRs stay in the model handoff. */
+function stageFocus(model: Model, current: StageDoc, on = today()): StatusFocus {
+  const round = model.rounds.find((candidate) => candidate.id === current.round);
+  const todos = model.todos.flatMap((doc) => doc.items).filter((item) => item.status === "open" && item.target === current.id);
+  const cited = [
+    renderStage(current),
+    round ? [round.goal, round.constraints, round.non_goals, round.principles].join("\n") : "",
+    ...todos.map((item) => Object.values(item).join("\n")),
+  ].join("\n");
+  return {
+    kind: "stage",
+    id: current.id,
+    title: current.title,
+    status: current.status,
+    round: current.round,
+    target: current.target,
+    overdue: overdue(current, on),
+    dependsOn: current.depends_on,
+    started: current.started,
+    closed: current.closed,
+    criteria: parseDoneCriteria(current.done_criteria).map((criterion) => criterion.id),
+    todos: todos.map((item) => item.id),
+    adrIds: [...new Set(cited.match(/\bADR-\d{4,}\b/g) ?? [])],
+  };
+}
+
+/** Bounded, user-facing command text; never the stage document or instructions in the model handoff. */
+export function receiptSummary(receipt: ToolReceipt): string {
+  if (!receipt.ok) return [receipt.held?.summary ?? receipt.reason, ...receipt.hints].join("\n");
+  const focus = receipt.focus;
+  const summary = focus
+    ? [
+        !receipt.summary.startsWith("---\n") && receipt.summary.split("\n").length <= 12 ? receipt.summary : undefined,
+        `${focus.id} — ${focus.title} [${focus.status}]`,
+        focus.round ? `Round: ${focus.round}` : undefined,
+        focus.target ? `Target: ${focus.target}${focus.overdue ? " (overdue)" : ""}` : undefined,
+        focus.started ? `Started: ${focus.started}` : undefined,
+        focus.opened ? `Opened: ${focus.opened}` : undefined,
+        focus.closed ? `Closed: ${focus.closed}` : undefined,
+        focus.criteria ? `Criteria: ${focus.criteria.length} (${focus.criteria.join(", ") || "none"})` : undefined,
+        focus.todos ? `Open TODOs: ${focus.todos.length} (${focus.todos.join(", ") || "none"})` : undefined,
+        focus.adrIds ? `Cited ADRs: ${focus.adrIds.join(", ") || "none"}` : undefined,
+        focus.stages === undefined ? undefined : `Stages: ${focus.stages}`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : receipt.overview
+      ? `${receipt.overview.project}: ${receipt.overview.rounds.length} rounds, ${receipt.overview.stages.length} stages, ${receipt.overview.todos.length} open TODOs.`
+      : receipt.summary.split("\n").length > 12
+        ? "Roadmap operation completed."
+        : receipt.summary;
+  return [
+    summary,
+    ...receipt.warnings.map((warning) => `Warning: ${warning}`),
+    receipt.changedFiles.length ? `Changed: ${receipt.changedFiles.join(", ")}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup, order: StageOrder = "dependency"): Promise<ToolReceipt> {
   const model = await loadAll(repo);
   const on = today();
@@ -128,7 +207,20 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup,
       summary: `${renderRound(round)}${overdue(round, on) ? "\nOverdue: this unfinished round is past its target.\n" : ""}`,
       changedFiles: [],
       warnings: [],
-      focus: { kind: "round", id: round.id, title: round.title, status: round.status, target: round.target, overdue: overdue(round, on) },
+      focus: {
+        kind: "round",
+        id: round.id,
+        title: round.title,
+        status: round.status,
+        target: round.target,
+        overdue: overdue(round, on),
+        opened: round.opened,
+        closed: round.closed,
+        stages: model.stages.filter((current) => current.round === round.id).length,
+        todos: model.todos
+          .filter((doc) => doc.round === round.id)
+          .flatMap((doc) => doc.items.filter((item) => item.status === "open").map((item) => item.id)),
+      },
     };
   }
   if (id) {
@@ -140,16 +232,7 @@ export async function statusReceipt(repo: Repo, id?: string, plans?: PlanLookup,
       handoff: renderHandoff(model, current, on, plans?.(current.id)),
       changedFiles: [],
       warnings: [],
-      focus: {
-        kind: "stage",
-        id: current.id,
-        title: current.title,
-        status: current.status,
-        target: current.target,
-        overdue: overdue(current, on),
-        round: current.round,
-        dependsOn: current.depends_on,
-      },
+      focus: stageFocus(model, current, on),
     };
   }
   const open = model.todos.flatMap((doc) => doc.items.filter((item) => item.status === "open"));
@@ -342,6 +425,7 @@ export async function resolveOverlap(request: OverlapRequest): Promise<ToolRecei
         summary: `This session is already working in-system on ${candidate.id}.`,
         answer,
         handoff: renderHandoff(latest, candidate, today(), request.plans?.(candidate.id)),
+        focus: stageFocus(latest, candidate),
         changedFiles: [],
         warnings: [],
       };
@@ -381,7 +465,10 @@ export async function resolveOverlap(request: OverlapRequest): Promise<ToolRecei
       onSuccess();
       return { ok: true, summary: `Overlap answer for ${current.id}: ${answer}.`, changedFiles: [], warnings: [] };
     });
-  return receipt.ok ? { ...receipt, answer } : receipt;
+  if (!receipt.ok) return receipt;
+  const latest = await loadAll(repo);
+  const selected = latest.stages.find((candidate) => candidate.id === current.id);
+  return { ...receipt, answer, ...(selected ? { focus: stageFocus(latest, selected) } : {}) };
 }
 
 /** A preview no dialog could confirm: held in memory until the user runs `/roadmap confirm <token>`. */
@@ -609,12 +696,24 @@ export function registerTools(
   const planParameters = z.object({ id: z.string().optional(), round, target: z.string().optional() });
   const upgradeParameters = z.object({});
 
-  async function run(ctx: ExtensionContext, operation: (repo: Repo, owner: Actor) => Promise<ToolReceipt>, initialize = false) {
+  async function run(
+    ctx: ExtensionContext,
+    operation: (repo: Repo, owner: Actor) => Promise<ToolReceipt>,
+    initialize = false,
+    focusId?: string,
+  ) {
     try {
       ses.ensure(ctx);
       const connected = adr.connect(ctx.sessionManager.getSessionId());
       if (!("api" in connected)) return toolResult({ ok: false, reason: connected.reason, hints: [ADR_INSTALL_HINT] });
-      return toolResult(await operation(await requireRepo(ctx, connected.api, initialize), actor(ctx)));
+      const repo = await requireRepo(ctx, connected.api, initialize);
+      const receipt = await operation(repo, actor(ctx));
+      if (receipt.ok && receipt.handoff && focusId && !receipt.focus) {
+        const model = await loadAll(repo);
+        const current = model.stages.find((candidate) => candidate.id === focusId);
+        if (current) receipt.focus = stageFocus(model, current);
+      }
+      return toolResult(receipt);
     } catch (error) {
       return toolResult({
         ok: false,
@@ -650,20 +749,24 @@ export function registerTools(
     approval: "write",
     async execute(_id, params: typeof stageParameters.infer, signal, _onUpdate, ctx) {
       const generation = ses.currentGeneration(ctx);
-      return run(ctx, (repo, owner) =>
-        stage(repo, owner, params, {
-          signal,
-          planning: params.action === "start" && planModeActive(ctx),
-          plans:
-            params.id && (params.action === "start" || params.action === "close")
-              ? planLookup(pi.events, ctx, repo.repoRoot)(params.id)
-              : undefined,
-          onSuccess() {
-            if (!params.id || !ses.isCurrent(ctx, generation)) return;
-            if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
-            if (params.action === "close" || params.action === "drop") ses.clearStage(ctx, repo.repoRoot, params.id);
-          },
-        }),
+      return run(
+        ctx,
+        (repo, owner) =>
+          stage(repo, owner, params, {
+            signal,
+            planning: params.action === "start" && planModeActive(ctx),
+            plans:
+              params.id && (params.action === "start" || params.action === "close")
+                ? planLookup(pi.events, ctx, repo.repoRoot)(params.id)
+                : undefined,
+            onSuccess() {
+              if (!params.id || !ses.isCurrent(ctx, generation)) return;
+              if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
+              if (params.action === "close" || params.action === "drop") ses.clearStage(ctx, repo.repoRoot, params.id);
+            },
+          }),
+        false,
+        params.id,
       );
     },
   });

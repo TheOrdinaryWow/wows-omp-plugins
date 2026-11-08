@@ -8,7 +8,8 @@ import type { NativeToolHead, NativeToolView } from "@oh-my-pi/pi-tui/tools/rend
 import type { TspText, TspTone } from "@oh-my-pi/pi-wire";
 
 import type { Diagnostics } from "#src/check.ts";
-import type { HeldPreview, StatusFocus, StatusOverview, ToolReceipt } from "#src/tools.ts";
+import { modelTextNodes } from "#src/model-text.ts";
+import { type HeldPreview, receiptSummary, type StatusFocus, type StatusOverview, type ToolReceipt } from "#src/tools.ts";
 
 export type RoadmapToolName =
   | "roadmap_status"
@@ -24,7 +25,7 @@ export type RoadmapToolName =
 type Args = Record<string, unknown>;
 type ToolResult = { content: readonly { type: string; text?: string }[]; details?: unknown; isError?: boolean };
 
-/** Lines a long body (handoff, stage document, held preview) shows while the card is collapsed. */
+/** Lines a structured overview or diagnostics preview shows while the card is collapsed. */
 const PREVIEW_LINES = 12;
 
 function fields(value: unknown): Args {
@@ -330,23 +331,30 @@ function focusView(head: NativeToolHead, receipt: ToolReceipt & { ok: true }, fo
   return {
     tool: {
       ...head,
-      meta: [focus.title],
+      meta: [focus.id, focus.title],
       badges: compact([
         { text: focus.status, tone: style.tone },
+        receipt.answer ? { text: receipt.answer, tone: "accent" as const } : undefined,
         focus.overdue ? { text: "overdue", tone: "warning" as const } : undefined,
       ]),
     },
     body: compact<NativeChild>([
+      !receipt.summary.startsWith("---\n") && receipt.summary.split("\n").length <= PREVIEW_LINES ? md(receipt.summary) : undefined,
       kv([
         ["Round", focus.round],
         ["Target", focus.target ?? undefined],
+        ["Started", focus.started ?? undefined],
+        ["Opened", focus.opened ?? undefined],
+        ["Closed", focus.closed ?? undefined],
         ["Depends on", focus.dependsOn?.length ? focus.dependsOn.join(", ") : undefined],
+        ["Criteria", focus.criteria ? `${focus.criteria.length} (${focus.criteria.join(", ") || "none"})` : undefined],
+        ["Open TODOs", focus.todos ? `${focus.todos.length} (${focus.todos.join(", ") || "none"})` : undefined],
+        ["Cited ADRs", focus.adrIds?.join(", ") || (focus.adrIds ? "none" : undefined)],
+        ["Stages", focus.stages === undefined ? undefined : String(focus.stages)],
       ]),
       ...warningLines(receipt.warnings),
-      md(documentBody(receipt.summary)),
-      receipt.handoff ? section("Planning handoff", [md(receipt.handoff)], "handoff") : undefined,
+      changedFiles(receipt.changedFiles),
     ]),
-    preview: { lines: PREVIEW_LINES },
   };
 }
 
@@ -360,7 +368,12 @@ function heldView(head: NativeToolHead, held: HeldPreview): NativeToolView {
         wrap: "word",
       }),
       ...held.files.map((file) =>
-        node("section", { head: [span(file.path, "path")], collapsible: true }, [md(documentBody(file.content))], `file-${file.path}`),
+        node(
+          "section",
+          { head: [span(file.path, "path")], collapsible: true, collapsed: true },
+          [md(documentBody(file.content))],
+          `file-${file.path}`,
+        ),
       ),
     ]),
     preview: { lines: PREVIEW_LINES },
@@ -380,14 +393,13 @@ function receiptView(name: RoadmapToolName, head: NativeToolHead, receipt: ToolR
   if (receipt.overview) return overviewView(head, receipt, receipt.overview);
   if (receipt.focus) return focusView(head, receipt, receipt.focus);
   if (name === "roadmap_check") return checkView(head, receipt, receipt.diagnostics ?? []);
-  const long = Boolean(receipt.handoff) || receipt.summary.split("\n").length > PREVIEW_LINES;
+  const long = receipt.summary.split("\n").length > PREVIEW_LINES;
   return {
     tool: { ...head, ...(receipt.answer ? { badges: [{ text: receipt.answer, tone: "accent" as const }] } : {}) },
     tone: receipt.warnings.length ? "warning" : undefined,
     body: compact<NativeChild>([
-      md(receipt.summary),
+      long ? text("Roadmap operation completed.") : md(receipt.summary),
       ...warningLines(receipt.warnings),
-      receipt.handoff ? section("Planning handoff", [md(receipt.handoff)], "handoff") : undefined,
       changedFiles(receipt.changedFiles),
     ]),
     ...(long ? { preview: { lines: PREVIEW_LINES } } : {}),
@@ -396,30 +408,44 @@ function receiptView(name: RoadmapToolName, head: NativeToolHead, receipt: ToolR
 
 const views = new OwnerMemo<NativeToolView>();
 
-function describeResult(name: RoadmapToolName, result: ToolResult, args: unknown): NativeToolView {
+function describeResult(name: RoadmapToolName, result: ToolResult, args: unknown, expanded: boolean): NativeToolView {
   const head = callHead(name, args);
   const receipt = receiptOf(result.details);
-  if (!receipt) {
-    // Older sessions and host-side failures carry no receipt: show the text as written.
-    const output = result.content
-      .filter((part) => part.type === "text" && part.text)
-      .map((part) => part.text)
-      .join("\n");
+  const output = result.content
+    .filter((part) => part.type === "text" && part.text)
+    .map((part) => part.text)
+    .join("\n");
+  return views.get(result, [name, head.target, head.meta?.join("\n"), expanded], () => {
+    const view: NativeToolView = receipt
+      ? receiptView(name, head, receipt)
+      : {
+          tool: head,
+          ...(result.isError ? { tone: "error" as const } : {}),
+          body: [text(result.isError ? "Roadmap operation failed." : "Roadmap result available.", { wrap: "word" })],
+        };
     return {
-      tool: head,
-      ...(result.isError ? { tone: "error" as const } : {}),
-      body: output ? [md(output)] : [],
-      preview: { lines: PREVIEW_LINES },
+      ...view,
+      body: compact<NativeChild>([
+        ...(view.body ?? []),
+        expanded && output
+          ? node(
+              "section",
+              { head: [span("Model text", "muted")], collapsible: true, collapsed: true },
+              modelTextNodes(output),
+              "model-text",
+            )
+          : undefined,
+      ]),
     };
-  }
-  return views.get(receipt, [name, head.target, head.meta?.join("\n")], () => receiptView(name, head, receipt));
+  });
 }
 
 /** Tern's native card hooks for one roadmap tool; plain terminals keep the host's default rendering. */
 export function roadmapToolCard(name: RoadmapToolName) {
   return {
     describeCall: (args: unknown): NativeToolView => ({ tool: callHead(name, args) }),
-    describeResult: (result: ToolResult, _options: unknown, args?: unknown): NativeToolView => describeResult(name, result, args),
+    describeResult: (result: ToolResult, options: { expanded: boolean }, args?: unknown): NativeToolView =>
+      describeResult(name, result, args, options.expanded),
     mergeCallAndResult: true,
   };
 }
@@ -444,7 +470,39 @@ export const MESSAGE_TITLES: Readonly<Record<string, string>> = {
 export function registerMessageTitles(pi: Pick<ExtensionAPI, "registerMessageRenderer">): void {
   for (const [customType, title] of Object.entries(MESSAGE_TITLES)) {
     pi.registerMessageRenderer(customType, (message, options) => {
-      const component = new CustomMessageComponent({ ...message, customType: title });
+      const receipt = receiptOf(message.details);
+      const source = typeof message.content === "string" ? message.content : "";
+      const legacyHandoff =
+        source.split("\n").length > PREVIEW_LINES || source.includes("# Planning handoff:") || source.includes("Commit these files per");
+      const summary = receipt
+        ? [receiptSummary(receipt), word(fields(message.details).footer)].filter(Boolean).join("\n")
+        : legacyHandoff
+          ? "Roadmap result available."
+          : source;
+      const modelText = source !== summary ? source : "";
+      const component = new CustomMessageComponent({ ...message, content: summary, customType: title });
+      const describe = component.describe.bind(component);
+      component.describe = () => {
+        const frame = describe();
+        return {
+          ...frame,
+          c: compact<NativeChild>([
+            ...(frame.c ?? []),
+            options.expanded && modelText
+              ? node(
+                  "section",
+                  {
+                    head: [span("Model text", "muted")],
+                    collapsible: true,
+                    collapsed: true,
+                  },
+                  modelTextNodes(modelText),
+                  "model-text",
+                )
+              : undefined,
+          ]),
+        };
+      };
       component.setExpanded(options.expanded);
       return component;
     });

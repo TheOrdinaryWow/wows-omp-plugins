@@ -33,6 +33,7 @@ import {
   checkReceipt,
   dialogGuard,
   planLookup,
+  receiptSummary,
   requireRepo,
   resolveOverlap,
   statusReceipt,
@@ -213,8 +214,11 @@ export function registerCommands(
   });
 
   function show(customType: string, receipt: ToolReceipt, footer?: string): void {
-    const text = toolResult(receipt).content.map((part) => part.text);
-    pi.sendMessage({ customType, content: [...text, ...(footer ? [footer] : [])].join("\n"), display: true });
+    const fullText = [...toolResult(receipt).content.map((part) => part.text), ...(footer ? [footer] : [])].join("\n");
+    const summary = [receiptSummary(receipt), ...(footer ? [footer] : [])].join("\n");
+    // Keep the original model message at this point in the conversation, with the same default delivery.
+    if (fullText !== summary) pi.sendMessage({ customType, content: fullText, display: false });
+    pi.sendMessage({ customType, content: summary, details: { ...receipt, footer }, display: true });
   }
 
   /** Shows a write preview; returns the console line for the written, refused or declined change. */

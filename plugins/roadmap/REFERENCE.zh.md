@@ -141,7 +141,7 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 | --- | --- |
 | RPC（`--mode rpc`、`rpc-ui`）和 ACP | 无论 `uiMenu` 怎么设，都使用内联选择菜单和对话框，以 `select`、`input` 和 `editor` 请求发送。ACP 客户端可能只把通知写进日志。 |
 | 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。不带参数的 `/roadmap` 输出状态和用法。预览只返回令牌，不写入任何内容；用 `/roadmap confirm <token>` 确认。重叠问题用 `/roadmap overlap` 回答，关闭轮次用 `/roadmap close-round` 的参数回答，包括目标结果。 |
-| Tern | 控制台和写入预览以原生面板打开。点击标签切换分区，点击一行选中，双击执行与 Enter 相同的操作。面板下方的按钮执行与按键相同的操作（Shift+O 对应 Order 按钮），按键仍然可用。roadmap 工具调用显示为原生卡片（状态以表格显示，检查诊断按严重度分组，规划交接默认折叠），roadmap 消息带有可读的标题，比如 “Roadmap check”。 |
+| Tern | 控制台和写入预览以原生面板打开。点击标签切换分区，点击一行选中，双击执行与 Enter 相同的操作。面板下方的按钮执行与按键相同的操作（Shift+O 对应 Order 按钮），按键仍然可用。roadmap 工具调用显示为原生卡片：状态以表格显示，检查诊断按严重度分组，阶段只显示要点（轮次、日程、完成标准、未关闭的 TODO 和引用的 ADR，给出数量和编号），不再展示整份规划交接。展开卡片后，模型收到的原文放在默认折叠、已格式化的 “Model text” 区块里。命令消息只显示结果摘要，完整文本仍通过隐藏消息发给模型。roadmap 消息带有可读的标题，比如 “Roadmap check”。 |
 
 暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。暂存的预览只保存在内存里，进程退出后就会丢失。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO，在格式 2 中还要求提供 `outcome=<assessment>:<summary>`。进入格式 1 的会话时显示一条提到 `/roadmap upgrade` 的通知；`roadmap_upgrade` 会拒绝。通知和错误会显示为会话消息。
 
