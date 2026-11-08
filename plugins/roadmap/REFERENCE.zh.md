@@ -19,7 +19,7 @@
 | `roadmap_status` | 不带参数时返回轮次、目标日期、实际日期、逾期标记、阶段及其依赖、活动轮次中计划阶段的就绪情况、未关闭阶段的 Atlas 计划（omo-prometheus 有回复时），以及按目标或触发条件分组的未关闭 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
 | `roadmap_stage` | `add`、`edit`、`amend`、`revise_amendment`、`delete_amendment`、`revise_free_work`、`delete_free_work`、`start`、`close`、`drop`、`renumber`。`add` 接受可选的 `round` 和 `target`；`edit`、`amend` 和 `revise_amendment` 也接受 `target`。`start` 和 `close` 会向 omo-prometheus 查询该阶段的 Atlas 计划。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
-| `roadmap_check` | 可选 `fix: true`。只检查文档，不检查代码与文档是否一致。 |
+| `roadmap_check` | 可选 `fix: true`。只检查文档，不检查代码与文档是否一致。它会列出全部警告；写操作的回执只列出这次写入新产生的警告。 |
 | `roadmap_overlap` | `stage` 和 `intent`。 |
 | `roadmap_init` | `project`、`round`、初始的 `adrs` 和 `stages`；需要 `/init-project` 授权和已确认的预览。初始 ADR 通过 adr 插件创建（见[通过 adr 插件管理的 ADR](#通过-adr-插件管理的-adr)）。 |
 | `roadmap_round_plan` | `round` 章程、用于修订计划轮次的可选 `id`、可选的 `target`；需要 `/roadmap plan-round [id]` 授权和已确认的预览。 |

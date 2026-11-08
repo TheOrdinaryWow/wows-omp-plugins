@@ -432,7 +432,7 @@ function target(model: Model, input: { target?: string; trigger?: string }): { t
   return { target: stage.id };
 }
 
-async function checked(model: Model, issues?: Diagnostics[]): Promise<string[]> {
+async function checked(model: Model, issues?: Diagnostics[]): Promise<Diagnostics[]> {
   const diagnostics = issues ?? (await check(model));
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
   if (errors.length) {
@@ -441,7 +441,15 @@ async function checked(model: Model, issues?: Diagnostics[]): Promise<string[]> 
       errors.map((error) => `${error.rule}: ${error.path}: ${error.message}`),
     );
   }
-  return diagnostics.map((diagnostic) => diagnostic.message);
+  return diagnostics;
+}
+
+const diagnosticKey = (diagnostic: Diagnostics): string => `${diagnostic.rule}\0${diagnostic.path}\0${diagnostic.message}`;
+
+/** Warnings the change introduced; ones present before it stay visible through roadmap_check instead of repeating on every write. */
+function introduced(after: readonly Diagnostics[], before: readonly Diagnostics[]): string[] {
+  const known = new Set(before.map(diagnosticKey));
+  return after.filter((diagnostic) => !known.has(diagnosticKey(diagnostic))).map((diagnostic) => diagnostic.message);
 }
 
 function assertNotCancelled(options: OperationOptions): void {
@@ -581,10 +589,11 @@ async function mutate(
       const guarded = guardMutation(model, options);
       if (guarded) return guarded;
       await checked(model, checkClosureIntegrity(model));
+      const before = await check(model);
       const mutation = new Mutation(model);
       const summary = await change(mutation);
       if (!mutation.readOnly) mutation.indexes();
-      mutation.warnings.push(...(await checked(model)));
+      mutation.warnings.push(...introduced(await checked(model), before));
       const beforeWrite = guardMutation(model, options);
       if (beforeWrite) return beforeWrite;
       let receipt = await mutation.write(repo, summary, options);
@@ -1386,11 +1395,11 @@ async function prepare(
             files: {},
           }
         : await loadAll(repo);
-      if (!initialize) await checked(model);
+      const before = initialize ? [] : await checked(model);
       const mutation = new Mutation(model);
       const summary = await build(mutation);
       mutation.indexes();
-      mutation.warnings.push(...(await checked(model)));
+      mutation.warnings.push(...introduced(await checked(model), before));
       const prepared: PreparedOperation = {
         repoRoot: repo.repoRoot,
         snapshot: expected,

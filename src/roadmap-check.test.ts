@@ -294,10 +294,11 @@ describe("ADR warnings", () => {
     });
   }
 
-  test("closed and dropped stages and closed TODOs do not warn about historical ADR citations", async () => {
+  test("closed and dropped rounds and stages and closed TODOs do not warn about historical ADR citations", async () => {
     const model = modelFixture();
     (records(model)[0] as AdrRecord).superseded_by = "ADR-0002";
-    (model.rounds[0] as (typeof model.rounds)[number]).principles = "";
+    (model.rounds[0] as (typeof model.rounds)[number]).principles = "See ADR-0001.";
+    (model.rounds[0] as (typeof model.rounds)[number]).status = "closed";
     (model.stages[0] as (typeof model.stages)[number]).status = "dropped";
     const item = model.todos[0]?.items[0];
     if (item) {

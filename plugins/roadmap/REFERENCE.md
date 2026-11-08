@@ -19,7 +19,7 @@ Mutating tools use write approval; `roadmap_status` uses read approval.
 | `roadmap_status` | No parameters for rounds, targets, actual dates, overdue flags, stages with dependencies, readiness of the active round's planned stages, the Atlas plans of unclosed stages (when omo-prometheus answers) and open TODOs by target or trigger; optional `stage` for full detail and handoff. |
 | `roadmap_stage` | `add`, `edit`, `amend`, `revise_amendment`, `delete_amendment`, `revise_free_work`, `delete_free_work`, `start`, `close`, `drop`, `renumber`. `add` accepts optional `round` and `target`; `edit`, `amend` and `revise_amendment` also accept `target`. `start` and `close` ask omo-prometheus for the stage's Atlas plans. |
 | `roadmap_todo` | `add`, `update`, `resolve`, `move`. |
-| `roadmap_check` | Optional `fix: true`. Checks documents, not code/document drift. |
+| `roadmap_check` | Optional `fix: true`. Checks documents, not code/document drift. It lists every warning; a write's receipt lists only the warnings that write introduced. |
 | `roadmap_overlap` | `stage` and `intent`. |
 | `roadmap_init` | `project`, `round`, initial `adrs` and `stages`; needs `/init-project` authorization and a confirmed preview. Initial ADRs are created through the adr plugin (see [ADRs through the adr plugin](#adrs-through-the-adr-plugin)). |
 | `roadmap_round_plan` | `round` charter, optional `id` to revise a planned round, optional `target`; needs `/roadmap plan-round [id]` authorization and a confirmed preview. |

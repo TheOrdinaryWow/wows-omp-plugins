@@ -309,7 +309,8 @@ function diagnostics(model: Model): Diagnostics[] {
       if (successor) report("warning", "superseded-adr", path, `${reference} is superseded; use successor ${successor}.`);
     }
   };
-  for (const round of model.rounds) warnReferences(round.principles, round.path);
+  for (const round of model.rounds.filter((round) => round.status === "planned" || round.status === "active"))
+    warnReferences(round.principles, round.path);
   for (const stage of model.stages.filter((stage) => stage.status === "planned" || stage.status === "active"))
     warnReferences(renderStage(stage), stage.path);
   for (const todo of model.todos)

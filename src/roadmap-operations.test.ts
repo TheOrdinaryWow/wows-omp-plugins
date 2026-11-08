@@ -1508,6 +1508,22 @@ describe("roadmap and the adr plugin", () => {
     expect(start.handoff).toContain("Use the newer host API.");
     expect(start.handoff).not.toContain("### ADR-0001 —");
     expect((await check(await loadAll(repo))).find((item) => item.rule === "superseded-adr")?.message).toContain("successor ADR-0002");
+    expect(start.warnings.join("\n")).not.toContain("superseded");
+    const cited = success(
+      await todo(repo, main, {
+        action: "add",
+        title: "Revisit",
+        severity: "low",
+        source: "Review",
+        trigger: "Later",
+        body: "See ADR-0001.",
+      }),
+    );
+    expect(cited.warnings).toContain("ADR-0001 is superseded; use successor ADR-0002.");
+    const unrelated = success(
+      await todo(repo, main, { action: "add", title: "Unrelated", severity: "low", source: "Review", trigger: "Later" }),
+    );
+    expect(unrelated.warnings.join("\n")).not.toContain("superseded");
   });
 
   test("round principles must cite existing, readable ADRs through the adr plugin", async () => {
