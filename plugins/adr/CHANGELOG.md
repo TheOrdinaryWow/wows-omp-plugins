@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.4.1...adr@0.4.2) (2026-11-08)
+
+
+### Bug Fixes
+
+* **adr:** keep the console and preview one size in Tern with actions always visible ([c0de4be](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c0de4beb4f677d241b45f1cf6740dea01ca6b988))
+
 ## [0.4.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.4.0...adr@0.4.1) (2026-11-06)
 
 

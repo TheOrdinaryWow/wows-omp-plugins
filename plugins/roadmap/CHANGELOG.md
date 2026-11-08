@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.9.2...roadmap@0.9.3) (2026-11-08)
+
+
+### Bug Fixes
+
+* **roadmap:** keep the console and previews one size in Tern with actions always visible ([df9908f](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/df9908fd46381d8e9c1e92618f967cd7d768c504))
+* **roadmap:** report only new warnings in write receipts and skip frozen rounds' ADR citations ([5747e05](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/5747e057bbac5d4c0a6fe2673f85c4e0cf3d414f))
+
 ## [0.9.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.9.1...roadmap@0.9.2) (2026-11-08)
 
 
