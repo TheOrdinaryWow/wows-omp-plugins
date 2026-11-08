@@ -136,6 +136,7 @@ The tool requires write approval because `record` changes repository metadata.
 - On success it returns `{commitSha, fileCount, loc, timestamp, mode}` in both JSON content and `details`. The skill copies those five fields into `local://init-deep/snapshot.json`.
 - On failure it returns `isError: true` with an explanation and keeps the prior snapshot.
 - Recording is not verification evidence. The skill owns that requirement. Reports and digests stay session-local under `local://init-deep/`.
+- Tern cards show the action and delivery mode, a short HEAD, file and line counts, and the recorded ISO timestamp. Status also shows advisor suppression, cooldown, and snapshot guidance. Errors show their reason. Expanded cards keep the formatted JSON or model text folded under `Model text`; model-facing results are unchanged.
 
 ## Fallback continuity
 

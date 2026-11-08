@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@oh-my-pi/pi-coding-agent";
 
+import { initDeepCard } from "#src/init-deep-card.ts";
 import {
   COOLDOWN_MS,
   computeProposal,
@@ -220,6 +221,7 @@ export function registerInitDeepAdvisor(pi: ExtensionAPI, settings: ToolkitSetti
 
   const parameters = pi.zod.object({ action: pi.zod.enum(["status", "record"]), mode: pi.zod.enum(["local", "committed"]).optional() });
   pi.registerTool({
+    ...initDeepCard,
     name: "toolkit_init_deep",
     label: "Init-deep snapshot",
     description:

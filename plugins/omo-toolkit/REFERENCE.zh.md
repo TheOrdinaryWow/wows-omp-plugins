@@ -136,6 +136,7 @@ worktree 快照（`snapshot.json`）：
 - 成功时，JSON content 和 `details` 中返回 `{commitSha, fileCount, loc, timestamp, mode}`。技能将这五个字段复制到 `local://init-deep/snapshot.json`。
 - 失败时返回 `isError: true` 和说明，并保留原有快照。
 - 记录操作不是独立验证证据，验证要求仍由技能负责。报告和摘要保留在会话本地的 `local://init-deep/` 下。
+- Tern 卡片显示操作、交付模式、HEAD 短哈希、文件数、代码行数和 ISO 格式的记录时间。状态卡片还显示建议器的禁用状态、冷却截止时间和快照建议。错误卡片显示失败原因。展开卡片后，格式化的 JSON 或模型文本仍折叠在 `Model text` 中；提供给模型的结果不变。
 
 ## 回退连续性
 
