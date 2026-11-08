@@ -1,5 +1,5 @@
 import { GRID } from "../src/layout.ts";
-import type { NodeState, Snapshot, Source, ThemeColors } from "../src/model.ts";
+import type { NodeState, Snapshot, Source, TaskCard, ThemeColors } from "../src/model.ts";
 
 /**
  * Viewer design tokens. Every color, glyph and spacing value the renderer uses lives here so the
@@ -49,6 +49,23 @@ export const STATE_TOKENS: Record<NodeState, ThemeToken> = {
   blocked: "warning",
   abandoned: "dim",
 };
+/**
+ * Execution state is the per-node signal: it colors node borders, titles and status marks, and task-card borders. A
+ * running node or task without recent activity reads as stalled. Run kind (todo / plan / atlas) is a per-run property
+ * and keeps its source color in the run header, tabs and legend.
+ */
+export function nodeStateToken(node: { state: NodeState; stalled?: boolean }): ThemeToken {
+  return node.state === "running" && node.stalled ? "warning" : STATE_TOKENS[node.state];
+}
+const TASK_STATE_TOKENS: Record<TaskCard["status"], ThemeToken> = {
+  running: "accent",
+  completed: "success",
+  failed: "error",
+  aborted: "warning",
+};
+export function taskStateToken(task: { status: TaskCard["status"]; stalled?: boolean }): ThemeToken {
+  return task.status === "running" && task.stalled ? "warning" : TASK_STATE_TOKENS[task.status];
+}
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export const GLYPHS = {

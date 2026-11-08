@@ -1,6 +1,7 @@
 import type { Snapshot } from "../src/model.ts";
 import { DEFAULT_VIEW_STATE, readSnapshot, readViewState, type ViewState, writeViewState } from "../src/persisted.ts";
 import { applyOps, encodeFrame, type Frame, FrameParser, type SessionPaths } from "../src/protocol.ts";
+import { followRunning } from "./follow.ts";
 import { handleInput, type Input, InputReader } from "./keys.ts";
 import { createUi, type LinkState, render, type UiState } from "./render.ts";
 import { type ColorMode, detectColorMode } from "./theme.ts";
@@ -164,6 +165,7 @@ export class Viewer {
   }
 
   frame(): string[] {
+    followRunning(this.snapshot, this.viewState, this.ui, this.link === "live");
     return render({
       snapshot: this.snapshot,
       viewState: this.viewState,
@@ -302,7 +304,7 @@ export class Viewer {
         return;
       case "snapshot":
         this.#alive();
-        if (this.snapshot?.sessionId !== frame.snapshot.sessionId) this.ui.selected.clear();
+        if (this.snapshot?.sessionId !== frame.snapshot.sessionId) this.#sessionChanged();
         this.snapshot = frame.snapshot;
         this.seq = frame.seq;
         this.#awaitingResync = false;
@@ -318,7 +320,7 @@ export class Viewer {
           this.#requestResync();
           return;
         }
-        if (applied.snapshot.sessionId !== this.snapshot.sessionId) this.ui.selected.clear();
+        if (applied.snapshot.sessionId !== this.snapshot.sessionId) this.#sessionChanged();
         this.snapshot = applied.snapshot;
         this.seq = applied.seq;
         if (applied.paths) this.#rebind(applied.paths);
@@ -331,6 +333,13 @@ export class Viewer {
         if (frame.reason === "shutdown") this.#hostLost();
         return;
     }
+  }
+
+  /** Another session's work: selections no longer apply and automatic follow starts over. */
+  #sessionChanged(): void {
+    this.ui.selected.clear();
+    this.ui.autoFollow = true;
+    this.ui.followTarget = undefined;
   }
 
   #requestResync(): void {

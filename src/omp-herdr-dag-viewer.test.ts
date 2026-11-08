@@ -3,9 +3,10 @@ import { appendFile, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { DagNode, NodeState, Run, Snapshot } from "../plugins/omp-herdr-dag/src/model.ts";
+import type { DagNode, NodeState, Run, Snapshot, TaskCard } from "../plugins/omp-herdr-dag/src/model.ts";
 import { DEFAULT_VIEW_STATE, readSnapshot, readViewState, type ViewState } from "../plugins/omp-herdr-dag/src/persisted.ts";
 import { encodeFrame, type Frame, FrameParser } from "../plugins/omp-herdr-dag/src/protocol.ts";
+import { runningTarget } from "../plugins/omp-herdr-dag/viewer/follow.ts";
 import { handleKey, handleMouse, InputReader, parseKeys, spatialTarget } from "../plugins/omp-herdr-dag/viewer/keys.ts";
 import { type Clock, type Connect, type ConnectionHandlers, Viewer } from "../plugins/omp-herdr-dag/viewer/main.ts";
 import { clean, createUi, type RenderInput, render, visibleRuns } from "../plugins/omp-herdr-dag/viewer/render.ts";
@@ -276,7 +277,7 @@ describe("omp-herdr-dag viewer rendering", () => {
     }
   });
 
-  test("source colors mark run headers and node borders", async () => {
+  test("source colors mark run headers and the legend", async () => {
     for (const [name, hex] of [
       ["todo-only", "#4f8cff"],
       ["plan", "#a371f7"],
@@ -287,7 +288,8 @@ describe("omp-herdr-dag viewer rendering", () => {
       const lines = frame(snapshot, { cols: 100 });
       const label = { "todo-only": "TODO", plan: "PLAN", atlas: "ATLAS" }[name];
       expect(lines.some((line) => line.includes(`\x1b[1;7;${color(hex)}m ${label} `))).toBe(true);
-      expect(lines.some((line) => line.includes(`\x1b[${color(hex)}m╭`))).toBe(true);
+      const swatch = `\x1b[${color(hex)}m▍\x1b[0m\x1b[${color(snapshot.theme.dim)}m ${label.toLowerCase()}`;
+      expect(lines.some((line) => line.includes(swatch))).toBe(true);
     }
   });
 
@@ -315,7 +317,7 @@ describe("omp-herdr-dag viewer rendering", () => {
     expect(text).not.toContain("verify:");
   });
 
-  test("each state has its own icon in its state color", async () => {
+  test("each state colors its icon, title and box border", async () => {
     const base = await fixture("todo-only");
     const states: NodeState[] = ["pending", "running", "done", "failed", "blocked", "abandoned"];
     const run: Run = {
@@ -340,8 +342,38 @@ describe("omp-herdr-dag viewer rendering", () => {
       abandoned: `\x1b[${color(theme.dim)}m⊖`,
     };
     for (const state of states) {
-      expect(text).toContain(`${expected[state]}\x1b[0m\x1b`);
+      expect(text).toContain(expected[state]);
       expect(strip(text)).toContain(`node ${state}`);
+    }
+    // The running node is the fallback selection: a bold double border; the others keep a rounded one.
+    expect(text).toContain(`\x1b[1;${color(theme.accent)}m╔`);
+    for (const [state, token] of [
+      ["pending", theme.muted],
+      ["done", theme.success],
+      ["failed", theme.error],
+      ["blocked", theme.warning],
+      ["abandoned", theme.dim],
+    ] as const) {
+      expect(text, state).toContain(`\x1b[${color(token)}m╭`);
+    }
+    expect(text).toContain(`\x1b[${color(theme.success)}m✔ node done`);
+    expect(text).toContain(`\x1b[${color(theme.text)}m node pending`);
+  });
+
+  test("task cards color their border and agent by execution state, stalled included", async () => {
+    const snapshot = await fixture("tasks");
+    const theme = snapshot.theme;
+    const card = (task: TaskCard): string => frame({ ...snapshot, tasks: [task] }, { view: "tasks", cols: 60 }).join("\n");
+    const base = snapshot.tasks.find((task) => task.status === "running") as TaskCard;
+    for (const [task, token] of [
+      [{ ...base, stalled: false }, theme.accent],
+      [{ ...base, stalled: true }, theme.warning],
+      [{ ...base, status: "completed" }, theme.success],
+      [{ ...base, status: "failed" }, theme.error],
+      [{ ...base, status: "aborted" }, theme.warning],
+    ] as const) {
+      expect(card(task as TaskCard), task.status).toContain(`\x1b[1;${color(token)}m╔═ `);
+      expect(card(task as TaskCard), task.status).toContain(`\x1b[1;${color(token)}m ${clean(base.agent)}`);
     }
   });
 
@@ -1125,7 +1157,7 @@ describe("omp-herdr-dag viewer navigation", () => {
     viewer.stop();
   });
 
-  test("f cycles through the running nodes in drawn order and does nothing when none runs", async () => {
+  test("r cycles through the running nodes in drawn order and does nothing when none runs", async () => {
     const large = await fixture("large-plan");
     const running = (ids: string[]): Snapshot => ({
       ...large,
@@ -1141,7 +1173,7 @@ describe("omp-herdr-dag viewer navigation", () => {
     expect(drawnSelection(viewer).id).toBe("atlas:T4");
     const visits: string[] = [];
     for (let press = 0; press < 3; press += 1) {
-      await type("f");
+      await type("r");
       const next = drawnSelection(viewer);
       expect(next.visible).toBe(true);
       visits.push(next.id);
@@ -1152,7 +1184,7 @@ describe("omp-herdr-dag viewer navigation", () => {
     const idle = await liveViewer(running([]), 50, 30);
     await idle.type("\x1b[A");
     const before = drawnSelection(idle.viewer);
-    await idle.type("f");
+    await idle.type("r");
     const after = drawnSelection(idle.viewer);
     expect(after.id).toBe(before.id);
     expect(after.frame.scrollY).toBe(before.frame.scrollY);
@@ -1185,7 +1217,7 @@ describe("omp-herdr-dag viewer navigation", () => {
     const start = drawnSelection(viewer);
     expect(strip(viewer.frame().at(-1) ?? "")).toStartWith(" NODES  ? help");
     await type("\t");
-    expect(strip(viewer.frame().at(-1) ?? "")).toStartWith("  PAN   ? help · t tasks · tab nodes");
+    expect(strip(viewer.frame().at(-1) ?? "")).toStartWith("  PAN   ? help · f follow ON · t tasks · tab nodes");
     // PgUp pans by half a page; at the top the selection is unchanged but out of view.
     for (let press = 0; press < 20; press += 1) await type("\x1b[5~");
     const top = drawnSelection(viewer);
@@ -1315,7 +1347,7 @@ describe("omp-herdr-dag viewer navigation", () => {
     const snapshot: Snapshot = { ...large, runs: [...large.runs, ...todo.runs] };
     const runs = visibleRuns(snapshot, false).map((run) => run.id);
     expect(runs).toHaveLength(2);
-    const { viewer, type } = await liveViewer(snapshot, 50, 30);
+    const { viewer, type } = await liveViewer(snapshot, 64, 30);
     const first = drawnSelection(viewer).frame.runId;
     const [forward, back] = first === runs[0] ? ["]", "["] : ["[", "]"];
     await type("\x1b[<65;5;5M");
@@ -1361,5 +1393,108 @@ describe("omp-herdr-dag viewer navigation", () => {
       expect(output.endsWith(restore)).toBe(true);
       expect(output.split("\x1b[?1000l")).toHaveLength(2);
     }
+  });
+});
+
+describe("omp-herdr-dag automatic follow", () => {
+  const withRunning = (snapshot: Snapshot, ids: string[]): Snapshot => ({
+    ...snapshot,
+    runs: snapshot.runs.map((run) => ({
+      ...run,
+      nodes: run.nodes.map((node) => ({
+        ...node,
+        state: ids.includes(node.id) ? "running" : node.state === "running" ? "done" : node.state,
+      })),
+    })),
+  });
+  const revealed = (viewer: Viewer, id: string): boolean => {
+    viewer.frame();
+    const frame = viewer.ui.dagFrame;
+    const box = frame?.boxes.get(id);
+    return !!frame && !!box && box.y >= frame.scrollY && box.y + box.h <= frame.scrollY + frame.rows;
+  };
+  const footer = (lines: string[]): string => strip(lines.at(-1) ?? "");
+
+  test("the target stays on one running node through parallel arrivals and moves on only when it finishes", async () => {
+    const large = await fixture("large-plan");
+    let target = runningTarget(withRunning(large, ["atlas:T7"]), false, undefined);
+    expect(target).toMatchObject({ view: "dag", nodeId: "atlas:T7" });
+    target = runningTarget(withRunning(large, ["atlas:T4", "atlas:T7", "atlas:F3"]), false, target);
+    expect(target).toMatchObject({ nodeId: "atlas:T7" });
+    target = runningTarget(withRunning(large, ["atlas:T4", "atlas:F3"]), false, target);
+    expect(target).toMatchObject({ nodeId: "atlas:T4" });
+    expect(runningTarget(withRunning(large, []), false, target)).toBeUndefined();
+  });
+
+  test("ordinary tasks are followed only when no running node is, and never a task a node claims", async () => {
+    const tasks = await fixture("tasks");
+    const first = runningTarget(tasks, false, undefined);
+    expect(first).toMatchObject({ view: "dag", nodeId: "todo:1:0:0cf3e0cd34" });
+    const idle = withRunning(tasks, []);
+    const next = runningTarget(idle, false, first);
+    expect(next?.view).toBe("tasks");
+    expect(["sub-explore-2", "sub-grandchild"]).toContain(next?.view === "tasks" ? next.taskId : "");
+    expect(runningTarget(idle, false, next)).toEqual(next);
+  });
+
+  test("follow reveals the running box without selecting it; inspection suspends it until f re-arms it", async () => {
+    const snapshot = withRunning(await fixture("large-plan"), ["atlas:F3"]);
+    const run = snapshot.runs[0] as Run;
+    const { viewer, peer, type } = await liveViewer(snapshot, 50, 30);
+    viewer.ui.selected.set(run.id, "atlas:T1");
+    expect(revealed(viewer, "atlas:F3")).toBe(true);
+    expect(revealed(viewer, "atlas:T1")).toBe(false);
+    expect(viewer.ui.selected.get(run.id)).toBe("atlas:T1");
+    expect(footer(viewer.frame())).toContain("f follow ON");
+
+    for (let notch = 0; notch < 20; notch += 1) await type("\x1b[<64;5;5M");
+    expect(footer(viewer.frame())).toContain("f follow OFF");
+    const scrolled = viewer.ui.dagFrame?.scrollY;
+    // A second node starting and streamed updates leave the inspected viewport alone.
+    send(peer, { seq: 3, type: "snapshot", snapshot: { ...withRunning(snapshot, ["atlas:F3", "atlas:T7"]), at: snapshot.at + 1000 } });
+    expect(revealed(viewer, "atlas:F3")).toBe(false);
+    expect(viewer.ui.dagFrame?.scrollY).toBe(scrolled);
+
+    await type("f");
+    expect(revealed(viewer, "atlas:F3")).toBe(true);
+    expect(viewer.ui.followTarget).toMatchObject({ nodeId: "atlas:F3" });
+    expect(footer(viewer.frame())).toContain("f follow ON");
+    viewer.stop();
+  });
+
+  test("follow switches to the run or view holding running work and stays off while disconnected", async () => {
+    const large = withRunning(await fixture("large-plan"), []);
+    const todo = await fixture("todo-only");
+    const atlasRun = large.runs[0] as Run;
+    const todoRun = todo.runs[0] as Run;
+    const { viewer, peer } = await liveViewer({ ...large, runs: [atlasRun, todoRun] }, 60, 30);
+    viewer.viewState.selectedRun = atlasRun.id;
+    expect(revealed(viewer, "todo:1:1:efc73550d2")).toBe(true);
+    expect(viewer.viewState.selectedRun).toBe(todoRun.id);
+
+    const tasks = await fixture("tasks");
+    send(peer, { seq: 3, type: "snapshot", snapshot: { ...withRunning(tasks, []), sessionId: large.sessionId } });
+    viewer.frame();
+    expect(viewer.viewState.view).toBe("tasks");
+    expect(viewer.viewState.folded).toEqual([]);
+
+    peer?.handlers.close();
+    viewer.viewState.view = "dag";
+    expect(footer(viewer.frame())).toContain("f follow OFF");
+    expect(viewer.viewState.view).toBe("dag");
+    viewer.stop();
+  });
+
+  test("f toggles follow in memory only; a disconnected frame shows it OFF", async () => {
+    const ui = createUi();
+    const viewState: ViewState = { ...DEFAULT_VIEW_STATE, folded: [] };
+    expect(handleKey({ viewState, ui, now: 0 }, "follow")).toEqual([]);
+    expect(ui.autoFollow).toBe(false);
+    handleKey({ viewState, ui, now: 0 }, "follow");
+    expect(ui.autoFollow).toBe(true);
+    expect(viewState).toEqual({ ...DEFAULT_VIEW_STATE, folded: [] });
+    const snapshot = await fixture("large-plan");
+    expect(footer(frame(snapshot, { link: "lost" }))).toContain("f follow OFF");
+    expect(footer(frame(snapshot, { link: "live" }))).toContain("f follow ON");
   });
 });

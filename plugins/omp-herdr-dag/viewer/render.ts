@@ -23,6 +23,7 @@ import {
   LEFT,
   LINE_RANK,
   type LineKind,
+  nodeStateToken,
   type Palette,
   palette,
   RESET,
@@ -35,6 +36,7 @@ import {
   type Style,
   sameStyle,
   sgr,
+  taskStateToken,
   UP,
 } from "./theme.ts";
 import type { TranscriptLine } from "./transcript.ts";
@@ -193,6 +195,8 @@ export interface DagFrame {
   scrollX: number;
   scrollY: number;
 }
+/** Running work automatic follow tracks by identity: a DAG node in a run, or an ordinary task no node claims. */
+export type FollowTarget = { view: "dag"; runId: string; nodeId: string; taskIds: readonly string[] } | { view: "tasks"; taskId: string };
 export interface UiState {
   history: boolean;
   help: boolean;
@@ -206,6 +210,10 @@ export interface UiState {
   dagMode: "nodes" | "pan";
   /** The viewport keeps the selected node (or task card) in view; panning and the wheel detach it until the next selection. */
   follow: boolean;
+  /** Automatic follow of running work: on by default, suspended by inspection input, toggled with `f`; never persisted. */
+  autoFollow: boolean;
+  /** The running work being followed; kept until it stops running so parallel arrivals do not cycle the view. */
+  followTarget?: FollowTarget;
   /** Draw every dependency edge instead of the reduced set. */
   allEdges: boolean;
   /** Body height of the last frame; paging keys move by it. */
@@ -229,6 +237,7 @@ export const createUi = (): UiState => ({
   scrollX: 0,
   dagMode: "nodes",
   follow: true,
+  autoFollow: true,
   allEdges: false,
   bodyRows: 10,
   bodyTop: 0,
@@ -476,14 +485,18 @@ const fg = (pal: Palette, token: keyof Palette["theme"], extra: Style = {}): Sty
 const ruleLine = (ctx: Ctx, cols: number): Line => [{ text: GLYPHS.rule.repeat(cols), style: fg(ctx.pal, "borderMuted") }];
 
 function stateIcon(node: DagNode, ctx: Ctx): Segment {
-  if (node.state === "running" && node.stalled) return { text: STATE_ICONS.running, style: fg(ctx.pal, "warning", { bold: true }) };
-  return { text: STATE_ICONS[node.state], style: fg(ctx.pal, STATE_TOKENS[node.state], { bold: node.state === "running" }) };
+  return { text: STATE_ICONS[node.state], style: fg(ctx.pal, nodeStateToken(node), { bold: node.state === "running" }) };
 }
 
 function legend(ctx: Ctx, cols: number): Line[] {
   const items: Line = [];
-  for (const state of ["pending", "running", "done", "failed", "blocked", "abandoned"] as const) {
-    items.push({ text: STATE_ICONS[state], style: fg(ctx.pal, STATE_TOKENS[state]) }, { text: ` ${state}`, style: fg(ctx.pal, "dim") });
+  for (const state of ["pending", "running", "stalled", "done", "failed", "blocked", "abandoned"] as const) {
+    const token = state === "stalled" ? "warning" : STATE_TOKENS[state];
+    const icon = state === "stalled" ? STATE_ICONS.running : STATE_ICONS[state];
+    items.push({ text: icon, style: fg(ctx.pal, token) }, { text: ` ${state}`, style: fg(ctx.pal, "dim") });
+  }
+  for (const source of ["todo", "plan", "atlas"] as const) {
+    items.push({ text: GLYPHS.tabMark, style: { fg: ctx.pal.sources[source] } }, { text: ` ${source}`, style: fg(ctx.pal, "dim") });
   }
   const lines: Line[] = [[]];
   for (let index = 0; index < items.length; index += 2) {
@@ -493,7 +506,7 @@ function legend(ctx: Ctx, cols: number): Line[] {
     if (current.length && lineWidth(current) + lineWidth([...gap, ...pair]) > cols) lines.push([...pair]);
     else current.push(...gap, ...pair);
   }
-  return lines.slice(0, 2);
+  return lines.slice(0, 3);
 }
 
 function banners(input: RenderInput, ctx: Ctx): Line[] {
@@ -576,7 +589,8 @@ function nodeContent(node: DagNode, options: DagOptions, inner: number, layoutBa
   const lines: Line[] = [];
   const expanded = options.expanded.has(node.id);
   const selected = options.selected === node.id;
-  const labelStyle = fg(ctx.pal, node.state === "abandoned" ? "dim" : "text", { bold: selected });
+  const titleToken = node.state === "pending" ? "text" : nodeStateToken(node);
+  const labelStyle = fg(ctx.pal, titleToken, { bold: selected });
   const label = wrap(clean(node.label) || GLYPHS.missing, inner - 2, expanded ? 8 : SPACING.labelLines);
   label.forEach((text, index) => {
     lines.push([index === 0 ? stateIcon(node, ctx) : { text: " " }, { text: ` ${text}`, style: labelStyle }]);
@@ -960,6 +974,7 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
   const exitY = new Map<string, number>();
   const entryY = new Map<string, number>();
   const outgoing = new Set(layout.edges.map((route) => route.edge.from));
+  const nodes = new Map(run.nodes.map((node) => [node.id, node]));
   layerItems.forEach((items, index) => {
     const layer = layers[index] as LayoutLayer;
     const top = layerY[index] as number;
@@ -994,7 +1009,9 @@ function buildDag(options: DagOptions, ctx: Ctx): DagScene {
       const isCritical = critical.has(item.id);
       const isSelected = options.selected === item.id;
       const glyphs = BOXES[isSelected ? "double" : isCritical ? "heavy" : "rounded"];
-      const border: Style = isCritical ? fg(ctx.pal, "accent", { bold: true }) : { fg: sourceColor, bold: isSelected };
+      // Color is execution state; the glyph weight marks selection (double) and the critical path (heavy).
+      const node = nodes.get(item.id);
+      const border = fg(ctx.pal, node ? nodeStateToken(node) : "border", { bold: isSelected || isCritical });
       drawBox(canvas, box, lines, glyphs, border);
       if (outgoing.has(item.id)) canvas.set(anchor.get(item.id) as number, box.y + box.h - 1, glyphs.tee, border);
       exitY.set(item.id, box.y + box.h);
@@ -1190,15 +1207,19 @@ function dagFooter(run: Run, node: DagNode | undefined, layout: RunLayout, input
     ui.dagMode === "pan"
       ? { text: "  PAN  ", style: fg(ctx.pal, "accent", { inverse: true, bold: true }) }
       : { text: " NODES ", style: fg(ctx.pal, "muted", { inverse: true, bold: true }) };
-  const items = ["? help", "t tasks", ui.dagMode === "pan" ? "tab nodes" : "tab pan"];
+  const items = ["? help", followHint(input), "t tasks", ui.dagMode === "pan" ? "tab nodes" : "tab pan"];
   if (visibleRuns(input.snapshot, ui.history).length > 1) items.push("[ ] runs");
   items.push(viewState.folded.includes(run.id) ? "c unfold" : "c fold");
   if (layout.criticalPath.length) items.push(viewState.criticalPath ? "p hide path" : "p path");
   items.push("e edges");
-  if (run.nodes.some((item) => item.state === "running")) items.push("f running");
+  if (run.nodes.some((item) => item.state === "running")) items.push("r running");
   lines.push(hints(ctx, cols, items, badge));
   return lines;
 }
+
+/** Automatic follow acts only on a live connection; a recovery snapshot or a lost host shows it OFF. */
+const following = (input: RenderInput): boolean => input.ui.autoFollow && input.link === "live";
+const followHint = (input: RenderInput): string => `f follow ${following(input) ? "ON" : "OFF"}`;
 
 function renderDag(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
   const { snapshot, viewState, ui, cols, rows } = input;
@@ -1207,7 +1228,7 @@ function renderDag(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
     const body: Line[] = [[], [{ text: "waiting for todos or Atlas", style: fg(ctx.pal, "muted", { italic: true }) }]];
     if (snapshot && !snapshot.atlasAvailable) body.push([{ text: "Atlas integration: not available", style: fg(ctx.pal, "dim") }]);
     if (snapshot?.tasks.length) body.push([{ text: `${snapshot.tasks.length} subagent task(s) · press t`, style: fg(ctx.pal, "dim") }]);
-    return compose(top, body, [ruleLine(ctx, cols), hints(ctx, cols, ["? help", "t tasks", "q quit"])], rows, ui, 0);
+    return compose(top, body, [ruleLine(ctx, cols), hints(ctx, cols, ["? help", followHint(input), "t tasks", "q quit"])], rows, ui, 0);
   }
   const runs = visibleRuns(snapshot, ui.history);
   if (!runs.some((item) => item.id === run.id)) runs.push(run);
@@ -1231,8 +1252,11 @@ function renderDag(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
   );
   const { height } = fit(header, footer, rows);
   const total = scene.canvas.rows.length;
-  // Only a followed selection moves the viewport; after a pan, live re-renders keep the panned position.
-  const box = selected && ui.follow ? scene.boxes.get(selected) : undefined;
+  // Automatic follow reveals the running box without selecting it; otherwise only a followed selection moves the
+  // viewport, and after a pan live re-renders keep the panned position.
+  const target = following(input) && ui.followTarget?.view === "dag" && ui.followTarget.runId === run.id ? ui.followTarget : undefined;
+  const reveal = target ? target.nodeId : ui.follow ? selected : undefined;
+  const box = reveal ? scene.boxes.get(reveal) : undefined;
   if (box) {
     if (box.y < ui.scrollY) ui.scrollY = Math.max(0, box.y - 1);
     if (box.y + box.h > ui.scrollY + height) ui.scrollY = Math.min(box.y, box.y + box.h - height + 1);
@@ -1313,9 +1337,9 @@ function nodeLabel(snapshot: Snapshot | undefined, nodeId: string | undefined): 
 
 function taskCard(task: TaskCard, input: RenderInput, ctx: Ctx, width: number, selected: boolean): Line[] {
   const glyphs = BOXES[selected ? "double" : "rounded"];
+  const state = taskStateToken(task);
   const stalled = task.status === "running" && task.stalled;
-  const borderToken = task.status === "failed" ? "error" : stalled ? "warning" : task.status === "running" ? "borderAccent" : "borderMuted";
-  const border = fg(ctx.pal, borderToken, { bold: selected });
+  const border = fg(ctx.pal, state, { bold: selected });
   const inner = width - 4;
   const content: Line[] = [];
   const expanded = input.ui.expanded.has(task.id);
@@ -1375,7 +1399,7 @@ function taskCard(task: TaskCard, input: RenderInput, ctx: Ctx, width: number, s
   const topLine: Line = [
     { text: `${glyphs.tl}${glyphs.h} `, style: border },
     taskIcon(task, ctx),
-    { text: ` ${agentText}`, style: fg(ctx.pal, "text", { bold: true }) },
+    { text: ` ${agentText}`, style: fg(ctx.pal, state, { bold: true }) },
     { text: status, style: statusStyle },
     { text: ` ${glyphs.h.repeat(fill)}`, style: border },
     { text: elapsed, style: fg(ctx.pal, "muted") },
@@ -1420,26 +1444,29 @@ function renderTasks(input: RenderInput, ctx: Ctx, top: Line[]): Line[] {
     [{ text: `tok ${formatTokens(tokens)}${GLYPHS.separator}${formatCost(cost)}`, style: fg(ctx.pal, "muted") }],
     ruleLine(ctx, cols),
   ];
-  const footer: Line[] = [ruleLine(ctx, cols), hints(ctx, cols, ["? help", "t dag", "o transcript", "enter expand"])];
+  const footer: Line[] = [ruleLine(ctx, cols), hints(ctx, cols, ["? help", followHint(input), "t dag", "o transcript", "enter expand"])];
   if (!ordered.length) {
     return compose(header, [[], [{ text: "no subagent tasks yet", style: fg(ctx.pal, "muted", { italic: true }) }]], footer, rows, ui, 0);
   }
+  const target = following(input) && ui.followTarget?.view === "tasks" ? ui.followTarget.taskId : undefined;
+  // Automatic follow reveals the running card without selecting it; the wheel detaches the list from the selected card
+  // until the selection moves again.
+  const reveal = target && ordered.some((task) => task.id === target) ? target : ui.follow ? selected?.id : undefined;
   const body: Line[] = [];
-  let selectedStart = 0;
-  let selectedEnd = 0;
+  let revealStart = 0;
+  let revealEnd = 0;
   for (const task of ordered) {
     const indent = Math.min(6, Math.max(0, task.depth - 1) * 2);
     const width = Math.max(12, cols - indent);
-    const isSelected = task.id === selected?.id;
-    if (isSelected) selectedStart = body.length;
-    for (const line of taskCard(task, input, ctx, width, isSelected)) body.push(indent ? [{ text: " ".repeat(indent) }, ...line] : line);
-    if (isSelected) selectedEnd = body.length;
+    if (task.id === reveal) revealStart = body.length;
+    for (const line of taskCard(task, input, ctx, width, task.id === selected?.id))
+      body.push(indent ? [{ text: " ".repeat(indent) }, ...line] : line);
+    if (task.id === reveal) revealEnd = body.length;
   }
   const { height } = fit(header, footer, rows);
-  // The wheel detaches the list from the selected card until the selection moves again.
-  if (ui.follow) {
-    if (selectedStart < ui.scrollY) ui.scrollY = selectedStart;
-    if (selectedEnd > ui.scrollY + height) ui.scrollY = Math.min(selectedStart, selectedEnd - height);
+  if (reveal) {
+    if (revealStart < ui.scrollY) ui.scrollY = revealStart;
+    if (revealEnd > ui.scrollY + height) ui.scrollY = Math.min(revealStart, revealEnd - height);
   }
   ui.scrollY = Math.max(0, Math.min(ui.scrollY, body.length - height));
   return compose(header, body, footer, rows, ui, ui.scrollY);
@@ -1495,7 +1522,8 @@ const HELP: Array<[string, string]> = [
   ["c", "fold / unfold completed layers"],
   ["p", "toggle critical-path highlight"],
   ["e", "show / hide edges implied by a path"],
-  ["f", "jump to the next running node"],
+  ["f", "follow running work on / off"],
+  ["r", "select the next running node"],
   ["o", "open the selected child's transcript"],
   ["wheel", "scroll; shift+wheel scrolls sideways"],
   ["click", "select node; double-click opens it"],

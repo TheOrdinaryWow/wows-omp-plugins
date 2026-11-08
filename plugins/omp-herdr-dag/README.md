@@ -54,7 +54,7 @@ Subagents alone do not open the pane. Once you close it with `q` or `/dag-pane c
 
 ### Reading the graph
 
-Each run is colored by where it comes from:
+Each run's tab, title badge and progress bar take the color of its source, and the legend at the top of the pane repeats these colors:
 
 | Source | Color | What it shows |
 | --- | --- | --- |
@@ -62,22 +62,31 @@ Each run is colored by where it comes from:
 | Plan execution | Purple `#a371f7` | The first todo list after you approve a plan in Plan Mode. |
 | Atlas | Green `#3fb950` | An `omo-prometheus` plan: tasks, discovered work, fixes, final reviews and delivery, with their real dependencies. |
 
-Node icons use your OMP theme colors:
+Each node's icon, title and border use your OMP theme colors to show its state, so you can tell at a glance what is running, finished or stuck:
 
-| Icon | State |
-| --- | --- |
-| `○` | Pending |
-| `◐` | Running |
-| `✔` | Done |
-| `✖` | Failed |
-| `⊘` | Blocked |
-| `⊖` | Abandoned |
+| Icon | State | Theme color |
+| --- | --- | --- |
+| `○` | Pending | muted |
+| `◐` | Running | accent |
+| `◐` | Stalled | warning |
+| `✔` | Done | success |
+| `✖` | Failed | error |
+| `⊘` | Blocked | warning |
+| `⊖` | Abandoned | dim |
 
-Solid lines are dependencies; the selected node's lines are drawn bold. Dotted lines are fixes and dependencies that point backwards (marked `↑ after <label>`). To keep the graph readable, a line is hidden when a longer path already implies the same order; press `e` to draw them all. The footer always lists what the selected node depends on directly.
+The selected node has a double border. Solid lines are dependencies; the selected node's lines are drawn bold in its run's color. Dotted lines are fixes and dependencies that point backwards (marked `↑ after <label>`). To keep the graph readable, a line is hidden when a longer path already implies the same order; press `e` to draw them all. The footer always lists what the selected node depends on directly.
 
-Press `p` to highlight the critical path, the longest chain of dependencies by time taken, and `c` to fold layers that are done.
+Press `p` to highlight the critical path, the longest chain of dependencies by time taken: its nodes get heavy borders and its lines are drawn heavy. Press `c` to fold layers that are done.
 
 A running node whose subagent has shown no progress for `stalledAfterSeconds` is marked `stalled`. A failed subagent does not mark its todo or plan task as failed.
+
+Subagent cards in the Tasks view use the same colors: running, stalled, completed, failed or aborted.
+
+### Following running work
+
+The pane follows running work on its own: it keeps the node or task it is following in view until that work finishes, then moves to the next running node or to a running subagent that belongs to no node. If needed, it switches runs or switches between the graph and Tasks. It only scrolls the node into view, so your selection and the footer details stay where you left them. When several things start at once, or a subagent prints more output, the pane doesn't jump between them.
+
+Scrolling, selecting, switching runs or views, folding layers, expanding details or opening a transcript all stop following, so updates don't pull the view away from what you're reading. Press `f` to turn it back on, and the pane shows the current running work right away. The footer shows `f follow ON` or `f follow OFF`. Following is off while the pane is disconnected from OMP. It turns on each time the pane opens and is never saved with your folds or other view settings.
 
 ### Tasks and transcripts
 
@@ -100,7 +109,8 @@ Press `o` on a task, or on a node with a subagent attached, to read its transcri
 | `c` | Fold completed layers. |
 | `p` | Highlight the critical path. |
 | `e` | Draw every dependency line. |
-| `f` | Jump to the next running node. |
+| `f` | Turn following running work on or off. |
+| `r` | Select the next running node. |
 | `o` | Open the selected subagent's transcript. |
 | Esc | Leave a transcript or close help. |
 | `?` | Help. |
@@ -149,9 +159,9 @@ Settings are read at startup, on a session switch and with each `/dag-pane` comm
 | `todoDependencies` | `true` | Let the agent declare dependencies between todos. Todos work the same either way. |
 | `atlasIntegration` | `true` | Show `omo-prometheus` Atlas plans. |
 | `followTheme` | `true` | Follow changes to your OMP theme. |
-| `colorTodo` | `#4f8cff` | Color of todo runs (`#rrggbb`). |
-| `colorPlan` | `#a371f7` | Color of plan runs (`#rrggbb`). |
-| `colorAtlas` | `#3fb950` | Color of Atlas runs (`#rrggbb`). |
+| `colorTodo` | `#4f8cff` | Color of todo runs in tabs, the run badge and the legend (`#rrggbb`). |
+| `colorPlan` | `#a371f7` | Color of plan runs in tabs, the run badge and the legend (`#rrggbb`). |
+| `colorAtlas` | `#3fb950` | Color of Atlas runs in tabs, the run badge and the legend (`#rrggbb`). |
 | `retentionDays` | `14` | When a session starts, delete this plugin's files for sessions older than this many days, from 1 to 365. |
 | `layoutAlign` | `centered` | `centered` centers the graph in the pane; `left` packs it against the left edge. |
 | `viewerRuntime` | empty | The Bun executable for the viewer. Empty means find `bun` on your `PATH`. |
@@ -175,4 +185,4 @@ Settings are read at startup, on a session switch and with each `/dag-pane` comm
 
 ## License
 
-MIT. An improved port of [jc01rho/omo-herdr-dag](https://github.com/jc01rho/omo-herdr-dag), inspected at revision `a093cdf5da96e28dfe50348965d9f3bafb1c9531`. The upstream copyright and permission notice are kept in [NOTICE](NOTICE); see [LICENSE](LICENSE) for this plugin's license.
+MIT. An improved port of [jc01rho/omo-herdr-dag](https://github.com/jc01rho/omo-herdr-dag), inspected at revision `2963f8fb0c1ab6c475de206d08a6b67c29ae1227`. The upstream copyright and permission notice are kept in [NOTICE](NOTICE); see [LICENSE](LICENSE) for this plugin's license.

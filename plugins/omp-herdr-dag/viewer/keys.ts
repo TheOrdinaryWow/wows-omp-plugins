@@ -32,6 +32,7 @@ export type Key =
   | "previousRun"
   | "nextRun"
   | "running"
+  | "follow"
   | "open"
   | "escape"
   | "help";
@@ -62,7 +63,8 @@ const CHARS: Record<string, Key> = {
   c: "fold",
   p: "critical",
   e: "edges",
-  f: "running",
+  f: "follow",
+  r: "running",
   "\t": "mode",
   "[": "previousRun",
   "]": "nextRun",
@@ -202,6 +204,7 @@ export function spatialTarget(boxes: DagFrame["boxes"], from: string, direction:
 /** Moves the DAG viewport and detaches it from the selection; the last frame's canvas bounds the move. */
 function pan(ui: UiState, frame: DagFrame | undefined, dx: number, dy: number): void {
   ui.follow = false;
+  ui.autoFollow = false;
   const maxX = frame ? Math.max(0, frame.width - frame.cols) : Number.POSITIVE_INFINITY;
   const maxY = frame ? Math.max(0, frame.height - frame.rows) : Number.POSITIVE_INFINITY;
   ui.scrollX = Math.max(0, Math.min(maxX, ui.scrollX + dx));
@@ -247,7 +250,11 @@ export function handleKey(context: InputContext, key: Key): Effect[] {
     case "toggle":
       viewState.view = viewState.view === "dag" ? "tasks" : "dag";
       resetViewport(ui);
+      ui.autoFollow = false;
       return [{ type: "persist" }];
+    case "follow":
+      ui.autoFollow = !ui.autoFollow;
+      return [];
     case "history":
       ui.history = !ui.history;
       return [];
@@ -267,8 +274,12 @@ export function handleKey(context: InputContext, key: Key): Effect[] {
     if (delta) {
       ui.taskId = moveSelection(ids, current?.id, delta);
       ui.follow = true;
+      ui.autoFollow = false;
     }
-    if (key === "enter" && current) toggle(ui.expanded, current.id);
+    if (key === "enter" && current) {
+      toggle(ui.expanded, current.id);
+      ui.autoFollow = false;
+    }
     if (key === "open" && current) return openTranscript(viewState, ui, current.id, current.sessionFile, "tasks");
     return [];
   }
@@ -278,6 +289,7 @@ export function handleKey(context: InputContext, key: Key): Effect[] {
   switch (key) {
     case "previousRun":
     case "nextRun":
+      ui.autoFollow = false;
       return switchRun(context, run, key === "previousRun" ? -1 : 1);
     case "mode":
       ui.dagMode = ui.dagMode === "nodes" ? "pan" : "nodes";
@@ -288,6 +300,7 @@ export function handleKey(context: InputContext, key: Key): Effect[] {
   }
   if (!run) return [];
   if (key === "fold") {
+    ui.autoFollow = false;
     viewState.folded = viewState.folded.includes(run.id) ? viewState.folded.filter((id) => id !== run.id) : [...viewState.folded, run.id];
     return [{ type: "persist" }];
   }
@@ -320,10 +333,12 @@ export function handleKey(context: InputContext, key: Key): Effect[] {
         : moveSelection(nodeOrder(layout), selected, key === "up" || key === "left" ? -1 : 1);
     if (next) ui.selected.set(run.id, next);
     ui.follow = true;
+    ui.autoFollow = false;
     return [];
   }
   if (key === "running") {
     // Cycles through running nodes in drawn order, starting after the current selection; nothing runs, nothing moves.
+    ui.autoFollow = false;
     const states = new Map(run.nodes.map((node) => [node.id, node.state]));
     const running = nodeOrder(layout).filter((id) => states.get(id) === "running");
     if (!running.length) return [];
@@ -337,9 +352,13 @@ export function handleKey(context: InputContext, key: Key): Effect[] {
     const next = moveSelection(nodeOrder(layout), selected, key === "pageup" ? -nodePage : nodePage);
     if (next) ui.selected.set(run.id, next);
     ui.follow = true;
+    ui.autoFollow = false;
     return [];
   }
-  if (key === "enter" && selected) toggle(ui.expanded, selected);
+  if (key === "enter" && selected) {
+    toggle(ui.expanded, selected);
+    ui.autoFollow = false;
+  }
   if (key === "open" && selected) return openNode(context, run, selected);
   return [];
 }
@@ -356,6 +375,7 @@ export function handleMouse(context: InputContext, mouse: Mouse): Effect[] {
     if (mouse.type === "wheel" && mouse.dy) {
       // The renderer clamps the list and stops pulling the selected card into view until the selection moves.
       ui.follow = false;
+      ui.autoFollow = false;
       ui.scrollY = Math.max(0, ui.scrollY + mouse.dy * WHEEL_ROWS);
     }
     return [];
@@ -380,6 +400,7 @@ export function handleMouse(context: InputContext, mouse: Mouse): Effect[] {
   ui.lastClick = double ? undefined : { id: hit, at: context.now };
   ui.selected.set(run.id, hit);
   ui.follow = true;
+  ui.autoFollow = false;
   return double ? openNode(context, run, hit) : [];
 }
 
@@ -425,6 +446,7 @@ function toggle(set: Set<string>, id: string): void {
 }
 
 function openTranscript(viewState: ViewState, ui: UiState, taskId: string, file: string | undefined, from: "dag" | "tasks"): Effect[] {
+  ui.autoFollow = false;
   ui.returnView = from;
   ui.transcript = { taskId, file, lines: [], scroll: 0, follow: true };
   viewState.view = "transcript";

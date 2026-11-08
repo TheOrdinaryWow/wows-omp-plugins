@@ -1,6 +1,9 @@
 This plugin is an improved port of jc01rho/omo-herdr-dag.
 Upstream: https://github.com/jc01rho/omo-herdr-dag
-Inspected revision: a093cdf5da96e28dfe50348965d9f3bafb1c9531
+Inspected revision: 2963f8fb0c1ab6c475de206d08a6b67c29ae1227
+Adopted from 2963f8f (reimplemented, not copied): execution-state colors on node
+borders, titles and status marks with run-kind colors moved to the run header and
+legend, and automatic follow of running work.
 
 MIT License
 
