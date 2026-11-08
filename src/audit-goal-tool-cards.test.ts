@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { initTheme } from "@oh-my-pi/pi-tui";
+import { initTheme, type NativeChild, type NativeNode } from "@oh-my-pi/pi-tui";
 import type { NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
 import { z } from "zod";
 
@@ -132,6 +132,13 @@ const round1 = {
 
 const flat = (value: unknown): string => JSON.stringify(value);
 
+const nodes = (children: readonly NativeChild[] | undefined): NativeNode[] =>
+  (children ?? []).flatMap((child) =>
+    typeof child === "object" && child !== null && "k" in child ? [child as NativeNode, ...nodes((child as NativeNode).c)] : [],
+  );
+const visible = (view: NativeToolView): string =>
+  flat(view.body?.filter((child) => !(typeof child === "object" && child !== null && "key" in child && child.key === "model-text")));
+const receipt = (view: NativeToolView): NativeNode | undefined => nodes(view.body).find((node) => node.key === "model-text");
 describe("audit_round Tern card", () => {
   test("call head names the operation and tolerates partial streaming args", async () => {
     const { tool } = await harness(seed());
@@ -147,7 +154,7 @@ describe("audit_round Tern card", () => {
     }
   });
 
-  test("recorded round shows round number, auditors, open findings and receipt", async () => {
+  test("recorded round shows counts collapsed and current round facts expanded, with a folded receipt", async () => {
     const { tool, call } = await harness(seed(3));
     const result = await call(round1);
     expect(result.isError).toBeUndefined();
@@ -157,8 +164,16 @@ describe("audit_round Tern card", () => {
     expect(shown).toContain("1 of 3");
     expect(shown).toContain("auditor-A, auditor-B");
     expect(shown).toContain("major 1");
-    expect(shown).toContain("Round 1 recorded.");
-    expect(view.preview).toBeDefined();
+    expect(shown).not.toContain("Round 1 recorded.");
+    expect(shown).not.toContain("Order lost after restart");
+    expect(view.preview).toBe("none");
+    const expanded = tool.describeResult(result, { expanded: true }, round1);
+    expect(visible(expanded)).toContain("Order lost after restart");
+    expect(visible(expanded)).toContain("checkout chain");
+    expect(visible(expanded)).toContain("CI passed");
+    expect(visible(expanded)).not.toContain("Round 1 recorded.");
+    expect(receipt(expanded)?.p).toMatchObject({ collapsible: true, collapsed: true });
+    expect(flat(receipt(expanded))).toContain("Round 1 recorded.");
     expect(view.tone).not.toBe("error");
   });
 
@@ -186,7 +201,12 @@ describe("audit_round Tern card", () => {
     const view = clean.tool.describeResult(concluded, { expanded: false }, args);
     expect(view.tone).toBe("success");
     expect(flat(view)).toContain("threshold-convergence");
-    expect(flat(view)).toContain("two clean rounds");
+    expect(flat(view)).not.toContain("two clean rounds");
+    const expanded = clean.tool.describeResult(concluded, { expanded: true }, args);
+    expect(visible(expanded)).toContain("two clean rounds");
+    expect(visible(expanded)).toContain("Round 2 observation");
+    expect(visible(expanded)).not.toContain("call goal");
+    expect(receipt(expanded)?.p).toMatchObject({ collapsible: true, collapsed: true });
   });
 
   test("status result and refusal", async () => {
@@ -200,11 +220,144 @@ describe("audit_round Tern card", () => {
     expect(flat(view)).toContain("op=extend is only valid");
   });
 
-  test("results without details fall back to markdown text", async () => {
+  test("legacy results keep their receipt folded and old structured details still show counts", async () => {
     const { tool } = await harness(undefined);
-    const view = tool.describeResult({ content: [{ type: "text", text: "Legacy **receipt**" }], details: {} }, { expanded: false });
-    expect(flat(view)).toContain("Legacy **receipt**");
-    expect(view.tone).toBeUndefined();
+    const result = { content: [{ type: "text", text: "Legacy operation completed.\nLegacy **receipt**" }], details: {} };
+    const view = tool.describeResult(result, { expanded: false });
+    expect(flat(view)).toContain("Legacy operation completed.");
+    expect(flat(view)).not.toContain("Legacy **receipt**");
+    const expanded = tool.describeResult(result, { expanded: true });
+    expect(visible(expanded)).not.toContain("Legacy **receipt**");
+    expect(flat(receipt(expanded))).toContain("Legacy **receipt**");
+    const old = {
+      ...result,
+      details: {
+        op: "record",
+        intensity: "standard",
+        rounds: 8,
+        roundLimit: "unlimited",
+        round: { round: 8, auditorModels: ["old-auditor"], critical: 0, major: 2, minor: 0, picky: 0 },
+        open: { critical: 0, major: 4, minor: 1, picky: 0 },
+        capPending: false,
+        ended: false,
+      },
+    };
+    for (const expanded of [false, true]) {
+      const card = tool.describeResult(old, { expanded });
+      expect(visible(card)).toContain("8 of unlimited");
+      expect(visible(card)).toContain("old-auditor");
+      expect(visible(card)).toContain("major 4");
+      expect(visible(card)).not.toContain("Legacy **receipt**");
+    }
+  });
+
+  test("long audits show only the recorded round, current repairs and rejections outside model text", async () => {
+    const { tool, call } = await harness(seed());
+    for (let round = 1; round < 12; round++) {
+      const result = await call({
+        ...round1,
+        round,
+        coverage: `Historic coverage ${round}`,
+        findings: [{ ...round1.findings[0], id: `historic-${round}`, summary: `Historic defect ${round}` }],
+      });
+      expect(result.isError).toBeUndefined();
+    }
+    const args = {
+      ...round1,
+      round: 12,
+      rejected: 1,
+      coverage: "Current checkout coverage",
+      checks: "Current restart regression passed",
+      findings: [{ ...round1.findings[0], id: "current-finding", summary: "Current checkout defect" }],
+      resolutions: [{ findingId: "historic-1", evidence: "Current repair verified at checkout.ts:84" }],
+      rejectedEvidence: ["Current rejected claim contradicted by restart regression"],
+    };
+    const result = await call(args);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toContain("Historic defect 11");
+    for (const expanded of [false, true]) {
+      const card = tool.describeResult(result, { expanded }, args);
+      expect(visible(card)).toContain("12 of");
+      expect(visible(card)).not.toContain("Historic defect");
+      expect(visible(card)).not.toContain("Historic coverage");
+      expect(visible(card)).not.toContain("Start round 13");
+      expect(visible(card)).not.toContain("Remaining findings");
+      if (expanded) {
+        expect(visible(card)).toContain("Current checkout defect");
+        expect(visible(card)).toContain("Current repair verified");
+        expect(visible(card)).toContain("Current rejected claim");
+        expect(flat(receipt(card))).toContain("Historic defect 11");
+      } else expect(receipt(card)).toBeUndefined();
+    }
+    const status = await call({ op: "status" });
+    const card = tool.describeResult(status, { expanded: true }, { op: "status" });
+    expect(visible(card)).toContain("major 11");
+    expect(visible(card)).not.toContain("Current checkout defect");
+    expect(visible(card)).not.toContain("Historic defect");
+    expect(flat(receipt(card))).toContain("Historic defect 11");
+  });
+
+  test("refusal keeps one reason visible and formats instructions only inside folded model text", async () => {
+    const { tool } = await harness(undefined);
+    const result = {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: [
+            "The round limit is exhausted. Report all old findings before continuing.",
+            "Line one",
+            "Line two",
+            "State: cap-pending",
+            "Next: request a decision",
+            "| ID | Status |",
+            "| --- | --- |",
+            "| historic-1 | open |",
+            'Then call goal({"op":"complete"}).',
+          ].join("\n"),
+        },
+      ],
+    };
+    for (const expanded of [false, true]) {
+      const card = tool.describeResult(result, { expanded }, { op: "record", round: 12 });
+      expect(card.tone).toBe("error");
+      expect(card.preview).toBe("none");
+      expect(visible(card)).toContain("The round limit is exhausted.");
+      expect(visible(card)).not.toContain("Report all old findings");
+      expect(visible(card)).not.toContain("historic-1");
+      if (expanded) {
+        const raw = receipt(card);
+        expect(raw?.p).toMatchObject({ collapsible: true, collapsed: true });
+        const inside = nodes(raw?.c);
+        expect(inside.find((node) => node.k === "table")?.p).toMatchObject({
+          cols: [
+            { head: "ID", priority: 2 },
+            { head: "Status", priority: 1 },
+          ],
+          rows: [{ cells: { 0: "historic-1", 1: "open" } }],
+        });
+        expect(inside.find((node) => node.k === "code")?.p).toMatchObject({
+          lang: "json",
+          text: JSON.stringify({ op: "complete" }, null, 2),
+        });
+        expect(inside.some((node) => node.k === "kv")).toBe(true);
+        expect(flat(inside)).toContain("Line one\\\\\\nLine two");
+      }
+    }
+  });
+
+  test("finite-cap stop shows this conclusion, not the recorded round's findings", async () => {
+    const { tool, call } = await harness(seed(1));
+    await call(round1);
+    const result = await call({ op: "extend" });
+    expect(result.isError).toBeUndefined();
+    const collapsed = tool.describeResult(result, { expanded: false }, { op: "extend" });
+    expect(visible(collapsed)).toContain("stop");
+    expect(visible(collapsed)).not.toContain("Order lost after restart");
+    const expanded = tool.describeResult(result, { expanded: true }, { op: "extend" });
+    expect(visible(expanded)).toContain("Noninteractive finite round limit reached");
+    expect(visible(expanded)).not.toContain("Order lost after restart");
+    expect(flat(receipt(expanded))).toContain("Order lost after restart");
   });
 
   test("command notice is titled Audit goal in both terminals", async () => {

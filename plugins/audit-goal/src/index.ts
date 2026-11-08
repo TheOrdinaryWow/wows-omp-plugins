@@ -669,7 +669,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     loadMode: "essential",
     approval: "read",
     describeCall: (args) => describeRoundCall(args),
-    describeResult: (result, _options, args) => describeRoundResult(result, args),
+    describeResult: (result, options, args) => describeRoundResult(result, args, options.expanded),
     execute: async (_toolCallId, params: RoundParams, _signal, _onUpdate, ctx) => {
       if (invalidStates.has(ctx.sessionManager.getSessionId()))
         return textResult("Audit ledger is invalid or could not be saved. Do not complete or dispatch; use /goal drop explicitly.", true);
