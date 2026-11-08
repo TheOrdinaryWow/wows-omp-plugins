@@ -23,6 +23,7 @@ import {
   type VerificationStatus,
   verificationStatus,
 } from "./ledger.ts";
+import { modelTextNodes } from "./model-text.ts";
 
 type Tone = NonNullable<NativeToolView["tone"]>;
 
@@ -307,12 +308,12 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
       ruling ? rulingSection(ruling) : undefined,
       progressBar(progress),
       ...(expanded ? rowFacts(changed, progress, ruling) : []),
-      // The text the model reads repeats the whole plan on every call: shown raw and folded, for checking what it was told.
+      // The text the model reads repeats the whole plan on every call: folded, for checking what it was told.
       expanded && guidance
         ? node(
             "section",
             { head: [span("Model text", "muted")], collapsible: true, collapsed: true },
-            [text([span(guidance, "mono")], { wrap: "word" })],
+            modelTextNodes(guidance),
             "model-text",
           )
         : undefined,

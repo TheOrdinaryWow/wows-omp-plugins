@@ -100,10 +100,23 @@ test("atlas_ledger heads read as the action and row, even from partial arguments
 test("atlas_ledger shows the changed row and progress; expanding adds that row's facts and folds the model text", () => {
   const ledger = createLedger("/plans/plan.md", planContent, ["task"]);
   const row = startRow(ledger, "T1", undefined, ["task"]);
-  const modelText = "T1 is now in_progress.\n\n| ID | Status |\n| --- | --- |\n| T1 | in_progress |\n| T2 | open |";
+  const modelText = [
+    "T1 is now in_progress.",
+    "",
+    "| ID | Status |",
+    "| --- | --- |",
+    "| T1. Pipe \\| inside | in_progress |",
+    "| T2 | open |",
+    "T1 acceptance: run `bun test` twice",
+    'Assignment for T1: atlas_assignment: {"planSha256":"abc","rows":{"T1":"a1"}}',
+    "Next dispatchable: none",
+  ].join("\n");
   const result = {
     content: [
-      { type: "text", text: "todo refresh" },
+      {
+        type: "text",
+        text: 'Refresh the todo HUD now with the already-synced item: todo({"op":"start","task":"T1"}). Until then dispatch is refused.',
+      },
       { type: "text", text: modelText },
     ],
     details: { id: row.id, status: row.status, row: ledgerCardRow(ledger, row), progress: ledgerProgress(ledger) },
@@ -128,9 +141,35 @@ test("atlas_ledger shows the changed row and progress; expanding adds that row's
   expect(facts).toContain("none");
   const raw = expanded.find((node) => node.key === "model-text");
   expect(raw?.p).toMatchObject({ collapsible: true, collapsed: true });
-  expect(shown(raw)).toContain("| T2 | open |");
-  // The model's plan table reaches the user only inside that folded raw section.
-  expect(expanded.some((node) => node.k === "md" && shown(node).includes("| T2 | open |"))).toBe(false);
+  // The model's text arrives formatted: its table as a native table, its JSON indented, nothing left as raw pipes or one-line JSON.
+  const inside = nodes(raw?.c);
+  const table = inside.find((node) => node.k === "table");
+  expect(table?.p).toMatchObject({
+    cols: [{ head: "ID" }, { head: "Status" }],
+    rows: [{ cells: { 0: "T1. Pipe | inside", 1: "in_progress" } }, { cells: { 0: "T2", 1: "open" } }],
+  });
+  const json = inside.flatMap((node) => (node.k === "code" ? [node.p?.text] : []));
+  expect(json).toEqual([
+    JSON.stringify({ op: "start", task: "T1" }, null, 2),
+    JSON.stringify({ planSha256: "abc", rows: { T1: "a1" } }, null, 2),
+  ]);
+  const prose = inside.flatMap((node) => (node.k === "md" ? [node.p?.text] : []));
+  expect(prose).toEqual([
+    "Refresh the todo HUD now with the already-synced item: todo",
+    "Until then dispatch is refused.",
+    "T1 is now in_progress.",
+  ]);
+  // `Label: value` lines read as aligned fields, their backtick runs as code.
+  const fields = inside.flatMap((node) => (node.k === "kv" ? [node.p?.items] : []));
+  expect(fields).toMatchObject([
+    [
+      { k: [{ t: "T1 acceptance" }], v: [{ t: "run " }, { t: "bun test", s: "code" }, { t: " twice" }] },
+      { k: [{ t: "Assignment for T1" }], v: [{ t: "atlas_assignment:" }] },
+    ],
+    [{ k: [{ t: "Next dispatchable" }], v: [{ t: "none" }] }],
+  ]);
+  // The model's plan table reaches the user only inside that folded section.
+  expect(expanded.some((node) => node !== raw && !inside.includes(node) && shown(node).includes("T2"))).toBe(false);
 });
 
 test("atlas_ledger expanded card names a stopped retry window and the amendment behind the acceptance", () => {

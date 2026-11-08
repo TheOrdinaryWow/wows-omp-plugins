@@ -593,7 +593,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const window = retryWindow(item);
     if (window) {
       notes.push(
-        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total diagnostics; time limit ${effectiveTimeLimitHours(item)}h; opened ${window.openedAt ?? "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
+        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total diagnostics; time limit ${effectiveTimeLimitHours(item)}h; opened ${window.openedAt !== undefined ? new Date(window.openedAt).toISOString() : "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
       );
     }
   }
