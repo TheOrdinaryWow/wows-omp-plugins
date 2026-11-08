@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.6.6...omp-herdr-dag@0.7.0) (2026-11-08)
+
+
+### Features
+
+* **omp-herdr-dag:** color nodes by execution state and follow running work automatically ([3421a52](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/3421a529b34f5d71c30d648e5cdbbea6c0b21ae3))
+
 ## [0.6.6](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.6.5...omp-herdr-dag@0.6.6) (2026-11-06)
 
 
