@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.9.3...roadmap@0.10.0) (2026-11-08)
+
+
+### Features
+
+* **roadmap:** move planned stages between rounds, revise the active round charter and auto-upgrade format-1 repositories ([31313f7](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/31313f7c01f5cdd17c48a97ab111a06b0ea2b5d4))
+
 ## [0.9.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.9.2...roadmap@0.9.3) (2026-11-08)
 
 
