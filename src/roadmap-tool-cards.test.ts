@@ -171,6 +171,18 @@ describe("roadmap tool cards", () => {
     expect(
       tables.filter((child) => typeof child === "object" && child && "k" in child && child.k === "table").length,
     ).toBeGreaterThanOrEqual(3);
+    const statusTables = tables.filter((child) => typeof child === "object" && child && "k" in child && child.k === "table");
+    expect(statusTables).toHaveLength(4);
+    for (const table of statusTables) {
+      const columns = table.p?.cols ?? [];
+      const essential = columns.filter((column) => ["id", "stage", "title", "label", "status"].includes(column.id));
+      const secondary = columns.filter((column) => !essential.includes(column));
+      for (const column of essential) {
+        for (const other of secondary) expect(column.priority ?? 0).toBeGreaterThan(other.priority ?? 0);
+      }
+      for (const column of columns) expect(column.truncate).toBe("end");
+      expect(columns.find((column) => column.id === "title" || column.id === "label")?.grow).toBeGreaterThan(0);
+    }
     const text = shown(view);
     for (const round of model.rounds) expect(text).toContain(round.title);
     for (const stage of model.stages) expect(text).toContain(stage.title);

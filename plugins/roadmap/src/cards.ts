@@ -101,10 +101,15 @@ function section(head: string, children: readonly NativeChild[], key: string, to
 
 function table(
   key: string,
-  cols: readonly [string, string][],
+  cols: readonly [string, string, number, number?][],
   rows: readonly { id: string; cells: Record<string, TspText> }[],
 ): NativeNode {
-  return node("table", { cols: cols.map(([id, head]) => ({ id, head })), rows }, undefined, key);
+  return node(
+    "table",
+    { cols: cols.map(([id, head, priority, grow]) => ({ id, head, priority, truncate: "end", ...(grow ? { grow } : {}) })), rows },
+    undefined,
+    key,
+  );
 }
 
 function warningLines(warnings: readonly string[]): NativeNode[] {
@@ -217,12 +222,12 @@ function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true },
               table(
                 "rounds",
                 [
-                  ["id", "Round"],
-                  ["status", "Status"],
-                  ["title", "Title"],
-                  ["target", "Target"],
-                  ["stages", "Stages"],
-                  ["note", ""],
+                  ["id", "Round", 3],
+                  ["status", "Status", 3],
+                  ["title", "Title", 3, 1],
+                  ["target", "Target", 1],
+                  ["stages", "Stages", 1],
+                  ["note", "", 2],
                 ],
                 overview.rounds.map((round) => ({
                   id: round.id,
@@ -247,12 +252,12 @@ function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true },
               table(
                 "stages",
                 [
-                  ["id", "Stage"],
-                  ["status", "Status"],
-                  ["title", "Title"],
-                  ["round", "Round"],
-                  ["target", "Target"],
-                  ["note", ""],
+                  ["id", "Stage", 3],
+                  ["status", "Status", 3],
+                  ["title", "Title", 3, 1],
+                  ["round", "Round", 1],
+                  ["target", "Target", 1],
+                  ["note", "", 2],
                 ],
                 overview.stages.map((stage) => ({
                   id: stage.id,
@@ -278,11 +283,11 @@ function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true },
                   table(
                     "plans",
                     [
-                      ["stage", "Stage"],
-                      ["label", "Plan"],
-                      ["status", "Status"],
-                      ["rows", "Rows"],
-                      ["note", ""],
+                      ["stage", "Stage", 3],
+                      ["label", "Plan", 3, 1],
+                      ["status", "Status", 3],
+                      ["rows", "Rows", 1],
+                      ["note", "", 2],
                     ],
                     overview.plans.map((plan, index) => ({
                       id: `${plan.stage}-${index}`,
@@ -307,10 +312,10 @@ function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true },
               table(
                 "todos",
                 [
-                  ["id", "TODO"],
-                  ["severity", "Severity"],
-                  ["target", "Target or trigger"],
-                  ["title", "Title"],
+                  ["id", "TODO", 3],
+                  ["severity", "Severity", 2],
+                  ["target", "Target or trigger", 1],
+                  ["title", "Title", 3, 1],
                 ],
                 overview.todos.map((todo) => ({
                   id: todo.id,
