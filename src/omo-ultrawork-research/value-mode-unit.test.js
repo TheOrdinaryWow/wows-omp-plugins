@@ -1,16 +1,16 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: Dollar-prefixed fact placeholders are literal test inputs.
 import { describe, expect, onTestFinished, test } from "bun:test";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { derive } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fact-derive.mjs";
 import { valueChecks } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fidelity-values.mjs";
 import { buildContext } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/gates-static.mjs";
 import { parseHtml } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
 import { run } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/report-tools.mjs";
-import { codes, FIX, filled, LEDGER, prose } from "./tests/value-mode-support";
+import { codes, FIX, filled, LEDGER, prose } from "./tests/value-mode-support.js";
 
 describe("value-mode unit binding through fact fill and verify", () => {
   for (const format of ["html", "md"])
@@ -44,7 +44,7 @@ Up to {{F1:span_len:value}} meters [S4].`,
     ["{{F1:span_len:value}}", " m\uC758", " m\uC758", " mm\uC758"],
     ["{{F21:rev_eok:value}}", "\uC5B5 \uC6D0\uC73C\uB85C", "\uC5B5 \uC6D0\uC73C\uB85C", "\uC5B5 \uB2EC\uB7EC\uB85C"],
     ["{{F22:staff:value}}", "\uBA85\uC774\uB2E4", "\uBA85\uC774\uB2E4", "\uAC74\uC774\uB2E4"],
-    ["${{F23:price:value}}", "", "$<data", "\u20AC<data"],
+    ["$" + "{{F23:price:value}}", "", "$<data", "\u20AC<data"],
   ])
     test(`#given the documented form ${pointer}${tail} #when its unit is hand-edited #then unit_mismatch blocks`, async () => {
       const { verify, edit } = await filled(prose(pointer, tail)),
@@ -83,6 +83,17 @@ Up to {{F1:span_len:value}} meters [S4].`,
   });
   test("#given a converted row in value mode followed by its unit #when verified #then display(value, unit) still verifies", async () => {
     expect(codes(await (await filled(prose("{{F8:span_mm:value}}", " mm"))).verify())).not.toContain("unit_mismatch");
+  });
+  test("#given a converted row in value mode rendered with its original in brackets #when the unit beside it is hand-edited #then unit_mismatch blocks", async () => {
+    const ledger = structuredClone(LEDGER),
+      { row } = derive(ledger, { op: "convert", operands: ["F1"], to: "mm", now: "2026-10-23T08:00:00Z", label: "span_conv" }),
+      { verify, edit, text } = await filled(prose(`{{${row.fact_id}:span_conv:value}}`, " mm"), "html", ledger);
+    expect(text).toContain(">320,000 mm (320 m)</data> mm");
+    expect(codes(await verify())).toEqual([]);
+    edit("</data> mm", "</data> km");
+    const edited = await verify();
+    expect(codes(edited)).toContain("unit_mismatch");
+    expect(edited.exitCode).toBe(1);
   });
   test("#given the sign already inside a value-mode element (valueParts falling back to the raw text) #when checked #then it is bound", () => {
     const element = (shown) =>
@@ -160,7 +171,7 @@ const PAGE =
   "<html><body><p>\uB9E4\uCD9C\uC740 3,234\uC5B5 \uC6D0\uC774\uB2E4.</p><p>Revenue reached 12 million dollars.</p><p>The main span is 320 m long.</p></body></html>";
 async function located(pointers) {
   const dir = mkdtempSync(join(tmpdir(), "value-mode-find-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: !0, force: !0 }));
   copyFileSync(join(FIX, "fidelity-brief-locked.md"), join(dir, "brief.md"));
   writeFileSync(join(dir, "page.html"), PAGE);
   expect((await run(["source", "snapshot", "--id", "S1", "--html", join(dir, "page.html"), "--session-dir", dir])).exitCode).toBe(0);

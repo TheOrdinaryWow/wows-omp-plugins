@@ -1,6 +1,5 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: Dollar-prefixed fact placeholders are literal test inputs.
 import { describe, expect, test } from "bun:test";
 
 import { valueChecks } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fidelity-values.mjs";
@@ -8,7 +7,7 @@ import { buildContext } from "../../plugins/omo-ultrawork/assets/ulw-research/sc
 import { parseHtml } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
 import { escapeHtml } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/placeholder.mjs";
 import { dimensionOf, normalizeUnit } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/units.mjs";
-import { codes, F1, filled, prose } from "./tests/value-mode-support";
+import { codes, F1, filled, prose } from "./tests/value-mode-support.js";
 
 const verdictOf = (found) => (found.includes("unit_mismatch") ? "unit_mismatch" : found.includes("unit_unbound") ? "unit_unbound" : "pass"),
   ALIASES = [
@@ -184,7 +183,7 @@ ${u} [S4]`,
     {
       name: "currency sign before",
       format: "html",
-      body: prose("${{F23:price:value}}", ""),
+      body: prose("$" + "{{F23:price:value}}", ""),
       at: (u) => `Up to ${u}<data`,
       units: ["$", "\u20AC", "Rs"],
     },
@@ -243,6 +242,95 @@ describe("class 2: a unit hand-edited after fill", () => {
     expect(wrong).toEqual([]);
   }, 120000);
 });
+const PREFIX_SIGNS = [
+    ["$", "USD"],
+    ["US$", "USD"],
+    ["USD ", "USD"],
+    ["\u20AC", "EUR"],
+    ["\xA3", "GBP"],
+    ["\u20A9", "KRW"],
+  ],
+  SUFFIX_SIGNS = [
+    ["\u20AC", "EUR"],
+    [" \u20AC", "EUR"],
+    [" USD", "USD"],
+    ["\xA3", "GBP"],
+    ["\uC6D0", "KRW"],
+    [" \uC6D0", "KRW"],
+    ["\uB2EC\uB7EC", "USD"],
+    [" \uB2EC\uB7EC", "USD"],
+    ["\uB9CC\uC6D0", "KRW"],
+  ],
+  SIGN_ROW_UNITS = ["USD", "EUR", "GBP", "KRW", "KRW-e4"],
+  KO = /[\u20A9\uAC00-\uD7A3]/u;
+function signCases() {
+  const cases = [],
+    insides = [
+      ["", "", ""],
+      ...PREFIX_SIGNS.map(([f, u]) => [`${f}320`, u, "prefix"]),
+      ...SUFFIX_SIGNS.map(([f, u]) => [`320${f}`, u, "suffix"]),
+    ];
+  for (const [outside, outsideUnit] of [["", ""], ...PREFIX_SIGNS])
+    for (const [inside, insideUnit, where] of insides)
+      for (const unit of SIGN_ROW_UNITS) {
+        const bound = [outsideUnit, insideUnit].filter(Boolean);
+        if (bound.some((u) => u !== unit && dimensionOf(u) === dimensionOf(unit))) continue;
+        const agree = bound.every((u) => dimensionOf(u) === dimensionOf(unit)),
+          position =
+            !outsideUnit && !insideUnit
+              ? "no sign"
+              : !insideUnit
+                ? "outside-before only"
+                : !outsideUnit
+                  ? `inside-${where} only`
+                  : dimensionOf(outsideUnit) !== dimensionOf(insideUnit)
+                    ? "outside vs inside conflicting"
+                    : "outside and inside agreeing",
+          label = outsideUnit && !insideUnit && !agree ? "outside disagreeing with the row" : position;
+        cases.push({
+          position: label,
+          outside,
+          inside: inside || "320",
+          unit,
+          expected: bound.length === 0 ? "unit_unbound" : agree ? "pass" : "unit_mismatch",
+        });
+      }
+  return cases;
+}
+function signed(outside, inside, unit) {
+  const value = inside.includes("\uB9CC") ? "3200000" : "320",
+    html = `<h2>Findings</h2><p>Up to ${escapeHtml(outside)}<data class="fact" value="${value}" data-fact="F1" data-unit="${escapeHtml(unit)}" data-fact-mode="value">${escapeHtml(inside)}</data> [S4].</p>`,
+    ledger = { rows: [{ ...F1, unit, value, raw: `${value} ${unit}`, exact: { num: value, den: "1" } }] };
+  return verdictOf(valueChecks(buildContext(parseHtml(html), {}), ledger, null, null).map((d) => d.code));
+}
+describe("class 2b: a currency sign outside and inside a value-mode element", () => {
+  test("#given every EN and KO sign outside before, inside as prefix or suffix, both, or none #when read #then every bound sign must agree with the row and with each other", () => {
+    const cases = signCases(),
+      positions = [
+        "outside-before only",
+        "inside-prefix only",
+        "inside-suffix only",
+        "outside and inside agreeing",
+        "outside vs inside conflicting",
+        "outside disagreeing with the row",
+        "no sign",
+      ];
+    for (const position of positions) {
+      const here = cases.filter((row) => row.position === position);
+      if (position !== "no sign")
+        expect([
+          position,
+          here.some((row) => KO.test(row.outside + row.inside)),
+          here.some((row) => !KO.test(row.outside + row.inside) && row.outside + row.inside !== "320"),
+        ]).toEqual([position, !0, !0]);
+      else expect(here.length).toBe(SIGN_ROW_UNITS.length);
+    }
+    const wrong = cases
+      .map((row) => ({ ...row, actual: signed(row.outside, row.inside, row.unit) }))
+      .filter((row) => row.actual !== row.expected);
+    expect(wrong).toEqual([]);
+  }, 120000);
+});
 const squashed = (alias) => alias.replace(/\s+/g, ""),
   LETTERS = /^[A-Za-z]+$/,
   scaleOf = (unit) => /-(e\d+)$/.exec(unit)?.[1] ?? null;
@@ -279,14 +367,14 @@ function prefixCases() {
   return cases;
 }
 const SIGNED = [
-  ["<p>Up to ${V} pounds [S4].</p>", "USD", "unit_mismatch"],
-  ["<p>Up to ${V} pound [S4].</p>", "USD", "unit_mismatch"],
-  ["<p>Up to ${V} won [S4].</p>", "USD", "unit_mismatch"],
+  ["<p>Up to $" + "{V} pounds [S4].</p>", "USD", "unit_mismatch"],
+  ["<p>Up to $" + "{V} pound [S4].</p>", "USD", "unit_mismatch"],
+  ["<p>Up to $" + "{V} won [S4].</p>", "USD", "unit_mismatch"],
   ["<p>Up to \u20AC{V} pounds [S4].</p>", "EUR", "unit_mismatch"],
   ["<p>Up to \u20A9{V} pounds [S4].</p>", "KRW", "unit_mismatch"],
   ["<p>Up to \xA3{V} pounds [S4].</p>", "GBP", "pass"],
-  ["<p>Up to ${V} SEC filings [S4].</p>", "USD", "pass"],
-  ["<p>Up to ${V} second [S4].</p>", "USD", "pass"],
+  ["<p>Up to $" + "{V} SEC filings [S4].</p>", "USD", "pass"],
+  ["<p>Up to $" + "{V} second [S4].</p>", "USD", "pass"],
   ["<p>Up to {V} pounds [S4].</p>", "USD", "unit_unbound"],
   ["<table><thead><tr><th>Cost ($)</th></tr></thead><tbody><tr><td>{V} pounds</td></tr></tbody></table>", "USD", "unit_mismatch"],
   ["<table><thead><tr><th>Time (min)</th></tr></thead><tbody><tr><td>{V} second</td></tr></tbody></table>", "min", "unit_mismatch"],

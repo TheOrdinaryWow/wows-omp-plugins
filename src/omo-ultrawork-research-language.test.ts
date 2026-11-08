@@ -33,7 +33,7 @@ test("Chinese fact and quote prose survives snapshot, locator, fill, and exact-v
     ].join("\n"),
   );
   const session = ["--session-dir", dir];
-  expect((await runSource(["snapshot", "--id", "S1", "--text", source, "--provenance", "primary", ...session])).exitCode).toBe(0);
+  expect((await runSource(["snapshot", "--id", "S1", "--raw", source, "--provenance", "primary", ...session])).exitCode).toBe(0);
   expect((await runFact(["add", "--source", "S1", "--find", "桥梁长度为", "--label", "span_len", ...session])).exitCode).toBe(0);
   expect((await runFact(["quote", "--source", "S1", "--match", "项目仍在研究阶段", "--label", "caveat", ...session])).exitCode).toBe(0);
   const ledger = readLedger(dir);

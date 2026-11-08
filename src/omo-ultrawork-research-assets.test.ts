@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -32,6 +32,12 @@ describe("pinned research asset snapshots", () => {
       expect.objectContaining({ path: "scripts/report-tools.mjs", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) }),
     );
     expect(manifest.files.some((entry: { path: string }) => entry.path.includes(".test."))).toBe(false);
+    for (const name of ["research-collection.md", "research-delivery.md", "fact-ledger.md"]) {
+      expect(readFileSync(join(first.directory, "references", name)).length).toBeGreaterThan(0);
+    }
+    for (const obsolete of ["collection.md", "research-setup.md"]) {
+      expect(existsSync(join(first.directory, "references", obsolete))).toBe(false);
+    }
     const cli = Bun.spawnSync(["bun", join(first.directory, "scripts/report-tools.mjs"), "--help", "--json"]);
     expect(cli.exitCode).toBe(0);
     expect(JSON.parse(cli.stdout.toString()).commands).toContain("fact verify");

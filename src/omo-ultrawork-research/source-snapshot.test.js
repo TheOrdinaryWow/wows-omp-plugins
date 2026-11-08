@@ -1,4 +1,4 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { describe, expect, onTestFinished, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -13,7 +13,7 @@ const FIXTURES = join(import.meta.dir, "tests", "fixtures", "fidelity", "sources
   S9_TEXT = readFileSync(join(FIXTURES, "S9.txt"), "utf8");
 function tempDir() {
   const dir = mkdtempSync(join(tmpdir(), "ulw-snapshot-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: !0, force: !0 }));
   return dir;
 }
 function readSentences(dir) {
@@ -39,7 +39,7 @@ describe("snapshotFromHtml", () => {
   });
 });
 describe("writeSnapshot", () => {
-  test("#given html #when written #then text.txt, source.html, meta.json, sentences.jsonl and acronyms.json exist and sha256 covers text.txt", () => {
+  test("#given html #when written #then raw.bin preserves the body and sha256 covers its bytes", () => {
     const sources = tempDir(),
       result = writeSnapshot(sources, "S4", {
         url: "https://example.test/bridge",
@@ -48,10 +48,11 @@ describe("writeSnapshot", () => {
         observed_at: "2026-10-23T00:00:00Z",
       });
     expect(result.dir).toBe(join(sources, "S4"));
-    for (const name of ["text.txt", "source.html", "meta.json", "sentences.jsonl", "acronyms.json"])
-      expect(existsSync(join(result.dir, name))).toBe(true);
-    const text = readFileSync(join(result.dir, "text.txt"));
-    expect(result.sha256).toBe(createHash("sha256").update(text).digest("hex"));
+    for (const name of ["raw.bin", "text.txt", "source.html", "meta.json", "sentences.jsonl", "acronyms.json"])
+      expect(existsSync(join(result.dir, name))).toBe(!0);
+    const raw = readFileSync(join(result.dir, "raw.bin"));
+    expect(raw.toString("utf8")).toBe(S4_HTML);
+    expect(result.sha256).toBe(createHash("sha256").update(raw).digest("hex"));
     expect(readFileSync(join(result.dir, "source.html"), "utf8")).toBe(S4_HTML);
     const meta = JSON.parse(readFileSync(join(result.dir, "meta.json"), "utf8"));
     expect(meta).toEqual({
@@ -63,6 +64,9 @@ describe("writeSnapshot", () => {
       revision: null,
       kind: "page",
       provenance: "unknown",
+      text_source: "html",
+      acquisition: "browser",
+      charset: "utf-8",
     });
   });
   test("#given a written snapshot #when sentences.jsonl is read #then every row slices text.txt and carries an S<n>:s<k> id", () => {
@@ -95,7 +99,7 @@ A second note cites TSV (Through Silicon Via) bonding.`,
       ["TSV", "Through Silicon Via", "S2:s2", "TSV (Through Silicon Via)"],
     ]);
     expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).kind).toBe("document");
-    expect(existsSync(join(dir, "source.html"))).toBe(false);
+    expect(existsSync(join(dir, "source.html"))).toBe(!1);
   });
   test("#given pages #when written #then pages are joined by a form feed and no sentence crosses a page", () => {
     const sources = tempDir(),

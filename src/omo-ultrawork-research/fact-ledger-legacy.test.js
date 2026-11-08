@@ -1,11 +1,11 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { describe, expect, onTestFinished, test } from "bun:test";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { derive, recompute } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fact-derive.mjs";
+import { recompute } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fact-derive.mjs";
 import {
   addRow,
   emptyLedger,
@@ -14,12 +14,13 @@ import {
   validateLedger,
   writeLedger,
 } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fact-ledger.mjs";
+import { derive } from "./tests/derive-clock.js";
 
 const FIXTURE = join(import.meta.dir, "tests", "fixtures", "fidelity", "ledger-legacy-dev.json"),
   SOURCE_IDS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "Q1", "F9", "F10", "F11", "F12", "F13", "F16", "F17", "F18"];
 function tempDir() {
   const dir = mkdtempSync(join(tmpdir(), "ulw-legacy-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: !0, force: !0 }));
   return dir;
 }
 const fixture = () => JSON.parse(readFileSync(FIXTURE, "utf8")),
@@ -57,7 +58,7 @@ describe("ledgers written by dev's writer (dimension 31 wins at read time)", () 
     expect(rowOf(ledger, "F7").value).toBe("7");
     for (const id of SOURCE_IDS)
       for (const column of ["context", "precision", "compatibility"]) expect(rowOf(ledger, id)[column]).toBeNull();
-    for (const id of ["F14", "F15"]) expect(Object.hasOwn(rowOf(ledger, id), "precision")).toBe(false);
+    for (const id of ["F14", "F15"]) expect(Object.hasOwn(rowOf(ledger, id), "precision")).toBe(!1);
     expect(validateLedger(ledger)).toEqual([]);
   });
   test("#given dev's ledger #when measured rows are summed #then the new row is canonical and recomputes", () => {
@@ -74,14 +75,14 @@ describe("ledgers written by dev's writer (dimension 31 wins at read time)", () 
       const padded = derive(ledger, { op: "sum", operands: ["F1", "F7"], unit: "km" });
       expect(padded.row).toMatchObject({ value: "19", exact: { num: "19", den: "1" } });
       expect(validateLedger(ledger)).toEqual([]);
-      expect(recompute(ledger, result.row).ok).toBe(true);
+      expect(recompute(ledger, result.row).ok).toBe(!0);
     }
   });
   test("#given a legacy derived or converted row #when recomputed #then it reports a legacy derived row", () => {
     for (const ledger of [fixture(), loaded().ledger])
       for (const id of ["F14", "F15"]) {
         const result = recompute(ledger, rowOf(ledger, id));
-        expect(result.ok).toBe(false);
+        expect(result.ok).toBe(!1);
         expect(result.shape).toBe("legacy derived row");
       }
   });
@@ -119,7 +120,7 @@ describe("ledgers written by dev's writer (dimension 31 wins at read time)", () 
     const once = readFileSync(join(dir, LEDGER_FILENAME), "utf8"),
       written = JSON.parse(once);
     expect(rowOf(written, "F11").exact).toEqual({ num: "5", den: "2" });
-    expect(Object.hasOwn(rowOf(written, "F14"), "precision")).toBe(false);
+    expect(Object.hasOwn(rowOf(written, "F14"), "precision")).toBe(!1);
     writeLedger(dir, readLedger(dir));
     expect(readFileSync(join(dir, LEDGER_FILENAME), "utf8")).toBe(once);
     expect(readLedger(dir)).toEqual(written);
@@ -163,7 +164,7 @@ describe("ledgers written by dev's writer (dimension 31 wins at read time)", () 
     const result = derive(ledger, { op: "sum", operands: ["F18", "F2"], unit: "km" });
     expect(result.error).toBe("incompatible_operands");
     expect(result.shape).toBe("dimension 7");
-    expect(recompute(ledger, rowOf(ledger, "F18")).ok).toBe(false);
+    expect(recompute(ledger, rowOf(ledger, "F18")).ok).toBe(!1);
   });
   test("#given an assumed row whose value and exact disagree #when read #then it loads flagged and a new row is refused (dimension 32)", () => {
     const dir = tempDir(),

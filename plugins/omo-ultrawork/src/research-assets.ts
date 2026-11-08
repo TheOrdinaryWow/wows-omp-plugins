@@ -5,7 +5,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const RESEARCH_UPSTREAM_PIN = "8a8db1d3094da8743989bf693ee5de77889de50e";
+export const RESEARCH_UPSTREAM_PIN = "adddd17004076e799c2de18ccfdee29e12525ace";
 
 interface BundleFile {
   path: string;
@@ -43,7 +43,12 @@ function cacheBundle(): { files: BundleFile[]; digest: string; manifest: string 
     visit(root);
     add("procedure.md", readFileSync(new URL("../assets/ulw-research.md", import.meta.url)));
     files.sort((left, right) => left.path.localeCompare(right.path, "en"));
-    for (const required of ["scripts/report-tools.mjs", "references/research-setup.md", "references/fact-ledger.md"]) {
+    for (const required of [
+      "scripts/report-tools.mjs",
+      "references/research-collection.md",
+      "references/research-delivery.md",
+      "references/fact-ledger.md",
+    ]) {
       if (!files.some((file) => file.path === required && file.bytes > 0)) throw new Error(`Research bundle is missing ${required}`);
     }
     const entries = files.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }));

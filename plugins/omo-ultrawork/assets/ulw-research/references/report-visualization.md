@@ -1,6 +1,7 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP adaptation.** The private parent procedure controls native task/agent selectors, `agent://` coordination, static-first immutable acquisition (browser required for rendered/authenticated/visual claims), active-loop-only reuse, and file/summary delivery. `$ASSETS` is the supplied pinned filesystem snapshot; `$SESSION_DIR` is the actual run directory. Node/Bun helpers cannot resolve `local://`. Use task-scoped/temporary tools only; no global installs, plugin runtime dependencies, or Senpi APIs.
+
 
 # ulw-research - report visualization playbook
 
@@ -39,7 +40,7 @@ Save every asset under `$SESSION_DIR/assets/` and confirm the file exists and is
 
 ### Charts from data
 
-Put the numbers in a table first (`$SESSION_DIR/data/<name>.csv`), then plot from the table, never from prose. Follow the data-scientist doctrine in SKILL.md (numpy, Polars, DuckDB, no pandas).
+Put the numbers in a table first (`$SESSION_DIR/data/<name>.csv`), then plot from the table, never from prose. Follow the data-scientist tool doctrine: numpy for numeric work beyond SQL/DataFrame aggregation, Polars for filtering, sorting, and transforms, DuckDB for joins, aggregations, and window functions, never pandas.
 
 ```bash
 uv run --with numpy --with polars --with matplotlib python plot_<name>.py
@@ -129,7 +130,7 @@ A post by Andrej Karpathy on 2026-10-02 ranks the formats that make model output
 
 ## 5. Quality bar
 
-- Every figure follows the figure standard in SKILL.md: fixed container, contain-fit, aspect ratio preserved, spec fonts and palette.
+- Every figure follows the binding figure standard in [deliverable-phase.md](deliverable-phase.md), section 6: fixed container, contain-fit, aspect ratio preserved, spec fonts and palette.
 - The caption alone tells the reader what the visual shows and what to conclude: "Median build time fell from 9.4 to 3.1 minutes after the cache change [S4]" beats "Build times".
 - Alt text states the content, not the file: the key values or the shape of the trend for a chart, the main nodes and flow for a diagram. A purely decorative image takes `alt=""` plus `role="presentation"` and does not count as a visual; an empty alt without that marker is reported as missing.
 - Every number in a visual comes from the data table and carries its source or lineage tag in the caption.

@@ -1,11 +1,17 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   exactFromDecimal,
   KIND_COLUMNS,
+  KIND_TABLE_BEGIN,
+  KIND_TABLE_END,
   KIND_RULES as RULES_TABLE,
+  renderKindTable,
 } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fact-ledger-kinds.mjs";
 import {
   FACT_KINDS,
@@ -55,7 +61,7 @@ const rational = (random) => exactFromDecimal(decimal(random)),
     },
     sha256: { valid: sha, invalid: (r) => pick(r, [null, "abc", "A".repeat(64)]) },
     sha256_or_null: { valid: (r) => pick(r, [null, sha(r)]), invalid: (r) => pick(r, ["abc", 7]) },
-    string_or_null: { valid: (r) => pick(r, [null, "", "a reason"]), invalid: (r) => pick(r, [5, false, {}]) },
+    string_or_null: { valid: (r) => pick(r, [null, "", "a reason"]), invalid: (r) => pick(r, [5, !1, {}]) },
     non_empty: { valid: () => "assumed from the filing year", invalid: (r) => pick(r, ["", null]) },
     from_value: {
       valid: (_r, row) => exactFromDecimal(row.value),
@@ -75,7 +81,11 @@ const rational = (random) => exactFromDecimal(decimal(random)),
     by_derive: { valid: rational, invalid: (r) => pick(r, [null, { num: "1", den: "0" }, { num: "x", den: "2" }, "1/2"]) },
     context_by_derive: {
       valid: (_r, row) => (row.kind === "converted" ? { target: "km" } : null),
-      invalid: (r) => pick(r, ["km", 3, ["km"], false]),
+      invalid: (r) => pick(r, ["km", 3, ["km"], !1]),
+    },
+    source_context: {
+      valid: (r) => pick(r, [null, { prefix: "source ", suffix: " text" }]),
+      invalid: (r) => pick(r, [{ target: "km" }, { prefix: "x".repeat(33), suffix: "" }, { prefix: "", suffix: 3 }]),
     },
     derived_operation: { valid: () => "expr", invalid: (r) => pick(r, [null, "convert", "mean"]) },
     convert_operation: { valid: () => "convert", invalid: (r) => pick(r, [null, "sum", "mean"]) },
@@ -115,7 +125,7 @@ describe("KIND_RULES covers the grammar", () => {
     expect(Object.keys(KIND_RULES)).toEqual([...FACT_KINDS]);
     for (const kind of FACT_KINDS) {
       expect(Object.keys(KIND_RULES[kind])).toEqual([...KIND_COLUMNS]);
-      for (const column of KIND_COLUMNS) expect(Object.hasOwn(GENERATORS, KIND_RULES[kind][column])).toBe(true);
+      for (const column of KIND_COLUMNS) expect(Object.hasOwn(GENERATORS, KIND_RULES[kind][column])).toBe(!0);
     }
   });
 });
@@ -137,22 +147,22 @@ describe("rows generated from KIND_RULES", () => {
           expect({ seed, value: row[column], named: errors.some((error) => error.startsWith(`rows[0].${column}`)) }).toEqual({
             seed,
             value: row[column],
-            named: true,
+            named: !0,
           });
         }
       });
   }
   test("review MEDIUM: a measured row with value -0.50 and exact 7/1 is rejected", () => {
     const row = { ...validRow("measured", prng(1)), value: "-0.50", exact: { num: "7", den: "1" } };
-    expect(validateLedger(ledgerOf(row)).some((error) => error.startsWith("rows[0].exact"))).toBe(true);
+    expect(validateLedger(ledgerOf(row)).some((error) => error.startsWith("rows[0].exact"))).toBe(!0);
     expect(validateLedger(ledgerOf({ ...row, exact: { num: "-1", den: "2" } }))).toEqual([]);
   });
-  test("review r6 LOW 3: context is a derived or converted column; a measured, quote, or assumed row carrying one is rejected", () => {
+  test("source context rejects derivation fields, and assumed rows still require null context", () => {
     for (const kind of ["measured", "quote", "assumed"]) {
       const row = { ...validRow(kind, prng(3)), context: { target: "km" } };
       expect({ kind, named: validateLedger(ledgerOf(row)).some((error) => error.startsWith("rows[0].context")) }).toEqual({
         kind,
-        named: true,
+        named: !0,
       });
     }
     expect(validateLedger(ledgerOf(validRow("converted", prng(4))))).toEqual([]);
@@ -160,6 +170,28 @@ describe("rows generated from KIND_RULES", () => {
   });
   test("review LOW 1: a quote row with a non-null exact is rejected", () => {
     const row = { ...validRow("quote", prng(2)), exact: { num: "1", den: "1" } };
-    expect(validateLedger(ledgerOf(row)).some((error) => error.startsWith("rows[0].exact"))).toBe(true);
+    expect(validateLedger(ledgerOf(row)).some((error) => error.startsWith("rows[0].exact"))).toBe(!0);
+  });
+});
+describe("the grammar's per-kind table is rendered from KIND_RULES", () => {
+  const grammar = readFileSync(
+    join(import.meta.dir, "../../plugins/omo-ultrawork/assets/ulw-research/references/fact-ledger-grammar.md"),
+    "utf8",
+  );
+  test("the committed table section equals renderKindTable() byte for byte", () => {
+    const begin = grammar.indexOf(KIND_TABLE_BEGIN),
+      end = grammar.indexOf(KIND_TABLE_END);
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(begin);
+    expect(grammar.slice(begin + KIND_TABLE_BEGIN.length + 1, end)).toBe(renderKindTable());
+  });
+  test("node fact-ledger-kinds.mjs --render-grammar prints the same table", () => {
+    const result = spawnSync(
+      "node",
+      [join(import.meta.dir, "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fact-ledger-kinds.mjs"), "--render-grammar"],
+      { encoding: "utf8" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(renderKindTable());
   });
 });

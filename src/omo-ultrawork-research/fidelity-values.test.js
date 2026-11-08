@@ -1,4 +1,4 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { describe, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { exportRows } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/fidelity-values.mjs";
 import { similarity } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/text-similarity.mjs";
-import { LEDGER, ledgerWith, run, SOURCES } from "./tests/fidelity-values-support";
+import { LEDGER, ledgerWith, run, SOURCES } from "./tests/fidelity-values-support.js";
 
 const FULL = "we estimate completion no earlier than 2027",
   codes = (defects) => defects.map((defect) => defect.code),
@@ -76,7 +76,7 @@ describe("quotes", () => {
       expect(codes(run(quote(sel, altered)))).toEqual(["quote_not_verbatim"]);
     });
   test("#given a quote row flagged fuzzy at registration #when cited #then quote_fuzzy_match describes the source", () => {
-    expect(codes(run(quote("full", FULL), { ledger: ledgerWith("Q1", { fuzzy: true }) }))).toEqual(["quote_fuzzy_match"]);
+    expect(codes(run(quote("full", FULL), { ledger: ledgerWith("Q1", { fuzzy: !0 }) }))).toEqual(["quote_fuzzy_match"]);
   });
   test("#given a quote revision that differs from the brief's as-of anchor #when checked #then quote_stale_version", () => {
     const ledger = ledgerWith("Q1", { revision: "v3.1" });
@@ -141,8 +141,8 @@ describe("fill maps (Markdown)", () => {
 describe("derivations, joins, snapshots", () => {
   test("#given recompute reports a tampered derived row #when checked #then value_mismatch", () => {
     const body = `<p>Span ${fact("F8", "320,000 mm (320 m)", "mm")} [S4].</p>`;
-    expect(codes(run(body, { recompute: () => ({ ok: false }) }))).toEqual(["value_mismatch"]);
-    expect(run(body, { recompute: () => ({ ok: true }) })).toEqual([]);
+    expect(codes(run(body, { recompute: () => ({ ok: !1 }) }))).toEqual(["value_mismatch"]);
+    expect(run(body, { recompute: () => ({ ok: !0 }) })).toEqual([]);
   });
   test("#given a derived row whose operand was observed outside its snapshot window #when checked #then snapshot_mismatch", () => {
     const ledger = ledgerWith("F8", { snapshot_window: { dataset_id: "d1", start: "2026-11-01T00:00:00Z", end: "2026-12-01T00:00:00Z" } });
@@ -156,7 +156,7 @@ describe("derivations, joins, snapshots", () => {
   test("#given a snapshot whose text changed after pinning #when checked #then snapshot_hash_mismatch", () => {
     const dir = mkdtempSync(join(tmpdir(), "fidelity-values-"));
     try {
-      cpSync(SOURCES, dir, { recursive: true });
+      cpSync(SOURCES, dir, { recursive: !0 });
       writeFileSync(
         join(dir, "S4", "text.txt"),
         `edited
@@ -164,7 +164,7 @@ describe("derivations, joins, snapshots", () => {
       );
       expect(codes(run(`<p>Span ${fact("F1", "up to 320 m", "m")} [S4].</p>`, { sourcesDir: dir }))).toEqual(["snapshot_hash_mismatch"]);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: !0, force: !0 });
     }
   });
 });
@@ -205,6 +205,40 @@ describe("verification claims are structural (data-claim-kind)", () => {
     expect(run(`<p>We ran the suite by running the test script, and it reported ${verified("F7", "42 passed")} [S5].</p>`)).toEqual([]);
   });
 });
+describe("foreignObject (omo #11570)", () => {
+  const chartFO = (inner) =>
+      `<figure data-chart-source="assets/share.csv"><svg viewBox="0 0 200 100"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">${inner}</div></foreignObject></svg><figcaption>Share by segment [S4].</figcaption></figure>`,
+    valueFact = (id, text, value) => `<data class="fact" data-fact="${id}" value="${value}">${text}</data>`,
+    CASES = [
+      [
+        "fact element unit change",
+        chartFO(`<p>Span ${fact("F1", "110.6 mm", "mm")} long [S4].</p>`),
+        ["unit_mismatch", "chart_value_untraceable"],
+      ],
+      [
+        "fact element digit change",
+        chartFO(`<p>Units ${fact("F2", "1,273")} sold [S4].</p>`),
+        ["value_mismatch", "chart_value_untraceable"],
+      ],
+      [
+        "fact element digit plus value attribute",
+        chartFO(`<p>Units ${valueFact("F2", "1,273", "1,273")} sold [S4].</p>`),
+        ["value_mismatch", "chart_value_untraceable"],
+      ],
+      ["bare numeral sentence", chartFO("<p>Growth 1234567 m [S4].</p>"), ["chart_value_untraceable"]],
+      ["numeral-free control", chartFO("<p>Share by segment, no numbers here [S4].</p>"), []],
+      ["clean fact at a plot value", chartFO(`<p>Share ${fact("F5", "12%", "%")} total [S4].</p>`), []],
+    ];
+  for (const [name, body, want] of CASES)
+    test(`#given ${name} inside foreignObject #when checked #then ${want.length ? want.join(" + ") : "clean"}`, () => {
+      expect(codes(run(body))).toEqual(want);
+    });
+  test("#given the same fact mutations in prose #when checked #then the same fact codes", () => {
+    expect(codes(run(`<p>Span ${fact("F1", "110.6 mm", "mm")} long [S4].</p>`))).toEqual(["unit_mismatch"]);
+    expect(codes(run(`<p>Units ${valueFact("F2", "1,273", "1,273")} sold [S4].</p>`))).toEqual(["value_mismatch"]);
+    expect(codes(run("<p>Growth 1234567 m [S4].</p>"))).toEqual(["untraceable_number"]);
+  });
+});
 describe("charts", () => {
   const SRC = 'data-chart-source="assets/share.csv"';
   test("#given a chart with an on-grid ticks group and a data label matching the CSV #when checked #then clean", () => {
@@ -233,12 +267,12 @@ F6,27,%
         "chart_value_untraceable",
       ]);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: !0, force: !0 });
     }
   });
   test("#given the ledger #when exported #then each active value row gives fact_id, plot_value and unit", () => {
     const rows = exportRows(LEDGER);
     expect(rows.find((row) => row.fact_id === "F5")).toMatchObject({ plot_value: "12", unit: "%" });
-    expect(rows.some((row) => row.fact_id === "Q1")).toBe(false);
+    expect(rows.some((row) => row.fact_id === "Q1")).toBe(!1);
   });
 });

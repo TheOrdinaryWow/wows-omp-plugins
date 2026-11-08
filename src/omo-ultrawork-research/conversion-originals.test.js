@@ -1,4 +1,4 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -13,7 +13,8 @@ import { checkFidelity } from "../../plugins/omo-ultrawork/assets/ulw-research/s
 import { buildContext } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/gates-static.mjs";
 import { parseHtml } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/html-lite.mjs";
 
-const FIX = join(import.meta.dir, "tests", "fixtures", "fidelity"),
+const NOW = "2026-10-27T00:00:00.000Z",
+  FIX = join(import.meta.dir, "tests", "fixtures", "fidelity"),
   BASE = JSON.parse(readFileSync(join(FIX, "ledger-verify.json"), "utf8")),
   BRIEF = readFileSync(join(FIX, "..", "fidelity-brief-locked.md"), "utf8"),
   DERIVED = { ...BASE, rows: BASE.rows.map((r) => (r.fact_id === "F8" ? { ...r, raw: r.render } : r)) },
@@ -41,7 +42,7 @@ function measured(id, value, unit, extra = {}) {
 function derivedReport(rows, spec) {
   const ledger = emptyLedger();
   for (const row of rows) addRow(ledger, row);
-  const result = derive(ledger, spec);
+  const result = derive(ledger, { now: NOW, ...spec });
   if (!result.row) throw Error(`derive refused: ${result.error}`);
   const filled = fill(`<h2>Findings</h2><p>The total is {{${result.row.fact_id}:${result.row.label}}}.</p>`, ledger);
   if (filled.out === null) throw Error("fill failed");
@@ -146,7 +147,7 @@ describe("conversion originals bind both halves", () => {
     for (const pointer of [(id) => `{{${id}:span_mm:value}} mm`, (id) => `{{${id}:span_mm:value}}{{${id}:span_mm:unit}}`]) {
       const ledger = emptyLedger();
       addRow(ledger, measured("F1", "320", "m"));
-      const { row } = derive(ledger, { op: "convert", operands: ["F1"], to: "mm", label: "span_mm" }),
+      const { row } = derive(ledger, { now: NOW, op: "convert", operands: ["F1"], to: "mm", label: "span_mm" }),
         filled = fill(`<h2>Findings</h2><p>The span is ${pointer(row.fact_id)}.</p>`, ledger);
       expect(valueChecks(buildContext(parseHtml(String(filled.out)), {}), ledger, null, null)).toEqual([]);
     }
@@ -219,11 +220,11 @@ describe("conversion originals: the bracket grammar class", () => {
       { form: "two originals, both right", input: "320,000 mm (320 m) (320 m)", expected: ORIGINAL },
       { form: "two originals, second wrong", input: "320,000 mm (320 m)\uFF08999 m\uFF09", expected: ORIGINAL },
       { form: "two originals, mixed brackets", input: "320,000 mm (320 m) [320 m]", expected: ORIGINAL },
-      { form: "second original typed after the fill site", input: " (999 m)", expected: ORIGINAL, after: true },
-      { form: "fullwidth original typed after the fill site", input: "\uFF08320 m\uFF09", expected: ORIGINAL, after: true },
-      { form: "square original typed after the fill site", input: " [999 m]", expected: ORIGINAL, after: true },
-      { form: "separator original typed after the fill site", input: " - 999 m", expected: ORIGINAL, after: true },
-      { form: "prose bracket typed after the fill site", input: " (approx.)", expected: PASS, after: true },
+      { form: "second original typed after the fill site", input: " (999 m)", expected: ORIGINAL, after: !0 },
+      { form: "fullwidth original typed after the fill site", input: "\uFF08320 m\uFF09", expected: ORIGINAL, after: !0 },
+      { form: "square original typed after the fill site", input: " [999 m]", expected: ORIGINAL, after: !0 },
+      { form: "separator original typed after the fill site", input: " - 999 m", expected: ORIGINAL, after: !0 },
+      { form: "prose bracket typed after the fill site", input: " (approx.)", expected: PASS, after: !0 },
     ],
     SENTENCE = { en: ["The span is ", "."], ko: ["\uAD50\uB7C9 \uAE38\uC774\uB294 ", "\uC774\uB2E4."] },
     RENDERS = {
@@ -246,10 +247,10 @@ ${a}${p}${b}
 `,
       },
     };
-  function verdict(input, render, lang, after = false) {
+  function verdict(input, render, lang, after = !1) {
     const ledger = emptyLedger();
     addRow(ledger, measured("F1", "320", "m"));
-    const row = derive(ledger, { op: "convert", operands: ["F1"], to: "mm", label: "span_mm" }).row,
+    const row = derive(ledger, { now: NOW, op: "convert", operands: ["F1"], to: "mm", label: "span_mm" }).row,
       filled = fill(render.doc(`{{${row.fact_id}:span_mm}}`, SENTENCE[lang]), ledger, { format: render.format }),
       site = render.format === "html" ? `>${row.render}</data>` : String(row.render),
       edited = filled.out.replace(site, after ? `${site}${input}` : render.format === "html" ? `>${input}</data>` : input);
@@ -333,13 +334,13 @@ ${x}${b}${y}
 
 ${x}${b}${y}
 `,
-        stale: true,
+        stale: !0,
       },
     };
   function verdict(after, render, lang) {
     const ledger = emptyLedger();
     for (const id of ["F1", "F3"]) addRow(ledger, structuredClone(rowOf(BASE, id)));
-    const row = derive(ledger, { op: "convert", operands: ["F1"], to: "mm", label: "span_mm" }).row,
+    const row = derive(ledger, { now: NOW, op: "convert", operands: ["F1"], to: "mm", label: "span_mm" }).row,
       filled = fill(render.doc(`{{${row.fact_id}:span_mm}}${after}`, SENTENCE[lang]), ledger, { format: render.format });
     if (filled.out === null) return "fill failed";
     const report = render.stale ? filled.out.replace("## Findings", "## Findings, revised after the review") : filled.out,

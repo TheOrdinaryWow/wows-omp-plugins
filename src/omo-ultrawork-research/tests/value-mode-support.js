@@ -1,4 +1,4 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { expect, onTestFinished } from "bun:test";
 import { copyFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,12 +21,12 @@ export const LEDGER = {
     extra("F24", "deck_len", "1.2 km", "1.2", "km", "6", "5"),
   ],
 };
-export async function filled(body, format = "html") {
+export async function filled(body, format = "html", ledger = LEDGER) {
   const dir = mkdtempSync(join(tmpdir(), "value-mode-unit-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(join(dir, "fact-ledger.json"), JSON.stringify(LEDGER));
+  onTestFinished(() => rmSync(dir, { recursive: !0, force: !0 }));
+  writeFileSync(join(dir, "fact-ledger.json"), JSON.stringify(ledger));
   copyFileSync(join(FIX, "fidelity-brief-locked.md"), join(dir, "brief.md"));
-  cpSync(join(FIX, "fidelity", "sources"), join(dir, "sources"), { recursive: true });
+  cpSync(join(FIX, "fidelity", "sources"), join(dir, "sources"), { recursive: !0 });
   const source = join(dir, `report.src.${format}`),
     report = join(dir, `report.${format}`);
   writeFileSync(source, body);

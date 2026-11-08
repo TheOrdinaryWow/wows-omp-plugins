@@ -1,4 +1,4 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { describe, expect, test } from "bun:test";
 
@@ -85,6 +85,23 @@ describe("parseHtml", () => {
     expect(svg.raw).toBe("<svg><text>t</text></svg>");
     expect(svg.attrs.viewbox).toBe("0 0 1 1");
     expect(childTags(svg.parent)).toEqual(["script", "svg", "p"]);
+  });
+  test("#given an svg with drawing markup and a foreignObject #when parsed #then raw is kept and only the foreignObject subtree is parsed", () => {
+    const doc = parseHtml(`<body><svg viewBox="0 0 200 100"><path d="M0 0"/><text>12%</text><foreignObject>
+<div>chart 110.6 mm</div>
+</foreignObject></svg></body>`),
+      svg = byTag(doc, "svg")[0];
+    expect(svg.raw).toBe(`<path d="M0 0"/><text>12%</text><foreignObject>
+<div>chart 110.6 mm</div>
+</foreignObject>`);
+    expect(childTags(svg)).toEqual(["foreignobject"]);
+    const fo = byTag(doc, "foreignobject")[0];
+    expect(fo.line).toBe(1);
+    const div = byTag(doc, "div")[0];
+    expect(div.line).toBe(2);
+    expect(proseText(div)).toBe("chart 110.6 mm");
+    expect(byTag(doc, "text")).toHaveLength(0);
+    expect(byTag(doc, "path")).toHaveLength(0);
   });
   test("#given an unclosed fragment without body #when parsed #then the tree still has body > div > p", () => {
     const doc = parseHtml("<div><p>unclosed"),

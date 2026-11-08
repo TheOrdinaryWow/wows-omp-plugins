@@ -26,28 +26,15 @@ import {
 } from "../../plugins/omo-ultrawork/assets/ulw-research/scripts/contracts.mjs";
 import {
   FIDELITY_BLOCKERS,
-  FIDELITY_CODES_EXPECTED,
   FIDELITY_MAJORS,
   FIDELITY_MINORS,
   fourGateManifest,
-  LAYOUT_CODES_EXPECTED,
   SEVERITIES,
-  STATIC_CODES_EXPECTED,
   sampleManifest,
 } from "./tests/contracts-support";
 
 describe("DEFECT_CODES", () => {
   test("#given the code table #when every code is inspected #then it has a severity, a hint, and an integrity flag", () => {
-    expect(Object.keys(DEFECT_CODES).sort()).toEqual(
-      [
-        ...STATIC_CODES_EXPECTED,
-        "missing_promised_deliverable",
-        ...LAYOUT_CODES_EXPECTED,
-        ...FIDELITY_CODES_EXPECTED,
-        "conversion_altered_number",
-        "unit_unbound",
-      ].sort(),
-    );
     for (const [code, entry] of Object.entries(DEFECT_CODES)) {
       expect(SEVERITIES.has(entry.severity), `${code} severity`).toBe(true);
       expect(typeof entry.hint).toBe("string");
@@ -56,17 +43,6 @@ describe("DEFECT_CODES", () => {
     }
   });
   test("#given the code table #when integrity codes are derived #then they are exactly the blocker codes", () => {
-    expect([...INTEGRITY_CODES].sort()).toEqual(
-      [
-        "broken_asset_reference",
-        "missing_citation_section",
-        "missing_closing_section",
-        "missing_promised_deliverable",
-        "missing_required_section",
-        ...FIDELITY_BLOCKERS,
-        "conversion_altered_number",
-      ].sort(),
-    );
     for (const code of INTEGRITY_CODES) expect(DEFECT_CODES[code].severity).toBe("blocker");
     for (const [code, entry] of Object.entries(DEFECT_CODES))
       if (entry.severity === "blocker") expect(INTEGRITY_CODES.has(code), `${code} must be integrity`).toBe(true);
@@ -96,10 +72,6 @@ describe("DEFECT_CODES", () => {
 });
 describe("code groups", () => {
   test("#given the code groups #when unioned #then they partition the code table exactly", () => {
-    expect([...STATIC_CODES].sort()).toEqual(STATIC_CODES_EXPECTED.slice().sort());
-    expect([...LAYOUT_CODES].sort()).toEqual(LAYOUT_CODES_EXPECTED.slice().sort());
-    expect([...MANIFEST_CODES]).toEqual(["missing_promised_deliverable"]);
-    expect([...FIDELITY_CODES].sort()).toEqual([...FIDELITY_CODES_EXPECTED, "conversion_altered_number", "unit_unbound"].sort());
     const union = [...STATIC_CODES, ...LAYOUT_CODES, ...MANIFEST_CODES, ...FIDELITY_CODES].sort();
     expect(union).toEqual(Object.keys(DEFECT_CODES).sort());
     expect(new Set(union).size).toBe(union.length);

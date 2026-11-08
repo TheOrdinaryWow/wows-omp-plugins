@@ -1,7 +1,7 @@
-// Behavioral tests ported from oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Behavioral tests ported from oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0; see /plugins/omo-ultrawork/LICENSE-SUL-1.0.
 import { describe, expect, onTestFinished, test } from "bun:test";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +13,7 @@ import { writeSnapshot } from "../../plugins/omo-ultrawork/assets/ulw-research/s
 const PAGE = "<p>USD 4.2<sup>2</sup> billion in revenue.</p><p>Staff grew to 1,250 people.</p>";
 function session() {
   const dir = mkdtempSync(join(tmpdir(), "conversion-altered-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: !0, force: !0 }));
   return dir;
 }
 async function snapshot(dir, html = PAGE) {
@@ -34,8 +34,8 @@ describe("the conversion probe result is consumed", () => {
     const result = await run(["fact", "add", "--source", "S1", "--find", "USD", "--label", "usd_bn", "--session-dir", dir, "--json"]);
     expect(result.exitCode).toBe(1);
     expect(result.json.error).toBe("conversion_altered_number");
-    expect(existsSync(join(dir, "fact-ledger.json"))).toBe(false);
-    expect(DEFECT_CODES.conversion_altered_number).toMatchObject({ severity: "blocker", integrity: true });
+    expect(existsSync(join(dir, "fact-ledger.json"))).toBe(!1);
+    expect(DEFECT_CODES.conversion_altered_number).toMatchObject({ severity: "blocker", integrity: !0 });
   });
   test("#given an unaltered number in the same snapshot #when fact add --find locates it #then it registers", async () => {
     const dir = session();
@@ -59,7 +59,7 @@ describe("the conversion probe result is consumed", () => {
   test("#given a non-ISO observed_at #when writeSnapshot runs #then it throws before writing anything", () => {
     const dir = join(session(), "sources");
     expect(() => writeSnapshot(dir, "S1", { path: "p.html", html: PAGE, extractor: "model", observed_at: "yesterday" })).toThrow(TypeError);
-    expect(existsSync(join(dir, "S1"))).toBe(false);
+    expect(existsSync(join(dir, "S1"))).toBe(!1);
   });
   test("#given an image named chart-109.png beside a glued 10<sup>9</sup> #when fact add --find locates it #then it refuses and registers nothing", async () => {
     const dir = session(),
@@ -80,7 +80,7 @@ describe("the conversion probe result is consumed", () => {
     ]);
     expect(result.exitCode).toBe(1);
     expect(result.json.error).toBe("conversion_altered_number");
-    expect(existsSync(join(dir, "fact-ledger.json"))).toBe(false);
+    expect(existsSync(join(dir, "fact-ledger.json"))).toBe(!1);
   });
 });
 test("#given a genuine 4.22 beside a glued 4.2<sup>2</sup> #when fact add --find locates the genuine one #then the refusal names the --replace recovery", async () => {
@@ -105,7 +105,7 @@ Staff grew to 1,250 people.
     );
     const replaced = await run(["source", "snapshot", "--id", "S1", "--text", verified, "--replace", ...s(dir)]);
     expect(replaced.exitCode).toBe(0);
-    expect(existsSync(join(dir, "sources", "S1", "conversion.json"))).toBe(false);
+    expect(existsSync(join(dir, "sources", "S1", "conversion.json"))).toBe(!1);
     const added = await run(["fact", "add", "--source", "S1", "--find", "USD", "--label", "usd_bn", ...s(dir), "--json"]);
     expect(added.exitCode).toBe(0);
     expect(added.json.data.row.value).toBe("4200000000");
@@ -148,8 +148,53 @@ Staff grew to 1,250 people.
     const replaced = await run(["source", "snapshot", "--id", "S1", "--text", verified, "--replace", ...s(dir)]);
     expect(replaced.exitCode).toBe(1);
     expect(replaced.json.error).toBe("snapshot_pinned");
-    expect(existsSync(join(dir, "sources", "S1", "conversion.json"))).toBe(true);
+    expect(existsSync(join(dir, "sources", "S1", "conversion.json"))).toBe(!0);
   });
+});
+test("#given --html whose conversion altered 4.22 #when fact add is refused, the verified text replaces S1, and the row is added, filled and verified #then the replacement is declared text over the kept raw.bin and every step passes", async () => {
+  const dir = session(),
+    s = ["--session-dir", dir];
+  await snapshot(dir);
+  const refused = await run(["fact", "add", "--source", "S1", "--find", "USD", "--label", "usd_bn", ...s, "--json"]);
+  expect([refused.exitCode, refused.json.error]).toEqual([1, "conversion_altered_number"]);
+  const verified = join(dir, "verified.txt");
+  writeFileSync(
+    verified,
+    `USD 4.2 billion in revenue.
+Staff grew to 1,250 people.
+`,
+  );
+  const replaced = await run(["source", "snapshot", "--id", "S1", "--text", verified, "--replace", ...s]);
+  expect([replaced.exitCode, replaced.json.data?.text_source, replaced.json.data?.kind]).toEqual([0, "declared", "page"]);
+  expect(existsSync(join(dir, "sources", "S1", "raw.bin"))).toBe(!0);
+  const added = await run(["fact", "add", "--source", "S1", "--find", "USD", "--label", "usd_bn", ...s, "--json"]);
+  expect([added.exitCode, added.json.error, added.json.message]).toEqual([0, void 0, void 0]);
+  const row = added.json.data?.row;
+  expect([row.value, row.locator.artifact, row.locator.unit]).toEqual(["4200000000", "text.txt", "bytes"]);
+  copyFileSync(join(import.meta.dir, "tests", "fixtures", "fidelity-brief-locked.md"), join(dir, "brief.md"));
+  writeFileSync(
+    join(dir, "report.src.html"),
+    [
+      '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Revenue</title></head><body><h1>Revenue</h1>',
+      "<h2>Findings</h2><p>Revenue was {{F1:usd_bn}} [S1].</p>",
+      "<h2>How this report was made</h2><p>Collected from one cited public page [S1].</p>",
+      '<h2>Sources</h2><ol><li id="s1">[S1] Revenue page, retrieved 2026-10-01.</li></ol></body></html>',
+    ].join(`
+`),
+  );
+  expect((await run(["fact", "fill", join(dir, "report.src.html"), "--out", join(dir, "report.html"), ...s])).exitCode).toBe(0);
+  const report = await run([
+    "fact",
+    "verify",
+    join(dir, "report.html"),
+    "--sources",
+    join(dir, "sources"),
+    "--brief",
+    join(dir, "brief.md"),
+    ...s,
+  ]);
+  expect([report.exitCode, report.json.defects]).toEqual([0, []]);
+  expect(JSON.parse(readFileSync(join(dir, "fidelity-defects.json"), "utf8")).defects.map((d) => d.code)).not.toContain("snapshot_not_raw");
 });
 test("#given a malformed conversion.json #when fact add reads it #then it is a usage error naming the file, not a crash", async () => {
   const dir = session();
