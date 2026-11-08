@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
@@ -14,16 +14,16 @@ For a new analysis pipeline, consider Polars, DuckDB and NumPy according to data
 |---|---|---|
 | `.csv` / `.parquet` / `.json` direct query | DuckDB | Zero memory load, SQL ergonomics |
 | `.duckdb` file | DuckDB | Native format |
-| Filter (any size) | Polars | 128x faster than DuckDB for filtering |
-| Sort | Polars | 12x faster |
-| Multi-table join | DuckDB | 3x faster, more join types |
-| Heavy GROUP BY aggregation | DuckDB | 4x faster on large datasets |
-| Window function | Polars | 3-5x faster |
-| Pivot / melt / string ops | Polars | 2x faster |
+| Filter (any size) | Polars | row-wise filtering, low setup cost |
+| Sort | Polars | in-memory sorting |
+| Multi-table join | DuckDB | more join types, out-of-core joins |
+| Heavy GROUP BY aggregation | DuckDB | large grouped aggregation |
+| Window function | Polars | window expressions |
+| Pivot / melt / string ops | Polars | reshape and string expressions |
 | Larger than RAM | Polars streaming or DuckDB out-of-core | Both handle OOM |
 | Mixed pipeline | Hybrid (zero-copy via Arrow) | Use each tool's strengths |
 
-For the deep version (per-operation benchmarks, OOM strategies, full execution templates), load the **`data-scientist`** skill - it lives in this same skill set and is the source of truth for performance numbers.
+For the deep version (engine choice, placement, OOM strategies, execution templates), load the **`data-scientist`** skill - it lives in this same skill set; when the engine choice matters, measure on the actual data, as that skill says.
 
 ## Standard imports
 
@@ -73,7 +73,7 @@ result = (
         pl.len().alias("count"),
         pl.sum("amount").alias("total"),
     ])
-    .collect(streaming=True)
+    .collect(engine="streaming")
 )
 ```
 
@@ -88,7 +88,7 @@ joined = duckdb.sql("""
     JOIN 'products.parquet'  p ON o.product_id  = p.id
 """).pl()
 
-# Phase 2: Polars for filtering and transformation (128x + 2x faster)
+# Phase 2: Polars for filtering and transformation
 processed = (
     joined
     .filter(pl.col("amount") > 100)

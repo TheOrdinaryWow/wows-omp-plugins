@@ -1,13 +1,12 @@
 #!/usr/bin/env -S uv run --script
-# Modified-port notice: OMP adaptation of oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e; SUL-1.0 (see plugin LICENSE-SUL-1.0).
+# Modified-port notice: OMP adaptation of oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace; SUL-1.0 (see plugin LICENSE-SUL-1.0).
 # /// script
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-# noqa: SIZE_OK  — single self-contained checker, splitting adds import ceremony for no readability gain
 """Check Python files for no-excuse violations.
 
-The python-programmer skill enforces these rules. Run after editing.
+Optional syntax-policy scanner. Run only when the project/user adopts this policy and the assignment authorizes it.
 
 Rules:
   cast-any             - cast(Any, ...) / cast(typing.Any, ...) / typing.cast(Any, ...)
@@ -33,7 +32,6 @@ Rules:
                          Opt out: trailing `# noqa: OBJECT_OK`
   if-elif-on-variant   - isinstance/enum-comparison if/elif chain (should be match/case)
                          Opt out: trailing `# noqa: IF_VARIANT_OK`
-                         Opt out: `# noqa: SIZE_OK` in first 10 lines
   broad-except         - `except Exception` / `except BaseException` (too broad)
                          Opt out: trailing `# noqa: BROAD_EXCEPT_OK`
 
@@ -88,7 +86,6 @@ MATCH_OK_RE: re.Pattern[str] = re.compile(r"#\s*noqa:\s*MATCH_OK")
 GENERIC_ERR_OK_RE: re.Pattern[str] = re.compile(r"#\s*noqa:\s*GENERIC_ERR_OK")
 OBJECT_OK_RE: re.Pattern[str] = re.compile(r"#\s*noqa:\s*OBJECT_OK")
 IF_VARIANT_OK_RE: re.Pattern[str] = re.compile(r"#\s*noqa:\s*IF_VARIANT_OK")
-SIZE_OK_RE: re.Pattern[str] = re.compile(r"#\s*noqa:\s*SIZE_OK")
 BROAD_EXCEPT_OK_RE: re.Pattern[str] = re.compile(r"#\s*noqa:\s*BROAD_EXCEPT_OK")
 
 
@@ -602,27 +599,6 @@ def find_broad_except_violations(
     return violations
 
 
-def find_oversized_module_violations(
-    source_lines: list[str], file: Path,
-) -> list[Violation]:
-    # File-level opt-out in first 10 lines (shebang + script metadata can push it down)
-    for line in source_lines[:10]:
-        if SIZE_OK_RE.search(line):
-            return []
-
-    pure_loc = sum(
-        1 for line in source_lines
-        if line.strip() and not line.strip().startswith("#")
-    )
-    if pure_loc > PURE_LOC_LIMIT:
-        return [Violation(
-            rule="oversized-module",
-            file=file,
-            line=1,
-            col=1,
-            message=f"{pure_loc} pure LOC (limit: {PURE_LOC_LIMIT}) \u2014 split by responsibility",
-        )]
-    return []
 
 
 def check_file(file: Path) -> list[Violation]:
@@ -649,7 +625,6 @@ def check_file(file: Path) -> list[Violation]:
         *find_generic_exception_violations(tree, source_lines, file),
         *find_object_annotation_violations(tree, source_lines, file),
         *find_if_elif_variant_violations(tree, source_lines, file),
-        *find_oversized_module_violations(source_lines, file),
         *find_broad_except_violations(tree, source_lines, file),
     ]
 

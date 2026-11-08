@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
@@ -45,7 +45,7 @@ These examples are project choices, not skill-wide obligations. Preserve existin
 11. **No Any, no object** — both are banned as type annotations. `object` erases all structural information (zero callable attributes, zero narrowing). Use `Protocol` (structural typing), `TypeVar` (generic pass-through), explicit union (known variants), or `TypedDict` (dict shapes).
 12. **No cast** — `cast()` is banned. Redesign the types.
 13. **No type: ignore** — fix the type error. The checker is right; you are wrong.
-14. **No broad except** — `except Exception` and `except BaseException` are banned. Catch the **specific** exception you expect. A broad catch swallows bugs you need to see — `KeyError`, `AttributeError`, `TypeError` all vanish silently. If you genuinely need a catch-all at a top-level boundary (CLI entry, HTTP handler), use `# noqa: BROAD_EXCEPT_OK` and log + re-raise.
+14. **No broad except** — `except Exception` and `except BaseException` are banned. Catch the **specific** exception you expect. A broad catch swallows bugs you need to see — `KeyError`, `AttributeError`, `TypeError` all vanish silently. If you genuinely need a catch-all at a top-level boundary (CLI entry, HTTP handler), put `# noqa: BROAD_EXCEPT_OK` on the `except` line and log + re-raise.
 
 ### Typing and safety
 
@@ -151,19 +151,19 @@ except Exception:
 # GOOD — catch what you expect
 try:
     result = api.fetch(url)
-except httpx.HTTPStatusError as e:
+except httpx2.HTTPStatusError as e:
     logger.error("API %d: %s", e.response.status_code, e.request.url)
     return None
-except httpx.ConnectError:
+except httpx2.ConnectError:
     raise ServiceUnavailableError(service="api") from None
 
-# GOOD — top-level boundary (only place broad catch is acceptable)
-def main() -> int:  # noqa: BROAD_EXCEPT_OK
+# GOOD — top-level boundary (CLI entry or HTTP handler: the only places a broad catch is acceptable)
+def main() -> int:
     try:
         return run()
-    except Exception:
+    except Exception:  # noqa: BROAD_EXCEPT_OK
         logger.exception("unhandled error")
-        return 1
+        raise
 ```
 
 ### Async
@@ -223,9 +223,9 @@ Canonical defaults (override only if `pyproject.toml` explicitly picks something
 Scaffold a new project with all strict defaults pre-configured:
 
 ```bash
-uv run ../../scripts/python/new-project.py myproject
-uv run ../../scripts/python/new-project.py myproject --path ./workspace
-uv run ../../scripts/python/new-project.py myproject --lib   # publishable library
+bun <skill-dir>/scripts/python/new-project.ts myproject
+bun <skill-dir>/scripts/python/new-project.ts myproject --path ./workspace
+bun <skill-dir>/scripts/python/new-project.ts myproject --lib   # publishable library
 ```
 
 Creates via `uv init`, then injects basedpyright `typeCheckingMode = "all"` + ruff `select = ["ALL"]` + pytest strict. Cross-platform (macOS, Linux, Windows).
@@ -236,7 +236,7 @@ For manual setup: `uv init --app myproject`, then load `pyproject-strict.md`.
 
 Every `.py` script — even throwaway — MUST use PEP 723 inline metadata with the `# ─── How to run ───` comment block. No venv, no `requirements.txt`. The script IS the environment spec. A script without the usage comment block is incomplete.
 
-Scaffold with: `uv run ../../scripts/python/new-script.py <name> --deps "httpx2[http2,brotli,zstd]"` (writes to temp dir by default, `--output` for specific path).
+Scaffold with: `bun <skill-dir>/scripts/python/new-script.ts <name> --deps "httpx2[http2,brotli,zstd]"` (writes to temp dir by default, `--output` for specific path).
 
 Load `one-liners.md` for full patterns, examples, and anti-patterns.
 

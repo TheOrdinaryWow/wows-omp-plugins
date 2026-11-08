@@ -1,10 +1,10 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
 # Bootstrap — Project Layout, Toolchain, Taskfile, CI
 
-What every new Go project gets in the first 60 seconds. Drop the script in `scripts/go/new-project.go` does all of this — this document explains *what* it produces and *why*.
+What every new Go project gets in the first 60 seconds. The explicitly requested new-project scaffold `bun <skill-dir>/scripts/go/new-project.ts <name>` does all of this — this document explains *what* it produces and *why*.
 
 ## Toolchain pin
 
@@ -324,7 +324,7 @@ Go 1.23+ HTTP service for {one-line purpose}.
 - Errors wrapped with `%w`; check with `errors.Is/As`
 ```
 
-The skill's `cmd/new-project.go` writes this file with project-specific values filled in.
+The skill's `scripts/go/new-project.ts` writes this file with project-specific values filled in.
 
 ## Sources
 

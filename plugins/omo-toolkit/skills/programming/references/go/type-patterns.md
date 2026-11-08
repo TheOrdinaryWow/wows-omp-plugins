@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
@@ -31,10 +31,10 @@ func GetUser(id UserID) User { /* ... */ }
 uid := UserID("u-123")
 oid := OrderID("o-456")
 
-GetUser(uid)              // ✅ OK
-GetUser(oid)              // ❌ cannot use oid (type OrderID) as UserID
-GetUser("u-123")          // ❌ untyped string literal — Go DOES catch this
-GetUser(UserID("u-123"))  // ✅ explicit conversion — accept it
+GetUser(uid)              //  OK
+GetUser(oid)              //  cannot use oid (type OrderID) as UserID
+GetUser("u-123")          //  untyped string literal — Go DOES catch this
+GetUser(UserID("u-123"))  //  explicit conversion — accept it
 ```
 
 **Use when**: IDs, opaque tokens, foreign keys, units that share a base primitive.

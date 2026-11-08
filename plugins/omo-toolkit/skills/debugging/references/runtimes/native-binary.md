@@ -1,4 +1,6 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+
+> **OMP execution scope.** Use native `task`/IRC, `eval` browser, `lsp`, and `debug` surfaces. Run tests, builds, linters, formatters, smoke runs, and audit tools only when the assignment authorizes them. A reported failure is already evidence; do not rerun it merely to confirm. No size gate, mandatory refactor, or implicit install applies. Toolchain/global installs need separate consent.
 
 # Native Binary Debugging (No Source / Reverse Engineering)
 
@@ -13,7 +15,7 @@ Read those before using them — especially Ghidra, which has a surprising amoun
 
 ---
 
-## ⚠️ STOP — is this actually a stripped C/C++ binary?
+##  STOP — is this actually a stripped C/C++ binary?
 
 A growing share of "binaries" are actually **bundled high-level apps** — Bun SEA, Node SEA, Deno compile, pkg, nexe, Electron, Tauri, PyInstaller. Their workflow is completely different: the high-level source is recoverable with the right per-bundler tool (often plaintext, sometimes V8 cache / `.pyc` / eszip needing extra tooling), and Ghidra against the runtime VM wastes hours.
 
@@ -22,7 +24,7 @@ Quick check:
 ```bash
 file ./target                                                    # Mach-O / ELF / PE - inconclusive
 du -h ./target                                                   # 50 MB+ for a "simple CLI" → suspect bundled
-strings -n 12 ./target | rg -iE 'bun|node_modules|webpack|esbuild|deno|pkg/lib|electron|pyinstaller|nexe|NODE_SEA_FUSE|tauri' | head -5
+strings -n 12 ./target | rg -i 'bun|node_modules|webpack|esbuild|deno|pkg/lib|electron|pyinstaller|nexe|NODE_SEA_FUSE|tauri' | head -5
 ```
 
 **If any hits** → close this file, open [bundled-js-binary.md](bundled-js-binary.md) instead. Following the Ghidra/pwndbg path on a bundled-app binary wastes hours decompiling the runtime VM while the app-level bundle is recoverable with the right per-bundler tool (plaintext for Bun/pkg/nexe/Electron-asar; eszip / V8-cache / `.pyc` for Deno / Node SEA / PyInstaller).
@@ -78,7 +80,7 @@ nm ./target 2>/dev/null | head          # empty? stripped. full? not stripped.
 file ./target                           # will say "stripped" or "not stripped"
 ```
 
-### ⚠️ `strings -n N` silently drops short content
+###  `strings -n N` silently drops short content
 
 `strings` prints runs of printable characters of length **≥ N**. With `-n 8`, **anything shorter than 8 chars sandwiched between non-printable bytes is dropped silently**. This includes:
 

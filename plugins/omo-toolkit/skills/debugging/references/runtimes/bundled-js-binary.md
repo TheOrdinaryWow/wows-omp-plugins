@@ -1,4 +1,6 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+
+> **OMP execution scope.** Use native `task`/IRC, `eval` browser, `lsp`, and `debug` surfaces. Run tests, builds, linters, formatters, smoke runs, and audit tools only when the assignment authorizes them. A reported failure is already evidence; do not rerun it merely to confirm. No size gate, mandatory refactor, or implicit install applies. Toolchain/global installs need separate consent.
 
 # Bundled-JS / Embedded-Source Binaries (Bun SEA, Node SEA, Deno compile, pkg, Electron, PyInstaller)
 
@@ -43,7 +45,7 @@ Step 3 is the unlock — once you have plaintext source on disk, the rest is nor
 
 ```bash
 # Look for runtime-specific markers in plaintext strings
-strings -n 12 ./target 2>/dev/null | rg -iE 'bun|node_modules|webpack|esbuild|deno|pkg/lib|electron|pyinstaller|nexe|NODE_SEA_FUSE|NODE_SEA_BLOB|tauri|ESZIP_V2|denort' | head -20
+strings -n 12 ./target 2>/dev/null | rg -i 'bun|node_modules|webpack|esbuild|deno|pkg/lib|electron|pyinstaller|nexe|NODE_SEA_FUSE|NODE_SEA_BLOB|tauri|ESZIP_V2|denort' | head -20
 ```
 
 | Marker pattern | Bundler | Source format |
@@ -322,7 +324,7 @@ The target's API may require credentials, network access, or paid quota you don'
 
 ---
 
-## ⚠️ Gotchas — read these before extracting
+##  Gotchas — read these before extracting
 
 ### G1. `strings -n N` silently drops short identifier interpolations
 

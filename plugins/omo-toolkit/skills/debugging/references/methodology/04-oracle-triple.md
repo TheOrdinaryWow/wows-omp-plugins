@@ -1,10 +1,12 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+
+> **OMP execution scope.** Use native `task`/IRC, `eval` browser, `lsp`, and `debug` surfaces. Run tests, builds, linters, formatters, smoke runs, and audit tools only when the assignment authorizes them. A reported failure is already evidence; do not rerun it merely to confirm. No size gate, mandatory refactor, or implicit install applies. Toolchain/global installs need separate consent.
 
 # Phase 4 — Oracle Triple Consultation
 
 Use this optional reframing when a genuinely open root-cause hunt has repeated inconclusive rounds and parallel analysis is likely to add a decisive observation. It is not a prerequisite for asking an unapproved consequential question, nor a replacement for runtime evidence.
 
-> ⚠️ **Wrong tool for non-debugging tasks.** The Triple is for *stuck root-cause hunts*. If your task is producing an artifact (extraction, reverse engineering, audit, compliance documentation) and you want a skeptical review before declaring it done, use the **Verification Oracle** pattern in [partial-runtime-evidence.md](partial-runtime-evidence.md#verification-oracle-pattern-for-non-debug-tasks). Running the Triple on a finished extraction returns three diverging "what if you tried…" tangents that are not what you need.
+>  **Wrong tool for non-debugging tasks.** The Triple is for *stuck root-cause hunts*. If your task is producing an artifact (extraction, reverse engineering, audit, compliance documentation) and you want a skeptical review before declaring it done, use the **Verification Oracle** pattern in [partial-runtime-evidence.md](partial-runtime-evidence.md#verification-oracle-pattern-for-non-debug-tasks). Running the Triple on a finished extraction returns three diverging "what if you tried…" tangents that are not what you need.
 
 ---
 

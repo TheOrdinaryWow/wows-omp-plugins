@@ -1,4 +1,6 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+
+> **OMP execution scope.** Use native `task`/IRC, `eval` browser, `lsp`, and `debug` surfaces. Run tests, builds, linters, formatters, smoke runs, and audit tools only when the assignment authorizes them. A reported failure is already evidence; do not rerun it merely to confirm. No size gate, mandatory refactor, or implicit install applies. Toolchain/global installs need separate consent.
 
 # Partial Runtime Evidence — When You Cannot Execute the Real Operation
 
@@ -61,7 +63,7 @@ HTTPS_PROXY=http://127.0.0.1:8888 SSL_CERT_FILE=~/.mitmproxy/mitmproxy-ca-cert.p
 ```bash
 # DYLD_INSERT_LIBRARIES / LD_PRELOAD shim approach
 # Wrap the network call to log payload, return a fake 200
-# See pwntools.md for shim examples
+# See ../runtimes/native-binary.md (DYLD_INSERT_LIBRARIES interception; "Option C: Wrap / shim") for shim examples
 ```
 
 **Strength**: Wire-level ground truth, but requires the target to honor your proxy / preload.
@@ -124,9 +126,9 @@ Record in the journal:
 <the specific claim, e.g. "Opus 4.7 default effort is 'high'">
 
 ### Available signals
-- Tier 1: debug log /tmp/trace.log line 47-49 shows `effort: "high"` ✓
-- Tier 3: static extraction of m5T() function returns "high" for smart mode ✓
-- Tier 6: code path verified by reading prompt-builder.js ✓
+- Tier 1: debug log /tmp/trace.log line 47-49 shows `effort: "high"` 
+- Tier 3: static extraction of m5T() function returns "high" for smart mode 
+- Tier 6: code path verified by reading prompt-builder.js 
 
 ### Independence assessment
 Tier 1 and Tier 3 are independent — the log was emitted by a different
@@ -138,7 +140,7 @@ VERIFIED via Tier 1 + Tier 3 agreement. No need to escalate.
 
 If you cannot achieve a complete Tier 2 capture **or** two independent non-Tier-6 signals from the table above, **write an explicit note in the deliverable**:
 
-> ⚠️ Partial-evidence finding. The full outbound payload could not be captured because [reason]. The conclusion rests on:
+>  Partial-evidence finding. The full outbound payload could not be captured because [reason]. The conclusion rests on:
 > - [signal A — tier and source]
 > - [signal B — tier and source]
 > A future verification should attempt [the missing tier] when [condition].

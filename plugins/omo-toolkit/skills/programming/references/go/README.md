@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
@@ -70,10 +70,10 @@ Read these per-file references for the canonical patterns:
 - **HTTP backend** → `backend-stack.md` — `gin` server skeleton, middleware ordering, SSE/streaming with `http.Flusher`, structured slog logging, graceful shutdown — distilled from the CLIProxyAPI codebase (a real proxy serving OpenAI/Gemini/Claude APIs).
 - **RPC** → `grpc-connect.md` — when to pick Connect vs grpc-go, codegen pipeline, protovalidate, streaming.
 - **DB** → `sqlc-pgx.md` — compile-time-safe SQL via sqlc + pgx connection pool + migrations via goose + testcontainers in CI.
-- **CLI** → `cobra-stack.md` — cobra layout, slog integration, graceful shutdown on signals, fang-style colored help.
+- **CLI** → `cobra-stack.md` — cobra layout, slog integration, graceful shutdown on signals, shell completions, `huh` prompts styled with `lipgloss`.
 - **TUI** → `bubbletea-v2.md` — v2 model, `SetVirtualCursor(false)` + `tea.View{Cursor}` for CJK IME, why v1 was broken for Korean/Japanese/Chinese input.
-- **Testing** → `testing.md` — table-driven tests, `require` vs `assert`, `autogold` snapshots, `gopter` property tests, `testcontainers` for integration, `goleak` for goroutine leaks.
-- **Bootstrap** → `bootstrap.md` — `new-project.go` invocation, project layout (`cmd/`, `internal/`, `pkg/`), Taskfile, CI.
+- **Testing** → `testing.md` — table-driven tests, `require` vs `assert`, `autogold` snapshots, `rapid` property tests, `testcontainers` for integration, `goleak` for goroutine leaks.
+- **Bootstrap** → `bootstrap.md` — `scripts/go/new-project.ts` invocation, project layout (`cmd/`, `internal/`, `pkg/`), Taskfile, CI.
 - **Strict config** → `golangci-strict.md` — the canonical `.golangci.yml` with the full linter whitelist and per-linter rationale.
 - **One-liners** → `one-liners.md` — `go run` scripts with `//go:build ignore`, `gorun`-style invocation.
 

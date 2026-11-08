@@ -1,4 +1,4 @@
-// Modified-port notice: OMP adaptation via oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e; retained MIT third-party license (see LICENSE).
+// Modified-port notice: OMP adaptation of oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace; SUL-1.0 (see plugin LICENSE-SUL-1.0).
 // Ported from pingdotgg/t3code at d7f3b72 (t3code#23799). MIT; see LICENSE.
 const EM_DASH = "\u2014";
 const MESSAGE = "No em dashes in product copy. Use a period, comma, colon, or parentheses instead.";

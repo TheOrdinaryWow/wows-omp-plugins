@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
@@ -20,7 +20,7 @@ These are deliberate project choices. Violations are always wrong, not "style pr
 | Category | Use | Never |
 |---|---|---|
 | Runtime | Bun (native TS, single binary) | ts-node, tsx |
-| Package manager | `pnpm` | npm, yarn (unless workspace requires it) |
+| Package manager | Bun (`bun install`); `pnpm` only when Node is forced | npm, yarn (unless workspace requires it) |
 | Linter + formatter | **oxlint + oxfmt**, with both local copy rules | New ESLint, Prettier, or Biome setups; retain them only in repositories already using them |
 | Type checker | `tsc --noEmit` with strict config | skip type checking |
 | Web framework | Hono | Express |
@@ -43,7 +43,7 @@ These are deliberate project choices. Violations are always wrong, not "style pr
 11. **as const for constants** — module-level constant objects and arrays use `as const`.
 12. **import type** — type-only imports use `import type`. Enforced by `verbatimModuleSyntax`.
 13. **Named exports only** — no `export default`. Exception: framework requirement (Next.js pages, etc.).
-14. **No empty catch, no catch-and-swallow** — every `catch` block must either (a) narrow the error with `instanceof` and handle each case, or (b) re-throw. Empty catch blocks and `catch (e) { console.error(e) }` without narrowing or re-throw are banned — they hide bugs. At top-level boundaries (CLI entry, HTTP handler), opt out with `// no-excuse-ok: catch`.
+14. **No empty catch, no catch-and-swallow** — every `catch` block must either (a) narrow the error with `instanceof` and handle each case, or (b) re-throw. Empty catch blocks and `catch (e) { console.error(e) }` without narrowing or re-throw are banned — they hide bugs. At top-level boundaries (CLI entry, HTTP handler), opt out with `// no-excuse-ok: catch` on the `catch` line.
 
 ### Data modeling — which construct, when
 
@@ -95,10 +95,10 @@ try {
 }
 
 // GOOD — top-level boundary (only place catch-all is acceptable)
-async function main(): Promise<void> {  // no-excuse-ok: catch
+async function main(): Promise<void> {
   try {
     await run()
-  } catch (e) {
+  } catch (e) {  // no-excuse-ok: catch
     console.error("unhandled:", e)
     process.exit(1)
   }
@@ -125,8 +125,8 @@ async function main(): Promise<void> {  // no-excuse-ok: catch
 Scaffold a new project with all strict defaults pre-configured:
 
 ```bash
-bun run ../../scripts/typescript/new-project.ts my-api
-bun run ../../scripts/typescript/new-project.ts my-api --path ./projects
+bun <skill-dir>/scripts/typescript/new-project.ts my-api
+bun <skill-dir>/scripts/typescript/new-project.ts my-api --path ./projects
 ```
 
 Creates: `package.json` (Hono + Zod + oxlint + oxfmt + oxlint-tsgolint), strict `tsconfig.json`, `.oxlintrc.json`, `.oxfmtrc.json`, `lint/oxlint-plugin/` including its MIT license, `src/index.ts`, and `.gitignore`. Works on macOS, Linux, Windows.
@@ -188,10 +188,9 @@ Tests are strict too, with these exceptions (configure in `.oxlintrc.json` overr
 |---|---|
 | Use `expect()` assertions | That's how testing works |
 | Use magic numbers | Test data |
-| Access private members via bracket notation | Testing internals |
 | Skip readonly on test fixtures | Mutable setup/teardown |
 
-Tests still follow the iron list — branded types, typed errors, exhaustive switch.
+Tests still follow the iron list — branded types, typed errors, exhaustive switch — and the authoring gate in [`../testing/README.md`](../testing/README.md). Private members are reached through the public boundary, never by bracket notation: a test on internals is an implementation mirror that a behavior-preserving refactor breaks.
 
 ## Existing codebases
 

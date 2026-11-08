@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Modified-port notice: OMP adaptation of oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e; SUL-1.0 (see plugin LICENSE-SUL-1.0).
+// Modified-port notice: OMP adaptation of oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace; SUL-1.0 (see plugin LICENSE-SUL-1.0).
 /**
  * Scaffold a new TypeScript project with ultra-strict defaults.
  *
@@ -35,7 +35,7 @@ const { values, positionals } = parseArgs({
   strict: true,
 });
 
-if (values.help || positionals.length === 0) {
+if (values.help || positionals.length !== 1) {
   console.log(`Usage: bun run new-project.ts <name> [--path <dir>]
 
 Arguments:
@@ -44,7 +44,7 @@ Arguments:
 Options:
   --path      Parent directory (default: current dir)
   -h, --help  Show this help`);
-  process.exit(positionals.length === 0 ? 2 : 0);
+  process.exit(values.help ? 0 : 2);
 }
 
 const name = positionals[0];
@@ -78,7 +78,7 @@ const pkg = {
   },
   dependencies: {
     hono: "^4.12.5",
-    zod: "^3.24.0",
+    zod: "^4.0.0",
   },
   devDependencies: {
     "@types/bun": "latest",
@@ -113,5 +113,5 @@ dist/
 `;
 writeFileSync(join(root, ".gitignore"), gitignore);
 
-console.log(`✓ Created: ${root}`);
+console.log(` Created: ${root}`);
 console.log(`  cd ${name} && bun install && bun run check`);

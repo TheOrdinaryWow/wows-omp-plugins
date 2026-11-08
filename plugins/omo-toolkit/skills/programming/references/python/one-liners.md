@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
@@ -91,17 +91,17 @@ Replace `<SCRIPT_NAME>` with the actual filename. Add argument descriptions if t
 
 ## Template generator
 
-Use `scripts/new-script.py` to scaffold a new PEP 723 script with all boilerplate pre-filled:
+Use `<skill-dir>/scripts/python/new-script.ts` (Bun) to scaffold a new PEP 723 script with all boilerplate pre-filled:
 
 ```bash
 # Generate to temp directory (default)
-uv run scripts/new-script.py my_tool
+bun <skill-dir>/scripts/python/new-script.ts my_tool
 
 # Generate to specific path
-uv run scripts/new-script.py my_tool --output ./scripts/my_tool.py
+bun <skill-dir>/scripts/python/new-script.ts my_tool --output ./scripts/my_tool.py
 
-# With extra dependencies
-uv run scripts/new-script.py my_tool --deps "polars" "duckdb" "rich"
+# With extra dependencies (repeat --deps for each)
+bun <skill-dir>/scripts/python/new-script.ts my_tool --deps polars --deps duckdb --deps rich
 ```
 
 ## Common dependency sets
@@ -187,7 +187,7 @@ def main(input_path: Path, output_path: Path | None = None) -> None:
     out = output_path or input_path.with_suffix(".parquet")
     df = pl.read_csv(input_path)
     df.write_parquet(out)
-    rprint(f"[green]✓[/green] {input_path} → {out} ({len(df)} rows)")
+    rprint(f"[green][/green] {input_path} → {out} ({len(df)} rows)")
 
 
 if __name__ == "__main__":
@@ -255,14 +255,14 @@ if __name__ == "__main__":
 
 ## Anti-patterns
 
-| ❌ Don't | ✅ Do |
+|  Don't |  Do |
 |---|---|
 | `pip install httpx2 && python script.py` | `uv run script.py` |
 | `requirements.txt` alongside script | PEP 723 inline metadata |
 | `python -m venv .venv && ...` | `uv run --script` handles it |
 | Script without usage comment | Always include the "How to run" block |
 | `import asyncio; asyncio.run(main())` | `import anyio; anyio.run(main)` |
-| Bare `httpx2.AsyncClient()` | Full production defaults (see `references/httpx2-optimization.md`) |
+| Bare `httpx2.AsyncClient()` | Full production defaults (see `references/python/httpx2-optimization.md`) |
 
 ## Sources
 

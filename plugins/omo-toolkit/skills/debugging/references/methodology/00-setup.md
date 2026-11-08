@@ -1,4 +1,6 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+
+> **OMP execution scope.** Use native `task`/IRC, `eval` browser, `lsp`, and `debug` surfaces. Run tests, builds, linters, formatters, smoke runs, and audit tools only when the assignment authorizes them. A reported failure is already evidence; do not rerun it merely to confirm. No size gate, mandatory refactor, or implicit install applies. Toolchain/global installs need separate consent.
 
 # Phase 0 + 1 — Environment Assessment & Journal Setup
 

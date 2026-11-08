@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Modified-port notice: OMP adaptation of oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace; SUL-1.0 (see plugin LICENSE-SUL-1.0).
 // Zero-dependency DAP REPL, modeled on oh-my-pi's debug tool. DAP framing is UTF-8 byte based.
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";

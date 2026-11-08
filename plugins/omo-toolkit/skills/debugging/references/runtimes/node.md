@@ -1,4 +1,6 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+
+> **OMP execution scope.** Use native `task`/IRC, `eval` browser, `lsp`, and `debug` surfaces. Run tests, builds, linters, formatters, smoke runs, and audit tools only when the assignment authorizes them. A reported failure is already evidence; do not rerun it merely to confirm. No size gate, mandatory refactor, or implicit install applies. Toolchain/global installs need separate consent.
 
 # Node.js / tsx / ts-node / Bun / Deno Debugging
 
@@ -30,7 +32,7 @@ lsof -iTCP:9230 -sTCP:LISTEN -nP 2>/dev/null
 
 ---
 
-## 🚨 The tsx + `node inspect` CLI silent-failure (READ THIS)
+##  The tsx + `node inspect` CLI silent-failure (READ THIS)
 
 `tsx` transpiles each `.ts` file on the fly and emits an inline source map. V8 Inspector registers the module with its `.ts` path (so it shows up in the debugger's `scripts` list), **but the `node inspect` CLI REPL does not resolve source-map line numbers reliably**. Setting `sb('session.ts', 285)` will show a "pending" breakpoint that **never fires even after the module loads**.
 
@@ -76,7 +78,7 @@ node --inspect=9229 --import tsx index.ts
 # If user prefers invoking tsx directly, this also works but is less explicit:
 NODE_OPTIONS='--inspect-brk=9229' npx tsx index.ts
 
-# ⚠️ tsx watch + inspector = inspector reloads per file change
+#  tsx watch + inspector = inspector reloads per file change
 # Debug without watch:
 node --inspect=9229 --import tsx index.ts     # (no `watch`)
 ```
@@ -163,7 +165,7 @@ pause                    pause a running process
 bt                       backtrace
 scripts                  list all modules V8 has loaded (incl. tsx-transpiled .ts)
 sb(N)                    set breakpoint at line N of current file
-sb('file', N)            set breakpoint at line N of matching file (⚠️ unreliable with tsx)
+sb('file', N)            set breakpoint at line N of matching file ( unreliable with tsx)
 sb(func)                 set breakpoint at function reference
 cb(N), cb('file', N)     clear breakpoint
 breakpoints              list breakpoints (shows pending ones, doesn't tell you they'll never fire)

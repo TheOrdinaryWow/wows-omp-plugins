@@ -1,17 +1,19 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 > **OMP scope.** Repository-first scope: these are optional recipes, not installation-wide rules. Existing repository contracts, language/toolchain versions, standard libraries and dependencies win. Do not migrate stacks, add dependencies, brand every primitive, run checks outside the assignment, or refactor automatically. Size and argument-count metrics are not gates. Run only explicitly requested/authorized checks. Provision packages only in the requested project, a temporary environment, or an explicit user cache; machine-wide installs/upgrades require separate consent.
 
 
 # Rust Undefined Behavior Exorcist
 
-You are a UB hunter. Your job is to find, classify, prove, and eliminate every instance of undefined behavior in Rust code. **Miri is your primary weapon** — everything else supplements where Miri cannot reach.
+For an **authorized unsafe-code audit**, classify concrete undefined-behavior findings and collect evidence on the supported paths. Run both Stacked Borrows and Tree Borrows for the exercised tests; a clean run covers only those inputs, executions, targets, and the recorded Miri version. It is not a proof of soundness or of all unsafe behavior. Do not install a nightly, change CI, or ban an unsupported platform merely because this reference was loaded.
+
+The [Miri documentation](https://github.com/rust-lang/miri#readme) describes model limitations and unsupported operations. Inspect the installed nightly's supported flags before using the pinned examples.
 
 ## Core Philosophy
 
-1. **Miri first, always.** Before reading a single line of `unsafe`, run Miri. Before proposing a fix, run Miri. After applying a fix, run Miri. Miri is the oracle.
+1. **Evidence-led audit.** Trace the unsafe contract, identify supported tests, and use Miri when the assignment authorizes it. An already observed failure is evidence, not an instruction to replay it.
 2. **Classify before fixing.** Every UB finding gets classified against the 14-category taxonomy (see [ub-taxonomy.md](ub-taxonomy.md)). This prevents misdiagnosis and ensures the fix targets the root cause, not a symptom.
-3. **Prove the fix.** A fix is not done until Miri passes with full paranoia flags. If Miri cannot run the test (FFI, I/O), the fix is not done until the appropriate sanitizer passes.
+3. **Bound the claim.** Exercise the regression under both aliasing models when supported. For FFI, I/O, or unsupported targets, name the uncovered behavior and use an authorized sanitizer or targeted runtime test where appropriate; do not label an unsupported run clean.
 4. **Bead handoff.** Each resolved UB instance is a "bead" — a discrete, documented, proven fix. Hand it off with: the UB category, the root cause, the fix, and the Miri proof.
 
 ## The UB Taxonomy
@@ -63,7 +65,7 @@ You are a UB hunter. Your job is to find, classify, prove, and eliminate every i
 
 ### Phase 2: Miri Sweep (THE CRITICAL PHASE)
 
-Run Miri with escalating strictness. **Do not skip any level.**
+In a requested audit, the lower levels are useful diagnosis; Levels 3 and 4 supply the two-model evidence for supported paths. Use the target/filter authorized by the assignment, not an automatic whole-repository sweep. Record the actual aliasing model for the installed nightly rather than assuming a default forever.
 
 **Level 1 — Default (Stacked Borrows):**
 ```bash
@@ -82,8 +84,7 @@ MIRIFLAGS="\
   -Zmiri-strict-provenance \
   -Zmiri-symbolic-alignment-check \
   -Zmiri-preemption-rate=0.1 \
-  -Zmiri-backtrace=full \
-  -Zmiri-disable-isolation" \
+  -Zmiri-backtrace=full" \
   cargo +nightly miri test 2>&1
 ```
 
@@ -94,16 +95,18 @@ MIRIFLAGS="\
   -Zmiri-strict-provenance \
   -Zmiri-symbolic-alignment-check \
   -Zmiri-preemption-rate=0.1 \
-  -Zmiri-backtrace=full \
-  -Zmiri-disable-isolation" \
+  -Zmiri-backtrace=full" \
   cargo +nightly miri test 2>&1
 ```
+
+Keep Miri isolation enabled by default. Add `-Zmiri-disable-isolation` only when the particular authorized test needs host resources and its effects are understood. Do not automatically provision Miri's first-run prerequisites; obtain consent when setup would install or download tools.
 
 **Interpret results:**
 - Fails at Level 1 → Definite UB. Fix immediately.
 - Passes Level 1, fails Level 2 → Provenance or alignment UB. Fix.
-- Passes Levels 1-3, fails Level 4 → Tree Borrows found something Stacked Borrows missed (unusual). Investigate — may be a Tree Borrows false positive, but usually indicates fragile aliasing.
-- Passes all 4 → Miri-clean. Proceed to supplementary tools.
+- Passes Levels 1-3, fails Level 4 → Tree Borrows found something Stacked Borrows missed (unusual). Investigate — may be a Tree Borrows false positive, but usually indicates fragile aliasing. It does not ship until the aliasing is fixed or the false positive is proven and recorded with the Miri output.
+- Passes both models → no UB observed on the exercised paths under those model/version/seed/target settings; this is not global soundness proof.
+- Unsupported operation or unavailable toolchain → incomplete evidence, not a program assertion failure or a clean audit.
 
 ### Phase 3: Supplementary Scans
 
@@ -131,8 +134,8 @@ For each UB finding:
 1. **Classify** against the 14-category taxonomy.
 2. **Write the SAFETY comment** explaining what is wrong and what the fix must achieve.
 3. **Apply the minimal fix.** Do not refactor — fix the UB and nothing else.
-4. **Run Miri (Level 3 minimum) on the specific test that triggered the UB.**
-5. **Run Miri (Level 3) on the full test suite** to check for regressions.
+4. **Run the regression under both aliasing models (Levels 3 and 4)** when supported and authorized.
+5. **Run the relevant authorized suite under both models**, reporting its target, filters, seeds, version, and uncovered paths.
 6. **Document the bead:**
    ```
    BEAD: [Category #] [Short description]
@@ -146,14 +149,14 @@ For each UB finding:
 
 After all beads are resolved:
 
-1. **Add Miri to CI** if not already present (see [miri-sanitizers-loom.md](miri-sanitizers-loom.md) for the GitHub Actions config).
+1. **Discuss CI separately** if ongoing audit coverage is requested; [miri-sanitizers-loom.md](miri-sanitizers-loom.md) has optional examples, not a mandatory infrastructure change.
 2. **Add `#[cfg(miri)]` regression tests** for each bead — these are the tests that originally caught the UB, locked in so it never returns.
 3. **Review SAFETY comments** on every remaining `unsafe` block. Each must name the specific invariant from the taxonomy.
 4. **Run the full paranoia sweep one final time** to confirm clean.
 
 ## Miri-First Decision Protocol
 
-When the agent encounters `unsafe` code during ANY Rust task (not just audits):
+When an authorized audit covers unsafe paths:
 
 ```
 Is there unsafe code in the changeset?
@@ -163,11 +166,11 @@ Is there unsafe code in the changeset?
   │       NO  → Run Miri Level 2 (strict provenance).
   │             Miri fails?
   │               YES → Stop. Classify. Fix. Prove. Then continue.
-  │               NO  → Proceed with the original task.
+  │               NO  → Collect Levels 3 and 4 for the authorized, supported paths.
   NO → Proceed normally.
 ```
 
-This is not optional. **Every `unsafe` block gets Miri'd before it ships.**
+Both aliasing models are the requested audit evidence for paths Miri supports. Report incomplete or unavailable evidence to the owner; do not silently expand the assignment or claim universal safety.
 
 ## SAFETY Comment Standard
 
@@ -214,10 +217,10 @@ When completing a UB audit, produce a summary:
 #### Bead #1: Aliasing violation in buffer resize
 - **Root cause:** `&mut` created while `&` to same slice existed
 - **Fix:** Restructured to drop shared ref before taking mutable
-- **Proof:** `cargo +nightly miri test -- test_buffer_resize` passes Level 3
+- **Evidence:** `test_buffer_resize` passes under recorded Stacked Borrows and Tree Borrows flags; list version, target, seeds, and unexercised behavior.
 
 ### Miri CI Status
-- [ ] Miri added to CI (Level 2 minimum)
+- [ ] CI changes requested separately, or not in scope
 - [ ] All SAFETY comments reviewed
 - [ ] Regression tests added for each bead
 ```
@@ -290,4 +293,4 @@ This skill activates when:
 - Miri reports a failure and the agent needs to classify and fix it
 - The user asks "is this sound?" about Rust code
 
-**Miri is not optional. Miri is the proof. Ship nothing `unsafe` without Miri's blessing.**
+**A two-model Miri pass is evidence for the exercised paths, not proof of soundness. Report what ran and what Miri could not cover.**

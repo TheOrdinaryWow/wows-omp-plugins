@@ -1,166 +1,39 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
-# Phase 9 + 10 — Cleanup & Final Verification
+# Cleanup and final debugging evidence
 
-The working tree after the session must differ from before only by the real fix and its test. Anything else is a process failure.
+Preserve the real fix, justified regression coverage, requested evidence and every unrelated pre-existing change. Cleanup removes only this investigation's temporary artifacts. No mandatory oversized-file split, full-suite ritual or new check authorization arises here.
 
----
+## Walk the ownership journal
 
-## Phase 9 — Cleanup & Revert
+Use the journal created at setup. Each temporary edit, service, tab, debugger, fixture, environment override and evidence location must have an owner and an exact cleanup action recorded at creation. Walk those entries; use successful native operation results as evidence, not a redundant delete-then-query ritual.
 
-### The walk
+- **Source instrumentation:** surgically undo only your own temporary statements or hunks. Never `git checkout <file>` over a real fix or someone else's changes. If a new diagnostic has an agreed ongoing consumer, retain it as part of the actual fix through the repository's logger; otherwise remove it.
+- **Debuggers/services:** terminate the exact owned native `debug` session or named service/process through its lifecycle control. Wait for its terminal result when needed; a stop request is not proof it stopped. Do not use global `pkill -f node`, `debugpy`, `dlv`, `gdb` or similar patterns that could kill a user's process.
+- **Browser state:** close only owned tabs/sessions and remove only owned interception/instrumentation. Leave attached user sessions, profiles and credentials alone. Preserve requested screenshots/traces in their agreed location; keep authentication-bearing traces private.
+- **tmux/fixtures/scratch:** close the exact owned tmux session and remove explicitly named run-owned paths. Do not use `/tmp/debug-*`, `core.*`, global profile globs, or broad `playwright-report/` cleanup against shared directories.
+- **Environment:** restore the previous value of each override in the persistent shell; unsetting an originally set variable is not restoration.
+- **Ghidra/core dumps:** remove only scratch projects and dumps attributable to this run and not requested as evidence. Unknown ownership means preserve and report, not assume disposable.
 
-Open the journal's "Artifacts to revert" list. Walk it top to bottom. Check each box only after the revert command succeeds and produces no error.
+Do not stop a sibling worker's resource, cancel an unsettled writer, or claim a child was stopped merely because the lead is exiting. A delegated worker follows its assignment's cleanup and evidence ownership.
 
-### Standard revert operations
+## Review the actual change boundary
 
-Most sessions create some combination of these artifacts. The commands below are the defaults — your journal should have the exact commands for this session.
+When review is authorized, inspect the relevant change set against the recorded baseline. It should contain the real fix, any justified owner-boundary test, requested evidence/docs and unrelated work left untouched. A user tree need not be globally clean.
 
-```bash
-# --- Temporary source edits (instrumentation statements, debug prints) ---
-git checkout <file>                              # reverts only that file
-git diff <file>                                  # verify clean
+Look for temporary `debugger;`, `breakpoint()`, `dbg!`, ad-hoc DEBUG output, stale debug markers, commented trial code and unrelated autoformatting. Interpret each in context; a legitimate pre-existing log or fixture is not automatically debris. Fix the exact owned hunk, not every textual match.
 
-# --- tmux sessions ---
-tmux kill-session -t <session-name>
-tmux ls                                          # confirm gone
+Preserve the evidence needed by the calling workflow before removing a temporary journal. Delete only the journal/exclusion entry you created; do not modify shared Git exclude state by a broad text command. A requested report or durable evidence artifact is part of the deliverable, not throwaway scaffolding.
 
-# --- Temp fixtures / scratch scripts ---
-rm -f /tmp/debug-*.*
-ls /tmp/debug-*.* 2>/dev/null                    # confirm gone (ls returns non-zero when no match)
+## Final evidence
 
-# --- Background processes (debugger-attached runtimes) ---
-pkill -f 'node --inspect' || true
-pkill -f 'python -m pdb' || true
-pkill -f 'debugpy' || true
-pkill -f 'dlv' || true
-pkill -f 'gdb' || true
-pkill -f 'lldb' || true
+Report these dimensions honestly, within the assignment's authorized checks:
 
-# --- Debug-relevant ports confirmed free ---
-lsof -iTCP:9229 -sTCP:LISTEN -nP 2>/dev/null     # Node inspector default
-lsof -iTCP:5678 -sTCP:LISTEN -nP 2>/dev/null     # debugpy default
-lsof -iTCP:2345 -sTCP:LISTEN -nP 2>/dev/null     # dlv default
-lsof -iTCP:9999 -sTCP:LISTEN -nP 2>/dev/null     # pwndbg/gdb-server default
+1. **Before evidence:** the user's observed failure or an already captured failing owner test/reproduction, with its source. Do not rerun a reported failure merely to reconfirm it.
+2. **After evidence:** the same changed scenario's observed result, plus the affected owner test/check where authorized. Prefer existing coverage or an added fixture/table case over a parallel test that restates the fix.
+3. **Coverage and limits:** exact commands, relevant diagnostics compared with baseline, tested inputs/surface/modes and unavailable checks. A type check alone is not end-to-end behavior; a fake downstream is not the inaccessible real operation.
+4. **Resource disposition:** which owned instrumentation/resources were cleaned up, what requested evidence remains and where, and any unsettled resource or recovery limit.
 
-# --- Env var overrides in current shell ---
-unset DEBUG_OVERRIDE_FOO
-unset PYTHONBREAKPOINT
-unset RUST_LOG
-unset DEBUG
+Do not report an unrun full suite as green, weaken a baseline-red test, or silently extend the debugging assignment into CI/toolchain changes. If the real operation is inaccessible, use `partial-runtime-evidence.md`, name the narrow observation and its limits, and leave the stronger claim unverified.
 
-# --- Ghidra scratch projects (if created just for this session) ---
-# rm -rf ~/ghidra-projects/debug-scratch
-
-# --- Core dumps from debugging (if any) ---
-rm -f ./core ./core.* ~/core.*
-
-# --- Playwright trace files ---
-rm -rf playwright-report/ test-results/
-```
-
-### The verify command
-
-This is the single most important check of the whole skill:
-
-```bash
-git status
-git diff --stat
-```
-
-The diff must contain **only**:
-
-1. The real fix.
-2. The new failing-first test.
-3. Nothing else.
-
-### Detector checklist — scan the diff for these
-
-If `git status` shows any untracked debug file, or `git diff` shows any of the patterns below, **you are not done**. Clean it.
-
-| Pattern | Usually means |
-|---|---|
-| `debugger;` | Node debug statement left behind |
-| `breakpoint()` | Python debug statement left behind |
-| `dbg!(...)` | Rust debug macro left behind |
-| `fmt.Println("DEBUG: ...")` | Go ad-hoc print |
-| `console.log("[DEBUG]` | Node ad-hoc log |
-| `print(f"DEBUG: ` | Python ad-hoc print |
-| `// TODO DEBUG`, `// HACK`, `// XXX` | Stale debug marker |
-| `// <PROJECT>-DEBUG` | Session-specific marker from this skill's edits |
-| Commented-out code blocks near the fix | Dead code from trial fixes |
-| Reordered imports or formatting in unrelated files | Drift from your editor's autoformat during the session |
-
-### Remove the journal
-
-Only once the git check is clean:
-
-```bash
-rm .debug-journal.md
-sed -i.bak '/^\.debug-journal\.md$/d' .git/info/exclude && rm -f .git/info/exclude.bak
-```
-
-The journal is not part of the fix; it doesn't belong in the commit or in the git exclude list.
-
----
-
-## Phase 10 — Final Verification
-
-Last gate before reporting done. All four gates must be true, and all four must have **evidence in your final message** to the user. Passing a gate without evidence is the same as failing it.
-
-### The four gates
-
-1. **Red→green toggle confirmed** — show the failing test output from before the fix and passing output after. Both outputs visible in the reply or the journal.
-
-2. **Full test suite green** — show the suite's final pass line (e.g. `42 passed in 3.14s`). Not just the new test.
-
-3. **Manual QA reproduced the fix** — show the command or scenario that originally failed and its now-correct output. Verbatim, not paraphrased.
-
-4. **Working tree clean of debug artifacts** — show `git diff --stat` output containing only fix + test, plus `git status` clean of untracked debug files.
-
-If any of the four lacks evidence, you have not finished — return to the appropriate phase.
-
-### Final message template
-
-Keep it short. Evidence-dense. The user should be able to skim it in 30 seconds.
-
-```markdown
-Fixed.
-
-**Root cause**: <one sentence — the mechanism, not the symptom>
-**Fix**: `<file:line>` — <two words>
-**Test**: `<test file>::<test name>` — red without fix, green with fix
-**QA**: <one line describing what you ran and what you saw>
-
-Diff:
-```
-<git diff --stat output — should be tiny>
-```
-
-**Next steps I didn't take** (awaiting your decision):
-- <follow-up 1, if any — from QA silent-failure scan or refactor opportunities noted during Phase 7>
-- <follow-up 2 — or "none" if nothing else surfaced>
-```
-
-### Example (from a real session)
-
-```markdown
-Fixed.
-
-**Root cause**: pi-mono Agent's `model.baseUrl` was hardcoded to `api.anthropic.com`, so the `ANTHROPIC_BASE_URL` env var was silently ignored. The proxy API key was rejected by the real Anthropic API with 401, but pi-mono packaged the error into the assistant message's `errorMessage` field instead of throwing, so the route's try/catch never fired and the client received HTTP 200 with empty content.
-
-**Fix**: `core/pi-bridge/modelResolver.ts:117` — override baseUrl
-**Test**: `__tests__/core/modelResolver.test.ts::resolves_env_override` — red without fix, green with fix
-**QA**: `curl -X POST /api/refinement/chat` with proxy env set, observed non-zero usage and non-empty content
-
-Diff:
-```
- core/pi-bridge/modelResolver.ts              | 3 +++
- __tests__/core/modelResolver.test.ts         | 42 ++++++++++++++++++++++
- 2 files changed, 45 insertions(+)
-```
-
-**Next steps I didn't take** (awaiting your decision):
-- pi-mono itself silently swallows LLM errors into `errorMessage`; adding a throw-on-error wrapper at our orchestrator layer would surface these upstream
-- Same silent-failure pattern exists in the planning route — likely the same fix applies
-```
+A concise handoff names the root-cause mechanism, changed owner/callers, concrete before/after evidence, exact exercised checks and remaining limits. No canned PASS line substitutes for those observations.

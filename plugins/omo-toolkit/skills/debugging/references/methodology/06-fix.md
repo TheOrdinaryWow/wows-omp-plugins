@@ -1,4 +1,6 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+
+> **OMP execution scope.** Use native `task`/IRC, `eval` browser, `lsp`, and `debug` surfaces. Run tests, builds, linters, formatters, smoke runs, and audit tools only when the assignment authorizes them. A reported failure is already evidence; do not rerun it merely to confirm. No size gate, mandatory refactor, or implicit install applies. Toolchain/global installs need separate consent.
 
 # Phase 6 + 7 — Root Cause Evidence & Verified Fix
 
@@ -15,6 +17,10 @@ In the journal record the mechanism, before-evidence (including a user observati
 ---
 
 ## Phase 7 — Fix and regression
+
+### 0. Look for the owner test first
+
+Find the existing test owning this contract at the strongest boundary before creating another reproduction. If its failure for this bug is already observed, that is the red proof; do not rerun merely to confirm it. If it passes but covers the path, extend a table/fixture case instead of adding a parallel test. With no owner, add the narrowest justified regression under `skill://programming` and its testing references. An unrelated baseline-red failure stays a product bug, not deletion evidence.
 
 ### 1. Regression evidence
 
