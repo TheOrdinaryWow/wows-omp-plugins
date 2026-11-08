@@ -203,27 +203,37 @@ describe("replacement over retained raw bytes", () => {
       else expect(meta.observed_at).toBe(observedAt);
     });
 });
-const unreadableOn = (platform) => (dir) => {
-    const raw = join(dir, "sources/S1/raw.bin");
-    if (platform !== "win32" && process.getuid?.() !== 0) return chmodSync(raw, 0);
+const NOT_A_FILE = "raw.bin is not a readable file",
+  replaceWithDirectory = (raw) => {
     unlinkSync(raw);
     mkdirSync(raw);
+    return NOT_A_FILE;
   },
-  unreadable = unreadableOn(process.platform),
-  UNREADABLE_CAUSE =
-    process.platform === "win32" || process.getuid?.() === 0 ? "raw.bin is not a readable file" : "raw.bin is unreadable (EACCES)";
+  unreadableOn = (platform) => (dir) => {
+    const raw = join(dir, "sources/S1/raw.bin");
+    if (platform === "win32") return replaceWithDirectory(raw);
+    chmodSync(raw, 0);
+    try {
+      readFileSync(raw);
+    } catch {
+      return "raw.bin is unreadable (EACCES)";
+    }
+    return replaceWithDirectory(raw);
+  },
+  unreadable = unreadableOn(process.platform);
 describe("fact verify fails closed when a cited snapshot cannot be read", () => {
   const cases = [
     ["the sources dir is removed", (dir) => rmSync(join(dir, "sources"), { recursive: !0 }), [], "meta.json is missing"],
     ["meta.json is removed", (dir) => unlinkSync(join(dir, "sources/S1/meta.json")), [], "meta.json is missing"],
     ["--sources names a missing dir", () => {}, ["--sources", "/nonexistent/sources"], "meta.json is missing"],
-    ["raw.bin is unreadable", unreadable, [], UNREADABLE_CAUSE],
+    ["raw.bin is unreadable", unreadable, [], null],
   ];
-  for (const [name, damage, extra, cause] of cases)
+  for (const [name, damage, extra, expected] of cases)
     test(`#given ${name} #when verified #then every cited row gets the blocker with the cause and a record is written`, async () => {
       const dir = await pageSession();
       rmSync(join(dir, "fidelity-defects.json"));
-      damage(dir);
+      const cause = expected ?? damage(dir);
+      if (expected) damage(dir);
       const result = await reverify(dir, ...extra);
       expect(result.exitCode).toBe(1);
       expect(blockers(result.json).map((defect) => defect.message)).toEqual([
