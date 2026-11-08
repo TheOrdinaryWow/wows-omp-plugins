@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/snippets@0.2.1...snippets@0.2.2) (2026-11-08)
+
+
+### Bug Fixes
+
+* **snippets:** keep the fallback console sheet one size in Tern ([c84f44f](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c84f44f314eb37982dc5b6a75d8b3749826d0603))
+
 ## [0.2.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/snippets@0.2.0...snippets@0.2.1) (2026-11-06)
 
 
