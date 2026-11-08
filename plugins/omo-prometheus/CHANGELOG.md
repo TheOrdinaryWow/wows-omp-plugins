@@ -24,6 +24,17 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.29.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.29.0...omo-prometheus@0.29.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** format the folded model text in Atlas Ledger cards ([fd98e46](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/fd98e46173b2eaba4a3237e5217dd76edcb11cad))
+* **omo-prometheus:** keep git stat columns aligned in Atlas Git cards ([3dc6ceb](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/3dc6ceb370fd0d803fa69db51a5034723c02dbf5))
+* **omo-prometheus:** show a refused Atlas release as its reason and unfinished rows ([7e5bde9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/7e5bde91ccb4bcd3f70676944cc82f2ada91ef39))
+* **omo-prometheus:** show only the changed row's facts in expanded Atlas Ledger cards ([282869b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/282869bf68cd242405e3e8cebf0dfcd3c10bb893))
+* **omo-prometheus:** stop stale failures from woken Atlas children deadlocking their rows ([0ae4c97](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0ae4c974602db0f71afa9cfa45182590b07bcaf3))
+
 ## [0.29.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.28.0...omo-prometheus@0.29.0) (2026-11-07)
 
 

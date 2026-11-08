@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.9.1...roadmap@0.9.2) (2026-11-08)
+
+
+### Bug Fixes
+
+* **roadmap:** keep ids, titles and status visible when status tables narrow ([b1947a6](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/b1947a61407529d6b96aa5d42f2a2f3c4381cd9e))
+* **roadmap:** show stage facts instead of the planning handoff in cards and command messages ([0c2c7df](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0c2c7dfbf81da009807c7b99996ae4e137b076c0))
+
 ## [0.9.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.9.0...roadmap@0.9.1) (2026-11-06)
 
 

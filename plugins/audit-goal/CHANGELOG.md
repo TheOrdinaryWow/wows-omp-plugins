@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.2...audit-goal@0.4.3) (2026-11-08)
+
+
+### Bug Fixes
+
+* **audit-goal:** show only the current operation in audit round cards and fold the receipt ([1457af3](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/1457af33fd8a95b67a269627d53fab720d79fae6))
+
 ## [0.4.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.1...audit-goal@0.4.2) (2026-11-06)
 
 
