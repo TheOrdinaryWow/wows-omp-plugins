@@ -162,6 +162,36 @@ test("Atlas plan view describes a large sheet titled by the plan with toned rows
   expect(component.describe(cx)).toBe(root);
 });
 
+test("Atlas sheets refresh their fixed extent on terminal resize and otherwise keep their descriptions", () => {
+  const terminal = { rows: 30 };
+  const surface = { requestRender() {}, terminal } as unknown as TUI;
+  const components = [
+    new AtlasMenu([plan], "unfinished", "", theme, surface, () => undefined),
+    new AtlasPlanView(
+      plan,
+      "dispatch",
+      theme,
+      surface,
+      async () => "",
+      () => undefined,
+    ),
+  ];
+  const before = components.map((component) => component.describe(cx));
+  terminal.rows += 10;
+  for (const [index, component] of components.entries()) {
+    const previous = before[index];
+    const resized = component.describe(cx);
+    expect(resized).not.toBe(previous);
+    expect(resized.p?.min).not.toEqual(previous?.p?.min);
+    expect(resized.p?.min).toEqual(resized.p?.max);
+    expect(component.describe(cx)).toBe(resized);
+    if (previous && component instanceof AtlasPlanView) {
+      expect(find(resized, "body")).toBe(find(previous, "body"));
+      expect(find(resized, "sidebar")).toBe(find(previous, "sidebar"));
+    }
+  }
+});
+
 test("Atlas plan view describes an amended row's ruling in force with the approved text, and lists every ruling", () => {
   const amended: AtlasPlanDetail = {
     ...plan,
@@ -197,6 +227,34 @@ test("Atlas plan view row clicks and view tabs change it exactly as the arrow an
   expect(find(timeline, "view")?.p).toMatchObject({ active: "timeline" });
   expect(shown(find(timeline, "body"))).toContain("verify passed");
   expect(timeline).toEqual(keys.component.describe(cx));
+});
+
+test("Atlas plan view forwards scroll keys to the stable body scroller and memoizes unchanged descriptions", () => {
+  const { component } = view();
+  const initial = component.describe(cx);
+  const body = find(initial, "body-scroll");
+  expect(body?.k).toBe("list");
+  expect(body?.c?.some((child) => "k" in child && child.scroll)).toBe(false);
+  const keys = [
+    ["\x1b[6~", "page-down"],
+    ["\x1b[5~", "page-up"],
+    ["\x1b[H", "start"],
+    ["\x1b[F", "end"],
+  ] as const;
+  for (const [index, [key, by]] of keys.entries()) {
+    if (by === "start") component.handleInput("\t");
+    component.handleInput(key);
+    const root = component.describe(cx);
+    const scroller = find(root, "body-scroll");
+    expect(scroller?.key).toBe(body?.key);
+    // Tern moves the scroller above the node carrying the request, so it rides on the scroller's content.
+    const content = scroller?.c?.[0];
+    expect(content && "k" in content ? content.scroll : undefined).toEqual({ by, n: index + 1 });
+    expect(find(root, "body")?.scroll).toBeUndefined();
+    expect(scroller?.scroll).toBeUndefined();
+    expect(find(root, "rows")).toBe(find(initial, "rows"));
+    expect(component.describe(cx)).toBe(root);
+  }
 });
 
 test("Atlas plan view buttons dispatch, refuse and close exactly like their keys", () => {

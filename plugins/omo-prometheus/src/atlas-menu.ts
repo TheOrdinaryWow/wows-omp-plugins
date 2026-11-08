@@ -90,6 +90,23 @@ const MENU_PLAN_ACTIONS: readonly string[] = ["start", "resume", "inspect", "del
 const EMPTY_TEXT = "No plans in this view; press Tab for All";
 const NO_MATCH_TEXT = "No plans match the search";
 
+// Tern sizes lg sheets by content, so roots take a fixed terminal line extent; a list is the only scroll container.
+const FILL = { grow: 1, shrink: 1, basis: 0, min: { h: 0 } } as const;
+const SCROLLER = { ...FILL, max: { lines: 10_000 } } as const;
+const SHEET_MARGIN_LINES = 8;
+const SHEET_MIN_LINES = 16;
+
+function sheetRoot(rows: number) {
+  const lines = Math.max(SHEET_MIN_LINES, rows - SHEET_MARGIN_LINES);
+  return { gap: "md", min: { h: `${lines}lines` }, max: { h: `${lines}lines` } } as const;
+}
+
+/** Tern moves the scroller above the node that carries `scroll`, so the request rides on the scroller's content. */
+function scroller(key: string, children: NativeChild[], scroll?: NativeScroll): NativeNode {
+  const content = col(children, { gap: "md" });
+  return node("list", SCROLLER, [scroll ? { ...content, scroll } : content], key);
+}
+
 /** Why a plan cannot be started or resumed from here; undefined when it can. */
 export function dispatchBlock(detail: AtlasPlanDetail, kind: AtlasDispatch, displayOnly: boolean): string | undefined {
   if (displayOnly) return "All is display-only; press Tab for Unfinished to start or resume";
@@ -435,11 +452,14 @@ export class AtlasMenu extends OverlayPanel {
 
   override describe(_cx: DescribeContext): NativeNode {
     const { items, selected, query } = this.#list.pickerView();
-    return this.#native.get([this.#filter, this.#message, items, selected, query], () => this.#describe(items, selected, query));
+    const rows = this.tui.terminal.rows;
+    return this.#native.get([this.#filter, this.#message, items, selected, query, rows], () =>
+      this.#describe(items, selected, query, rows),
+    );
   }
 
   /** The sheet is the frame (titled by `nativeOverlay`): a borderless column. */
-  #describe(items: readonly SelectItem[], selected: string | null, query: string): NativeNode {
+  #describe(items: readonly SelectItem[], selected: string | null, query: string, rows: number): NativeNode {
     const search: TspSpan[] = query.trim() ? [span("Search ", "muted"), span(query, "strong")] : [span("Type to search", "muted")];
     const head = rowNode(
       [
@@ -473,10 +493,10 @@ export class AtlasMenu extends OverlayPanel {
         notice && keyed(notice, "notice"),
         plans,
         node("rule", undefined, undefined, "divider"),
-        keyed(this.#describePreview(selected), "preview"),
+        scroller("preview-scroll", [keyed(this.#describePreview(selected), "preview")]),
         actions,
       ]),
-      { gap: "md" },
+      sheetRoot(rows),
     );
   }
 
@@ -983,7 +1003,7 @@ export class AtlasPlanView implements Component {
 
   /**
    * Live refreshes arrive every second while a row runs. The description changes only when the ledger detail, the
-   * selection, the view or the selected row's live child does; Tern clocks the elapsed counters itself.
+   * selection, the view, terminal height or the selected row's live child does; Tern clocks the elapsed counters itself.
    */
   describe(_cx: DescribeContext): NativeNode {
     const item = this.#row();
@@ -998,8 +1018,9 @@ export class AtlasPlanView implements Component {
     );
     const notice = this.#notice();
     const running = this.#running();
-    return this.#nativeRoot.get([this.detail, this.mode, this.#timeline, notice, running, sidebar, body], () =>
-      this.#describeRoot(notice, running, sidebar, body),
+    const rows = this.tui.terminal.rows;
+    return this.#nativeRoot.get([this.detail, this.mode, this.#timeline, notice, running, sidebar, body, rows], () =>
+      this.#describeRoot(notice, running, sidebar, body, rows),
     );
   }
 
@@ -1029,7 +1050,7 @@ export class AtlasPlanView implements Component {
   }
 
   /** The sheet is the frame (titled by `nativeOverlay`): tools, summary, the row sidebar beside the body, key hints. */
-  #describeRoot(notice: string, running: number, sidebar: NativeNode, body: NativeNode): NativeNode {
+  #describeRoot(notice: string, running: number, sidebar: NativeNode, body: NativeNode, rows: number): NativeNode {
     const { detail } = this;
     const buttons =
       this.mode === "active"
@@ -1087,10 +1108,10 @@ export class AtlasPlanView implements Component {
         keyed(origin, "origin"),
         rulings ? keyed(rulings, "rulings") : undefined,
         notice ? keyed(text([span(notice, "warning")], { wrap: "word" }), "notice") : undefined,
-        keyed(rowNode([sidebar, body], { gap: "lg", align: "start" }), "split"),
+        keyed(rowNode([sidebar, body], { ...FILL, gap: "lg", align: "stretch" }), "split"),
         hints,
       ]),
-      { gap: "md" },
+      sheetRoot(rows),
     );
   }
 
@@ -1104,11 +1125,12 @@ export class AtlasPlanView implements Component {
       }),
     );
     const list = selectList("rows", items, {
+      ...SCROLLER,
       selected: items.length ? `r${this.#selected}` : null,
       empty: "No plan rows",
       role: "omp.atlas.rows",
     });
-    return node("col", { max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
+    return node("col", { max: { w: "32ch" }, shrink: 0, min: { h: 0 } }, [list], "sidebar");
   }
 
   #describeBody(item: AtlasRowDetail | undefined, live: AtlasLiveRow | undefined): NativeNode {
@@ -1117,8 +1139,8 @@ export class AtlasPlanView implements Component {
       : item
         ? this.#describeRow(item, live)
         : [text([span("No row selected", "muted")])];
-    const body = node("col", { grow: 1, gap: "md", role: "omp.atlas.body" }, children, "body");
-    return this.#nativeScroll ? { ...body, scroll: this.#nativeScroll } : body;
+    const body = scroller("body-scroll", children, this.#nativeScroll);
+    return node("col", { ...FILL, role: "omp.atlas.body" }, [body], "body");
   }
 
   /** The selected row: its fields, the live child while it runs, evidence, the archived output and acceptance. */

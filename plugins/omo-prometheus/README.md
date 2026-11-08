@@ -248,6 +248,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus atlasRelease approve
 - Atlas needs sessions saved on a local disk that supports hard links, atomic renames and syncing files and directories. With in-memory or remote-only session storage it refuses to run, and sessions with different session directories cannot see each other's plans.
 - Planning with Prometheus needs Plan Mode's interactive approval, so it does not run in headless or SDK sessions.
 - Plans from versions before the shared ledger cannot be resumed. Have them approved again.
+- In Tern, the plan list and plan view keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
 
 ## More details
 

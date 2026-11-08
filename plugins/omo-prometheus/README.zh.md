@@ -248,6 +248,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus atlasRelease approve
 - Atlas 需要保存在本地磁盘上的会话，并且文件系统要支持硬链接、原子重命名以及文件和目录同步。会话存储在内存中或只存在于远端时，Atlas 会拒绝运行；会话目录不同的会话也看不到彼此的计划。
 - 用 Prometheus 规划需要 Plan Mode 的交互式批准，所以在无界面或 SDK 会话中无法运行。
 - 在共享执行记录出现之前的版本中执行的计划无法恢复，需要重新批准。
+- 在 Tern 中，计划列表和计划视图保持同一尺寸，窗格在内部滚动，因此滚动窗格里的文字无法选中或复制。
 
 ## 更多细节
 
