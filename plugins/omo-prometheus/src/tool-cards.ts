@@ -3,17 +3,22 @@
  * default tool rendering: these tools define no renderCall/renderResult, so only the TSP describe hooks change.
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { code, compact, item, list, md, node, span, text } from "@oh-my-pi/pi-tui";
+import { code, compact, item, kv, list, md, node, span, text } from "@oh-my-pi/pi-tui";
 import { CustomMessageComponent } from "@oh-my-pi/pi-tui/chat/custom-message";
 import { OwnerMemo } from "@oh-my-pi/pi-tui/native/memo";
 import type { NativeChild, NativeNode } from "@oh-my-pi/pi-tui/native/node";
 import type { NativeToolHead, NativeToolView, RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
 
 import {
+  countedFailures,
   type ExecutionLedger,
+  effectiveAcceptance,
+  effectiveTimeLimitHours,
   type ItemStatus,
   type LedgerItem,
   type OwnerRuling,
+  type RetryWindow,
+  retryWindow,
   type Tier,
   type VerificationStatus,
   verificationStatus,
@@ -28,7 +33,7 @@ interface CardResult {
   isError?: boolean;
 }
 
-/** One ledger row as a result card shows it. */
+/** One ledger row as a result card shows it. Fields after `verification` are absent in results from older versions. */
 export interface LedgerCardRow {
   id: string;
   title: string;
@@ -36,12 +41,21 @@ export interface LedgerCardRow {
   agent: string;
   tier?: Tier;
   verification?: VerificationStatus;
+  /** The acceptance in force; `amendedBy` names the owner ruling that set it. */
+  acceptance?: string;
+  amendedBy?: string;
+  evidence?: string;
+  timeLimitHours?: number;
+  /** The current retry window, once it has recorded a failure or a later window was granted. */
+  retry?: { window: number; counted: number; diagnostics: number; stop?: NonNullable<RetryWindow["stop"]>["reason"] };
 }
 
 /** Finished rows of the whole plan. */
 export interface LedgerCardProgress {
   done: number;
   total: number;
+  /** Open rows whose dependencies are all done; absent in results from older versions. */
+  next?: string[];
 }
 
 /** Card fields an `atlas_ledger` result adds to its details. */
@@ -80,7 +94,8 @@ function cardRows(ledger: Partial<ExecutionLedger>): LedgerItem[] {
   );
 }
 
-export function ledgerCardRow(row: LedgerItem): LedgerCardRow {
+/** The fields every row list shows. */
+function rowSummary(row: LedgerItem): LedgerCardRow {
   const verification = verificationStatus(row);
   return {
     id: row.id,
@@ -93,9 +108,36 @@ export function ledgerCardRow(row: LedgerItem): LedgerCardRow {
   };
 }
 
+/** A changed row with the facts its expanded card shows. */
+export function ledgerCardRow(ledger: ExecutionLedger, row: LedgerItem): LedgerCardRow {
+  const accepted = effectiveAcceptance(ledger, row);
+  const window = retryWindow(row);
+  const windows = row.retry?.windows.length ?? 0;
+  const evidence = row.evidence?.trim();
+  return {
+    ...rowSummary(row),
+    acceptance: accepted.text,
+    ...(accepted.ruling ? { amendedBy: accepted.ruling.id } : {}),
+    ...(evidence ? { evidence } : {}),
+    timeLimitHours: effectiveTimeLimitHours(row),
+    ...(window && (window.failures.length > 0 || window.stop || windows > 1)
+      ? {
+          retry: {
+            window: windows,
+            counted: countedFailures(window).length,
+            diagnostics: window.failures.length,
+            ...(window.stop ? { stop: window.stop.reason } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 export function ledgerProgress(ledger: Partial<ExecutionLedger>): LedgerCardProgress {
   const rows = cardRows(ledger);
-  return { done: rows.filter((row) => row.status === "done").length, total: rows.length };
+  const done = new Set(rows.filter((row) => row.status === "done").map((row) => row.id));
+  const next = rows.filter((row) => row.status === "open" && (row.dependsOn ?? []).every((id) => done.has(id))).map((row) => row.id);
+  return { done: done.size, total: rows.length, next };
 }
 
 /** A non-empty trimmed string, or undefined for anything else (partial streaming args, older details). */
@@ -181,6 +223,42 @@ function rulingSection(ruling: OwnerRuling): NativeNode {
   );
 }
 
+const RETRY_STOP: Record<NonNullable<NonNullable<LedgerCardRow["retry"]>["stop"]>, string> = {
+  signature: "same failure twice",
+  attempts: "three counted failures",
+  elapsed: "time limit reached",
+  harness: "harness failed again",
+};
+
+function retryLine(retry: NonNullable<LedgerCardRow["retry"]>): string {
+  return compact([
+    `window ${retry.window}`,
+    `${retry.counted}/3 counted failures`,
+    `${retry.diagnostics} ${retry.diagnostics === 1 ? "diagnostic" : "diagnostics"}`,
+    retry.stop ? `stopped: ${RETRY_STOP[retry.stop] ?? retry.stop}` : undefined,
+  ]).join(" · ");
+}
+
+function factSection(label: string, source: string, key: string): NativeNode {
+  return node("section", { head: [span(label, "muted")] }, [md(source)], key);
+}
+
+/** What an expanded row change adds: that row's acceptance and evidence, its clock and retries, and what can run next. */
+function rowFacts(row: LedgerCardRow | undefined, progress: LedgerCardProgress, ruling: OwnerRuling | undefined): NativeChild[] {
+  return compact<NativeChild>([
+    // An amend card already shows the ruled acceptance in its ruling section.
+    row?.acceptance && !ruling
+      ? factSection(row.amendedBy ? `Acceptance (amended by ${row.amendedBy})` : "Acceptance", row.acceptance, "acceptance")
+      : undefined,
+    row?.evidence ? factSection("Evidence", row.evidence, "evidence") : undefined,
+    kv([
+      ["Time limit", row?.timeLimitHours !== undefined ? `${row.timeLimitHours}h` : undefined],
+      ["Retry", row?.retry ? retryLine(row.retry) : undefined],
+      ["Next", progress.next ? progress.next.join(", ") || "none" : undefined],
+    ]),
+  ]);
+}
+
 function describeLedgerResult(result: CardResult, expanded: boolean, args: PartialArgs | undefined): NativeToolView {
   const target = ledgerTarget(args);
   if (result.isError) return textView(LEDGER_TITLE, target, result, "Ledger operation refused.");
@@ -190,7 +268,7 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
     const progress = ledgerProgress(details.ledger);
     return {
       tool: head(LEDGER_TITLE, target ?? "status", { meta: [`${progress.done}/${progress.total} done`] }),
-      body: [progressBar(progress), list(cardRows(details.ledger).map((row) => rowItem(ledgerCardRow(row))))],
+      body: [progressBar(progress), list(cardRows(details.ledger).map((row) => rowItem(rowSummary(row))))],
     };
   }
   const progress = details?.progress;
@@ -228,9 +306,15 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
       ]),
       ruling ? rulingSection(ruling) : undefined,
       progressBar(progress),
-      // The model's guidance repeats on every call during a run: folded until the user expands the card.
-      guidance
-        ? node("section", { head: [span("Guidance", "muted")], collapsible: true, collapsed: !expanded }, [md(guidance)], "guidance")
+      ...(expanded ? rowFacts(changed, progress, ruling) : []),
+      // The text the model reads repeats the whole plan on every call: shown raw and folded, for checking what it was told.
+      expanded && guidance
+        ? node(
+            "section",
+            { head: [span("Model text", "muted")], collapsible: true, collapsed: true },
+            [text([span(guidance, "mono")], { wrap: "word" })],
+            "model-text",
+          )
         : undefined,
     ]),
     preview: "none",

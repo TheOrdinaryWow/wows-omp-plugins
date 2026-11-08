@@ -97,15 +97,16 @@ test("atlas_ledger heads read as the action and row, even from partial arguments
   expect(shown(ledger.describeCall({ action: "start", id: "T3", i: "Starting row" }, options()))).not.toContain("Starting row");
 });
 
-test("atlas_ledger shows the changed row and plan progress, guidance folded until expanded", () => {
+test("atlas_ledger shows the changed row and progress; expanding adds that row's facts and folds the model text", () => {
   const ledger = createLedger("/plans/plan.md", planContent, ["task"]);
   const row = startRow(ledger, "T1", undefined, ["task"]);
+  const modelText = "T1 is now in_progress.\n\n| ID | Status |\n| --- | --- |\n| T1 | in_progress |\n| T2 | open |";
   const result = {
     content: [
       { type: "text", text: "todo refresh" },
-      { type: "text", text: "T1 is now in_progress.\n\n| Row | Status |\n|---|---|\n| T1 | in_progress |" },
+      { type: "text", text: modelText },
     ],
-    details: { id: row.id, status: row.status, row: ledgerCardRow(row), progress: ledgerProgress(ledger) },
+    details: { id: row.id, status: row.status, row: ledgerCardRow(ledger, row), progress: ledgerProgress(ledger) },
   };
   const args = { action: "start", id: "T1" };
   const collapsed = tool("atlas_ledger").describeResult(result, options(), args);
@@ -113,15 +114,52 @@ test("atlas_ledger shows the changed row and plan progress, guidance folded unti
   expect(collapsed?.tool?.badges?.[0]).toMatchObject({ text: "in progress" });
   expect(collapsed?.tone).not.toBe("error");
   const body = nodes(collapsed?.body);
-  const progress = body.find((node) => node.k === "progress");
-  expect(progress?.p).toMatchObject({ value: 0 });
+  expect(body.find((node) => node.k === "progress")?.p).toMatchObject({ value: 0 });
   expect(shown(collapsed)).toContain(`0/${ledgerRows(ledger).length}`);
   expect(shown(collapsed)).toContain("Implement the prerequisite");
-  const guidance = body.find((node) => node.k === "section");
-  expect(guidance?.p).toMatchObject({ collapsible: true, collapsed: true });
-  expect(shown(guidance)).toContain("T1 is now in_progress.");
-  const expanded = tool("atlas_ledger").describeResult(result, options(true), args);
-  expect(nodes(expanded?.body).find((node) => node.k === "section")?.p).toMatchObject({ collapsed: false });
+  expect(shown(collapsed)).not.toContain("prerequisite behavior is observed");
+  expect(shown(collapsed)).not.toContain("T1 is now in_progress.");
+
+  const expanded = nodes(tool("atlas_ledger").describeResult(result, options(true), args)?.body);
+  expect(shown(expanded.find((node) => node.key === "acceptance"))).toContain("prerequisite behavior is observed");
+  const facts = shown(expanded.find((node) => node.k === "kv"));
+  expect(facts).toContain("4h");
+  // T1 is running and T2 waits on it, so nothing else can start.
+  expect(facts).toContain("none");
+  const raw = expanded.find((node) => node.key === "model-text");
+  expect(raw?.p).toMatchObject({ collapsible: true, collapsed: true });
+  expect(shown(raw)).toContain("| T2 | open |");
+  // The model's plan table reaches the user only inside that folded raw section.
+  expect(expanded.some((node) => node.k === "md" && shown(node).includes("| T2 | open |"))).toBe(false);
+});
+
+test("atlas_ledger expanded card names a stopped retry window and the amendment behind the acceptance", () => {
+  const ledger = createLedger("/plans/plan.md", planContent, ["task"]);
+  amendAcceptance(ledger, "T1", "p95 latency stays under 250 ms", "User accepted 250 ms", "user");
+  const row = startRow(ledger, "T1", undefined, ["task"]);
+  row.retry = {
+    windows: [
+      { failures: [], timeLimitHours: 4 },
+      { failures: [], timeLimitHours: 6, stop: { reason: "elapsed", at: 1 } },
+    ],
+  } as unknown as typeof row.retry;
+  const expanded = nodes(
+    tool("atlas_ledger").describeResult(
+      {
+        content: [{ type: "text", text: "T1 is now in_progress." }],
+        details: { id: row.id, status: row.status, row: ledgerCardRow(ledger, row), progress: ledgerProgress(ledger) },
+      },
+      options(true),
+      { action: "start", id: "T1" },
+    )?.body,
+  );
+  const acceptance = expanded.find((node) => node.key === "acceptance");
+  expect(shown(acceptance)).toContain("amended by R1");
+  expect(shown(acceptance)).toContain("p95 latency stays under 250 ms");
+  const facts = shown(expanded.find((node) => node.k === "kv"));
+  expect(facts).toContain("6h");
+  expect(facts).toContain("window 2");
+  expect(facts).toContain("stopped: time limit reached");
 });
 
 test("atlas_ledger amend shows the ruling, its row, the acceptance now in force and the user's note", () => {
@@ -132,7 +170,7 @@ test("atlas_ledger amend shows the ruling, its row, the acceptance now in force 
   const card = tool("atlas_ledger").describeResult(
     {
       content: [{ type: "text", text: `${ruling.id} records the user-confirmed acceptance of T1.` }],
-      details: { id: row.id, status: row.status, ruling, row: ledgerCardRow(row), progress: ledgerProgress(ledger) },
+      details: { id: row.id, status: row.status, ruling, row: ledgerCardRow(ledger, row), progress: ledgerProgress(ledger) },
     },
     options(),
     { action: "amend", id: "T1" },

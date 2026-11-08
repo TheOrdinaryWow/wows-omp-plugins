@@ -683,7 +683,7 @@ export function retryWindow(row: LedgerItem): RetryWindow | undefined {
   return row.retry?.windows.at(-1);
 }
 
-function countedFailures(window: RetryWindow): FailedOutcome[] {
+export function countedFailures(window: RetryWindow): FailedOutcome[] {
   return window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass !== "harness");
 }
 

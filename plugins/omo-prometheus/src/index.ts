@@ -2279,7 +2279,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             id: ruling.rowId,
             status: checked.row.status,
             ruling,
-            row: ledgerCardRow(checked.row),
+            row: ledgerCardRow(ledger, checked.row),
             progress: ledgerProgress(ledger),
           },
         };
@@ -2358,7 +2358,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               text: `${refresh}\n\n${row.id}: ${bySetting ? `a new retry window was granted. ${bySetting} Previous` : "owner confirmed a new retry window; previous"} history is preserved. Time limit: ${effectiveTimeLimitHours(row)}h.${timeLimit !== undefined && settled.decidedBy !== "user" ? " Requested timeLimit ignored: only a user-confirmed dialog can change it." : ""}\n\n${ledgerSummary(ledger, row.id)}`,
             },
           ],
-          details: { id: row.id, status: row.status, row: ledgerCardRow(row), progress: ledgerProgress(ledger) },
+          details: { id: row.id, status: row.status, row: ledgerCardRow(ledger, row), progress: ledgerProgress(ledger) },
         };
       });
     } catch (error) {
@@ -2456,7 +2456,13 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `${item.id} waits on the user; ${children.join(", ")} keeps running and the ask guard no longer counts ${item.id} as movable. ${next} After the answer, tell the child through write agent://<id> what changed; the user's answer to the next ask ends the mark.\n\n${ledgerSummary(ledger, item.id)}`,
                 },
               ],
-              details: { id: item.id, status: item.status, awaiting: evidence, row: ledgerCardRow(item), progress: ledgerProgress(ledger) },
+              details: {
+                id: item.id,
+                status: item.status,
+                awaiting: evidence,
+                row: ledgerCardRow(ledger, item),
+                progress: ledgerProgress(ledger),
+              },
             };
           }
           if (
@@ -2501,7 +2507,13 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `${found.id} records in-scope work found during ${item.id}; it can dispatch now and every gate waits for it.\n\n${ledgerSummary(ledger, found.id)}`,
                 },
               ],
-              details: { id: found.id, status: found.status, origin: item.id, row: ledgerCardRow(found), progress: ledgerProgress(ledger) },
+              details: {
+                id: found.id,
+                status: found.status,
+                origin: item.id,
+                row: ledgerCardRow(ledger, found),
+                progress: ledgerProgress(ledger),
+              },
             };
           }
           if (params.action === "fix") {
@@ -2525,7 +2537,13 @@ export default function prometheus(pi: ExtensionAPI): void {
                   text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.\n\n${ledgerSummary(ledger, fix.id)}`,
                 },
               ],
-              details: { id: fix.id, status: fix.status, origin: item.id, row: ledgerCardRow(fix), progress: ledgerProgress(ledger) },
+              details: {
+                id: fix.id,
+                status: fix.status,
+                origin: item.id,
+                row: ledgerCardRow(ledger, fix),
+                progress: ledgerProgress(ledger),
+              },
             };
           }
           if (params.action === "start") {
@@ -2724,7 +2742,13 @@ export default function prometheus(pi: ExtensionAPI): void {
                 text: `${item.id} is now ${item.status}.${note}\n\n${ledgerSummary(ledger, item.id)}${rulings ? `\n\n${rulings}\n` : ""}${schema ? `\n${schemaLabel} (use schemaMode strict): ${JSON.stringify(schema)}` : ""}${planBinding}`,
               },
             ],
-            details: { id: item.id, status: item.status, outputSchema: schema, row: ledgerCardRow(item), progress: ledgerProgress(ledger) },
+            details: {
+              id: item.id,
+              status: item.status,
+              outputSchema: schema,
+              row: ledgerCardRow(ledger, item),
+              progress: ledgerProgress(ledger),
+            },
           };
         });
         if (completion) roadmap.emitCompleted(completion);
