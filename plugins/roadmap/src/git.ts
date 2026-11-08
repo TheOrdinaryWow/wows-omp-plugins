@@ -14,8 +14,14 @@ export function discoverRepo(path: string): GitRepo | null {
 const GIT = ["--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.fsmonitor=false"];
 
 /** Synchronous because pi.events answers must be emitted inside the request's emit. */
-function gitSync(repoRoot: string, args: string[]): { code: number; stdout: string } {
-  const result = Bun.spawnSync(["git", ...GIT, ...args], { cwd: repoRoot, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+export function gitSync(repoRoot: string, args: string[], timeout?: number): { code: number; stdout: string } {
+  const result = Bun.spawnSync(["git", ...GIT, ...args], {
+    cwd: repoRoot,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    ...(timeout === undefined ? {} : { timeout, killSignal: "SIGKILL" }),
+  });
   return { code: result.exitCode, stdout: result.stdout.toString() };
 }
 

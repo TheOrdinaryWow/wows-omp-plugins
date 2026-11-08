@@ -306,7 +306,7 @@ test("roundOutcome maps each assessment option and the trimmed summary; dismissi
   expect(await createTuiUi(pickAt(0, undefined), stubUi([]).pi).roundOutcome(r1)).toBeUndefined();
 });
 
-test("upgradePrompt is one Yes/No step that states the 0.2.3 incompatibility and forwards cancellation", async () => {
+test("upgradePrompt is one Yes/No step and forwards cancellation", async () => {
   for (const purpose of ["upgrade", "round-outcome"] as const) {
     const seen: Array<{ title: string; options: string[]; signal?: AbortSignal }> = [];
     const answering = (index: number | undefined): RoadmapUiContext =>
@@ -324,7 +324,6 @@ test("upgradePrompt is one Yes/No step that states the 0.2.3 incompatibility and
     expect(await createTuiUi(answering(1), stubUi([]).pi).upgradePrompt(purpose)).toBe(false);
     expect(await createTuiUi(answering(undefined), stubUi([]).pi).upgradePrompt(purpose)).toBeUndefined();
     expect(seen.map((dialog) => dialog.options.length)).toEqual([2, 2, 2]);
-    expect(seen[0]?.title).toContain("0.2.3");
     expect(seen[0]?.signal).toBe(controller.signal);
   }
   const headless = stubUi([], false);

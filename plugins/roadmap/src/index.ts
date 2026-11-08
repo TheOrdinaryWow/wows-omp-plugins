@@ -1,3 +1,6 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { relative } from "node:path";
+
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { ADR_INSTALL_HINT, AdrConnection } from "#src/adr.ts";
@@ -5,15 +8,16 @@ import { requestPlans } from "#src/atlas.ts";
 import { registerMessageTitles } from "#src/cards.ts";
 import { registerCommands } from "#src/commands.ts";
 import { loadAll, loadRepo, today } from "#src/documents.ts";
-import { discoverRepo } from "#src/git.ts";
+import { committedFile, discoverRepo, gitSync } from "#src/git.ts";
 import { renderCloseReminder, renderInjection } from "#src/handoff.ts";
 import { interceptionReason } from "#src/interception.ts";
+import { applyPrepared, atomicWrite, prepareUpgrade } from "#src/operations.ts";
 import { PluginStatePublisher } from "#src/plugin-state.ts";
 import { registerPrometheusContract } from "#src/prometheus.ts";
 import { RoadmapSession, type UiFactory } from "#src/ses.ts";
 import { StageOrderPreference, uiMenuReader } from "#src/settings.ts";
 import { roadmapStatus } from "#src/state.ts";
-import { registerTools, toolResult, upgradeAfterDialog } from "#src/tools.ts";
+import { registerTools } from "#src/tools.ts";
 import { createTuiUi } from "#src/ui.ts";
 
 export { discoverRepo } from "#src/git.ts";
@@ -73,33 +77,62 @@ export default function roadmap(pi: ExtensionAPI): void {
     }
   }
 
-  /** The one-step format-2 question for a format-1 repository; No changes nothing and is asked again next session. */
+  let upgradeWarningShown = false;
   async function offerUpgrade(ctx: ExtensionContext, signal: AbortSignal): Promise<void> {
     const generation = ses.currentGeneration(ctx);
     const git = discoverRepo(ctx.cwd);
-    const found = git && (await loadRepo(git.repoRoot));
-    // Without the adr plugin every roadmap command refuses, so there is nothing to offer.
-    const connected = adr.connect(ctx.sessionManager.getSessionId());
-    if (!found || !("api" in connected) || signal.aborted || !ses.isCurrent(ctx, generation)) return;
-    const repo = { ...found, adr: connected.api };
+    const repo = git && (await loadRepo(git.repoRoot));
+    if (!repo || signal.aborted || !ses.isCurrent(ctx, generation)) return;
     const model = await loadAll(repo);
     if (model.index.format !== 1 || model.parseErrors?.some((issue) => issue.path === model.index.path)) return;
-    if (signal.aborted || !ses.isCurrent(ctx, generation)) return;
-    const ui = uiFor(ctx);
-    if (!ui.interactive) {
-      ui.notify(
-        "This repository uses roadmap format 1. Run /roadmap upgrade to adopt format 2 (planned rounds, target dates, round goal outcomes); roadmap plugin 0.2.3 and earlier can no longer read an upgraded repository, and closed history is not rewritten.",
-        "info",
-      );
+    const path = relative(repo.repoRoot, model.index.path);
+    const directory = relative(repo.repoRoot, repo.roadmapDir);
+    const clean = (): boolean => {
+      const status = gitSync(repo.repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", directory]);
+      return status.code === 0 && status.stdout === "";
+    };
+    if (!clean() || committedFile(repo.repoRoot, path) === undefined) return;
+    const owner = { sessionId: ctx.sessionManager.getSessionId(), kind: "main" as const };
+    const preview = await prepareUpgrade(repo, owner);
+    if (!preview.ok || preview.files.length !== 1 || preview.files[0]?.path !== model.index.path) return;
+    if (signal.aborted || !ses.isCurrent(ctx, generation) || !clean()) return;
+    const original = await readFile(model.index.path);
+    let written = false;
+    const receipt = await applyPrepared(repo, owner, preview.prepared, {
+      signal,
+      async writeFile(path, content, options) {
+        await atomicWrite(path, content, options);
+        written = true;
+      },
+      guard: () =>
+        ses.isCurrent(ctx, generation) && clean()
+          ? undefined
+          : { ok: false, reason: "The session or roadmap files changed before the automatic upgrade.", hints: [] },
+    });
+    if (!receipt.ok) {
+      if (written) await writeFile(model.index.path, original);
       return;
     }
-    if ((await ui.upgradePrompt("upgrade", signal)) !== true || signal.aborted) return;
-    const receipt = await upgradeAfterDialog(ses, ctx, repo, generation, signal);
+    if (signal.aborted || !ses.isCurrent(ctx, generation)) {
+      await writeFile(model.index.path, original);
+      return;
+    }
+    try {
+      const commit = gitSync(repo.repoRoot, ["commit", "-m", "chore(roadmap): upgrade roadmap to format 2", "--", path], 30_000);
+      if (commit.code !== 0) throw new Error(`git commit exited with status ${commit.code}`);
+    } catch (error) {
+      await writeFile(model.index.path, original);
+      if (!upgradeWarningShown) {
+        upgradeWarningShown = true;
+        pi.logger.warn("Roadmap automatic format-2 upgrade was skipped", { error: String(error) });
+      }
+      uiFor(ctx).notify("Automatic roadmap upgrade was skipped. Run /roadmap upgrade to upgrade manually.", "warning");
+      return;
+    }
+    const sha = gitSync(repo.repoRoot, ["rev-parse", "--short", "HEAD"]).stdout.trim();
     pi.sendMessage({
       customType: "wows-omp-roadmap.upgrade",
-      content: toolResult(receipt)
-        .content.map((part) => part.text)
-        .join("\n"),
+      content: `Upgraded the repository to roadmap format 2 and committed ${path} (${sha}).`,
       display: true,
     });
     changed(ctx);
@@ -107,7 +140,7 @@ export default function roadmap(pi: ExtensionAPI): void {
   }
 
   let offering: AbortController | undefined;
-  /** Entering a session asks again; the dialog runs after the host's awaited session_start/switch handlers return. */
+  /** Runs after the host's awaited session-start handlers, with cancellation on the next entry or shutdown. */
   function scheduleUpgradeOffer(ctx: ExtensionContext): void {
     offering?.abort();
     offering = undefined;
@@ -116,7 +149,7 @@ export default function roadmap(pi: ExtensionAPI): void {
     offering = controller;
     setTimeout(() => {
       offerUpgrade(ctx, controller.signal)
-        .catch((error) => pi.logger.warn("roadmap could not offer the format-2 upgrade", { error: String(error) }))
+        .catch((error) => pi.logger.warn("roadmap could not automatically upgrade to format 2", { error: String(error) }))
         .finally(() => {
           if (offering === controller) offering = undefined;
         });

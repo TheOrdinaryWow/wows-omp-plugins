@@ -221,7 +221,7 @@ function diagnostics(model: Model): Diagnostics[] {
     }
     for (const dependency of stage.depends_on) {
       const other = stages.get(dependency);
-      if (other && Number(other.round.slice(1)) > Number(stage.round.slice(1)))
+      if (stage.status !== "dropped" && other && Number(other.round.slice(1)) > Number(stage.round.slice(1)))
         report(
           "error",
           "dependency-order",

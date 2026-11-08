@@ -157,7 +157,7 @@ const ASSESSMENT_LABELS: Readonly<Record<RoundAssessment, string>> = {
 };
 
 const UPGRADE_CONSEQUENCES =
-  "Roadmap plugin 0.2.3 and earlier can no longer read an upgraded repository. Closed rounds and closed stages are not rewritten: only docs/roadmap/README.md changes now, and other files adopt format 2 when a write needs it.";
+  "Closed rounds and closed stages are not rewritten: only docs/roadmap/README.md changes now, and other files adopt format 2 when a write needs it.";
 
 const UPGRADE_DIALOGS: Readonly<Record<UpgradePurpose, { title: string; yes: string; no: string }>> = {
   upgrade: {

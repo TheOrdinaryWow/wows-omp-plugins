@@ -361,7 +361,6 @@ describe("planned rounds", () => {
     const repo = await v023Repo();
     const before = await bytes(repo);
     const preview = prepared(await prepareRoundPlan(repo, main, { round: plan("Payments"), target: "2026-12-01" }));
-    expect(preview.summary).toContain(FORMAT_WARNING);
     expect(preview.files.map((file) => relative(repo.repoRoot, file.path)).sort()).toEqual([
       "docs/roadmap/03-payments/README.md",
       "docs/roadmap/03-payments/TODO.md",
@@ -380,11 +379,42 @@ describe("planned rounds", () => {
     await expectClean(repo);
   });
 
+  test("active charter revision preserves format 1, the directory and stage files", async () => {
+    const repo = await v023Repo();
+    const before = await bytes(repo);
+    const original = roundOf(await loadAll(repo), "R2");
+    const preview = prepared(await prepareRoundPlan(repo, main, { id: "R2", round: plan("Growth revised") }));
+    expect(await bytes(repo)).toEqual(before);
+    success(await applyPrepared(repo, main, preview.prepared));
+    let model = await loadAll(repo);
+    expect(model.index.format).toBe(1);
+    expect(roundOf(model, "R2")).toMatchObject({
+      format: 1,
+      path: original.path,
+      status: "active",
+      title: "Growth revised",
+      goal: "Growth revised goal",
+      opened: original.opened,
+    });
+    const after = await bytes(repo);
+    for (const path of Object.keys(before).filter(
+      (path) => path !== "docs/roadmap/README.md" && path !== relative(repo.repoRoot, original.path),
+    ))
+      expect(after[path]).toBe(before[path]);
+    refused(await prepareRoundPlan(repo, main, { id: "R1", round: plan("Launch") }), "Only an active or planned round");
+    await expectClean(repo);
+
+    await confirm(repo, prepareRoundPlan(repo, main, { id: "R2", round: plan("Growth dated"), target: "2027-01-01" }));
+    model = await loadAll(repo);
+    expect(model.index.format).toBe(2);
+    expect(roundOf(model, "R2")).toMatchObject({ format: 2, path: original.path, target: "2027-01-01" });
+    await expectClean(repo);
+  });
+
   test("planned charters are revisable with optional targets while a round is active", async () => {
     const repo = await v023Repo();
     await confirm(repo, prepareRoundPlan(repo, main, { round: plan("Payments"), target: "2026-12-01" }));
     const upgraded = prepared(await prepareRoundPlan(repo, main, { round: plan("Scale") }));
-    expect(upgraded.summary).not.toContain(FORMAT_WARNING);
     success(await applyPrepared(repo, main, upgraded.prepared));
     let model = await loadAll(repo);
     expect(roundOf(model, "R4")).toMatchObject({ status: "planned", target: null, opened: null });
@@ -406,8 +436,7 @@ describe("planned rounds", () => {
     expect(model.rounds).toHaveLength(4);
 
     const before = await bytes(repo);
-    refused(await prepareRoundPlan(repo, main, { id: "R2", round: plan("Growth") }), "Only a planned round");
-    refused(await prepareRoundPlan(repo, main, { id: "R1", round: plan("Launch") }), "Only a planned round");
+    refused(await prepareRoundPlan(repo, main, { id: "R1", round: plan("Launch") }), "Only an active or planned round");
     refused(await prepareRoundPlan(repo, main, { round: plan("Bad date"), target: "2026-02-30" }), "calendar date");
     refused(await prepareRoundPlan(repo, main, { id: "R3", round: plan("Bad date"), target: "next week" }), "calendar date");
     expect(await bytes(repo)).toEqual(before);
@@ -431,7 +460,10 @@ describe("planned rounds", () => {
     const before = await bytes(repo);
     refused(await stage(repo, main, { action: "start", id: "S06" }), "only stages of the active round");
     refused(await stage(repo, main, draft("Legacy", { round: "R1" })), "only to the active round or a planned round");
-    refused(await stage(repo, main, { action: "edit", id: "S06", round: "R2", title: "Moved" }), "round applies only when adding");
+    refused(
+      await stage(repo, main, { action: "edit", id: "S06", round: "R2", title: "Moved" }),
+      "round applies only when adding or moving",
+    );
     expect(await bytes(repo)).toEqual(before);
 
     success(await stage(repo, main, { action: "edit", id: "S06", title: "Refund flow", target: "none" }));
@@ -449,6 +481,102 @@ describe("planned rounds", () => {
     model = await loadAll(repo);
     expect(stageOf(model, "S08")).toMatchObject({ status: "dropped", closed: today() });
     expect(roundOf(model, "R3").status).toBe("planned");
+    await expectClean(repo);
+  });
+
+  test("moving planned stages keeps ids and filenames and regenerates both rounds and root status", async () => {
+    const repo = await plannedRepo();
+    const original = stageOf(await loadAll(repo), "S04");
+    const receipt = success(await stage(repo, main, { action: "move", id: "S04", round: "R3" }));
+    expect(receipt.summary).toContain("Moved S04");
+    let model = await loadAll(repo);
+    expect(stageOf(model, "S04")).toMatchObject({ id: "S04", round: "R3", format: original.format });
+    expect(stageOf(model, "S04").path).toBe(join(dirname(roundOf(model, "R3").path), "stages", original.path.split("/").at(-1) ?? ""));
+    expect(model.files?.[original.path]).toBeUndefined();
+    expect(await stat(original.path).catch(() => undefined)).toBeUndefined();
+    expect(raw(model, roundOf(model, "R2").path)).not.toContain("| S04 |");
+    expect(raw(model, roundOf(model, "R3").path)).toContain("| S04 |");
+    expect(receipt.changedFiles).toContain("docs/roadmap/README.md");
+    await expectClean(repo);
+    success(await stage(repo, main, { action: "move", id: "S04", round: "R4" }));
+    success(await stage(repo, main, { action: "move", id: "S04", round: "R2" }));
+    model = await loadAll(repo);
+    expect(stageOf(model, "S04").path).toBe(original.path);
+    expect(stageOf(model, "S04").round).toBe("R2");
+    await expectClean(repo);
+  });
+
+  test("stage moves refuse dependency and follows conflicts in either direction without writing", async () => {
+    const repo = await plannedRepo();
+    for (const relation of ["depends_on", "follows"] as const) {
+      success(
+        await stage(repo, main, {
+          action: "edit",
+          id: "S07",
+          depends_on: [],
+          follows: undefined,
+          [relation]: relation === "depends_on" ? ["S06"] : "S06",
+        }),
+      );
+      const before = await bytes(repo);
+      refused(await stage(repo, main, { action: "move", id: "S07", round: "R2" }), "S06");
+      expect(await bytes(repo)).toEqual(before);
+      success(
+        await stage(repo, main, { action: "edit", id: "S06", depends_on: [], [relation]: relation === "depends_on" ? ["S04"] : "S04" }),
+      );
+      const linked = await bytes(repo);
+      const refusal = await stage(repo, main, { action: "move", id: "S04", round: "R4" });
+      refused(refusal, "S06");
+      refused(refusal, "Move dependents first");
+      expect(await bytes(repo)).toEqual(linked);
+    }
+    refused(await stage(repo, main, { action: "move", id: "S03", round: "R3" }), "Only a planned stage");
+    refused(await stage(repo, main, { action: "move", id: "S06", round: "R1" }), "only to the active round or a planned round");
+    refused(await stage(repo, main, { action: "move", id: "S06", round: "R3" }), "already belongs");
+    refused(await stage(repo, main, { action: "move", id: "S06" }), "round id");
+    await confirm(repo, prepareRoundDrop(repo, main, { id: "R4", reason: "Not needed" }));
+    refused(await stage(repo, main, { action: "move", id: "S06", round: "R4" }), "is dropped");
+    await expectClean(repo);
+  });
+
+  test("dropped dependents do not prevent moving a planned stage to a later round", async () => {
+    const repo = await plannedRepo();
+    success(await stage(repo, main, draft("Abandoned refund reporting", { round: "R3", depends_on: ["S06"] })));
+    success(await stage(repo, main, { action: "drop", id: "S08", reason: "Reporting is not needed" }));
+    success(await stage(repo, main, { action: "move", id: "S06", round: "R4" }));
+    const model = await loadAll(repo);
+    expect(stageOf(model, "S06").round).toBe("R4");
+    expect(stageOf(model, "S08")).toMatchObject({ status: "dropped", round: "R3", depends_on: ["S06"] });
+    await expectClean(repo);
+  });
+
+  test("moving a stage relocates only TODOs invalidated in a planned round with fresh ids and provenance", async () => {
+    const repo = await plannedRepo();
+    success(await todo(repo, main, { action: "add", title: "Active note", severity: "normal", source: "Review", target: "S06" }));
+    const model = await loadAll(repo);
+    const doc = todoDoc(model, "R3");
+    doc.items.push({
+      id: "T009",
+      title: "Refund note",
+      status: "open",
+      severity: "high",
+      source: "Review",
+      target: "S06",
+      body: "Keep details.",
+    });
+    await writeFile(doc.path, renderTodo(doc));
+    await expectClean(repo);
+    const receipt = success(await stage(repo, main, { action: "move", id: "S06", round: "R4" }));
+    expect(receipt.summary).toContain("T009 → T010");
+    let moved = await loadAll(repo);
+    expect(itemOf(moved, "R3", "T009")).toMatchObject({ status: "moved", reference: "T010 (R4)" });
+    expect(itemOf(moved, "R4", "T010")).toMatchObject({ status: "open", target: "S06", carried_from: "T009 (R3)", body: "Keep details." });
+    expect(itemOf(moved, "R2", "T008")).toMatchObject({ status: "open", target: "S06" });
+    await expectClean(repo);
+    success(await stage(repo, main, { action: "move", id: "S06", round: "R2" }));
+    moved = await loadAll(repo);
+    expect(itemOf(moved, "R4", "T010")).toMatchObject({ status: "moved", reference: "T011 (R2)" });
+    expect(itemOf(moved, "R2", "T011")).toMatchObject({ status: "open", target: "S06", carried_from: "T010 (R4)" });
     await expectClean(repo);
   });
 
@@ -486,7 +614,7 @@ describe("planned rounds", () => {
 
     const before = await bytes(repo);
     refused(await prepareRoundOpen(repo, main, { activate: "R4", import_todos: [] }), "lowest-numbered planned round R3");
-    refused(await prepareRoundPlan(repo, main, { id: "R2", round: plan("Growth") }), "Only a planned round");
+    refused(await prepareRoundPlan(repo, main, { id: "R2", round: plan("Growth") }), "Only an active or planned round");
     expect(await bytes(repo)).toEqual(before);
 
     const preview = prepared(await prepareRoundOpen(repo, main, { round: plan("Payments v2"), import_todos: [] }));
@@ -505,7 +633,7 @@ describe("planned rounds", () => {
     expect(roundOf(model, "R4").status).toBe("planned");
     expect(itemOf(model, "R3", "T008")).toMatchObject({ status: "open", target: "S06" });
     expect(under(await bytes(repo), "docs/roadmap/02-growth/")).toEqual(under(before, "docs/roadmap/02-growth/"));
-    refused(await prepareRoundPlan(repo, main, { id: "R3", round: plan("Payments v3") }), "Only a planned round");
+    await confirm(repo, prepareRoundPlan(repo, main, { id: "R3", round: plan("Payments v3") }));
     success(await stage(repo, main, { action: "start", id: "S06" }));
     refused(await stage(repo, main, { action: "start", id: "S07" }), "only stages of the active round");
     await expectClean(repo);
@@ -555,7 +683,7 @@ describe("dropping planned rounds", () => {
     const dropped = under(await bytes(repo), "docs/roadmap/03-payments/");
     refused(await prepareRetarget(repo, main, { id: "R3", target: "2027-01-01" }), "Only unclosed");
     refused(await prepareRetarget(repo, main, { id: "S06", target: "2027-01-01" }), "frozen or inactive");
-    refused(await prepareRoundPlan(repo, main, { id: "R3", round: plan("Payments again") }), "Only a planned round");
+    refused(await prepareRoundPlan(repo, main, { id: "R3", round: plan("Payments again") }), "Only an active or planned round");
     refused(await prepareRoundDrop(repo, main, { id: "R3", reason: "Again" }), "Only planned rounds");
     refused(await stage(repo, main, draft("Late refunds", { round: "R3" })), "only to the active round or a planned round");
     refused(await stage(repo, main, { action: "edit", id: "S06", title: "Refunds again" }), "frozen or inactive");

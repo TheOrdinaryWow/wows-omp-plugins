@@ -17,14 +17,14 @@
 | 工具 | 输入或操作 |
 | --- | --- |
 | `roadmap_status` | 不带参数时返回轮次、目标日期、实际日期、逾期标记、阶段及其依赖、活动轮次中计划阶段的就绪情况、未关闭阶段的 Atlas 计划（omo-prometheus 有回复时），以及按目标或触发条件分组的未关闭 TODO；带 `stage` 时返回该阶段的完整信息和交接内容。 |
-| `roadmap_stage` | `add`、`edit`、`amend`、`revise_amendment`、`delete_amendment`、`revise_free_work`、`delete_free_work`、`start`、`close`、`drop`、`renumber`。`add` 接受可选的 `round` 和 `target`；`edit`、`amend` 和 `revise_amendment` 也接受 `target`。`start` 和 `close` 会向 omo-prometheus 查询该阶段的 Atlas 计划。 |
+| `roadmap_stage` | `add`、`edit`、`amend`、`revise_amendment`、`delete_amendment`、`revise_free_work`、`delete_free_work`、`start`、`close`、`drop`、`move`、`renumber`。`add` 接受可选的 `round` 和 `target`；`move` 必须提供 `id` 和目标 `round`，不需要命令授权。`edit`、`amend` 和 `revise_amendment` 也接受 `target`。`start` 和 `close` 会向 omo-prometheus 查询该阶段的 Atlas 计划。 |
 | `roadmap_todo` | `add`、`update`、`resolve`、`move`。 |
 | `roadmap_check` | 可选 `fix: true`。只检查文档，不检查代码与文档是否一致。它会列出全部警告；写操作的回执只列出这次写入新产生的警告。 |
 | `roadmap_overlap` | `stage` 和 `intent`。 |
 | `roadmap_init` | `project`、`round`、初始的 `adrs` 和 `stages`；需要 `/init-project` 授权和已确认的预览。初始 ADR 通过 adr 插件创建（见[通过 adr 插件管理的 ADR](#通过-adr-插件管理的-adr)）。 |
-| `roadmap_round_plan` | `round` 章程、用于修订计划轮次的可选 `id`、可选的 `target`；需要 `/roadmap plan-round [id]` 授权和已确认的预览。 |
+| `roadmap_round_plan` | `round` 章程、用于修订活动或计划轮次的可选 `id`、可选的 `target`；需要 `/roadmap plan-round [id]` 授权和已确认的预览。直接替换标题、目标、约束、非目标和原则，不追加修订日志或重命名目录；已关闭、已放弃的轮次拒绝修订。只修订活动轮次章程保留格式 1；创建计划轮次或添加目标日期时，在预览中升级为格式 2。 |
 | `roadmap_round_open` | `import_todos` ID，以及可选的 `round` 章程或 `activate` 轮次 ID；需要 `/roadmap new-round` 授权和已确认的预览。存在计划轮次时，激活编号最小的那个。 |
-| `roadmap_upgrade` | 无参数，仅限主会话。在格式 1 的仓库中，打开与进入会话时相同的一步式“是/否”对话框：选“是”写入与 `/roadmap upgrade` 相同的变更（只改 `docs/roadmap/README.md`），选“否”报告保留格式 1 且不写入，没有回答也不写入。格式 2 的仓库会报告已经升级。没有对话框或在子代理中时，它会拒绝并提示 `/roadmap upgrade`。 |
+| `roadmap_upgrade` | 无参数，仅限主会话。在格式 1 的仓库中打开一步式“是/否”对话框：选“是”写入与 `/roadmap upgrade` 相同的变更（只改 `docs/roadmap/README.md`），选“否”报告保留格式 1 且不写入，没有回答也不写入。格式 2 的仓库会报告已经升级。没有对话框或在子代理中时，它会拒绝并提示 `/roadmap upgrade`。这条手动路径不会提交变更。 |
 
 授权来自用户明确运行命令、使主会话进入就绪状态。一次成功的写入会用掉授权；取消或无法获得回答都不构成写入授权。
 
@@ -40,6 +40,7 @@
 | `start` | 要求阶段属于活动轮次、依赖已关闭且没有检查错误；激活并绑定阶段，返回规划交接内容。对已处于活动状态的阶段，则加入而不修改文档。 |
 | `close` | 接受 `id`、`delivered` 摘要、可选的 `deviations`，以及下文所述的 `evidence` 和 `todos`。与该阶段关联的 ADR 仍处于提议状态时拒绝。记录 Outcome（在 `### ADRs` 下包含关联 ADR 的状态）和关闭哈希，并冻结阶段。关联的 Atlas 计划尚未完成时不会阻止关闭：回执会给出警告，并在 Outcome 的 Deviations 文本后追加一行，列出这些计划（名称、计划 ID、声明的标准）。 |
 | `drop` | 放弃计划中或活动的阶段，必须写明 `reason`；需先解决或移走所有指向它的未关闭 TODO。 |
+| `move` | 用 `id` 和目标 `round` 移动一个计划阶段，可在活动、计划轮次之间双向移动。同轮移动、活动或终态阶段、已关闭或已放弃的轮次均拒绝。保留 ID、文件名和 ADR 关联，迁移阶段文件，重建两个轮次的阶段表和根状态块。若自身依赖，或其他未放弃阶段的 `depends_on`、`follows` 因移动而指向较晚轮次，则拒绝并列出冲突 ID；应先移动后续阶段或修改依赖。只有留在计划轮次文档中会变得无效的未关闭 TODO 才迁移：旧条目标记为 `moved` 并引用目标文档中的新 ID，新条目保留目标，以 `carried_from` 记录旧 ID 和轮次。成功后清除调用会话对该阶段的绑定。 |
 | `renumber` | 用 `new_id` 为计划阶段重新编号，并改写可变的引用，包括通过 adr 插件改写 ADR 的阶段关联。如果已关闭的历史中有需要修改的引用，则拒绝。 |
 
 是否提交按 `HEAD` 中解析出的阶段条目判断，对相同标题和正文采用多重集匹配，重复条目按数量计算。仓库尚无提交，或文件在 `HEAD` 中不存在时，所有条目均视为未提交。其他位置的修改不会解锁已提交条目；此时会拒绝并提示追加新条目。索引越界时不写入。每次成功修改都执行与追加相同的验证和索引重新生成，并列出需要提交的文件；不引入缓冲或自动提交。
@@ -143,7 +144,7 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 | 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。不带参数的 `/roadmap` 输出状态和用法。预览只返回令牌，不写入任何内容；用 `/roadmap confirm <token>` 确认。重叠问题用 `/roadmap overlap` 回答，关闭轮次用 `/roadmap close-round` 的参数回答，包括目标结果。 |
 | Tern | 控制台和写入预览以原生面板打开。点击标签切换分区，点击一行选中，双击执行与 Enter 相同的操作。面板下方的按钮执行与按键相同的操作（Shift+O 对应 Order 按钮），按键仍然可用。roadmap 工具调用显示为原生卡片：状态以表格显示，检查诊断按严重度分组，阶段只显示要点（轮次、日程、完成标准、未关闭的 TODO 和引用的 ADR，给出数量和编号），不再展示整份规划交接。展开卡片后，模型收到的原文放在默认折叠、已格式化的 “Model text” 区块里。命令消息只显示结果摘要，完整文本仍通过隐藏消息发给模型。roadmap 消息带有可读的标题，比如 “Roadmap check”。 |
 
-暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。暂存的预览只保存在内存里，进程退出后就会丢失。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO，在格式 2 中还要求提供 `outcome=<assessment>:<summary>`。进入格式 1 的会话时显示一条提到 `/roadmap upgrade` 的通知；`roadmap_upgrade` 会拒绝。通知和错误会显示为会话消息。
+暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。暂存的预览只保存在内存里，进程退出后就会丢失。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO，在格式 2 中还要求提供 `outcome=<assessment>:<summary>`。自动升级格式 2 在无 UI 时也会运行；`roadmap_upgrade` 需要对话框，否则会提示 `/roadmap upgrade`。通知和错误会显示为会话消息。
 
 ### 控制台细节
 
@@ -154,11 +155,13 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 - 没有 adr 插件时，`/roadmap`、`/init-project` 和所有 `roadmap_*` 工具都会拒绝并给出安装提示，而对 `docs/roadmap/` 的编辑仍被阻止。插件附带 `roadmap` 技能。
 - Plan Mode 下代理不能提交，所以在那里启动阶段只会绑定会话并返回交接内容；阶段保持 planned，文件不变。计划批准、开始实现时，阶段才真正启动并提交其文件。配合 omo-prometheus 时，Atlas 会在派发任何任务之前完成这一步，完成之前拒绝派发（见 [Prometheus 契约](#prometheus-契约) 中的 `activation`）；对于在 Plan Mode 之外启动但无人提交的阶段，它也会补上提交。
 
-## 格式 2 升级询问
+## 自动升级格式 2
 
-在已初始化的格式 1 仓库中，主会话每次进入会话（`session_start` 和 `session_switch`；分支和树导航时不问，子代理中也从不问）都会询问一次是否升级。对话框会说明 roadmap 0.2.3 及更早版本将无法读取升级后的仓库，且已关闭的历史不会被改写。选“是”立即写入升级；选“否”关闭对话框，在下次进入会话之前不做任何改变。对话框在宿主的会话启动处理程序返回之后才打开，因此对话框打开期间会话照常可用；关闭会话或进入另一个会话时它会被取消。已是格式 2 或路线图无法读取的仓库不会被询问。
+每次进入会话（`session_start` 和 `session_switch`）时，如果已初始化的格式 1 仓库的索引能正常解析，且 `docs/roadmap/` 下没有暂存、未暂存或未跟踪的改动，主会话就会自动升级。升级在宿主的会话启动处理程序返回后运行，不会在分支或树导航时运行，也不会在子代理中运行。仓库必须已有 HEAD 提交，且路线图 README 已被跟踪；无需 adr 插件。不满足条件时，插件不写入、不通知，下次进入会话时再试。
 
-升级只修改根标记（`docs/roadmap/README.md`）。现有文件保持格式 1，直到某次写入需要格式 2 的字段；从不使用格式 2 功能的格式 1 仓库会逐字节保持格式 1。除了进入会话时的对话框，`/roadmap upgrade`、第一次 `/roadmap plan-round` 的预览、关闭轮次的对话框和 `roadmap_upgrade` 也会提供升级；只有在对话框里选“是”或确认 `/roadmap upgrade` 预览后才会写入。
+升级只修改 `docs/roadmap/README.md`，并用 `chore(roadmap): upgrade roadmap to format 2` 提交该文件。按路径提交保证其他已暂存的改动不会混入提交，且仍留在暂存区。用户的 Git hook 会照常运行，提交最多等待 30 秒。提交失败时，README 会恢复为原始字节，并简短提示可以运行 `/roadmap upgrade`。成功后会显示短提交 SHA，并刷新路线图状态。
+
+现有文件保持格式 1，直到某次写入需要格式 2 的字段；已关闭的历史不会被改写。自动升级跳过时，可运行 `/roadmap upgrade`。第一次 `/roadmap plan-round` 的预览、关闭轮次的对话框和 `roadmap_upgrade` 也仍提供手动升级选项。这些路径仍需确认，不会自动提交升级。
 
 ## 状态快照
 
@@ -195,7 +198,7 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 
 ## 目录格式
 
-以下是 `src/documents.ts` 中 `HOW_THIS_DIRECTORY_WORKS_V2` 的原文。`/init-project` 会把它写入项目的 `docs/roadmap/README.md`，该文件同时是初始化标记和自动生成的索引；确认升级到格式 2 时，它会替换更早版本写入的格式 1 版本。
+以下是 `src/documents.ts` 中 `HOW_THIS_DIRECTORY_WORKS_V2` 的原文。`/init-project` 会把它写入项目的 `docs/roadmap/README.md`，该文件同时是初始化标记和自动生成的索引；升级到格式 2 时，它会替换更早版本写入的格式 1 版本。
 
 > This directory records structured build rounds, their stages and carry-over TODOs. ADRs in docs/adr/ record decisions and outlive rounds. Plans describe implementation steps and do not live here.
 >

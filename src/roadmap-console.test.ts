@@ -279,7 +279,7 @@ test("console secondary actions answer only where they apply and explain otherwi
   planned.type("X");
   expect(planned.screen()).toMatch(/Select an active stage in Stages to close it/);
   planned.type("E");
-  expect(planned.screen()).toMatch(/Select a planned round in Rounds to revise it/);
+  expect(planned.screen()).toMatch(/Select an active or planned round in Rounds to revise it/);
   planned.type("D");
   expect(planned.screen()).toMatch(/Select a planned round in Rounds to drop it/);
   planned.type("U");
@@ -310,6 +310,13 @@ test("console secondary actions answer only where they apply and explain otherwi
   roundTarget.type(KEY.tab, "T");
   expect(roundTarget.choices.map((choice) => [choice?.action, choice?.round])).toEqual([["retarget", "R2"]]);
 
+  const activeRoundRevision = mount();
+  activeRoundRevision.type(KEY.tab);
+  expect(activeRoundRevision.screen(160)).toMatch(/⇧E revise R2/);
+  activeRoundRevision.type("E");
+  expect(activeRoundRevision.choices).toEqual([
+    { action: "plan-round", round: "R2", view: { section: "rounds", query: "", selected: "R2" } },
+  ]);
   // Revise and drop act on the planned round selected in Rounds.
   for (const [key, action] of [
     ["E", "plan-round"],

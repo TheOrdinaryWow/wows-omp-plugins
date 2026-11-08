@@ -95,11 +95,12 @@ export interface StageOperationInput extends Partial<StageInput> {
     | "start"
     | "close"
     | "drop"
+    | "move"
     | "renumber";
   /** Zero-based entry index in this stage's amendment or free-work log. */
   index?: number;
   intent?: string;
-  /** add only: the active round (default) or a planned round. */
+  /** add: active round by default; move: required destination active or planned round. */
   round?: string;
   /** YYYY-MM-DD, or none to clear on edit and amend. */
   target?: string;
@@ -158,7 +159,7 @@ export interface RoundOpenInput {
 }
 
 export interface RoundPlanInput {
-  /** A planned round whose charter this revises; omitted drafts a new planned round. */
+  /** An active or planned round whose charter this revises; omitted drafts a new planned round. */
   id?: string;
   round: RoundInput;
   /** YYYY-MM-DD, or none to clear on revision. */
@@ -234,7 +235,7 @@ const preparedModels = new WeakMap<PreparedOperation, Model>();
 const BODY_REPAIR_HINT =
   "Use plain paragraphs or flat lists with plain-text items. Keep inline code on one line; put literal Markdown or HTML inside a fully closed top-level fenced code block. Use spaces, not tabs, outside fences; single-line fields accept only plain text and same-line code spans.";
 const UPGRADE_HINT = "Ask the user to run /roadmap upgrade; agents never change the repository format.";
-export const FORMAT_WARNING = "This upgrades the repository to roadmap format 2: roadmap plugin 0.2.3 and earlier can no longer read it.";
+export const FORMAT_WARNING = "This upgrades the repository to roadmap format 2.";
 
 function adrService(repo: Repo): AdrApi {
   if (!repo.adr) throw new Refusal("Roadmap needs the adr plugin, which is not loaded in this session.", [ADR_INSTALL_HINT]);
@@ -1113,13 +1114,76 @@ async function renumberStage(repo: Repo, actor: Actor, mutation: Mutation, stage
   mutation.remove(oldPath);
 }
 
+async function relocateTodo(repo: Repo, mutation: Mutation, previous: TodoDoc, source: TodoItem, destination: RoundDoc): Promise<TodoItem> {
+  const n = await allocate(repo, "todo", highest(mutation.model, "todo"));
+  const item: TodoItem = {
+    ...source,
+    id: `T${String(n).padStart(3, "0")}`,
+    status: "open",
+    carried_from: `${source.id} (${previous.round})`,
+  };
+  delete item.reference;
+  source.status = "moved";
+  source.reference = `${item.id} (${destination.id})`;
+  const doc = roundTodo(mutation.model, destination);
+  doc.items.push(item);
+  return item;
+}
+
+async function moveStage(repo: Repo, mutation: Mutation, current: StageDoc, round: string | undefined): Promise<string> {
+  if (current.status !== "planned") throw new Refusal("Only a planned stage can be moved.");
+  const model = mutation.model;
+  const destination = findRound(model, round);
+  if (destination.status !== "active" && destination.status !== "planned")
+    throw new Refusal(`Stages can move only to the active round or a planned round; ${destination.id} is ${destination.status}.`);
+  if (destination.id === current.round) throw new Refusal(`${current.id} already belongs to ${destination.id}.`);
+  const dependencies = [...current.depends_on, ...(current.follows ? [current.follows] : [])].filter(
+    (id) => numberOf(findStage(model, id).round) > numberOf(destination.id),
+  );
+  const dependents = model.stages.filter(
+    (other) =>
+      other.status !== "dropped" &&
+      other.id !== current.id &&
+      numberOf(other.round) < numberOf(destination.id) &&
+      (other.depends_on.includes(current.id) || other.follows === current.id),
+  );
+  if (dependencies.length || dependents.length)
+    throw new Refusal(
+      `Moving ${current.id} to ${destination.id} conflicts with stage dependencies: ${[...new Set([...dependencies, ...dependents.map((other) => other.id)])].join(", ")}.`,
+      ["Move dependents first or edit their dependencies; the moved stage cannot depend on or follow a stage in a later round."],
+    );
+  const previousRound = current.round;
+  const previousPath = current.path;
+  current.round = destination.id;
+  current.path = join(dirname(destination.path), "stages", basename(previousPath));
+  promote(model, current);
+  mutation.remove(previousPath);
+  mutation.put(current.path, renderStage(current));
+  const relocated: string[] = [];
+  for (const doc of model.todos) {
+    if (findRound(model, doc.round).status !== "planned" || doc.round === destination.id) continue;
+    const pending = doc.items.filter((item) => item.status === "open" && item.target === current.id);
+    for (const item of pending) {
+      const moved = await relocateTodo(repo, mutation, doc, item, destination);
+      relocated.push(`${item.id} → ${moved.id}`);
+    }
+    if (pending.length) mutation.put(doc.path, renderTodo(doc));
+  }
+  if (relocated.length) {
+    const doc = roundTodo(model, destination);
+    mutation.put(doc.path, renderTodo(doc));
+  }
+  return `Moved ${current.id} — ${current.title} from ${previousRound} to ${destination.id}.${relocated.length ? ` Relocated TODOs: ${relocated.join(", ")}.` : ""}`;
+}
+
 export async function stage(repo: Repo, actor: Actor, input: StageOperationInput, options: StageOptions = {}): Promise<Receipt> {
   return mutate(
     repo,
     actor,
     async (mutation) => {
       const model = mutation.model;
-      if (input.round !== undefined && input.action !== "add") throw new Refusal("round applies only when adding a stage.");
+      if (input.round !== undefined && input.action !== "add" && input.action !== "move")
+        throw new Refusal("round applies only when adding or moving a stage.");
       if (input.action === "add") {
         const created = await newStage(repo, model, input);
         mutation.put(created.path, renderStage(created));
@@ -1128,6 +1192,7 @@ export async function stage(repo: Repo, actor: Actor, input: StageOperationInput
       const current = editableStage(model, input.id);
       if (input.target !== undefined && input.action !== "edit" && input.action !== "amend" && input.action !== "revise_amendment")
         throw new Refusal("target applies only to add, edit, amend and revise_amendment; use /roadmap retarget otherwise.");
+      if (input.action === "move") return moveStage(repo, mutation, current, input.round);
       if (input.action === "start") {
         const active = activeRound(model);
         if (current.round !== active.id)
@@ -1263,14 +1328,8 @@ export async function todo(repo: Repo, actor: Actor, input: TodoOperationInput, 
             const destination = nextTarget.target ? findRound(model, findStage(model, nextTarget.target).round) : undefined;
             if (findRound(model, doc.round).status === "planned" && destination && destination.id !== doc.round) {
               const previous = doc;
-              const source = item;
-              const n = await allocate(repo, "todo", highest(model, "todo"));
-              item = { ...source, id: `T${String(n).padStart(3, "0")}`, status: "open", carried_from: `${source.id} (${previous.round})` };
-              delete item.reference;
-              source.status = "moved";
-              source.reference = `${item.id} (${destination.id})`;
+              item = await relocateTodo(repo, mutation, previous, item, destination);
               doc = roundTodo(model, destination);
-              doc.items.push(item);
               mutation.put(previous.path, renderTodo(previous));
             }
             delete item.target;
@@ -1545,20 +1604,24 @@ export async function prepareUpgrade(repo: Repo, actor: Actor): Promise<Preparat
 export async function prepareRoundPlan(repo: Repo, actor: Actor, input: RoundPlanInput): Promise<PreparationReceipt> {
   return prepare(repo, actor, false, async (mutation) => {
     const model = mutation.model;
-    const upgrading = model.index.format === 1;
+    const existing = input.id ? findRound(model, input.id) : undefined;
+    if (existing && existing.status !== "planned" && existing.status !== "active")
+      throw new Refusal(`Only an active or planned round's charter can be revised; ${existing.id} is ${existing.status}.`);
+    const upgrading =
+      model.index.format === 1 && (!existing || existing.status === "planned" || (input.target !== undefined && input.target !== "none"));
     if (upgrading) upgradeRoadmapIndex(model.index);
     let round: RoundDoc;
-    if (input.id) {
-      round = findRound(model, input.id);
-      if (round.status !== "planned") throw new Refusal(`Only a planned round's charter can be revised; ${round.id} is ${round.status}.`);
+    if (existing) {
+      round = existing;
       Object.assign(round, charter(model, input.round));
       if (input.target !== undefined) round.target = targetDate(input.target);
+      promote(model, round);
     } else {
       round = await newRound(repo, model, input.round, "planned", input.target === undefined ? null : targetDate(input.target));
       const doc = roundTodo(model, round);
       mutation.put(doc.path, renderTodo(doc));
     }
-    return `${upgrading ? `${FORMAT_WARNING}\n` : ""}${input.id ? "Revised planned" : "Planned"} ${round.id} — ${round.title}${round.target ? `; target ${round.target}` : ""}.`;
+    return `${upgrading ? `${FORMAT_WARNING}\n` : ""}${input.id ? `Revised ${round.status}` : "Planned"} ${round.id} — ${round.title}${round.target ? `; target ${round.target}` : ""}.`;
   });
 }
 

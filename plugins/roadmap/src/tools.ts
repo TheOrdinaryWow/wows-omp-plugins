@@ -613,7 +613,7 @@ export function registerTools(
     title: z.string().optional(),
     objective: z.string().optional(),
     scope_in: z.array(z.string()).optional(),
-    round: z.string().optional(),
+    round: z.string().optional().describe("Destination round: optional for add, required for move; active or planned rounds only."),
     target: z.string().optional(),
     scope_out: z.array(z.string()).optional(),
     done_criteria: z.array(criterion).optional(),
@@ -628,6 +628,7 @@ export function registerTools(
       "start",
       "close",
       "drop",
+      "move",
       "renumber",
     ]),
     index: z
@@ -744,7 +745,7 @@ export function registerTools(
     ...roadmapToolCard("roadmap_stage"),
     label: "Roadmap stage",
     description:
-      "Manage stage lifecycle and uncommitted entries. amend reports its zero-based amendment index. revise_amendment/delete_amendment take id/index and only edit the latest uncommitted amendment with reversible effects; revision takes reason/amendments/target. revise_free_work/delete_free_work take id/index; revision takes intent. Entries identical to HEAD remain append-only. Start or join returns the planning handoff and binds this session; in plan mode start binds a planned stage without writing, and it starts when start is called again outside plan mode. Close requires passing evidence for every done criterion and TODO dispositions, refuses while ADRs linked to the stage are proposed, and records still-unfinished linked Atlas plans under the Outcome's Deviations.",
+      "Manage stage lifecycle and uncommitted entries. move takes id and round, keeping a planned stage's id while relocating it between active/planned rounds; it refuses dependency-order conflicts and relocates open TODOs whose placement would become invalid. amend reports its zero-based amendment index. revise_amendment/delete_amendment take id/index and only edit the latest uncommitted amendment with reversible effects; revision takes reason/amendments/target. revise_free_work/delete_free_work take id/index; revision takes intent. Entries identical to HEAD remain append-only. Start or join returns the planning handoff and binds this session; in plan mode start binds a planned stage without writing, and it starts when start is called again outside plan mode. Close requires passing evidence for every done criterion and TODO dispositions, refuses while ADRs linked to the stage are proposed, and records still-unfinished linked Atlas plans under the Outcome's Deviations.",
     parameters: stageParameters,
     approval: "write",
     async execute(_id, params: typeof stageParameters.infer, signal, _onUpdate, ctx) {
@@ -762,7 +763,8 @@ export function registerTools(
             onSuccess() {
               if (!params.id || !ses.isCurrent(ctx, generation)) return;
               if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
-              if (params.action === "close" || params.action === "drop") ses.clearStage(ctx, repo.repoRoot, params.id);
+              if (params.action === "close" || params.action === "drop" || params.action === "move")
+                ses.clearStage(ctx, repo.repoRoot, params.id);
             },
           }),
         false,
@@ -898,7 +900,7 @@ export function registerTools(
     ...roadmapToolCard("roadmap_round_plan"),
     label: "Plan Roadmap round",
     description:
-      "Draft or revise a planned round charter and optional target after a user-confirmed preview. Only available to the main session armed by /roadmap plan-round. The first planned round upgrades format 1 with a warning in the same preview.",
+      "Draft a planned round or revise an active/planned round charter and optional target after a user-confirmed preview. Only available to the main session armed by /roadmap plan-round. Creating a planned round or supplying a target date upgrades format 1 in the same write; revising an active charter alone preserves its format and directory path.",
     parameters: planParameters,
     approval: "write",
     async execute(_id, params: typeof planParameters.infer, signal, _onUpdate, ctx) {
@@ -914,7 +916,7 @@ export function registerTools(
         if (confirmed !== true || signal?.aborted)
           return {
             ok: false,
-            reason: confirmed === false ? "Planned round preview declined." : "Planned round: no answer available or cancelled.",
+            reason: confirmed === false ? "Round charter preview declined." : "Round charter: no answer available or cancelled.",
             hints: [],
           };
         return applyPreview(ses, ctx, "plan", repo, owner, generation, prepared.prepared, signal);
@@ -927,7 +929,7 @@ export function registerTools(
     ...roadmapToolCard("roadmap_upgrade"),
     label: "Roadmap upgrade",
     description:
-      "Ask the user, in the same one-step dialog shown at session start, whether to upgrade this format-1 repository to roadmap format 2; writes the upgrade only on Yes. Main session only. Without a dialog it refuses: ask the user to run /roadmap upgrade.",
+      "Ask the user, in a one-step Yes/No dialog, whether to upgrade this format-1 repository to roadmap format 2; writes the upgrade only on Yes and does not commit it. Main session only. Without a dialog it refuses: ask the user to run /roadmap upgrade.",
     parameters: upgradeParameters,
     approval: "write",
     async execute(_id, _params: typeof upgradeParameters.infer, signal, _onUpdate, ctx) {

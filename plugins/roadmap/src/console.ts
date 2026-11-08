@@ -78,7 +78,7 @@ export interface ConsoleState {
 /** What the console asks the command to do: the status menu's actions plus the typed planning actions it offers by key. */
 export type ConsoleAction = "check" | "close" | "close-round" | "new-round" | "plan-round" | "drop-round" | "retarget" | "upgrade";
 
-/** `stage` names the stage to close or retarget; `round` the planned round to revise or drop, or the round to retarget. */
+/** `stage` names the stage to close or retarget; `round` the round to revise, drop or retarget. */
 export interface ConsoleChoice {
   action: ConsoleAction;
   stage?: string;
@@ -781,11 +781,15 @@ export class RoadmapConsole extends SplitPane {
     else this.#choose({ action: "new-round" });
   }
 
-  /** Revising or dropping acts on the planned round selected in Rounds. */
   #onPlannedRound(action: "plan-round" | "drop-round", verb: string): void {
     const entry = this.#current();
-    if (entry?.kind === "round" && entry.round.status === "planned") this.#choose({ action, round: entry.id });
-    else this.message = { text: `Select a planned round in Rounds to ${verb} it`, level: "info" };
+    if (entry?.kind === "round" && (entry.round.status === "planned" || (action === "plan-round" && entry.round.status === "active")))
+      this.#choose({ action, round: entry.id });
+    else
+      this.message = {
+        text: `Select ${action === "plan-round" ? "an active or planned" : "a planned"} round in Rounds to ${verb} it`,
+        level: "info",
+      };
   }
 
   /** The unclosed stage or round whose target date can change; format 1 has no target dates. */
@@ -969,18 +973,16 @@ export class RoadmapConsole extends SplitPane {
     const entry = this.#current();
     const round = this.#active;
     const planned = entry?.kind === "round" && entry.round.status === "planned" ? entry.id : undefined;
+    const revisable =
+      entry?.kind === "round" && (entry.round.status === "active" || entry.round.status === "planned") ? entry.id : undefined;
     const enter = entry?.kind === "todo" ? "go to target" : entry?.kind === "stage" ? "its round" : "its stages";
     return [
       ...(entry ? [{ act: "primary", key: "enter", label: enter } as const] : []),
       ...(entry?.kind === "stage" && entry.stage.status === "active"
         ? [{ act: "close-stage", key: "shift+x", label: "close stage" } as const]
         : []),
-      ...(planned
-        ? [
-            { act: "revise", key: "shift+e", label: `revise ${planned}` } as const,
-            { act: "drop", key: "shift+d", label: `drop ${planned}`, tone: "error" } as const,
-          ]
-        : []),
+      ...(revisable ? [{ act: "revise", key: "shift+e", label: `revise ${revisable}` } as const] : []),
+      ...(planned ? [{ act: "drop", key: "shift+d", label: `drop ${planned}`, tone: "error" } as const] : []),
       ...(this.#retargetable() ? [{ act: "retarget", key: "shift+t", label: "target date" } as const] : []),
       ...(round && this.#roundSettled()
         ? [{ act: "close-round", key: "shift+r", label: `close ${round.id}`, tone: "accent" } as const]

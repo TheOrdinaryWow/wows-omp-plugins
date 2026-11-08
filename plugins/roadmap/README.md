@@ -54,6 +54,8 @@ In Plan Mode, starting a stage only gives the agent the handoff for planning; th
 
 If the scope or the criteria of an active stage need to change, the agent records an amendment with a reason. Work found along the way goes into TODOs, and decisions into ADRs. Until you commit, the agent can still correct or remove its latest amendment.
 
+Before a stage starts, you can ask the agent to move it to another active or planned round. Its ID and linked ADRs stay the same. The plugin refuses moves that put a stage before a dependency or predecessor, and moves any TODOs that would otherwise be left in the wrong round. Active stages cannot move, and closed or dropped rounds cannot send or receive stages.
+
 A stage closes only when:
 
 - every current criterion has passing evidence, with the method actually used and a summary;
@@ -74,7 +76,7 @@ Not everything needs a stage. When the agent notices that a request overlaps an 
 
 ### Plan ahead
 
-`/roadmap plan-round` drafts a future round, whether or not a round is active; `/roadmap plan-round R2` revises one. The agent can then add stages to it. Planned rounds become active in order, and their stages cannot start before that.
+`/roadmap plan-round` drafts a future round, whether or not a round is active. `/roadmap plan-round R2` revises the charter of an active or planned round after you confirm the preview; it replaces the charter without adding a revision log or renaming the directory. Revising an active charter alone keeps format 1; adding a target date needs format 2. The agent can add stages to planned rounds, which become active in order. Their stages cannot start before that.
 
 Rounds and stages can have a target date (`YYYY-MM-DD`). Status views show it next to the actual dates and flag unfinished work past its target. Targets never block anything.
 
@@ -82,9 +84,11 @@ Rounds and stages can have a target date (`YYYY-MM-DD`). Status views show it ne
 
 ### Older repositories
 
-Planned rounds, target dates and round outcomes need the newer repository format (format 2). `/init-project` creates format 2. Repositories set up by roadmap 0.2.3 or earlier are format 1 and keep working as they are. Each time you open a session in one, the plugin asks whether to upgrade; you can also run `/roadmap upgrade` later, or accept the offer in the first `/roadmap plan-round` or round close. After upgrading, **roadmap 0.2.3 and earlier can no longer read the repository**, so make sure every machine working on it runs a newer roadmap first. Closed history is never rewritten.
+Planned rounds, target dates and round outcomes need format 2, which `/init-project` creates. When you enter a session, the plugin automatically upgrades a format-1 repository if `docs/roadmap/` has no uncommitted changes. It changes and commits only `docs/roadmap/README.md`; unrelated staged changes stay staged. If the directory has changes, the plugin leaves it alone. If the commit fails, it restores the README and tells you how to upgrade manually.
 
-### Nothing is written without your confirmation
+You can run `/roadmap upgrade`, or accept the offer in the first `/roadmap plan-round` preview or round close. Closed history is never rewritten.
+
+### Confirming document changes
 
 Setting up the roadmap and every change to rounds (planning, opening, dropping, changing a target date) need a command from you and a preview you confirm. The plugin checks the files again after you confirm and refuses a preview that is out of date. Cancelling writes nothing.
 
@@ -99,7 +103,7 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 | `/roadmap stage <id>` | Show a stage and its handoff without starting it. |
 | `/roadmap check [--fix]` | Check that the documents are consistent; `--fix` rebuilds the generated tables. |
 | `/roadmap upgrade` | Upgrade a repository to format 2. |
-| `/roadmap plan-round [id]` | Draft a planned round, or revise one. |
+| `/roadmap plan-round [id]` | Draft a planned round, or revise an active or planned round's charter. |
 | `/roadmap new-round` | Activate the next planned round, or create one when none is planned. |
 | `/roadmap drop-round <id> <reason>` | Drop a planned round and its stages. |
 | `/roadmap retarget <round-or-stage> <YYYY-MM-DD\|none>` | Set or clear a target date. |
@@ -117,7 +121,7 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 | Shift+R | Close the active round. |
 | Shift+N | Open a new round, or activate the next planned one. |
 | Shift+P | Plan a new round. |
-| Shift+E | Revise the selected planned round. |
+| Shift+E | Revise the selected active or planned round's charter. |
 | Shift+D | Drop the selected planned round. |
 | Shift+T | Change the target date of the selected round or stage. |
 | Shift+U | Upgrade a format-1 repository. |
@@ -127,7 +131,7 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 
 Checks, round closes, drops, target dates and upgrades happen right in the console, which comes back on the same item with a one-line result. Closing a stage and opening or planning a round need the agent, so the console closes and you continue in the chat.
 
-Before anything is written, a preview lists the files on the left and shows the selected one on the right. Space switches between formatted and raw text, Shift+W writes every file, and Esc writes nothing. In [Tern](https://docs.stencil.so/tern/), the console and the previews open as native sheets with buttons for the same actions.
+For changes you make through the console, a preview lists the files on the left and shows the selected one on the right. Space switches between formatted and raw text, Shift+W writes every file, and Esc writes nothing. In [Tern](https://docs.stencil.so/tern/), the console and the previews open as native sheets with buttons for the same actions.
 
 ### What the agent does
 

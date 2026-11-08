@@ -172,10 +172,11 @@ interface Harness {
   setUi: (factory?: UiFactory) => void;
 }
 
-async function git(root: string, args: string[]): Promise<void> {
+async function git(root: string, args: string[]): Promise<string> {
   const child = Bun.spawn(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   assert.equal(code, 0, `${stdout}\n${stderr}`);
+  return stdout;
 }
 
 async function createHarness(
@@ -487,9 +488,11 @@ const CASES: Record<string, string> = {
     "the fullscreen console reopens after local actions and previews launched from it with their result, stays open on refusals, Enter posts nothing, hand-offs to the model close it, and the inline setting keeps the status menu",
   preflight: "init command preflight rejects existing directories and non-git roots",
   "init-format-2": "a new repository starts at format 2: entering a session neither asks about nor announces an upgrade",
-  "upgrade-prompt":
-    "entering a format-1 session asks the one-step upgrade question; No keeps format 1, Yes upgrades, branch and tree do not ask",
-  "upgrade-prompt-headless": "without dialogs, entering a format-1 session shows one notice naming /roadmap upgrade and writes nothing",
+  "upgrade-auto": "a clean format-1 session upgrades and commits only the roadmap README, preserving unrelated staged files",
+  "upgrade-auto-headless": "a clean format-1 session upgrades without a dialog in headless mode",
+  "upgrade-auto-no-adr": "a clean format-1 session upgrades without loading the adr plugin",
+  "upgrade-auto-dirty": "untracked, unstaged and staged changes under the roadmap directory silently postpone the upgrade",
+  "upgrade-auto-hook": "a failing pre-commit hook restores the original README bytes and keeps HEAD and unrelated staging unchanged",
   "upgrade-subagent": "subagents are never asked to upgrade and cannot use roadmap_upgrade",
   "upgrade-tool":
     "roadmap_upgrade asks the same question and reports no answer, declined, headless, accepted and already-format-2 outcomes",
@@ -502,8 +505,11 @@ const FORMAT_ONE_CASES: Readonly<Record<string, true>> = {
   "plan-round": true,
   "plan-stale": true,
   "planning-headless": true,
-  "upgrade-prompt": true,
-  "upgrade-prompt-headless": true,
+  "upgrade-auto": true,
+  "upgrade-auto-headless": true,
+  "upgrade-auto-no-adr": true,
+  "upgrade-auto-dirty": true,
+  "upgrade-auto-hook": true,
   "upgrade-subagent": true,
   "upgrade-tool": true,
   "round-outcome-format-1": true,
@@ -512,7 +518,7 @@ const FORMAT_ONE_CASES: Readonly<Record<string, true>> = {
 async function acceptance(name: string, root: string): Promise<void> {
   const h = await createHarness(root, {
     sub: name === "subagent" || name === "subagent-planning" || name === "upgrade-subagent",
-    adr: name !== "adr-absent",
+    adr: name !== "adr-absent" && name !== "upgrade-auto-no-adr",
     lsp: name === "interception-lsp-rename",
     editMode:
       EDIT_MODES.find((mode) => name === `interception-mode-${mode}`) ??
@@ -2480,11 +2486,14 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.deepEqual((await loadAll(repo)).files, before, "a declined upgrade preview writes nothing");
         assert.equal((await loadAll(repo)).index.format, 1);
         await command(h, "roadmap", "plan-round R1");
-        assert.equal(h.ui.notifications.at(-1)?.level, "error", "only planned rounds can be revised");
-        assert.equal(h.kickoffs.length, 0);
-        await command(h, "roadmap", "plan-round");
         assert.equal(h.kickoffs.length, 1);
-        assert.match(h.kickoffs[0] ?? "", /roadmap_round_plan/);
+        assert.match(h.kickoffs[0] ?? "", /revise active round R1/);
+        const declinedActive = await call(h, "roadmap_round_plan", { id: "R1", round: growth });
+        assert(!declinedActive.ok);
+        assert.deepEqual((await loadAll(repo)).files, before, "declining active charter revision writes nothing");
+        await command(h, "roadmap", "plan-round");
+        assert.equal(h.kickoffs.length, 2);
+        assert.match(h.kickoffs.at(-1) ?? "", /roadmap_round_plan/);
         const input = { round: growth, target: "2027-03-01" };
         assert.equal(
           await h.runner.emitToolCall({ type: "tool_call", toolName: "roadmap_round_plan", toolCallId: "armed-plan", input }),
@@ -2498,7 +2507,6 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert(planned.ok, JSON.stringify(planned));
         const preview = h.ui.previewCalls.at(-1);
         assert(preview);
-        assert.match(preview.title, /0\.2\.3/, "the first planned round warns that older plugins cannot read format 2");
         assert(preview.files.some((file) => file.path === join(repo.roadmapDir, "README.md")));
         assert.deepEqual([...planned.changedFiles].sort(), preview.files.map((file) => relative(root, file.path)).sort());
         for (const file of preview.files) assert.equal(await readFile(file.path, "utf8"), file.content);
@@ -2545,11 +2553,25 @@ async function acceptance(name: string, root: string): Promise<void> {
             ?.getArgumentCompletions?.(prefix)
             ?.map((option) => option.value);
         assert.deepEqual(complete("p"), ["plan-round", "plan-round "]);
-        assert.deepEqual(complete("plan-round "), [`plan-round ${plannedId}`]);
+        assert.deepEqual(complete("plan-round "), ["plan-round R1", `plan-round ${plannedId}`]);
         assert.deepEqual(complete("drop-round "), [`drop-round ${plannedId} `]);
         assert.deepEqual(complete("retarget R"), ["retarget R1 ", `retarget ${plannedId} `]);
         assert.deepEqual(complete("retarget S"), ["retarget S01 "]);
         assert.deepEqual(complete(`retarget ${plannedId} `), [`retarget ${plannedId} none`]);
+        await command(h, "roadmap", "plan-round R1");
+        const activeRevised = await call(h, "roadmap_round_plan", { id: "R1", round: { ...growth, title: "Active charter revised" } });
+        assert(activeRevised.ok, JSON.stringify(activeRevised));
+        const activeRound = (await loadAll(repo)).rounds.find((round) => round.id === "R1");
+        assert.deepEqual([activeRound?.status, activeRound?.path, activeRound?.title], ["active", r1Path, "Active charter revised"]);
+        h.session.sessionManager.appendModeChange("plan");
+        assert((await call(h, "roadmap_stage", { action: "start", id: "S01" })).ok);
+        assert.match(await injection(h), /Bound stage: S01, still planned/);
+        h.session.sessionManager.appendModeChange("none");
+        const moved = await call(h, "roadmap_stage", { action: "move", id: "S01", round: plannedId });
+        assert(moved.ok, JSON.stringify(moved));
+        assert(!(await injection(h)).includes("Bound stage:"));
+        assert.equal((await loadAll(repo)).stages.find((stage) => stage.id === "S01")?.round, plannedId);
+        assert((await call(h, "roadmap_check", {})).ok);
       } else if (name === "plan-stale") {
         await command(h, "roadmap", "plan-round");
         const before = (await loadAll(repo)).files;
@@ -2598,7 +2620,6 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.deepEqual((await loadAll(repo)).files, before);
 
         await command(h, "roadmap", "upgrade");
-        assert.match(last(), /0\.2\.3/);
         const upgrade = tokenIn(last());
         assert(upgrade, last());
         assert.deepEqual((await loadAll(repo)).files, before, "a pending upgrade writes nothing");
@@ -2819,53 +2840,96 @@ async function acceptance(name: string, root: string): Promise<void> {
         await scheduler.wait(300);
         assert.deepEqual([h.ui.upgradeCalls, h.messages.length], [[], shown], "a new repository is neither asked nor told to upgrade");
         assert.deepEqual((await loadAll(repo)).files, model.files);
-      } else if (name === "upgrade-prompt") {
+      } else if (name.startsWith("upgrade-auto")) {
+        await git(root, ["config", "user.name", "SDK"]);
+        await git(root, ["config", "user.email", "sdk@example.invalid"]);
+        await git(root, ["config", "commit.gpgsign", "false"]);
         const before = (await loadAll(repo)).files;
+        const original = await readFile(join(repo.roadmapDir, "README.md"));
         await h.runner.emit({ type: "session_start" });
-        await until(() => h.ui.upgradeCalls.length === 1, "session start asks");
-        assert.deepEqual(h.ui.upgradeCalls, ["upgrade"]);
+        await scheduler.wait(300);
+        assert.deepEqual((await loadAll(repo)).files, before, "an unborn HEAD and untracked README are not upgraded");
+        await git(root, ["add", "docs"]);
+        await git(root, ["commit", "-qm", "fixture"]);
+        const head = await git(root, ["rev-parse", "HEAD"]);
+        await writeFile(join(root, "unrelated.txt"), "User's staged work\n");
+        await git(root, ["add", "unrelated.txt"]);
+        if (name === "upgrade-auto-headless") h.setUi();
+        const shown = h.messages.length;
+        if (name === "upgrade-auto-dirty") {
+          const untracked = join(repo.roadmapDir, "notes.txt");
+          await writeFile(untracked, "User's roadmap notes\n");
+          for (const mode of ["untracked", "staged", "unstaged"]) {
+            if (mode === "staged") await git(root, ["add", "docs/roadmap/notes.txt"]);
+            if (mode === "unstaged") {
+              await rm(untracked);
+              await git(root, ["reset", "--", "docs/roadmap/notes.txt"]);
+              await writeFile(join(repo.roadmapDir, "README.md"), Buffer.concat([original, Buffer.from("\nUser note.\n")]));
+            }
+            const dirty = (await loadAll(repo)).files;
+            const status = await git(root, ["status", "--porcelain=v1"]);
+            await h.runner.emit({ type: "session_start" });
+            await scheduler.wait(300);
+            assert.deepEqual((await loadAll(repo)).files, dirty, mode);
+            assert.equal(await git(root, ["status", "--porcelain=v1"]), status, mode);
+            assert.equal(await git(root, ["rev-parse", "HEAD"]), head, mode);
+          }
+          assert.equal(h.messages.length, shown);
+          assert.deepEqual(h.ui.notifications, []);
+          assert.deepEqual(h.ui.upgradeCalls, []);
+          await writeFile(join(repo.roadmapDir, "README.md"), original);
+        } else if (name === "upgrade-auto-hook") {
+          await writeFile(join(root, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+          const status = await git(root, ["status", "--porcelain=v1"]);
+          await h.runner.emit({ type: "session_start" });
+          await until(() => h.ui.notifications.some((notice) => notice.level === "warning"), "the commit failure is reported");
+          assert.deepEqual(await readFile(join(repo.roadmapDir, "README.md")), original);
+          assert.equal(await git(root, ["rev-parse", "HEAD"]), head);
+          assert.equal(await git(root, ["status", "--porcelain=v1"]), status);
+          assert.match(h.ui.notifications.at(-1)?.message ?? "", /\/roadmap upgrade/);
+          assert.equal(h.messages.length, shown);
+          await rm(join(root, ".git/hooks/pre-commit"));
+        }
         const leaf = h.session.sessionManager.getLeafId();
         await h.runner.emit({ type: "session_branch", reason: "fork", previousSessionFile: undefined });
         await h.runner.emit({ type: "session_tree", oldLeafId: leaf, newLeafId: leaf });
         await scheduler.wait(300);
-        assert.equal(h.ui.upgradeCalls.length, 1, "branch and tree changes do not ask");
-        assert.deepEqual((await loadAll(repo)).files, before, "No keeps format 1");
-        h.ui.upgrade = true;
-        const shown = h.messages.length;
-        await h.runner.emit({ type: "session_switch", reason: "resume", previousSessionFile: undefined });
-        await until(async () => (await loadAll(repo)).index.format === 2, "Yes writes the upgrade");
-        await until(() => h.messages.length > shown, "the upgrade receipt is shown");
-        assert.deepEqual(h.ui.upgradeCalls, ["upgrade", "upgrade"]);
-        assert.match(h.messages.at(-1) ?? "", /docs\/roadmap\/README\.md/);
-        const upgraded = await loadAll(repo);
-        assert.deepEqual(
-          [...upgraded.rounds, ...upgraded.stages].map((doc) => doc.format),
-          [1, 1],
-          "only the repository marker changes",
+        assert.equal(await git(root, ["rev-parse", "HEAD"]), head, "branch and tree events do not upgrade");
+        await h.runner.emit(
+          name === "upgrade-auto"
+            ? { type: "session_start" }
+            : { type: "session_switch", reason: "resume", previousSessionFile: undefined },
         );
-        assert((await call(h, "roadmap_check", {})).ok);
-        await h.runner.emit({ type: "session_start" });
-        await scheduler.wait(300);
-        assert.equal(h.ui.upgradeCalls.length, 2, "a format-2 repository is not asked");
-      } else if (name === "upgrade-prompt-headless") {
-        h.setUi();
-        const before = (await loadAll(repo)).files;
-        const shown = h.messages.length;
-        await h.runner.emit({ type: "session_start" });
-        await until(() => h.messages.length > shown, "the notice is shown");
-        await scheduler.wait(300);
-        assert.equal(h.messages.length, shown + 1, "one notice per session entry");
-        assert.match(h.messages.at(-1) ?? "", /\/roadmap upgrade/);
-        assert.deepEqual((await loadAll(repo)).files, before);
+        await until(() => h.messages.length > shown, "a new session entry commits and displays the upgrade");
+        const upgraded = await loadAll(repo);
+        assert.equal(upgraded.index.format, 2);
+        assert.notEqual(await git(root, ["rev-parse", "HEAD"]), head);
+        assert.equal(await git(root, ["log", "-1", "--format=%s"]), "chore(roadmap): upgrade roadmap to format 2\n");
+        assert.equal(await git(root, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]), "docs/roadmap/README.md\n");
+        assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "unrelated.txt\n");
+        assert.match(h.messages.at(-1) ?? "", /format 2 and committed docs\/roadmap\/README\.md \([a-f0-9]+\)/);
+        for (const [path, content] of Object.entries(before ?? {})) {
+          if (path !== upgraded.index.path) assert.deepEqual(upgraded.files?.[path], content, "other managed files keep their bytes");
+        }
         assert.deepEqual(h.ui.upgradeCalls, []);
+        if (name !== "upgrade-auto-headless" && name !== "upgrade-auto-no-adr") assert((await call(h, "roadmap_check", {})).ok);
+        const committed = await git(root, ["rev-parse", "HEAD"]);
+        await h.runner.emit({ type: "session_start" });
+        await scheduler.wait(300);
+        assert.equal(await git(root, ["rev-parse", "HEAD"]), committed, "format 2 is not upgraded again");
+        assert.equal(h.messages.length, shown + 1);
       } else if (name === "upgrade-subagent") {
         const before = (await loadAll(repo)).files;
+        await git(root, ["add", "docs"]);
+        await git(root, ["-c", "user.name=SDK", "-c", "user.email=sdk@example.invalid", "commit", "-qm", "fixture"]);
+        const head = await git(root, ["rev-parse", "HEAD"]);
         h.ui.upgrade = true;
         await h.runner.emit({ type: "session_start" });
         await scheduler.wait(300);
         const refused = await call(h, "roadmap_upgrade", {});
         assert(!refused.ok);
         assert.deepEqual(h.ui.upgradeCalls, []);
+        assert.equal(await git(root, ["rev-parse", "HEAD"]), head);
         assert.deepEqual((await loadAll(repo)).files, before);
       } else if (name === "upgrade-tool") {
         const before = (await loadAll(repo)).files;

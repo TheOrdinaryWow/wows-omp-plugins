@@ -60,7 +60,7 @@ const ACTIONS: readonly Completion[] = [
   { value: "check --fix", description: "Check documents and regenerate eligible generated blocks" },
   { value: "upgrade", description: "Preview upgrading the repository to the current document format" },
   { value: "plan-round", description: "Interview for a new planned round" },
-  { value: "plan-round ", label: "plan-round <id>", description: "Revise a planned round's charter" },
+  { value: "plan-round ", label: "plan-round <id>", description: "Revise an active or planned round's charter" },
   { value: "new-round", description: "Open the next round, activating the lowest planned round if any" },
   { value: "drop-round ", label: "drop-round <id> <reason>", description: "Drop a planned round with a reason" },
   { value: "retarget ", label: "retarget <round-or-stage> <YYYY-MM-DD|none>", description: "Set or clear a round or stage target date" },
@@ -163,6 +163,7 @@ export function registerCommands(
 ): RoadmapCommands {
   let stages: Completion[] = [];
   let plannedRounds: Completion[] = [];
+  let revisableRounds: Completion[] = [];
   let rounds: Completion[] = [];
 
   async function rememberStages(ctx: ExtensionContext, model: Model): Promise<void> {
@@ -175,6 +176,7 @@ export function registerCommands(
   async function refresh(ctx: ExtensionContext): Promise<void> {
     stages = [];
     plannedRounds = [];
+    revisableRounds = [];
     rounds = [];
     const repo = await loadRepo(ctx.cwd);
     if (repo) {
@@ -183,6 +185,9 @@ export function registerCommands(
       const sorted = [...model.rounds].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
       rounds = sorted.map((round) => ({ value: round.id, description: `${round.title} (${round.status})` }));
       plannedRounds = sorted.filter((round) => round.status === "planned").map((round) => ({ value: round.id, description: round.title }));
+      revisableRounds = sorted
+        .filter((round) => round.status === "active" || round.status === "planned")
+        .map((round) => ({ value: round.id, description: `${round.title} (${round.status})` }));
     }
   }
 
@@ -300,13 +305,16 @@ export function registerCommands(
     } else if (action === "plan-round") {
       if (words.length > 2) throw new Error("Usage: /roadmap plan-round [<id>]");
       model = await loadAll(repo);
-      if (selectedStage && !model.rounds.some((round) => round.id === selectedStage && round.status === "planned"))
-        throw new Error(`Only a planned round's charter can be revised: ${selectedStage}.`);
+      if (
+        selectedStage &&
+        !model.rounds.some((round) => round.id === selectedStage && (round.status === "active" || round.status === "planned"))
+      )
+        throw new Error(`Only an active or planned round's charter can be revised: ${selectedStage}.`);
       const errors = (await check(model)).filter((diagnostic) => diagnostic.severity === "error");
       if (errors.length) throw new Error(`Roadmap check failed: ${errors.map((diagnostic) => diagnostic.message).join("; ")}`);
       ses.arm(ctx, repo.repoRoot, "plan");
       pi.sendUserMessage(
-        `Use the roadmap skill to interview me ${selectedStage ? `to revise planned round ${selectedStage}` : "for a future planned round"}: title, goal, constraints, non-goals, principles citing existing ADRs (adr_status lists them; record new decisions with adr_manage first) and an optional target date. Then call roadmap_round_plan with ${selectedStage ? `id=${selectedStage}, ` : ""}round and optional target; show the exact preview and wait for my confirmation. If this is the first format-2 feature, the same preview warns that roadmap plugin 0.2.3 and earlier cannot read the upgraded repository.`,
+        `Use the roadmap skill to interview me ${selectedStage ? `to revise ${model.rounds.find((round) => round.id === selectedStage)?.status} round ${selectedStage}` : "for a future planned round"}: title, goal, constraints, non-goals, principles citing existing ADRs (adr_status lists them; record new decisions with adr_manage first) and an optional target date. Then call roadmap_round_plan with ${selectedStage ? `id=${selectedStage}, ` : ""}round and optional target; replace the charter without a revision log or directory rename. Show the exact preview and wait for my confirmation. Revising an active charter alone preserves format 1; creating a planned round or supplying a target date upgrades it to format 2.`,
       );
       return { handoff: true };
     } else if (action === "stage") {
@@ -557,7 +565,7 @@ export function registerCommands(
       if (verb === "overlap") options = prefixed(`overlap ${id} `, OVERLAP_ANSWERS);
       else if (typed.startsWith("overlap ")) options = prefixed("overlap ", stages, " ");
       else if (typed.startsWith("stage ")) options = prefixed("stage ", stages);
-      else if (typed.startsWith("plan-round ")) options = prefixed("plan-round ", plannedRounds);
+      else if (typed.startsWith("plan-round ")) options = prefixed("plan-round ", revisableRounds);
       else if (typed.startsWith("drop-round ")) options = prefixed("drop-round ", plannedRounds, " ");
       else if (verb === "retarget") options = [{ value: `retarget ${id} none`, description: "Clear the target date" }];
       else if (typed.startsWith("retarget ")) options = prefixed("retarget ", [...rounds, ...stages], " ");
