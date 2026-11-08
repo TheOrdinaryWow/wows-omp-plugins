@@ -10,8 +10,15 @@ import { z } from "zod";
 
 import { runAtlasGit } from "../plugins/omo-prometheus/src/atlas-git.ts";
 import register from "../plugins/omo-prometheus/src/index.ts";
-import { addDeferredFinding, amendAcceptance, createLedger, ledgerRows, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
-import { ledgerCardRow, ledgerProgress } from "../plugins/omo-prometheus/src/tool-cards.ts";
+import {
+  addDeferredFinding,
+  amendAcceptance,
+  createLedger,
+  ledgerRows,
+  renderLedgerSummary,
+  startRow,
+} from "../plugins/omo-prometheus/src/ledger.ts";
+import { ledgerCardRow, ledgerProgress, rowSummary } from "../plugins/omo-prometheus/src/tool-cards.ts";
 
 interface CardTool {
   name: string;
@@ -324,6 +331,35 @@ test("atlas_release and prometheus_activate show their outcome", () => {
   expect(activate.describeCall({}, options())?.tool?.title).toBe("Prometheus Activate");
   const denied = activate.describeResult({ content: [{ type: "text", text: "no consent" }], isError: true, details: {} }, options());
   expect(denied?.tone).toBe("error");
+});
+
+test("a refused atlas_release names the reason and only the unfinished rows; the ledger it sent the model stays folded", () => {
+  const ledger = createLedger("/plans/plan.md", planContent, ["task"]);
+  const [first] = ledgerRows(ledger);
+  if (!first) throw new Error("T1 missing");
+  first.status = "done";
+  const unfinished = ledgerRows(ledger).filter((row) => row.status !== "done");
+  const text = `Release refused: unfinished ledger rows remain (${unfinished.map((row) => `${row.id} ${row.status}`).join(", ")}). Keep delegating.\n\n${renderLedgerSummary(ledger, ["task"])}`;
+  const result = {
+    content: [{ type: "text", text }],
+    isError: true,
+    details: { unfinished: unfinished.map(rowSummary), progress: ledgerProgress(ledger) },
+  };
+  const collapsed = tool("atlas_release").describeResult(result, options());
+  expect(collapsed?.tone).toBe("error");
+  expect(collapsed?.tool?.meta).toEqual([`1/${ledgerRows(ledger).length} done`]);
+  const body = nodes(collapsed?.body);
+  expect(shown(body[0])).toContain("Release refused: unfinished ledger rows remain");
+  expect(shown(body[0])).not.toContain("Keep delegating");
+  const listed = body.filter((node) => node.k === "item").map((node) => node.key);
+  expect(listed).toEqual(unfinished.map((row) => row.id));
+  expect(shown(collapsed)).not.toContain("Plan ledger:");
+
+  const expanded = nodes(tool("atlas_release").describeResult(result, options(true))?.body);
+  const raw = expanded.find((node) => node.key === "model-text");
+  expect(raw?.p).toMatchObject({ collapsible: true, collapsed: true });
+  expect(shown(raw)).toContain("/plans/plan.md");
+  expect(nodes(raw?.c).some((node) => node.k === "table")).toBe(true);
 });
 
 test("displayed messages carry a product title instead of their customType", () => {

@@ -96,7 +96,7 @@ function cardRows(ledger: Partial<ExecutionLedger>): LedgerItem[] {
 }
 
 /** The fields every row list shows. */
-function rowSummary(row: LedgerItem): LedgerCardRow {
+export function rowSummary(row: LedgerItem): LedgerCardRow {
   const verification = verificationStatus(row);
   return {
     id: row.id,
@@ -388,21 +388,69 @@ export const gitCard = {
 
 const RELEASE_TITLE = "Atlas Release";
 
+/** Card fields a refused `atlas_release` adds to its details; absent in results from older versions. */
+export interface ReleaseCardDetails {
+  unfinished?: LedgerCardRow[];
+  findings?: { id: string; title: string }[];
+  progress?: LedgerCardProgress;
+}
+
+/** The refusal's own sentence: the text before the ledger and the instructions that follow it. */
+function refusalReason(result: CardResult): string {
+  const first =
+    resultText(result)
+      .split(/\n\s*\n/)[0]
+      ?.trim() ?? "";
+  return first.replace(/\s*\(.*$/s, "").replace(/\.$/, "") || "Release refused";
+}
+
+function describeReleaseRefusal(result: CardResult, expanded: boolean): NativeToolView {
+  const details = result.details as (StoredDetails & ReleaseCardDetails) | undefined;
+  const unfinished = Array.isArray(details?.unfinished) ? details.unfinished.filter((row) => typeof row?.id === "string") : [];
+  const findings = Array.isArray(details?.findings) ? details.findings.filter((finding) => typeof finding?.id === "string") : [];
+  // Older results recorded only the untriaged ids.
+  const untriaged = findings.length ? findings.length : Array.isArray(details?.untriaged) ? details.untriaged.length : 0;
+  const progress = typeof details?.progress?.done === "number" && typeof details.progress.total === "number" ? details.progress : undefined;
+  const full = resultText(result);
+  const reason = refusalReason(result);
+  return {
+    tool: head(RELEASE_TITLE, "refused", {
+      meta: compact([progress ? `${progress.done}/${progress.total} done` : undefined, untriaged ? `${untriaged} untriaged` : undefined]),
+    }),
+    tone: "error",
+    body: compact<NativeChild>([
+      text([span(reason, "error")], { wrap: "word" }),
+      unfinished.length ? list(unfinished.map(rowItem)) : undefined,
+      findings.length
+        ? list(
+            findings.map((finding) =>
+              item(finding.id, {
+                label: [span(finding.id, "strong"), span(" "), span(finding.title)],
+                detail: [span("needs triage", "warning")],
+              }),
+            ),
+          )
+        : undefined,
+      progress ? progressBar(progress) : undefined,
+      // The text the model reads also carries the whole ledger: folded, for checking what it was told.
+      expanded && full && full !== reason
+        ? node("section", { head: [span("Model text", "muted")], collapsible: true, collapsed: true }, modelTextNodes(full), "model-text")
+        : undefined,
+    ]),
+  };
+}
+
 export const releaseCard = {
   describeCall(args: PartialArgs | undefined): NativeToolView {
     const reason = str(args?.reason);
     return { tool: head(RELEASE_TITLE), body: reason ? [text([span(reason, "muted")], { wrap: "word" })] : undefined };
   },
-  describeResult(result: CardResult, _options: RenderResultOptions): NativeToolView {
-    return memoized(result, [], () => {
-      if (!result.isError) return { ...textView(RELEASE_TITLE, "released", result, "Atlas released."), tone: "success" };
-      const untriaged = (result.details as StoredDetails | undefined)?.untriaged;
-      const count = Array.isArray(untriaged) ? untriaged.length : 0;
-      return {
-        ...textView(RELEASE_TITLE, "refused", result, "Release refused."),
-        tool: head(RELEASE_TITLE, "refused", { meta: count ? [`${count} untriaged`] : undefined }),
-      };
-    });
+  describeResult(result: CardResult, options: RenderResultOptions): NativeToolView {
+    return memoized(result, [options.expanded], () =>
+      result.isError
+        ? describeReleaseRefusal(result, options.expanded)
+        : { ...textView(RELEASE_TITLE, "released", result, "Atlas released."), tone: "success" },
+    );
   },
   mergeCallAndResult: true,
 };

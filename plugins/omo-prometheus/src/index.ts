@@ -107,7 +107,16 @@ import {
   type RoadmapStageAnswer,
 } from "./roadmap-contract.ts";
 import { forceStructuredResults, restoreStructuredResults } from "./structured-results.ts";
-import { activateCard, gitCard, ledgerCard, ledgerCardRow, ledgerProgress, registerMessageTitle, releaseCard } from "./tool-cards.ts";
+import {
+  activateCard,
+  gitCard,
+  ledgerCard,
+  ledgerCardRow,
+  ledgerProgress,
+  registerMessageTitle,
+  releaseCard,
+  rowSummary,
+} from "./tool-cards.ts";
 import {
   ATLAS_USAGE,
   type AtlasCompletionPlan,
@@ -2133,7 +2142,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             },
           ],
           isError: true,
-          details: {},
+          details: { unfinished: unfinished.map(rowSummary), progress: ledgerProgress(ledger) },
         };
       }
       const untriaged = untriagedFindings(ledger);
@@ -2146,7 +2155,11 @@ export default function prometheus(pi: ExtensionAPI): void {
             },
           ],
           isError: true,
-          details: { untriaged: untriaged.map((finding) => finding.id) },
+          details: {
+            untriaged: untriaged.map((finding) => finding.id),
+            findings: untriaged.map((finding) => ({ id: finding.id, title: finding.title })),
+            progress: ledgerProgress(ledger),
+          },
         };
       }
       const decisions = decisionSettings.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_DECISION_SETTINGS;
