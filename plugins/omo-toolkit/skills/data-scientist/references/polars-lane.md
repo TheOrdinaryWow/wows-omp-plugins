@@ -1,16 +1,12 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Polars lane (resident Python kernel)
 
-When the work is DataFrame-shaped, Polars is the right engine — and it runs in the resident
-Python kernel by default. Kernels rarely ship polars/pyarrow preinstalled, so inject them
-once per session; the install lands in a user cache keyed to the kernel's interpreter, and
-the interpreter itself is never mutated (run with the skill directory as cwd, or spell out
-the script's absolute path):
+When the work is DataFrame-shaped and the project has not chosen another engine, use Polars in the resident Python kernel. Do not assume Polars/Arrow is installed. Prefer native managed provisioning after reading `xd://eval/helpers`; the explicit cache helper below is an alternative that installs only when invoked. Resolve `<skill-dir>` from the host-provided physical skill directory, not the project cwd; the cache is outside the copied plugin and does not mutate the interpreter.
 
 ```python
 import subprocess, sys
-site = subprocess.run(["bash", "scripts/ensure-py-deps.sh", sys.executable],
+site = subprocess.run(["bash", "<skill-dir>/scripts/ensure-py-deps.sh", sys.executable],
                       capture_output=True, text=True, check=True).stdout.strip()
 sys.path.insert(0, site)
 import polars as pl
@@ -68,7 +64,7 @@ out = duckdb.sql("SELECT category, SUM(rev) AS total FROM shaped GROUP BY 1").pl
 
 - `.pl()` requires pyarrow — the injection above provides it; without it, it raises
   `ModuleNotFoundError`.
-- Never `.df()`: it requires pandas (raising without it), and pandas is banned and absent.
+- `.df()` requires pandas; use `.pl()` for this lane, but preserve an established pandas workflow rather than migrating it for a skill preference.
 
 ## Streaming past RAM
 
@@ -81,6 +77,7 @@ out = (pl.scan_parquet("huge.parquet")
 
 Streaming executes lazy plans only — keep the plan lazy end-to-end, with no intermediate
 `.collect()` breaking it into eager pieces.
+Streaming support depends on the operators and installed Polars version. Inspect the plan and bound intermediates; it is not a promise that every join/sort/materialization fits memory.
 
 ## Kernel-less fallback (uv one-shot)
 

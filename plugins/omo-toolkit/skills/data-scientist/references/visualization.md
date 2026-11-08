@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Visualization
 
@@ -21,6 +21,13 @@ question — decoration dilutes the answer.
 | Is X related to Y? | scatter; add a trend line only when it aids the eye |
 | Composition of a whole? | stacked or 100% bar — pie only for four or fewer slices |
 | Many series over time? | small multiples over one spaghetti chart |
+
+## Figures — every chart
+
+- **Trace every value.** Keep the source, query, filters, aggregation, grain, units and missing-row policy. The numbers drawn must be the computed result, not hand-retyped approximations; mark illustrative data explicitly.
+- **Declare bucket semantics.** For reader-facing daily, weekly or monthly comparisons, cut buckets at the reader's calendar boundaries and name the timezone (and week start where relevant). Preserve an explicitly requested UTC/business calendar; if the reader's zone is unknown, disclose the chosen zone instead of guessing. Mark a still-filling day/week/month on the affected bar/point itself, not only in a subtitle, so it does not masquerade as a decline.
+- **Cross-check a headline figure.** When an independent second source is available (another independently maintained table, dashboard or raw count), compare a headline value and name the source, matching scope and any discrepancy beside the figure. A second aggregation of the same source is a consistency check, not independent corroboration. If no independent source is available, say so explicitly and state what internal check was possible; never invent a source or claim a match you did not observe.
+- **Check geometry and series.** Verify representative rendered marks against their source values and the actual axis transform, baseline, domain and plot dimensions. For a zero-based, unstacked linear bar, height is `value / axisMaximum * plotHeight`; that formula is not universal. Use transformed endpoints for log/truncated/negative axes and segment boundaries/totals for stacked bars. Inspect clipped/out-of-domain values and check each legend label, swatch and series against what is actually plotted (computed colors for HTML). A polished screenshot alone is not numerical proof.
 
 ## Quality bar — every chart
 

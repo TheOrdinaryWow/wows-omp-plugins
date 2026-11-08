@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This file is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Placement: where should this computation live?
 
@@ -10,16 +10,27 @@ ten times) or kills the machine (loading a dataset larger than RAM and swapping)
 Three facts, one cell or script:
 
 ```python
-import os, shutil, subprocess, sys
+import os, re, shutil, subprocess, sys
 size = os.path.getsize("data.csv")            # bytes on disk
 disk_free = shutil.disk_usage(".").free       # spill headroom
-if sys.platform == "darwin":
-    ram = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout)
+if sys.platform == "darwin":                 # estimate: free + inactive + speculative pages
+    vm = subprocess.run(["vm_stat"], capture_output=True, text=True, check=True).stdout
+    page = int(re.search(r"page size of (\d+)", vm).group(1))
+    ram_available = page * sum(int(re.search(rf"{k}:\s+(\d+)", vm).group(1))
+                               for k in ("Pages free", "Pages inactive", "Pages speculative"))
+elif sys.platform.startswith("linux"):       # Linux: available, not installed RAM
+    with open("/proc/meminfo", encoding="ascii") as meminfo:
+        ram_available = next(int(line.split()[1]) * 1024 for line in meminfo
+                             if line.startswith("MemAvailable:"))
 else:
-    ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    raise NotImplementedError(
+        f"No available-memory probe for {sys.platform}; obtain a platform-native reading before loading"
+    )
 # row estimate without loading (DuckDB streams the scan):
 # duckdb.sql("SELECT count(*) FROM 'data.csv'")
 ```
+
+This recipe supports Linux (including WSL with `/proc/meminfo`) and macOS. The macOS value is an estimate of reclaimable headroom, not a guarantee. Native Windows, BSD and other platforms need their own available-memory reading; do not treat every non-macOS system as Linux, substitute installed RAM, or install a dependency silently. Missing commands/fields are a failed probe, not permission to guess. Choose a bounded scan/spill route until headroom is known.
 
 CSV typically expands 2-5x in memory (string columns dominate); Parquet expands less
 predictably — compressed columns can inflate 10x. Estimate the working set from the

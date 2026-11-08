@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
+import { loadSkillsFromDir } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
+
 const pluginRoot = resolve(import.meta.dir, "../plugins/omo-toolkit");
 const skillRoot = join(pluginRoot, "skills");
 
@@ -53,6 +55,18 @@ describe("omo-toolkit skill packaging", () => {
       if (!fields.description) problems.push(`${directory}: frontmatter description is missing`);
     }
     expect(problems).toEqual([]);
+  });
+
+  test("the native loader discovers eval-integrity as a visible skill", async () => {
+    const result = await loadSkillsFromDir({ dir: skillRoot, source: "custom:project" });
+    const matching = result.skills.filter((skill) => skill.name === "eval-integrity");
+    expect(matching).toHaveLength(1);
+    expect(matching[0]).toMatchObject({
+      filePath: join(skillRoot, "eval-integrity/SKILL.md"),
+      baseDir: join(skillRoot, "eval-integrity"),
+      hide: false,
+    });
+    expect(matching[0]?.description.trim()).not.toBe("");
   });
 
   test("relative markdown links inside skills resolve to existing files or directories", () => {

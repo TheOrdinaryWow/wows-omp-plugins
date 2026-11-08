@@ -3,7 +3,7 @@ name: data-scientist
 description: "Use for CSV/Parquet/JSON/NDJSON analysis, SQL joins/grouping/aggregation, DataFrame transforms, larger-than-RAM processing, numerical work or query-backed plots. Chooses DuckDB, Polars, NumPy and plotting engines with native persistent eval first."
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace` (source: `packages/shared-skills/skills/data-scientist/SKILL.md`). It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Data scientist
 
@@ -52,6 +52,6 @@ For standalone resident kernels, `scripts/ensure-py-deps.sh <sys.executable>` in
 
 ## Deliver evidence, then stop
 
-Answer the question; include source/query/filter provenance, meaningful row counts and elapsed time for heavy work. Explain null/type/aggregation choices that change the answer. No bonus charts or unrelated exploration. A chart uses a named aggregation, labeled units and the user's actual script/font needs; save it to a real artifact, display it with native printed-image output, inspect it, and use `skill://visual-qa` when visual acceptance is required.
+Answer the question; include source/query/filter provenance, meaningful row counts and elapsed time for heavy work. Explain null/type/aggregation choices that change the answer. No bonus charts or unrelated exploration. A chart uses a named aggregation, labeled units and the user's actual script/font needs. Follow `references/visualization.md` for timezone/bucket semantics, partial-window labels, source cross-checks and scale-appropriate geometry/series checks. Save a real image artifact, display it with native printed-image output and inspect it; use `skill://visual-qa` when visual acceptance is required. For a standalone HTML answer, route presentation to `skill://visualize`; OMP has no inline-HTML tools, and native PNG/image output remains supported.
 
 References: `execution-surfaces.md`, `placement.md`, `polars-lane.md`, `visualization.md`, `uv-setup.md` under `references/`.

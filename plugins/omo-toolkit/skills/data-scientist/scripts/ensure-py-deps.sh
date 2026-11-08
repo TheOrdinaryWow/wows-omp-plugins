@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Modified-port notice: OMP adaptation of oh-my-openagent 8a8db1d3094da8743989bf693ee5de77889de50e; SUL-1.0 (see plugin LICENSE-SUL-1.0).
+# Modified-port notice: OMP adaptation of oh-my-openagent adddd17004076e799c2de18ccfdee29e12525ace; SUL-1.0 (see plugin LICENSE-SUL-1.0).
 # Install polars + pyarrow for a given Python interpreter into a user-level cache
 # (never mutating the interpreter itself) and print the site directory as the ONLY
 # stdout line. Idempotent: re-runs reuse the install. arg1 = python executable

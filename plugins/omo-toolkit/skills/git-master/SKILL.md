@@ -3,7 +3,7 @@ name: git-master
 description: "Use when a task requires Git commits, rebases, branch-history rewriting, or evidence-based Git history investigation."
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace` (source: `packages/shared-skills/skills/git-master/SKILL.md`). It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Git Master
 
@@ -37,6 +37,18 @@ git merge-base HEAD origin/master
 ```
 
 Missing upstream or missing `main`/`master` is normal. Fall back to the best available branch or report the missing fact. Never treat a failed lookup as proof.
+
+## PR body evidence attachments
+
+When an authorized PR update needs screenshots or terminal PNGs, use GitHub's authenticated web attachment workflow. Keep temporary captures outside the repository; never commit them, publish them through GitHub Releases, or upload them to external image hosts merely to populate a PR body.
+
+1. Confirm that the user's authorization covers both uploading this evidence to GitHub and writing the target PR body/comment. An investigation or local screenshot request alone authorizes neither. Inspect captures for secrets and unrelated private content before upload.
+2. Read `skill://agent-browser` and use the native browser's existing authenticated GitHub session. A `gh` token alone is not proof of a signed-in browser; never extract/copy cookies or clone the live profile.
+3. Open the intended repository's PR or issue composer and use its visible attachment/file-input workflow with the actual image file. Follow the current UI rather than hardcoding private upload endpoints or reimplementing its internal token/policy exchange.
+4. Wait for the attachment to finish, then retain only the resulting GitHub user-attachment URL/Markdown. Do not print, log or persist cookies, CSRF/authenticity tokens, signed upload URLs, form fields or upload headers. Keep browser diagnostics out of shared evidence when they expose credentials.
+5. Preview the image and verify the resulting link is accessible to the intended reviewers. Publish only to the authorized destination, using the composer or an authorized `gh pr edit --body-file <temporary-body-file>` update. Do not overwrite unrelated body content.
+
+If the authenticated browser, attachment capability, authorization or reviewer access is missing, report that precise blocker. Deliver local artifact paths privately to the user, clearly labeled local-only; never present them as reviewer-accessible PR evidence or publish an inaccessible filesystem path in the PR body. Do not improvise another hosting service.
 
 ## Commit Mode
 
