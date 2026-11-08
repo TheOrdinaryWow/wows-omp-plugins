@@ -206,6 +206,44 @@ test("without the picker kind Tern gets a glass sheet: fixed sidebar, state on t
   expect(props(listItems(plain)[0]).icon).toBe("doc");
 });
 
+test("generic page keys scroll the preview list without changing its key or defeating memoization", () => {
+  const { component } = mount();
+  const initial = component.describe();
+  const scroller = byKey(initial, "body-scroll");
+  expect(scroller?.k).toBe("list");
+  expect(nodes(scroller as NativeNode).some((candidate) => candidate.scroll)).toBe(false);
+  for (const [index, [key, by]] of (
+    [
+      ["\x1b[6~", "page-down"],
+      ["\x1b[5~", "page-up"],
+    ] as const
+  ).entries()) {
+    component.handleInput(key);
+    const root = component.describe();
+    const scrolling = nodes(root).filter((candidate) => candidate.scroll);
+    expect(scrolling).toHaveLength(1);
+    // Tern moves the scroller above the node carrying the request: its content, inside the same keyed list.
+    expect(nodes(byKey(root, "body-scroll") as NativeNode)[1]).toBe(scrolling[0]);
+    expect(byKey(root, "body-scroll")?.key).toBe(scroller?.key);
+    expect(scrolling[0]?.scroll).toEqual({ by, n: index + 1 });
+    expect(component.describe()).toBe(root);
+  }
+});
+
+test("generic sheet height follows terminal resizes while unchanged frames stay memoized", () => {
+  const terminal = { rows: 24 };
+  const tui = { requestRender() {}, terminal } as unknown as TUI;
+  const component = new SnippetConsole(entries, { query: "" }, theme, tui, () => {});
+  const initial = component.describe();
+  expect(component.describe()).toBe(initial);
+  terminal.rows = 32;
+  const resized = component.describe();
+  expect(resized).not.toBe(initial);
+  expect(props(resized).min).not.toEqual(props(initial).min);
+  expect(props(resized).max).not.toEqual(props(initial).max);
+  expect(component.describe()).toBe(resized);
+});
+
 const pickerCx = { supports: (kind: string) => kind === "picker" } as unknown as DescribeContext;
 const pickerProps = (component: SnippetConsole) => props(component.describe(pickerCx));
 const pickerActs = (component: SnippetConsole) => (pickerProps(component).actions as Array<{ id: string }>).map(({ id }) => id);

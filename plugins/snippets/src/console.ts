@@ -89,6 +89,17 @@ const FILTERS: ReadonlyArray<SnippetScope | undefined> = [undefined, "global", "
 /** Rows per wheel notch, as in the host's fullscreen plan review. */
 const WHEEL_ROWS = 3;
 
+// Tern sizes lg sheets by content: fix the root's line extent from terminal height; only lists scroll.
+const FILL = { grow: 1, shrink: 1, basis: 0, min: { h: 0 } } as const;
+const SCROLLER = { ...FILL, max: { lines: 10_000 } } as const;
+const SHEET_MARGIN_LINES = 8;
+const SHEET_MIN_LINES = 16;
+
+function sheetRoot(rows: number) {
+  const lines = Math.max(SHEET_MIN_LINES, rows - SHEET_MARGIN_LINES);
+  return { gap: "md", min: { h: `${lines}lines` }, max: { h: `${lines}lines` } } as const;
+}
+
 const capitalize = (word: string): string => `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}`;
 
 /** The label an action carries for this snippet: toggle and pin name the state they switch to. */
@@ -692,7 +703,8 @@ export class SnippetConsole implements Component {
   #describeGeneric(): NativeNode {
     const visible = this.#visible();
     const { entry } = this.#current(visible);
-    const sig = [this.#filter ?? "", this.#query, entry?.snippet.id ?? "", this.#scroll?.n ?? 0].join("\n");
+    const rows = this.tui.terminal?.rows ?? (process.stdout.rows || 40);
+    const sig = [rows, this.#filter ?? "", this.#query, entry?.snippet.id ?? "", this.#scroll?.n ?? 0].join("\n");
     if (this.#native?.sig === sig && this.#native.message === this.#message) return this.#native.node;
 
     const tabs = node(
@@ -734,6 +746,7 @@ export class SnippetConsole implements Component {
         });
       }),
       {
+        ...SCROLLER,
         selected: entry?.snippet.id ?? null,
         empty: this.entries.length
           ? "No snippets match; Esc clears the search, a tab changes the filter"
@@ -741,21 +754,16 @@ export class SnippetConsole implements Component {
         role: "omp.snippets.list",
       },
     );
-    // The body takes the rest of the row and may shrink below its content, so long lines wrap instead of clipping.
-    const body: NativeNode = {
-      ...node(
-        "col",
-        { role: "omp.snippets.body", grow: 1, shrink: 1, min: { w: 0 }, gap: "sm" },
-        [entry ? this.#preview(entry) : text([span("No snippet selected", "dim")])],
-        "body",
-      ),
-      ...(this.#scroll ? { scroll: this.#scroll } : {}),
-    };
+    // The body may shrink below its content, so long lines wrap inside its own scroller. Tern moves the scroller above
+    // the node that carries `scroll`, so the request rides on the scroller's content.
+    const content = col([entry ? this.#preview(entry) : text([span("No snippet selected", "dim")])], { gap: "md" });
+    const bodyScroll = node("list", SCROLLER, [this.#scroll ? { ...content, scroll: this.#scroll } : content], "body-scroll");
+    const body = node("col", { ...FILL, role: "omp.snippets.body", min: { w: 0, h: 0 } }, [bodyScroll], "body");
     // A fixed width: with only a maximum the sidebar follows its longest row and the body jumps between filters.
-    const sidebar = node("col", { min: { w: "32ch" }, max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
+    const sidebar = node("col", { min: { w: "32ch", h: 0 }, max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
     const children: NativeChild[] = [
       keyed(nativeRow([tabs, search, tools], { gap: "md", align: "center", wrap: true }), "head"),
-      keyed(nativeRow([sidebar, body], { gap: "lg", align: "start" }), "split"),
+      keyed(nativeRow([sidebar, body], { ...FILL, gap: "lg", align: "stretch" }), "split"),
     ];
     if (entry)
       children.push(
@@ -776,7 +784,7 @@ export class SnippetConsole implements Component {
     ] as const)
       if (line) children.push(keyed(text(line.text, { tone: messageColor(line.level), wrap: "word" }), key));
     children.push(CONSOLE_HINTS);
-    const described = col(children, { gap: "md" });
+    const described = col(children, sheetRoot(rows));
     this.#native = { sig, message, node: described };
     return described;
   }
