@@ -353,7 +353,11 @@ function gitHead(args: PartialArgs | undefined, commit?: GitCardDetails["commit"
 }
 
 function describeGitResult(result: CardResult, args: PartialArgs | undefined): NativeToolView {
-  const output = resultText(result);
+  // Git aligns columns with leading spaces (`--stat`), so only line ends are trimmed.
+  const output = result.content
+    .flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : []))
+    .join("\n\n")
+    .replace(/^\n+|\s+$/g, "");
   if (result.isError)
     return { tool: gitHead(args), tone: "error", body: [text([span(output || "Git refused.", "error")], { wrap: "word" })] };
   const commit = (result.details as StoredDetails | undefined)?.commit;

@@ -309,6 +309,13 @@ test("atlas_git commit card names the commit, its subject and files; failures ar
   });
   expect(diff?.tool?.target).toBe("diff HEAD~1");
   expect(nodes(diff?.body).find((node) => node.k === "code")?.p).toMatchObject({ text: "+added", lang: "diff" });
+  // `--stat` aligns its columns with leading spaces; the first line keeps its own.
+  const stat = " a.txt   | 1 +\n b/c.txt | 2 +-\n 2 files changed\n";
+  const statCard = tool("atlas_git").describeResult({ content: [{ type: "text", text: stat }], details: { action: "diff" } }, options(), {
+    action: "diff",
+    stat: true,
+  });
+  expect(nodes(statCard?.body).find((node) => node.k === "code")?.p).toMatchObject({ text: stat.trimEnd() });
 });
 
 test("atlas_release and prometheus_activate show their outcome", () => {
