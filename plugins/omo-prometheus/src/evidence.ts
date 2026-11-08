@@ -764,24 +764,73 @@ export class ChildEvidence {
         : [];
     });
   }
-  /** Excludes deliberate cancellation, which is an external blocker rather than a failed product cycle. */
+  /**
+   * Failed generations `atlas_ledger fail` could still record: bound to the phase the row is in now. A failure of an
+   * attempt or phase the row has left can no longer be recorded, so it must not hold the row back. Deliberate
+   * cancellation is excluded: it is an external blocker rather than a failed product cycle.
+   */
+  #unrecordedFailed(sessionId: string, ledger: ExecutionLedger, row: LedgerItem): Assignment[] {
+    const verify = verificationStatus(row) === "running";
+    if (row.status !== "in_progress" || (row.receipt && !verify)) return [];
+    const attempt = verify ? row.verification?.attempt : row.attempt;
+    return [...this.#dispatches.values()]
+      .flat()
+      .filter(
+        (assignment) =>
+          assignment.sessionId === sessionId &&
+          assignment.ledgerId === ledger.ledgerId &&
+          assignment.verify === verify &&
+          assignment.rows[row.id] === attempt &&
+          assignment.finalStatus === "failed" &&
+          !assignment.cancelled &&
+          !row.retry?.windows[assignment.retryWindows[row.id] ?? 0]?.stop &&
+          !row.retry?.windows.some((window) => window.failures.some((failure) => failure.outcomeKey === assignment.outcomeKey)),
+      );
+  }
+
   unrecordedFailures(sessionId: string, ledger: ExecutionLedger): string[] {
     return ledgerRows(ledger)
-      .filter((row) =>
-        [...this.#dispatches.values()]
-          .flat()
-          .some(
-            (assignment) =>
-              assignment.sessionId === sessionId &&
-              assignment.ledgerId === ledger.ledgerId &&
-              assignment.rows[row.id] !== undefined &&
-              assignment.finalStatus === "failed" &&
-              !assignment.cancelled &&
-              !row.retry?.windows[assignment.retryWindows[row.id] ?? 0]?.stop &&
-              !row.retry?.windows.some((window) => window.failures.some((failure) => failure.outcomeKey === assignment.outcomeKey)),
-          ),
-      )
+      .filter((row) => this.#unrecordedFailed(sessionId, ledger, row).length)
       .map((row) => row.id);
+  }
+
+  /**
+   * Unrecorded failed generations of the row's current phase other than `recording`: a woken child carried the attempt
+   * on after them. Recording the attempt's outcome charges them to its retry budget, with their native error as output.
+   */
+  supersededFailures(
+    sessionId: string,
+    ledger: ExecutionLedger,
+    row: LedgerItem,
+    evidence: string,
+    recording?: string,
+  ): { failure: FailedOutcome; output: string }[] {
+    const verifyAttempt = verificationStatus(row) === "running" ? row.verification?.attempt : undefined;
+    return this.#unrecordedFailed(sessionId, ledger, row)
+      .filter((assignment) => assignment.outcomeKey !== recording)
+      .map((assignment) => {
+        const output = assignment.nativeError?.trim() || "Native final status: failed";
+        const childAgentId =
+          assignment.nativeChildId ?? [...this.#children.values()].find((child) => child.assignment === assignment)?.childAgentId;
+        return {
+          failure: {
+            outcomeKey: assignment.outcomeKey,
+            attempt: row.attempt as string,
+            ...(verifyAttempt ? { verifyAttempt } : {}),
+            toolCallId: assignment.toolCallId,
+            sessionId,
+            ...(childAgentId ? { childAgentId } : {}),
+            at: Date.now(),
+            origin: assignment.dispatchRejected ? "dispatch" : "execution",
+            failureClass: "unknown",
+            check: "native final result",
+            firstError: output.split("\n")[0] as string,
+            evidence,
+            signature: "",
+          },
+          output,
+        };
+      });
   }
 
   pendingRowChildren(sessionId: string, ledgerId: string, rowId: string): string[] {

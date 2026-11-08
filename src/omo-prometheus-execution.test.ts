@@ -2416,6 +2416,62 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
 
+  if (name === "heavy-wake-after-failure" || name === "heavy-wake-spends-budget") {
+    const diskFull = "ENOSPC: no space left on device";
+    if (name === "heavy-wake-spends-budget") {
+      const first = await prepare("T1");
+      await publish(first, "FirstWorker", { finalError: diskFull });
+      ok(
+        await call({
+          action: "fail",
+          id: "T1",
+          childAgentId: "FirstWorker",
+          check: "native final result",
+          firstError: diskFull,
+          evidence: "Inspected the native error",
+        }),
+      );
+    }
+    // The child fails natively, then Atlas wakes it instead of recording the failure, and the wake succeeds.
+    const prepared = await prepare("T1");
+    await publish(prepared, "Revived", { finalError: diskFull });
+    await publish(prepared, "Revived", { status: "running", nativeStatus: "started", finalResult: false });
+    const wake = Promise.withResolvers<void>();
+    const wakeJob = {
+      id: "job-Revived-2",
+      agentId: "Revived",
+      type: "task" as const,
+      ownerId: "Main",
+      startTime: Date.now(),
+      label: "IRC follow-up",
+      status: "running",
+      agentOutputPublished: true,
+      promise: wake.promise,
+    };
+    nativeJobs.push(wakeJob);
+    await publish(prepared, "Revived", { nativeStatus: "completed", finalResult: false, content: "Implemented after disk cleanup" });
+    wakeJob.status = "completed";
+    await hook("context", { messages: [] });
+    wake.resolve();
+    await hook("tool_result", { toolName: "task", toolCallId: "unrelated", isError: false, details: {}, content: [] });
+    ok(await done("T1", "Revived"));
+    const current = await row("T1");
+    const failures = current.retry?.windows.flatMap((window) => window.failures) ?? [];
+    if (name === "heavy-wake-after-failure") {
+      assert.equal(current.status, "in_progress");
+      assert.equal(current.receipt?.childAgentId, "Revived");
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0]?.firstError, diskFull);
+      // The charged generation no longer holds the row: its verifier can start.
+      ok(await call({ action: "verify", id: "T1" }));
+    } else {
+      assert.equal(current.status, "blocked");
+      assert.equal(current.receipt, undefined);
+      assert.equal(failures.length, 2);
+      assert.equal(current.retry?.windows[0]?.stop?.reason, "signature");
+    }
+    return;
+  }
   if (name === "time-limit-long-run") {
     const originalNow = Date.now;
     let now = originalNow();
@@ -3149,6 +3205,8 @@ if (process.env[CHILD_ENV]) {
       "review-round-limit",
       "task-file-governance",
       "heavy-verify",
+      "heavy-wake-after-failure",
+      "heavy-wake-spends-budget",
       "heavy-verify-fail",
       "heavy-verify-inconclusive",
       "heavy-harness-retry",

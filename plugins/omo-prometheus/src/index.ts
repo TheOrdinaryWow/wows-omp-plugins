@@ -65,6 +65,7 @@ import {
   amendAcceptance,
   assertRetryAvailable,
   automaticRetryGrants,
+  chargeSupersededFailures,
   checkAmendment,
   currentAttempt,
   type ExecutionLedger,
@@ -73,6 +74,7 @@ import {
   type FailedOutcome,
   type FailureClass,
   grantRetry,
+  haltRow,
   isComplete,
   type LedgerItem,
   ledgerRows,
@@ -2612,6 +2614,25 @@ export default function prometheus(pi: ExtensionAPI): void {
                 : undefined;
             if (params.action === "fail" && verdict?.verdict === "PASS")
               throw new Error("A structured PASS is not a failed native outcome");
+            // A woken child carries its attempt on past failed generations that no fail recorded; they still cost budget.
+            const chargeSuperseded = async (recording?: string): Promise<boolean> => {
+              const superseded = childEvidence.supersededFailures(
+                ctx.sessionManager.getSessionId(),
+                ledger,
+                item,
+                `Charged when ${item.id} recorded ${childAgentId ?? "its outcome"}: no atlas_ledger fail recorded this failed generation before the attempt went on.`,
+                recording,
+              );
+              for (const { failure, output } of superseded) {
+                await store.saveFailure(plan, item, failure, output);
+                if (record.ownership !== ownership || ownership?.detached)
+                  throw new Error("Atlas exited while diagnostic output was copied");
+              }
+              return chargeSupersededFailures(
+                item,
+                superseded.map(({ failure }) => failure),
+              );
+            };
             if (diagnostic && (params.action === "fail" || diagnostic.nativeStatus === "failed" || verdict?.verdict !== "PASS")) {
               const check = verdict?.failure?.check ?? params.check?.trim() ?? (params.action === "fail" ? "" : `${item.id} acceptance`);
               const firstError =
@@ -2630,6 +2651,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                 signature: "",
               };
               if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during failure capture");
+              await chargeSuperseded(failure.outcomeKey);
               await store.saveFailure(plan, item, failure, diagnostic.output);
               if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while diagnostic output was copied");
               recordFailure(ledger, item, failure);
@@ -2642,19 +2664,28 @@ export default function prometheus(pi: ExtensionAPI): void {
               const nativeOutput = path.join(captureOptions.artifactsDir, `${childAgentId}.md`);
               const { receipt, output } = await childEvidence.capture({ ...captureOptions, childAgentId });
               if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during child evidence capture");
-              const archived = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
-              await store.saveReceipt(plan, receipt, nativeOutput);
-              if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while child evidence was copied");
-              if (verifying)
-                recordVerification(ledger, item, {
-                  verdict: "pass",
-                  receipt,
-                  summary: parseVerifyOutput(output, ledger, item).summary,
-                  evidence: archived,
-                });
-              else recordReceipt(item, receipt, archived);
-              if (item.status === "in_progress")
-                note = `\n${item.id} is HEAVY: its implementation is recorded. Bind a distinct fresh verifier with atlas_ledger verify id=${item.id}.`;
+              if (await chargeSuperseded()) {
+                haltRow(
+                  ledger,
+                  item,
+                  `Retry stopped (${retryWindow(item)?.stop?.reason}): ${childAgentId} was woken after failed generations of this attempt that no fail recorded, and charging them spent the retry budget.`,
+                );
+                note = `\n${childAgentId}'s outcome was not recorded; owner confirmation (atlas_ledger retry) is required before ${item.id} continues.`;
+              } else {
+                const archived = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
+                await store.saveReceipt(plan, receipt, nativeOutput);
+                if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while child evidence was copied");
+                if (verifying)
+                  recordVerification(ledger, item, {
+                    verdict: "pass",
+                    receipt,
+                    summary: parseVerifyOutput(output, ledger, item).summary,
+                    evidence: archived,
+                  });
+                else recordReceipt(item, receipt, archived);
+                if (item.status === "in_progress")
+                  note = `\n${item.id} is HEAVY: its implementation is recorded. Bind a distinct fresh verifier with atlas_ledger verify id=${item.id}.`;
+              }
             }
             const completedNow = !wasComplete && isComplete(ledger);
             if (completedNow) completedPlan = plan;

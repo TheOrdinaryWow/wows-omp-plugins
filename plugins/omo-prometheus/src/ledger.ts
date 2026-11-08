@@ -731,8 +731,8 @@ export function noteRetryDispatch(row: LedgerItem, now = Date.now()): void {
   if (window.harnessRepair && window.harnessRepair.attempt === undefined) window.harnessRepair.attempt = currentAttempt(row);
 }
 
-/** Idempotent per native generation, not per row attempt: replacement children cannot reset the budget. */
-export function recordFailure(ledger: ExecutionLedger, row: LedgerItem, failure: FailedOutcome): boolean {
+/** False when this native generation was already charged. */
+function chargeWindow(row: LedgerItem, failure: FailedOutcome): boolean {
   if (row.retry?.windows.some((window) => window.failures.some((old) => old.outcomeKey === failure.outcomeKey))) return false;
   if (
     row.status !== "in_progress" ||
@@ -760,6 +760,14 @@ export function recordFailure(ledger: ExecutionLedger, row: LedgerItem, failure:
     if (counted.length >= 2 && counted.at(-2)?.signature === diagnostic.signature) window.stop ??= { reason: "signature", at: failure.at };
     else if (counted.length >= 3) window.stop ??= { reason: "attempts", at: failure.at };
   }
+  return true;
+}
+
+/** Idempotent per native generation, not per row attempt: replacement children cannot reset the budget. */
+export function recordFailure(ledger: ExecutionLedger, row: LedgerItem, failure: FailedOutcome): boolean {
+  if (!chargeWindow(row, failure)) return false;
+  if (failure.origin === "dispatch") return true;
+  const window = retryWindow(row) as RetryWindow;
   if (failure.verifyAttempt && failure.failureClass === "harness" && row.receipt) {
     row.status = window.stop ? "blocked" : "in_progress";
     resetVerification(row);
@@ -773,6 +781,26 @@ export function recordFailure(ledger: ExecutionLedger, row: LedgerItem, failure:
   }
   expireRetryWindows(ledger, failure.at);
   return true;
+}
+
+/**
+ * Charge failed generations of the current attempt that a woken child carried on from before Atlas recorded them.
+ * They count like any failure but reopen nothing, since the attempt's own outcome is being recorded. Returns whether
+ * the window stopped; the caller then halts the row instead of recording that outcome.
+ */
+export function chargeSupersededFailures(row: LedgerItem, failures: readonly FailedOutcome[]): boolean {
+  for (const failure of failures) chargeWindow(row, failure);
+  return retryWindow(row)?.stop !== undefined;
+}
+
+/** Halt a row whose window stopped. A HEAVY row keeps its recorded implementation for an owner-confirmed retry. */
+export function haltRow(ledger: ExecutionLedger, row: LedgerItem, reason: string): void {
+  if (row.tier === "heavy" && row.receipt) {
+    row.status = "blocked";
+    row.evidence =
+      `${row.evidence ?? ""}\n${reason} Recorded implementation proof is retained; owner-confirmed retry resumes independent verification.`.trim();
+    resetVerification(row);
+  } else reopenRow(ledger, row.id, reason);
 }
 
 /** Recovery writes these stops before a requested mutation can refuse or roll back. */
@@ -792,13 +820,11 @@ export function expireRetryWindows(ledger: ExecutionLedger, now = Date.now()): b
     )
       continue;
     window.stop = { reason: "elapsed", at: now };
-    const reason = `${effectiveTimeLimitHours(row)}h product-work phase expired at this host event. Cancel any live children and observe native terminal settlement before further work.`;
-    if (row.tier === "heavy" && row.receipt) {
-      row.status = "blocked";
-      row.evidence =
-        `${row.evidence ?? ""}\n${reason} Recorded implementation proof is retained; owner-confirmed retry resumes independent verification.`.trim();
-      resetVerification(row);
-    } else reopenRow(ledger, row.id, reason);
+    haltRow(
+      ledger,
+      row,
+      `${effectiveTimeLimitHours(row)}h product-work phase expired at this host event. Cancel any live children and observe native terminal settlement before further work.`,
+    );
     changed = true;
   }
   return changed;
