@@ -3,7 +3,7 @@ name: ulw-loop
 description: "Procedure for the durable ulw-loop: criterion-gated goals, Git-tree-bound evidence, checkpoints, and steering through the ulw_loop tool. Load it when /ulw-loop is active or the user asks to inspect, steer, pause, resume, or finish one."
 ---
 
-> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent ulw-loop material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent ulw-loop material at revision `adddd17004076e799c2de18ccfdee29e12525ace` (`packages/omo-senpi/skills/ulw-loop/**`). It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # ulw-loop: durable, criterion-gated goal loop
 
@@ -57,7 +57,7 @@ Example input for `create_goals`:
 1. Confirm ownership: `status` must show `driver.owned: true`. If it does not, stop and report it.
 2. Survey the skills and gather context as `full-workflow.md` describes under Bootstrap.
 3. Write the brief to a plain file outside the repository, as `define-goal.md` describes.
-4. Shape the objective, goals, and criteria per `define-goal.md`. Every default you chose goes into the objective as `assumed:`, and into your first report so the user can veto it.
+4. Shape the objective, goals, and criteria per `define-goal.md`. Record routine, low-impact defaults as `assumed:` and surface them in the first report. Unresolved scope, spending, or irreversible choices go to the main session's native `ask` before dependent work; an unanswered request is unapproved, not an assumed default.
 5. Call `create_goals`, then `status`.
 6. Run the execution loop in `full-workflow.md` until the final checkpoint completes or a stop rule holds.
 7. Report the outcome, each criterion with its evidence path, the assumed defaults, blockers, and cleanup receipts.
@@ -68,16 +68,17 @@ Keep `todo` live with one `in_progress` item that names the current criterion. T
 
 - Inside a Git work tree, every capture binds to the full `HEAD^{tree}` and needs a clean tracked tree at capture and at completion, research goals included. Commit verified work first; the tool refuses otherwise (`ULW_LOOP_DIRTY_TRACKED`). Delivery goals outside a Git repository are refused (`ULW_LOOP_GIT_REQUIRED`). Never stash, reset, or check out to clean the tree.
 - Outside a Git work tree, research goals bind artifact hashes and dated sources only.
-- A capture stays current only while its goal attempt, criterion revision, tree binding, and artifact hashes still match. Change makes it stale. Re-run the proof at the current tree and record a new capture. Never relabel, pin, or regenerate old output.
+- A capture stays current only while its goal attempt, criterion revision, full-tree binding, and artifact hashes match. A changed tree makes it stale even when ordinary ultrawork would reuse a per-target check. Record what the artifact exercised and its relevant dependency, configuration, generated-input, and environment inputs too: the store cannot infer external changes from a tree hash. Rerun affected proof when those inputs change even if `fresh` is still true. Never relabel, pin, or regenerate old output.
 - A child's completion is not acceptance. Read its final result, including errors and aborts, and the proof it names, before you record a pass.
 
 ## Delegation
 
 - Use the native `task` tool only. Use `scout` for broad code mapping, `librarian` for external documentation when it is listed (otherwise `scout`), `sonic` for mechanical edits, `task` for bounded judgment, and `deep-high` for hard review.
-- Every prompt starts with `TASK:` and names `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN`. Children do not see this conversation, so paste in what they need.
+- Every prompt starts with `TASK:` and names `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN`. Children do not see this conversation, so paste in what they need. Producer and consumer assignments name the same accessible absolute physical handoff file; a missing or insufficient file is FAIL, and a parent's `local://` is not a cross-session path.
 - Children do not run builds or tests unless `VERIFY` names them.
 - Parallel children get disjoint write scopes. Dependent work waits for the wave it depends on.
 - For a child that edits files, set `isolated: true` when the `task` schema offers it. Read what the child reports it changed, then verify the result yourself.
+- Register temporary roots, runtime caches, worktrees, and QA resources when created. Scope cache-writing commands with owned `TMPDIR`, `NODE_COMPILE_CACHE`, and `BUN_RUNTIME_TRANSPILER_CACHE_PATH`; give independent children independent roots. Clean only owned disposable resources after their writers exit, preserve evidence, and retain open-PR worktrees and their ancestors with an explicit owner. Resource-free work needs no ritual root or cleanup item.
 - Steer a child with `write agent://<id>`, read its output with `read agent://<id>`, and use `wait` only while blocked on children you started.
 
 ## Continuation and host
@@ -86,9 +87,10 @@ Continuation comes from OMP's goal controller and the user's settings. The loop 
 
 ## Coexistence
 
-- An active loop owns the objective. Ordinary `ulw` adds no native goal and no second notepad. Turning `ulw` off does not stop the loop; use `/ulw-loop pause` or `/ulw-loop stop`.
+- An active loop owns the objective. Ordinary `ulw` adds no native goal or second notepad, and this loop's final quality gate replaces ordinary ultrawork review rather than stacking with it. Turning `ulw` off does not stop the loop; use `/ulw-loop pause` or `/ulw-loop stop`.
 - `/ulw-research` reuses an active loop's goals and criterion ids. It never creates an aggregate of its own.
 - Audit findings are evidence inputs, not criterion passes. Map their observations to criteria yourself.
+- A `mass-ulw` run is subordinate execution: it keeps one inspected frontier at a time and does not own loop acceptance. Do not import a foreign workflow SDK, per-goal worktree engine, per-angle advancement, or rescue scheduler.
 
 ## References
 

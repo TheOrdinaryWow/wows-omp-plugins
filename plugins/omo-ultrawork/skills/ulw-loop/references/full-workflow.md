@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This reference is a modified OMP port of oh-my-openagent ulw-loop material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This reference is a modified OMP port of oh-my-openagent ulw-loop material at revision `adddd17004076e799c2de18ccfdee29e12525ace` (`packages/omo-senpi/skills/ulw-loop/references/full-workflow.md`). It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Full loop procedure
 
@@ -9,7 +9,7 @@ This reference covers the bootstrap, the execution cycle, evidence freshness, ma
 Make no edits, dispatches, or checkpoints until these steps are done.
 
 1. Call `status`. Confirm `driver.owned` is true and note `evidenceRoot`. If the driver is missing, foreign, or paused, or the loop is paused, blocked, or stopped, report it and follow `nextActions`.
-2. Gather context with read-only lookups. Batch independent lookups in one `task` call: `scout` for code mapping, `librarian` for external documentation (or `scout` when `librarian` is not listed). Read the descriptions of the skills that match the work, and name the ones you will use.
+2. Gather context with read-only tools first. Batch substantial independent investigations in one `task` call when useful: `scout` for broad code mapping, `librarian` for external documentation (or `scout` when absent). Do not delegate a lookup whose briefing costs more than reading it. Survey matching skill descriptions and name the workflows this run will use; load delegated skills in their assignments.
 3. Write the brief as described in `define-goal.md`, under The brief file. It holds the user's request verbatim, every stated constraint, the out-of-scope items, and the owner decisions already made.
 4. Shape the goals and criteria per `define-goal.md`. Set the tier (`LIGHT` or `HEAVY`) and the shape (`delivery` or `research`) for each goal. When unsure, choose HEAVY.
 5. Call `create_goals` with the brief path, the objective, the goals, and any validation batches. Then call `status`.
@@ -17,6 +17,16 @@ Make no edits, dispatches, or checkpoints until these steps are done.
 7. Name the assumed defaults in your first user-visible report, so the user can veto one with a single line.
 
 For a HEAVY goal, split its criteria into atomic tasks, where an implementation and its test count as one task. Put tasks with no dependency between them in the same wave. Split waves only along real dependencies. Each task names the criterion it serves, its QA scenario, and its evidence path.
+
+Planning is driven by unresolved decisions, not the tier: plan a known procedure directly, and seek a planning child only after discovery leaves genuine architecture or dependency-order choices. For optimization, capture the baseline metric and behavior/regression proof before changes; each attempt records the measurement and the keep/revert/iterate decision. A rollback never discards unrelated user changes.
+
+### Resource ownership
+
+Create no ritual temporary root or cleanup task for resource-free work. Before a command that writes temporary data or runtime caches, create an owned root such as `RUN_TMP=$(mktemp -d)` and use `TMPDIR="$RUN_TMP" NODE_COMPILE_CACHE="$RUN_TMP/node-compile-cache" BUN_RUNTIME_TRANSPILER_CACHE_PATH="$RUN_TMP/bun-transpiler"`. Propagate those variables explicitly when a child does not inherit them; independent tasks own separate roots.
+
+At creation, register each root, cache, worktree, PID, service, browser context, container, port, script, or temporary path in the loop journal through `steer` `annotate_ledger`, and add its cleanup todo. Name its owner and teardown. Persist proof under `currentAttemptDir` before deleting a disposable root. Clean only resources this work owns after all their writers/processes exit; never wipe shared caches, another worker's paths, user browser state, or an ancestor of retained work. Retain worktrees still needed by open PRs, and their parent directories, with the path, reason, and continuing owner recorded. A resource-free scenario needs no teardown receipt; created disposable resources do.
+
+Only the main session requests unresolved scope, spending, or irreversible decisions through native `ask`, before dependent work. Children and eval cells report the decision need to that session. Timeout, dismissal, or no usable question surface means unapproved; do not turn generic best-judgment advice into authorization.
 
 ## Execution loop
 
@@ -35,12 +45,12 @@ Limits: after three identical failures on one criterion, checkpoint that goal `f
 
 1. **Plan.** Read the criterion's scenario, its expected evidence, and its prior captures. Choose the tasks for this wave. Tasks that touch the same files wait for a later wave.
 2. **Track.** Keep `todo` current with one `in_progress` item that names the criterion. Mark each step done as soon as it finishes.
-3. **Dispatch.** Send independent units in one `task` batch. Send dependent units in a later batch. Each prompt starts with `TASK:` and names `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN`. The prompt also carries the criterion text, the files in scope, the project rules, the checks to run in `VERIFY`, and the artifact path the child must write.
+3. **Dispatch.** Send independent units in one `task` batch and dependent units in a later batch. Each prompt starts with `TASK:` and names `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN`, carrying the criterion, exact allowed writes, project rules, required skills, named checks explicitly authorized in `VERIFY`, artifact paths, and creation-time resource ownership. A producer and consumer name the identical accessible absolute physical handoff path; a missing or insufficient file is FAIL, and the parent's `local://` namespace is not transport. When using `mass-ulw` for real ordering, retain its one-inspected-frontier barrier; no per-angle or rescue scheduler replaces this loop's acceptance.
 4. **Integrate.** When a child returns, read its final result first. An error, an abort, or any non-success result means the unit is not done, even when output exists. Read the diff yourself, run the checks in your own plan, and send the child back with the specific failure when the change drifts or the evidence is missing. Do not hand-patch around a failure.
 5. **Commit.** Load `skill://git-master` before you commit. Inspect recent commits and the touched paths, then commit only this unit's files in the repository's style. Commit each verified unit on its own. Never commit broken code. Commit before you capture, because every capture in a Git work tree needs a clean tracked tree.
 6. **Execute the scenario.** Run the criterion's real-surface scenario yourself, or dispatch one QA child whose only job is to drive the channel and write the artifact. Write artifacts under `currentAttemptDir` from `status`. Record the exact invocation and the expected observable before you run it.
-7. **Clean up.** Stop what you started: processes, services, browser sessions, ports, and temp paths. Put a cleanup receipt in the artifact, showing the stop commands and their read-back output. A missing receipt makes the result BLOCKED, not PASS.
-8. **Record.** Call `record_evidence` as soon as the artifact exists. Use `pass` only when the artifact shows the expected observable. Otherwise use `fail` or `blocked`, with notes. Record from the artifact you just wrote, never from memory.
+7. **Clean up.** Tear down the scenario's owned disposable resources and include stop commands plus read-back output in its artifact. Keep task-wide roots until their final consumers exit, then perform their recorded teardown before completion. Preserve open-PR worktrees under the recorded retention rule. A missing receipt for a created disposable resource is BLOCKED, not PASS; do not invent a receipt for resource-free work.
+8. **Record.** Call `record_evidence` as soon as the artifact exists. Use `pass` only when it shows the expected observable; otherwise use `fail` or `blocked`. Record the exact invocation, commit when applicable, what was exercised, relevant inputs, and any resource receipts. Record from the artifact just written, never from memory.
 9. **Repeat or move on.** On a mismatch, diagnose the cause, send the implementing child back with the captured failure, and rerun the same criterion, including its cleanup. Continue only when the next criterion has a concrete expected-evidence target.
 
 Name each adversarial class that the change does not trigger once in the `notes` field, as not applicable, with a one-line reason.
@@ -60,6 +70,8 @@ Name each adversarial class that the change does not trigger once in the `notes`
 - A capture is current only when all four hold. It belongs to the goal's current attempt. Its criterion revision is the current definition. Its tree binding matches the current tree. Each artifact still matches its recorded `sha256`. `criteria` reports `fresh` for each criterion.
 - An identical tree after a rebase or amend keeps a capture current. A changed tree makes it stale.
 - Captures are append-only. A new result is a new capture. Never edit or delete an old capture.
+- A commit or tree hash does not cover external dependencies, service state, credentials, configuration outside the tree, generated inputs, or environment. Record those relevant inputs with what each artifact exercised. If they change, rerun the affected proof, including consuming/importer paths, even when `criteria` still reports `fresh`; that field cannot inspect external state. Preserve unaffected observations without claiming their stronger loop binding was waived.
+- Any tree change still invalidates every capture bound to the old full tree, regardless of ordinary ultrawork's narrower per-target reuse rule. Rerun all captures the loop marks stale at the new tree, not merely checks for edited files.
 
 ## Manual QA channels
 
@@ -73,27 +85,27 @@ Use the surface the criterion names. Every artifact must be non-empty.
 
 These are not evidence: a printed command, `--dry-run`, "should respond", "looks correct", or a passing test suite alone. Baseline `lint`, `typecheck`, and `test` runs are necessary, but they never prove completion.
 
-Start a service with a `ready` probe, or with `bash` `async: true`. Record its teardown as soon as you start it.
+Start a named service with a `ready` probe, or a finite long command with `bash` `async: true`. Record ownership and teardown at creation, including command temp/cache roots as described above. Completion notifications arrive automatically; `wait` is for blocked work you started, not polling.
 
 ## Research goals
 
-- A research criterion passes on a cited answer. Its scenario is the source check the question needs. Its expected evidence is the source itself, cited as `file:line`, command output, or URL, plus the dated revision.
-- Skip QA channels, cleanup, and commits for research goals. Source observability still applies: never write "looks correct".
+- Before each investigation, read this goal's prior findings and open hypotheses; extend them instead of reinvestigating an answered question. A research criterion passes on a cited answer whose source check is observable, cited as `file:line`, command output, or URL plus dated revision.
+- Research needs source proof rather than an irrelevant UI/HTTP scenario or a commit with no code change. Resource-free research skips teardown; any browser context, service, temporary root, or cache it actually creates follows the same ownership/cleanup rules. Git-tree freshness still applies when the research runs inside a Git work tree.
 - Track hypotheses in the rationale of `annotate_ledger` as `HYPOTHESIS[id]: <claim> | status: open`. Change the status to `confirmed` or `refuted` only on an observed source.
 - Keep hypotheses inside the user's question. A hypothesis that widens the scope goes to the user as a proposal first. Add it as a goal only with their approval.
 - `/ulw-research` reuses this loop's goals and criterion ids when a loop is active. It never creates an aggregate of its own. Mirror its findings through `steer` `annotate_ledger`.
 
 ## Final quality gate
 
-The gate runs only at the closer of the final goal, or at the closer of a validation batch. It has two parts: real-surface or source QA, and one independent review.
+The gate runs only at the closer of the final goal, or at the closer of a validation batch. It has two parts: real-surface or source QA, and one independent review. This gate supersedes ordinary ultrawork review, including its extra review lanes; do not stack a second pipeline.
 
 1. **Targeted verification.** Run the checks the changed behavior needs. Keep their output as artifacts.
 2. **Freeze.** Make no edits, rebases, or commits until the gate is recorded. If a fix is needed, go back to step 1 after the fix. Call `criteria` for each gated criterion. Re-run QA for any criterion whose capture is stale at the frozen tree.
-3. **Manual QA.** Run the QA yourself through the real surfaces. Write a QA report at `<currentAttemptDir>/qa-report.md`, with each criterion, its observation, and its artifact paths.
-4. **Independent review.** Spawn exactly one reviewer child with `task`, agent `deep-high`, or `task` when `deep-high` is not listed. Give it the objective, the criteria, the diff range, the evidence paths, and the QA report path. It writes `<currentAttemptDir>/gate-review.md` and ends with `PASS` or a list of blockers. The reviewer must be a child of this session, not the session itself. A timeout, a missing or empty report, a `BLOCKED:` line, or an inconclusive verdict counts as a blocker.
+3. **Manual QA.** Run final QA yourself through the real surfaces, even when a worker performed per-criterion QA earlier. For research, perform the cited source checks. Write `<currentAttemptDir>/qa-report.md` with each criterion, exact invocation/inputs, observation, artifact paths, and applicable cleanup receipts.
+4. **Independent review.** Spawn exactly one fresh reviewer child with `task`, agent `deep-high`, or `task` when unavailable. Its self-contained `TASK`, `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN` assignment includes the objective, original brief, criteria, diff range, current captures, relevant input changes, and accessible physical QA/evidence paths. Explicitly authorize any named checks it must run. It writes `<currentAttemptDir>/gate-review.md` and ends with `PASS` or criterion-cited blockers. The reviewer must be a child of this session, not the session itself. Inspect the final native result, including errors or aborts, and the report before accepting its verdict: the runtime's child-ancestry check does not authenticate the truth of PASS. A timeout, missing/empty report, `BLOCKED:` line, or inconclusive terminal result is a blocker.
 5. **Gate file.** Call `checkpoint` with `printTemplate: true` to get the current shape. Write the JSON file outside the repository, in `currentAttemptDir`, using the capture ids from `criteria` and real file paths.
 6. **Checkpoint.** Call `checkpoint` with `status: "complete"` and `qualityGatePath` set to that file. If it refuses, read the error code, then fix the part of the file the code names.
-7. **Fixes.** Any change after the freeze restarts the gate. Re-run only the proofs the change invalidated, record fresh captures, and have the reviewer check the delta. Re-review at most twice. After that, go to step 8.
+7. **Fixes.** Any change after freeze restarts the gate. Rerun every proof made stale by the loop's full-tree binding and any further proof invalidated by changed external inputs; record new captures without relabeling old output. **Spawn a new reviewer child for each re-review**, never resume the previous reviewer. Give it the delta, prior eligible blockers, fresh captures and QA report, with already-approved criteria out of scope unless invalidated. Keep a separate report such as `<currentAttemptDir>/gate-review-1.md` for each attempt and point the gate file to the actual latest reviewer/report. Re-review at most twice, then go to step 8.
 8. **Blocked review.** Call `record_review_blockers` with the final goal's id, a title, the repair objective, the evidence, and the artifacts. It blocks the goal and appends one repair goal. Report it to the user.
 
 Gate file shape:
@@ -163,7 +175,7 @@ Example input for `revise_criterion`:
 3. Never hand-edit loop state. Never pass a session id, store path, or ledger path to any op.
 4. Never mark a criterion pass from memory. Never relabel, pin, refresh, or regenerate old output to match a new tree.
 5. Evidence must come from a real surface. A printed command, `--dry-run`, or "looks correct" never counts.
-6. Leftover QA state (a live process, session, browser context, port, or temp path) is never PASS. Clean it up, record the receipt, then continue.
+6. Leftover owned disposable QA state (a live process, session, browser context, port, or temporary path) is never PASS. Clean it up and record the receipt. A resource-free scenario needs none; open-PR worktrees and their ancestors use the explicit retained-owner rule, not destructive cleanup.
 7. Commit each verified delivery unit before its capture. Never commit broken code. Never stash, reset, or check out to clean the tree.
 8. Children run no builds or tests unless their `VERIFY` names them.
 9. At a safety boundary (a destructive command, secret exfiltration, or a production write), checkpoint `blocked`, surface the boundary, and offer a safe substitute.

@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace` (`packages/omo-senpi/skills/hyperplan/SKILL.md`). It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # HYPERPLAN — Adversarial Multi-Agent Planning
 
@@ -9,6 +9,8 @@ The main session leads a five-member hostile cross-critique. Each member attacks
 ## Five roles and full identity prompts
 
 Spawn a single `task` batch with names `skeptic`, `validator`, `researcher`, `architect`, `creative`. Choose `agent: "task"` for skeptic, `agent: "task"` with `effort: "hi"` for validator, `agent: "deep-low"` for researcher (if not listed, run with the other four), `agent: "ultrabrain"` for architect (if not listed, use `task`), and `agent: "artistry"` for creative (if not listed, use `task`). A degraded four-member roster is permitted only when `deep-low` is unavailable. Each child's prompt starts with its full role identity below, then the Round 1 request, and ends: "Reply with `write agent://<lead-id>`, then return; later round instructions arrive over IRC and reactivate you. Do not call `wait` unless work you started is still running in the background." Replace `<lead-id>` with the actual parent handle. All children retain their role across three rounds.
+
+Only the top-level main session leads this procedure. Before starting, verify that native `task` and IRC communication are available; otherwise report the missing host surface rather than inventing team tools. The accepted roster is the authority for every recipient, expected reply count, finding bundle, and provenance line: five members, or four when researcher is unavailable. Leave researcher out of every bundle and count in a four-member run; never invent its findings. Debate conclusions are recommendations, not authorization for new scope, spend, or irreversible changes. The main session resolves those decisions through native `ask`; a dismissed, timed-out, or unavailable answer is unapproved.
 
 ### Skeptic: simplicity and scope
 
@@ -144,7 +146,7 @@ Give all members the same request verbatim. Ask each to apply its identity, retu
 
 ### Phase 3 — Round 2: cross-attack
 
-Construct a single labeled bundle of all Round 1 findings, including all five names. Send it to each member with `write agent://<member>` and the same instructions: attack the OTHER members' findings, not its own, with concrete evidence or reasoning (at most three sentences per attack); use `STANDS — <reason>` for a finding that survives. Demand a numbered mapping to the original member and finding. Wait until each roster member replies before moving on.
+Construct a single labeled bundle containing every accepted roster member's Round 1 findings, and no absent-member section. Send the same bundle to each roster member with `write agent://<member>` and these instructions: attack the OTHER members' findings, not its own, with concrete evidence or reasoning (at most three sentences per attack); use `STANDS — <reason>` for a finding that survives. Demand a numbered mapping to the original member and finding. Collect exactly one reply from every accepted member before moving on.
 
 ### Phase 4 — Round 3: defend, refine, concede
 
@@ -167,23 +169,44 @@ Drop conceded and decisively defeated findings. Keep uncontested findings and th
 ## Open Questions (Unresolved Debate)
 <question and user-input gate>
 ## Adversarial Provenance
-<counts per member and filtered findings>
+<actual member count, names, surviving findings per accepted member, and filtered findings; omit absent members>
 ```
 
 Tell the user distillation is complete and a dedicated planner will formalize it. This bundle is raw input, not the final plan.
 
 ### Phase 6 — Dedicated planner handoff
 
-Dispatch `task` with `agent: "ultrabrain"` (if `ultrabrain` is not listed in the task tool description, use `task`). Give it the full insight bundle and require an executable plan with sequencing, dependencies, parallel opportunities, acceptance checks, and explicit gates for open questions. Include: "If `skill://prometheus` is readable, produce the plan in that format: a human TL;DR with one Effort band and a Risk line, the affected user with IS and GAP rows, `## Tasks` rows carrying `Agent:`, `Depends on:`, `Tier:`, `Acceptance:`, `Closes:`, happy and failure QA with evidence paths, and a `Commit:` line, the four `## Final gates` rows, a `## Success criteria` table, and a `Delivery:` line only when the request settles it; otherwise produce an executable plan." The lead must not pre-write or edit the child's plan. Wait for its output and present it verbatim, prefixed exactly:
+Dispatch a separate planner with `task`, `agent: "ultrabrain"` (otherwise `task` when it is not listed). Do not assign this to a debate member or pre-write its task list. Resolve the insight bundle and any evidence references to accessible absolute physical paths when passing files: the child's own `local://` is not the parent's artifact namespace. Include the full self-contained assignment below, with the actual roster and all required input paths filled in:
 
-*Plan derived from hyperplan adversarial review (5 members, 3 rounds).*
+```text
+TASK: Produce an executable work plan from the Hyperplan insight bundle. This is an executable planning assignment, not an implementation or an approval request.
+DELIVERABLE: Return the complete plan, or the clarifying questions when an unresolved owner decision blocks a correct plan.
+SCOPE: Read the supplied insight bundle and cited evidence. It contains only uncontested or defended/refined findings from the actual accepted roster; conceded findings were removed. Do not redo the debate or assume an absent researcher's approval. Your job is structure, sequencing, interfaces, dependencies, parallel opportunities, and verification, not widening the request or editing product files. A missing required handoff file is FAIL; report its path rather than inventing its contents.
+VERIFY: Check every hard constraint, pair every risk with its mitigation, and place each unresolved question before dependent work. Read skill://prometheus for the current authoritative plan format when available, without activating Plan Mode, running /prometheus, approving a plan, or taking over Atlas. Follow that format rather than maintaining a weaker Hyperplan schema. Include the requirements below even when the planning skill is unavailable.
+STOP WHEN: The plan meets every stated rule, or the blocking clarifying questions have been returned to the lead.
+```
 
-For the four-member degraded roster, state the omitted researcher separately while retaining the prescribed provenance line. If the planner instead asks for clarifications, forward them intact to the user.
+The planner's format requirements are:
+
+- Start with a human `## TL;DR`, one `Effort:` band and one `Risk:` line. Name the affected user and ideal-state IS rows, with the stakeholder, source (request, confirmed decision, or evidenced existing contract), and concrete consequence of failure. Map GAP rows to the work that closes them; do not smuggle in ideal-state strengthening.
+- Include `## Must not build`, naming excluded mechanisms and the existing capability or smaller design that covers the need; `None` is valid.
+- Include an execution contract: independent slices run through child agents while the executing root coordinates rather than implements, overriding the host's default delegation preference. Child assignments do their own named acceptance checks. Commit each finished working slice immediately in repository style, never broken code or a final omnibus commit.
+- Under `## Tasks`, use consecutive column-zero `- [ ] T<n>. <title>` rows. Each body has `Agent:`, `Depends on:`, `Tier: LIGHT|HEAVY`, `Acceptance:`, `Closes:`, references, the change and its interfaces, **`Mechanisms:`**, `QA happy:`, `QA failure:`, and `Commit:`. `Mechanisms: none` is valid; otherwise name the mechanism, the IS obligation, and why an existing or smaller design is insufficient. QA names exact actions, observables, and evidence paths; `QA failure: none — <reason>` is allowed except where denial/rejection is the feature. Validate the dependency graph and preserve proportionate test scope.
+- Include the current four `## Final gates` rows, F1 plan compliance, F2 code quality, F3 real-surface QA, and F4 success-criteria fidelity, plus `## Verification` and a `## Success criteria` table mapping every IS row to delivering work, proving scenario, and evidence. A library, schema, or build-time boundary is verified at its real consuming boundary.
+- Include at most one column-zero `Delivery: direct|pr|ship` line when the request settles delivery; omission means direct. Include `Roadmap criteria:` only for a bound stage and follow the current planning contract. Preserve owner-controlled constraints and native approval; a Hyperplan debate or planner response never approves execution.
+
+Give the planner the complete insight bundle after those rules. Wait for its terminal output, inspect that it returned the requested deliverable, and present its plan without rewriting it, prefixed with the actual accepted count:
+
+*Plan derived from hyperplan adversarial review (<actual member count> members, 3 rounds) and formalized by a dedicated planner.*
+
+For a four-member run, also state that researcher was omitted; the provenance line itself says four, not five. If the planner returns clarifying questions, forward them intact and ask them through the main session's native `ask`. Do not call a missing answer permission to proceed.
 
 ### Phase 7 — Cleanup
 
-After presenting the planner's output, cancel each still-resident member with `write proc://<id>/kill` for its process id and confirm no child remains active. Report the cleanup in one line. Never cancel a child before its Round 3 response is collected or confuse a quiet live child with a failed one.
+After the planner has returned and its output has been presented, cancel any still-resident debate members with `write proc://<id>/kill` for their actual process ids, and confirm no owned child remains active. Report cleanup in one line. Preserve the bundle, plan, and evidence; remove only disposable resources this procedure created. Never cancel a member before its Round 3 reply or the planner before its terminal result, and never confuse quiet live work with failure.
 
 ## Failure boundaries
 
 Do not skip rounds to save time, soften the adversarial identities, include conceded claims in the bundle, compose the plan yourself, or hand the planner's job to a debate member. Preserve the mapping between each finding and its attacks. Members see each other only through the labeled bundles the lead relays. Keep messages concise enough to remain actionable, but do not remove evidence. A missing reply is a missing review, not permission to invent it.
+
+The planner does not share the debate members' context. Gather any missing input and re-dispatch a self-contained assignment; do not route its work through a debate member. An uncontested claim survived this debate, not every possible verification; the executable plan still requires its concrete acceptance proof.

@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This reference is a modified OMP port of oh-my-openagent ulw-loop material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This reference is a modified OMP port of oh-my-openagent ulw-loop material at revision `adddd17004076e799c2de18ccfdee29e12525ace` (`packages/omo-senpi/skills/ulw-loop/references/define-goal.md`). It is licensed under the Sustainable Use License 1.0 in `../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Define the loop goals
 
@@ -25,7 +25,7 @@ Write the objective outcome-first, in this order:
 1. **Outcome.** One sentence naming the artifact, system, repository, or user-facing behavior involved.
 2. **Deliverables.** Literal paths, endpoints, packages, or environments. The executor reads names literally and infers no surface that you did not name.
 3. **Success criteria.** Summarized here. Each one is a seed with its scenario and expected evidence (see Criteria below).
-4. **Constraints and bounds.** The user's constraints, verbatim, including what is out of scope. Where the user was silent on a bound that the work depends on, choose the clearest defensible default from repository evidence and write it as `assumed: <constraint>. Rationale: <why>. Reversible: <yes or no>.` Unstated bounds do not exist, which is why you write them.
+4. **Constraints and bounds.** The user's constraints, verbatim, including what is out of scope. For a routine, low-impact bound the repository can settle, record the defensible default as `assumed: <constraint>. Rationale: <evidence>. Reversible: yes.` An unresolved architecture, safety, scope, budget, or irreversible choice is not a default: the main session asks through native `ask` before dependent work. Unstated bounds do not exist, which is why they are written.
 5. **WHEN TO STOP.** One line: "Stop right away when <the exact observable state that ends this run>." The run delivers and stops the moment that line holds. Work past it is a defect.
 
 State a motivation only when it changes execution. Positive statements beat prohibitions: "verify against staging" says more than "do not touch production".
@@ -43,7 +43,7 @@ Each criterion carries these at definition time, not after the work:
 
 - **Binary pass condition.** "Returns 200 and the body matches the schema." Never "works correctly".
 - **Exact scenario.** The literal command, request, page action, or payload that proves it.
-- **Expected evidence.** The artifact it will capture: transcript, status plus body, screenshot path, diff, parsed dump, or cited source for research.
+- **Expected evidence.** The artifact it will capture: transcript, status plus body, screenshot path, diff, parsed dump, or cited source for research. Name what it exercises and the source, dependency, configuration, generated-input, and environment inputs that can invalidate its claim; a commit stamp alone is insufficient.
 - **userModel.** One of `happy`, `edge`, `regression`, or `adversarial`.
 - **essential.** Set it to true for criteria that must pass before a non-final checkpoint can close. Final completion checks every criterion regardless.
 
@@ -59,7 +59,7 @@ Prefer numbers that represent real success. A threshold that nobody would act on
 
 | Domain | Quantify as |
 |---|---|
-| Bug fix | The failing case captured first, the same case passing after. |
+| Bug fix | An already observed failing case, then the same case passing after. Reproduce first only if no useful failure has been captured or a distinguishing observation is needed. |
 | Tests | The exact command and pass condition, plus a run count for flake-prone suites. |
 | Performance | Metric, target, measurement method, and run count ("p95 under 250 ms across 3 consecutive local runs"). |
 | Quality work | The observable bar: lint, typecheck, and tests pass; reviewed examples; a user-approved artifact. |
@@ -70,7 +70,7 @@ Prefer numbers that represent real success. A threshold that nobody would act on
 
 Reject activity objectives such as "make progress", "keep investigating", "improve things", or "work on X". They cannot fail, so they cannot finish.
 
-Rewrite vague goals when local context makes the rewrite safe. Ask the user one narrow question only when the missing detail is an owner decision: something irreversible, destructive, safety-critical, or a cross-cutting product choice (budget, public surface, external dependency, data shape, or target audience). Shape the question around the missing validator or bound, for example: "Which environment do I verify against: local, staging, or production?" Every other gap becomes an `assumed:` default that the user can veto.
+Rewrite vague goals when local context makes the rewrite safe. When a missing detail is an owner decision — irreversible, destructive, safety-critical, an unresolved architectural trade-off, or a cross-cutting product choice such as scope, spend, public surface, dependency, data shape, or audience — send it to the main session's native `ask`. Shape the question around the missing validator or bound, for example: "Which environment do I verify against: local, staging, or production?" A dismissed, timed-out, or unavailable answer is unapproved even when generic tool text suggests best judgment; do not start dependent work. A child reports the decision need to the lead. Only routine, low-impact gaps become evidence-backed `assumed:` defaults the user can veto.
 
 When the user cannot name a metric, choose the most honest binary validator available and state it in the objective.
 
@@ -103,6 +103,7 @@ Goals are unlimited. Never invent a token budget, run quota, or deadline that th
 ## Completion honesty
 
 - A pass needs evidence captured in this run, at the current tree.
+- The ordinary ultrawork per-target reuse rule never weakens this loop's full-tree, current-attempt, criterion-revision, and artifact-hash binding. External input changes can require new proof even when the store still reports `fresh`.
 - A green suite is supporting evidence, never completion proof by itself.
 - Waiting is not blocked. A running child or background process can still wake the run, so let it finish.
 - Blocked needs a true impasse: no way to resume, and the same block across consecutive turns.

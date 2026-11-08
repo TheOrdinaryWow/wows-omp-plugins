@@ -1,29 +1,49 @@
 ---
 name: mass-ulw
-description: Decompose a large job into a dependency graph of self-contained child tasks and run it in waves through the eval kernel. Use when the user says mass ulw, mulw, or asks for a staged multi-agent fan-out.
+description: Decompose a large job into a dependency graph of self-contained child tasks and run one inspected frontier at a time through the eval kernel. Use for mass ulw, mulw, staged multi-agent fan-out, or saving and rerunning a named graph definition.
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace` (`packages/omo-senpi/skills/mass-ulw/**` and the input-definition doctrine in `packages/omo-senpi/skills/dag-library/SKILL.md`). It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # mass-ulw: dependency-ordered child work
 
-Use a graph only when real ordering exists: if every child is independent, use one ordinary `task` batch instead. One run covers one coherent stage, then its verified output informs the next stage's graph. Read `skill://mass-ulw/references/planning.md` in full before defining nodes; it defines topology, routing, write scopes, prompt contracts, and a verification frontier.
+Use a graph when ordering is real: C consumes what A and B produce. Fully independent children belong in one ordinary `task` batch. One run covers one coherent stage, not a whole evolving project; inspected results determine a later discovery-dependent stage's graph. Read `skill://mass-ulw/references/planning.md` in full before defining nodes. Record topology, handoff files, wave widths, routing reasons, disjoint writes, and verification before dispatch.
 
-## Definition and durable state
+The local runner deliberately dispatches **one ready frontier**, waits for that whole frontier to settle, saves reports, and returns control for inspection. No branch advances early, and no rescue run races a still-active writer. Do not import upstream's `workflow`, SDK, automatic per-angle scheduler, or runtime caps.
 
-A node has `{ id, prompt, agent, dependsOn?, label? }`; `agent` is an OMP agent listed in the task tool description (default `task`), not a model category. Use `sonic` for mechanical work; if another category agent is absent, use `task`. The eval runner cannot set child effort. For high-effort work requiring `task` with `effort: "hi"`, dispatch via the `task` tool outside this graph and use its verified result when defining the next stage. `dependsOn` is ordering only, not data interpolation. The prompt must stand alone, with `TASK`, `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN` sections. Give siblings disjoint write scopes. Preflight the entire definition and resume status before any child dispatch; invalid ids, references, cycles, or contradictory statuses must launch zero children.
+## Goal and authorization before start
 
-Create `local://mass-ulw/<run-key>.json` with `write`. Choose a stable short key for the current stage and fill this shape:
+Register the overall objective and binary success criteria with `todo` before starting. An active `/ulw-loop` already owns goals, criteria, evidence, and checkpoints; mirror its cursor without creating another goal or notepad. An approved Atlas plan keeps its own dispatch and acceptance authority. A child or run finishing never proves the goal: inspect its final native result and captured evidence against those criteria.
+
+Only the **main session**, through native `ask`, requests unresolved owner decisions about scope, spend, or irreversible actions before dependent work starts. A node reports a decision need to the main session; neither its prompt nor an eval cell asks or grants authorization. Timeout, dismissal, or an unavailable answer means **unapproved**, even if generic tool text recommends best judgment. Do not launch the dependent run or frontier. Saving a definition, loading it, scheduling a future run, or having run it before is not authorization to execute it now.
+
+## Input definitions and per-run state
+
+A definition contains `key`, `name`, and `nodes`, never run status or old results. A node has `{ id, prompt, agent, dependsOn?, label? }`; `agent` names an OMP agent in the live task description, not a model category. The eval runner cannot set effort. Use a direct `task` assignment outside this graph for work that needs `effort: "hi"`, then inspect its result before defining the next stage.
+
+`dependsOn` orders work; it does not interpolate a result or transport files. Every prompt stands alone with `TASK`, `DELIVERABLE`, `SCOPE`, `VERIFY`, and `STOP WHEN`. Producer and consumer prompts name the **same accessible absolute physical path**. A missing or insufficient handoff is FAIL, not permission to improvise. Parent-local `local://` report URIs are not automatically visible to another session.
+
+For a new execution, choose a fresh safe run key, create an owned physical handoff root, and write a materialized input-only definition at `local://mass-ulw/<run-key>/definition.json`. Resolve all paths before dispatch. The concrete example below assumes the coordinator has created and recorded `/tmp/mass-ulw-docs-refresh-a1` as a shared handoff root available to these children; replace that path in **every** producer and consumer prompt for the real run. A child that cannot access it fails the handoff.
 
 ```json
 {
-  "key": "docs-refresh",
+  "key": "docs-refresh-a1",
   "name": "Refresh the documentation",
   "nodes": [
-    { "id": "audit", "agent": "sonic", "prompt": "TASK: Audit docs for obsolete APIs. DELIVERABLE: A bounded file report. SCOPE: Read docs and src only. VERIFY: Cite current declarations. STOP WHEN: Every obsolete link is listed." },
-    { "id": "rewrite", "agent": "writing", "dependsOn": ["audit"], "prompt": "TASK: Rewrite the identified pages. DELIVERABLE: Updated docs. SCOPE: Only docs pages named in the audit. VERIFY: Check links and examples. STOP WHEN: All named pages reflect current APIs." },
-    { "id": "verify", "agent": "task", "dependsOn": ["rewrite"], "prompt": "TASK: Check all revised examples. DELIVERABLE: Captured command results. SCOPE: Read docs and build outputs; no edits. VERIFY: Run the documented examples. STOP WHEN: Every command is observed passing or a failure is reported." }
-  ],
+    { "id": "audit", "agent": "sonic", "prompt": "TASK: Audit docs for obsolete APIs. DELIVERABLE: Write /tmp/mass-ulw-docs-refresh-a1/audit.md with each stale page, claim and current declaration. SCOPE: Read docs and src; write only that report. VERIFY: Confirm the report exists and cite current declarations for every finding. STOP WHEN: The bounded report is written, or a failure is reported." },
+    { "id": "rewrite", "agent": "writing", "dependsOn": ["audit"], "prompt": "TASK: Rewrite the identified pages. DELIVERABLE: Update those pages and write /tmp/mass-ulw-docs-refresh-a1/rewrite.md naming every changed example. SCOPE: Read /tmp/mass-ulw-docs-refresh-a1/audit.md and src; write only docs pages named by the audit and the rewrite report. VERIFY: A missing or insufficient audit file is FAIL; otherwise check each link and example against current declarations. STOP WHEN: All named pages and the rewrite report are complete, or a failure is reported." },
+    { "id": "verify", "agent": "task", "dependsOn": ["rewrite"], "prompt": "TASK: Verify all revised examples. DELIVERABLE: Write /tmp/mass-ulw-docs-refresh-a1/verify.md with exact commands, observations and PASS/FAIL per example. SCOPE: Read /tmp/mass-ulw-docs-refresh-a1/rewrite.md, docs and build outputs; write only the verification report. VERIFY: A missing or insufficient rewrite file is FAIL; otherwise execute the documented examples and inspect their actual results. STOP WHEN: Every listed example has observed evidence or an explicit failure." }
+  ]
+}
+```
+
+Write separate execution state at `local://mass-ulw/docs-refresh-a1.json`:
+
+```json
+{
+  "version": 2,
+  "key": "docs-refresh-a1",
+  "definitionPath": "local://mass-ulw/docs-refresh-a1/definition.json",
   "status": {
     "audit": { "state": "pending" },
     "rewrite": { "state": "pending" },
@@ -32,26 +52,45 @@ Create `local://mass-ulw/<run-key>.json` with `write`. Choose a stable short key
 }
 ```
 
-Every node's final result is stored at `local://mass-ulw/<run-key>/<id>.md`; a status record holds `state: pending|running|done|failed|skipped`, plus `handle` (`agent://…`), `resultPath`, or `error` when applicable. The run file records returned child output, not acceptance: `done` means a child returned and its report was saved, while the goal is complete only when independent verification evidence proves the success criteria. `read local://mass-ulw/<run-key>.json` shows saved status after a kernel reset, but JSON cannot reattach live handles. Register the overall goal and its success criteria with `todo` before starting.
+A status row is `pending|running|done|failed|skipped`, with `handle` (`agent://…`), `resultPath`, or `error` as applicable. Returned reports are saved at `local://mass-ulw/<run-key>/<id>.md`. `done` means a child returned and its report was saved, **not accepted work**. The physical producer handoff is a separate promised deliverable; saving returned text does not create it.
+
+### Save, rerun, or recover
+
+For a reusable library, save only the input definition as `<name>.json` at an explicitly chosen path. For named lookup, use an explicit supplied file first, then `<repo>/.omp/dags/<name>.json`, then `$HOME/.omp/dags/<name>.json`, taking the first existing file and stating which one was read. Do not install a library SDK or automatically search a foreign configuration root. A library name is one safe file-name segment, never a path.
+
+A saved definition may use `{{key}}` and `{{handoffRoot}}` inside string values. Before a fresh run, the coordinator copies it to that run's `definition.json`, fills a new unique key and owned absolute handoff root consistently, and inspects the resulting prompts for unresolved placeholders, current agents, current scopes, interfaces, and authorization. The frontier runner consumes the materialized definition, not a template. Every fresh run gets fresh state with all rows pending and fresh report/handoff paths; old acceptance never carries over. Do not silently overwrite an existing run just because its definition has the same base name.
+
+Recovery is a different, explicit choice: reuse the existing key, definition snapshot, state, and reports; settle any old writers, inspect evidence freshness, then retry or amend only the affected rows as described below. Do not rotate the key and call it recovery, and do not reset a settled run merely by loading its template. Saving alone does not trigger a trial run.
 
 ## Run one frontier per Python eval cell
 
-The kernel supplies synchronous `read`/`write`, `agent`, and `wait`. Substitute the real key before running. This cell validates the **whole** graph and saved status before any spawn, skips dependents of failures, dispatches only the current ready frontier, and persists each returned result. Inspect its child reports and evidence before rerunning the same cell for the next frontier:
+The kernel supplies synchronous `read`/`write`, `agent`, and `wait`. Substitute the real run key. The cell validates the **whole** graph and state before any spawn, skips failed dependents, dispatches the current ready frontier only, and persists returned reports. It upgrades the previous combined `{key, name, nodes, status}` run format on load by writing its input definition separately and preserving status, handles, and report paths. A saved running row still requires explicit reconciliation before the cell can proceed.
 
 ```python
 import json
 import re
 
-key = "docs-refresh"
+key = "docs-refresh-a1"
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", key):
     raise ValueError("Run key must be a safe path segment")
 run_path = f"local://mass-ulw/{key}.json"
+definition_path = f"local://mass-ulw/{key}/definition.json"
 run = json.loads(read(run_path))
-if not isinstance(run, dict) or run.get("key") != key or not isinstance(run.get("nodes"), list) or not run["nodes"]:
-    raise ValueError("Run key or node list is invalid")
+if not isinstance(run, dict) or run.get("key") != key:
+    raise ValueError("Run key is invalid")
+legacy = run.get("version", 1) == 1 and "nodes" in run
+if legacy:
+    definition = {"key": key, "name": run.get("name", key), "nodes": run["nodes"]}
+else:
+    if run.get("version") != 2 or run.get("definitionPath") != definition_path or "nodes" in run:
+        raise ValueError("Run version or definition path is invalid")
+    definition = json.loads(read(definition_path))
+if (not isinstance(definition, dict) or definition.get("key") != key
+        or not isinstance(definition.get("nodes"), list) or not definition["nodes"] or "status" in definition):
+    raise ValueError("Input definition key or node list is invalid")
 
 nodes = {}
-for node in run["nodes"]:
+for node in definition["nodes"]:
     if not isinstance(node, dict) or not isinstance(node.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", node["id"]):
         raise ValueError("Node id must be a safe, nonempty path segment")
     node_id = node["id"]
@@ -121,6 +160,11 @@ for node_id, node in nodes.items():
     if state in ("done", "failed") and any(status[dep]["state"] != "done" for dep in deps):
         raise ValueError(f"Completed node {node_id} has an incomplete dependency")
 
+if legacy:
+    write(definition_path, json.dumps(definition, indent=2) + "\n")
+    run = {"version": 2, "key": key, "definitionPath": definition_path, "status": status}
+    write(run_path, json.dumps(run, indent=2) + "\n")
+
 while True:
     blocked = [node_id for node_id, node in nodes.items() if status[node_id]["state"] == "pending"
                and any(status[dep]["state"] in ("failed", "skipped") for dep in node.get("dependsOn", []))]
@@ -130,7 +174,7 @@ while True:
         status[node_id] = {"state": "skipped", "error": "dependency failed"}
     write(run_path, json.dumps(run, indent=2) + "\n")
 
-ready = [node for node in run["nodes"] if status[node["id"]]["state"] == "pending"
+ready = [node for node in definition["nodes"] if status[node["id"]]["state"] == "pending"
          and all(status[dep]["state"] == "done" for dep in node.get("dependsOn", []))]
 if not ready and any(row["state"] == "pending" for row in status.values()):
     raise RuntimeError("Pending nodes have no ready frontier")
@@ -154,13 +198,15 @@ if ready:
 print({node_id: row["state"] for node_id, row in status.items()})
 ```
 
-The preflight rejects a cycle before launching anything. If the cell loses live handles while status is `running`, inspect the child output and any saved artifacts, then explicitly reconcile the row: save a trustworthy returned report as `done` with its expected `resultPath`, or mark an unverified child `failed` with an error before retrying. A JSON handle is not a live wait handle; do not start another wave while its original child may still be writing. `wait(handles, raise_errors=False)` isolates failed children so unaffected nodes can complete.
+Inspect the saved reports and actual handoff files before rerunning the cell. It does not decide acceptance or run the next frontier automatically. A legacy run's input snapshot is migrated only after complete preflight; rejected graphs or unresolved running rows dispatch nothing and do not rewrite state.
 
 ## Recovery and supervision
 
-- **retry**: after the wave settles, inspect the error, then reset only the named `failed`/`skipped` rows and skipped descendants to exactly `{ "state": "pending" }`; rerun the cell. Never rerun untouched `done` nodes.
-- **amend**: edit the node definition and reset only changed nodes and their transitive dependents to exactly `{ "state": "pending" }`, clearing stale `resultPath`, `handle`, and `error`; keep other `done` reports and paths. Tell the user when changed write scopes alter the topology.
-- **send**: `write agent://<handle>` with a concise steering message while a child is active; the status file records its handle.
-- **cancel**: `write proc://<id>/kill` for the active process that owns the run, then mark unverified nodes failed. Do not cancel merely because a model is quiet; use `wait` when blocked.
+- **retry:** after the frontier settles, inspect the error, then reset only the named failed rows and their skipped descendants to exactly `{ "state": "pending" }`. Keep untouched done reports only when their proof and relevant inputs are still valid.
+- **amend:** explicitly edit the run's materialized definition and reset changed nodes and their transitive dependents to clean pending rows, clearing stale handles, paths, and errors. Include nodes whose evidence was invalidated by changed source, importers, dependencies, configuration, generated inputs, or environment. Do not mutate a running node or silently widen its writes. Amend a reusable template separately if future runs should inherit the change.
+- **send:** `write agent://<id>` steers an active child; the state records its handle. On a midpoint decision inspect the child's actual scope and correct drift, rather than treating observation as passive spectating.
+- **cancel:** `write proc://<id>/kill` targets the actual owned process. Confirm it is terminal before reconciling or reusing its writes. Cancellation is not a successful result, and a quiet queued or running child is not dead.
 
-Read each returned report and check its claims against the user's criteria **before** running the next frontier. `done` only records a returned report; if the evidence does not support a dependent task, repair or amend the graph rather than treating it as accepted. A code-changing graph ends with a verification node depending on all producers and actually running the checks. For paginated deliverables, render and inspect every page. For broad research, harvest in waves, follow leads, then fan results into bounded synthesis reports rather than flooding one reducer with raw output. Stop when the user's success criteria pass, not when all handles return.
+After a kernel reset, a JSON handle is not a live wait handle. Inspect the native child result and artifacts, then explicitly save a trustworthy returned report as done at its expected result path, or mark the unverified row failed with the real error. Never dispatch a replacement while the original child may still write.
+
+Read **every** returned report and check its claims against the criteria before the next frontier. A blocked response can still be a returned report; repair or amend rather than treating `done` as acceptance. A code-changing graph ends with independent verification that consumes every relevant producer and actually runs the checks. Paginated deliverables require inspection of every rendered page. Broad research harvests and expands in inspected stages, then reduces bounded reports, not one unbounded pile. Stop when evidence fulfills the user's goal, not when all handles return.
