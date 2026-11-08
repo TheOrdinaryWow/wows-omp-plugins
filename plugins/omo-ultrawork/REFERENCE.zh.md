@@ -38,9 +38,21 @@
 
 需要完整评审的工作遵循其所属的计划。独立的合规、代码质量和真实界面 QA 报告可以并行进行，这些报告齐全后才启动最终的证据关口评审。轻量工作只做限定范围的自查和真实界面验证，不并行派评审。
 
+## /hyperplan 交接
+
+规划者收到的洞察包放在父会话和规划者都能读取的绝对路径上，因为 `local://` 路径只属于父会话。洞察包只包含已接受代理名单中被坚持或修正的发现，被让步的发现已移除。收件人、回复数量和来源都以实际接受的名单为准。规划者的任务沿用 TASK、DELIVERABLE、SCOPE、VERIFY、STOP WHEN 的结构，并要求使用当前的 `/prometheus` 计划格式，包括 `Mechanisms:` 行、`## Must not build`、任务与关口语法、执行约定以及逐切片提交。规划者不会启动 Plan Mode，也不会批准计划。
+
 ## mass-ulw 持久化
 
 状态保存在 `local://mass-ulw/<run-key>.json`，报告保存在 `local://mass-ulw/<run-key>/<id>.md`。两者在内核重置后都会保留，但已保存的 `running` 句柄无法重新接回 `wait`，必须先核对清楚才能继续分发工作。`done` 只表示子代理已返回。重试或修改部分节点时，其他节点的 `done` 报告保持不变。
+
+第 2 版把输入和进度分开。`local://mass-ulw/<run-key>/definition.json` 只保存 `key`、`name` 和 `nodes`；状态文件保存 `{version:2,key,definitionPath,status}`，其中每个节点一行（`pending|running|done|failed|skipped`）。旧的合并格式会在完整预检之后加载时自动升级，已完成的行、句柄和报告路径都会保留。被拒绝的图，或仍未核对的 `running` 行，都不会派发任何工作，旧记录也保持原样。
+
+保存的图只是输入定义。按名字查找时，顺序为：显式指定的文件路径，然后 `<repo>/.omp/dags/<name>.json`，再然后 `$HOME/.omp/dags/<name>.json`。取第一个命中的文件，代理会说明读的是哪个。新运行会复制定义、填入新的 key 和本次拥有的绝对交接根目录，并生成全部为 pending 的新行。恢复是另一种明确的选择，会沿用原有的 key、定义快照、状态和报告。模板从不直接执行。
+
+生产者与消费者的提示词必须指向同一个可访问的绝对物理路径。`local://` URI 属于父会话，其他会话看不到，因此不能用作交接文件。交接文件缺失或不足时，消费者失败。`done` 表示子代理已返回且报告已保存，不代表工作已被接受。
+
+只有主会话才会通过原生 `ask`，在依赖工作开始之前询问未决的范围、花费或不可撤销操作。问题被关闭、超时或无法回答，都视为未批准，依赖的运行不会开始。保存、加载或排期一个定义，都不构成批准。
 
 ## 持久循环契约
 
@@ -100,7 +112,7 @@
 
 普通静态来源以原生方式读取，并保存为不可变快照。论断依赖渲染效果、登录或访问状态、交互或视觉状态时，必须提供浏览器证据。浏览器抓取的 HTML 或文本保留真实的提取来源，不会被重新抓取来替代。这是与上游 OmO 有意保持的差异。
 
-插件在加载时缓存调研脚本，所以升级插件不会破坏正在运行的会话。调研保真来源固定在 [oh-my-openagent 8a8db1d](https://github.com/code-yeongyu/oh-my-openagent/tree/8a8db1d3094da8743989bf693ee5de77889de50e/packages/shared-skills/skills/ulw-research)。
+插件在加载时缓存调研脚本，所以升级插件不会破坏正在运行的会话。调研保真来源固定在 [oh-my-openagent adddd17](https://github.com/code-yeongyu/oh-my-openagent/tree/adddd17004076e799c2de18ccfdee29e12525ace/packages/shared-skills/skills/ulw-research)。
 
 ## 调研存储与保真契约
 
@@ -113,6 +125,12 @@ Outcome 清单使用 `OUTCOME_SCHEMA_VERSION = 2`；`SCHEMA_VERSION = 1` 仍用�
 事实账本、fidelity-state、论断索引、填充映射、语句配对和单次调研校准沿用各自上游 v1 格式；保真、语义及转换记录保留上游字段名和严格外层结构。`verifiedBy` 将交付绑定到精确的 `artifact_sha256`；`renderedFrom` 指明 PDF/DOCX 的已验证源文件。同一字节版本采用最新语义记录，时间相同则更严重的记录优先。缺失阅读结果、缺少必需强阅读覆盖、伪造片段、陈旧或不匹配的记录，以及未解决的注册表阻断或主要缺陷都会阻止交付。修复耗尽或显式争议都不能清除该关口。
 
 脚本没有运行时 npm 依赖。其可执行行为测试与固定样例位于仓库 `src/omo-ultrawork-research/`，不会随插件发布；模块生命周期、格式升级与代表性中文事实及引文回归另有仓库测试。英语及韩语规范化规则来自上游，不代表支持所有语言的完整解析。
+
+刷新会保留历史。刷新或以未固定的方式替换时，会先把完整的旧采集整体移入 `sources/.history/S<n>/<revision>/`，并让新的 `meta.json` 通过 `previous_capture` 指向它。`sources/S<n>/refresh.json` 记录归档路径、旧的和新的哈希、原有的来源型账本行，以及明确重新绑定到新字节的行。内容完全相同的快照不产生任何改动。浏览器来源只能由实际的 `--html` 或 `--raw` 采集刷新；`source refresh` 会拒绝隐式抓取、显式 `--url` 以及仅有文本的输入。每个来源都记录采集来源：静态抓取、浏览器采集、文件导入或命令输出。较早导入的页面按浏览器来源处理。
+
+测量值必须在采集到的原始字节中定位。只有 `--text` 的文件属于仅转换来源：它可以作为带警告的引文，但不能作为测量值的依据。每个 HTML 和 Markdown 版本都需要一个绑定到当前 `## Fidelity` 块的填充映射。`fact polish-apply` 会写出 `<out>.polished.fill-map.json`，其中 `polishedFrom` 指向润色前的映射，因此语义阅读者只复查有变化的句子。`fact derive` 必须显式传入 `--now`，脚本本身从不读取时钟。
+
+参考文件是 `research-collection.md`、`research-delivery.md` 和 `fact-ledger.md`，物化时三者缺一不可。旧的 `collection.md` 和 `research-setup.md` 已不再随插件发布。
 
 ## 不使用终端界面时
 

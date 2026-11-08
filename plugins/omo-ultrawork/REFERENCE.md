@@ -38,9 +38,21 @@ The footer clears on exit or when you switch to a session that is not armed. Swi
 
 Work that needs a full review follows its governing plan. Independent compliance, code-quality and real-surface QA reports may run in parallel, and the final evidence-gate reviewer starts once those reports exist. Light work gets a scoped self-review and real-surface proof without parallel reviewers.
 
+## Hyperplan handoff
+
+The planner receives an insight bundle at an absolute path that both sessions can read, because a `local://` path stays with the parent. The bundle holds only findings the accepted roster defended or refined; conceded findings are removed. Recipients, reply counts and provenance follow the roster as it was actually accepted. The planner's assignment uses the TASK, DELIVERABLE, SCOPE, VERIFY and STOP WHEN layout and asks for the current `/prometheus` plan format, including `Mechanisms:` lines, `## Must not build`, the task and gate grammar, the execution contract and per-slice commits. The planner never activates Plan Mode or approves a plan.
+
 ## mass-ulw persistence
 
 Status lives in `local://mass-ulw/<run-key>.json` and reports in `local://mass-ulw/<run-key>/<id>.md`. Both survive a kernel reset, but a saved `running` handle cannot be reattached to `wait` and must be reconciled before more work is dispatched. `done` only means a child returned. Retrying or amending some nodes leaves the other `done` reports intact.
+
+Version 2 separates input from progress. `local://mass-ulw/<run-key>/definition.json` holds only `key`, `name` and `nodes`; the status file holds `{version:2,key,definitionPath,status}` with one row per node (`pending|running|done|failed|skipped`). A run saved in the old combined format is upgraded when it loads, after a complete preflight, and keeps its finished rows, handles and report paths. A rejected graph or an unreconciled `running` row dispatches nothing and leaves the old record unchanged.
+
+Saved graphs are input-only definitions. A named graph is looked up in this order: an explicit file path, then `<repo>/.omp/dags/<name>.json`, then `$HOME/.omp/dags/<name>.json`. The first match wins, and the agent states which file it read. A fresh run copies the definition, fills in a new key and an owned absolute handoff root, and starts with all rows pending. Recovery is a separate, explicit choice that reuses the existing key, definition snapshot, status and reports. Templates are never executed directly.
+
+Producer and consumer prompts name the same accessible absolute physical path. A `local://` URI belongs to the parent session and is not visible to another session, so it cannot serve as a handoff. A missing or insufficient handoff fails the consumer. `done` means the child returned and its report was saved, not that the work was accepted.
+
+Only the main session asks about unresolved scope, spending or irreversible actions, through native `ask`, before dependent work starts. A dismissed, timed-out or unavailable answer means unapproved, and the dependent run does not start. Saving, loading or scheduling a definition never grants approval.
 
 ## Durable loop contract
 
@@ -100,7 +112,7 @@ The five delivery gates run in order: static, fidelity and meaning, layout, visu
 
 Ordinary static sources are read natively and saved as immutable snapshots. Browser evidence is required when a claim depends on rendering, login or access state, interaction, or visual state. Browser-captured HTML or text keeps its real extraction origin and is never fetched again as a substitute. This is an intentional difference from upstream OmO.
 
-The plugin caches its research scripts at load time, so a plugin upgrade does not break a running session. Research fidelity sources are pinned to [oh-my-openagent 8a8db1d](https://github.com/code-yeongyu/oh-my-openagent/tree/8a8db1d3094da8743989bf693ee5de77889de50e/packages/shared-skills/skills/ulw-research).
+The plugin caches its research scripts at load time, so a plugin upgrade does not break a running session. Research fidelity sources are pinned to [oh-my-openagent adddd17](https://github.com/code-yeongyu/oh-my-openagent/tree/adddd17004076e799c2de18ccfdee29e12525ace/packages/shared-skills/skills/ulw-research).
 
 ## Research storage and fidelity contract
 
@@ -113,6 +125,12 @@ Outcome manifests use `OUTCOME_SCHEMA_VERSION = 2`; `SCHEMA_VERSION = 1` continu
 Fact ledgers, fidelity-state, claim indexes, fill maps, pairs, and run-local calibration start at their upstream v1 schemas; fidelity/meaning/conversion records retain upstream field names and strict envelopes. `verifiedBy` binds a delivery to its exact `artifact_sha256`; `renderedFrom` names the verified source of PDF/DOCX. Newest matching-byte meaning records win, with more severe equal-time records winning. Missing readers, required strong coverage, malformed verdict fragments, stale/mismatched records, and unresolved registry blockers/majors prevent delivery. Neither repair exhaustion nor an explicit dispute clears that barrier.
 
 The scripts have no runtime npm dependencies. Their executable behavioral tests and fixtures live under repository `src/omo-ultrawork-research/`, not in the shipped plugin; module-lifetime, schema migration, and representative Chinese fact/quote regressions have separate repository tests. English/Korean normalization is upstream behavior, not a claim of universal-language parsing.
+
+Refreshing a source keeps its history. A refresh, or an unpinned replacement, first moves the complete prior capture into `sources/.history/S<n>/<revision>/` and points the new `meta.json` at it with `previous_capture`. `sources/S<n>/refresh.json` records the archived path, the old and new hashes, the source-backed ledger rows that existed, and the rows explicitly rebound to the new bytes. Identical snapshots are no-ops. A browser-derived source refreshes only from an actual `--html` or `--raw` capture; `source refresh` refuses an implicit fetch, an explicit `--url`, or text-only input. Each source records its acquisition origin: static fetch, browser capture, file import, or command output. Older imported pages are treated as browser-derived.
+
+Measured values are located in the captured raw bytes. A `--text` file alone is converted-only: it can back a quotation, with a warning, but never a measurement. Every HTML and Markdown edition needs a fill map bound to the current `## Fidelity` block. `fact polish-apply` writes `<out>.polished.fill-map.json`, whose `polishedFrom` names the pre-polish map, so the meaning readers re-check only changed sentences. `fact derive` requires an explicit `--now`; the script never reads the clock.
+
+The reference files are `research-collection.md`, `research-delivery.md` and `fact-ledger.md`, and materialization requires all three. The older `collection.md` and `research-setup.md` are no longer shipped.
 
 ## Without the terminal UI
 

@@ -59,6 +59,8 @@ omp config set magicKeywords.orchestrate false
 
 `mass-ulw` is a skill for work that splits into many subagent tasks, some of which depend on others. The agent describes each task and what it depends on; the skill checks the graph for mistakes and cycles before starting, runs the tasks that are ready in batches, and reads each batch's reports before starting the next. A final step checks the evidence, because a subagent finishing is not the same as the work being accepted. Progress survives a restart of the agent's script runtime.
 
+Before a run that costs money or can't be undone, the agent asks you in the main session. If you dismiss the question or don't answer, the run does not start. Graphs you want to reuse by name can live in `.omp/dags/` in your project or in `~/.omp/dags/`. Saving or loading a graph never starts a run, and each run starts with fresh progress.
+
 Typing `mass ulw`, `mass-ulw`, `ulw-mass`, `mulw` or `meth` points the agent to the skill (`mulw` and `meth` do not turn on ultrawork by themselves). For a handful of independent tasks, a plain parallel `task` call is simpler.
 
 OmO's original description: [Dependency graphs: mass-ulw](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#dependency-graphs-mass-ulw).
@@ -77,7 +79,7 @@ One session holds one loop. A finished loop is read-only, so start a new session
 
 ### Debate a plan with `/hyperplan`
 
-`/hyperplan <request>` has five critics debate a draft plan over three rounds. Each attacks it from one angle: needless complexity and scope creep, integration gaps and edge cases, unverified assumptions, architecture flaws, or missed alternatives. A separate planner then writes the plan from the outcome. The reply starts with `HYPERPLAN MODE ENABLED!`.
+`/hyperplan <request>` has five critics debate a draft plan over three rounds. Each attacks it from one angle: needless complexity and scope creep, integration gaps and edge cases, unverified assumptions, architecture flaws, or missed alternatives. A separate planner then writes the plan from the outcome, in the same format `/prometheus` produces. The reply starts with `HYPERPLAN MODE ENABLED!`.
 
 OmO's original description: [Adversarial alternative: /hyperplan](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#adversarial-alternative-hyperplan).
 
@@ -86,6 +88,8 @@ OmO's original description: [Adversarial alternative: /hyperplan](https://github
 `/ulw-research <request>` produces a report in which every claim can be traced to a source. The agent collects sources in parallel, follows up leads, searches for counter-evidence, and runs the result through five checks before delivery: structure, faithfulness to the sources and meaning, layout, visuals, and proofreading. A full report includes rendered charts or figures with descriptive alt text. The reply starts with `ULW-RESEARCH MODE ENABLED!`.
 
 Working notes go to `<tmpdir>/ulw-research/`, or to `researchScratchDir`. The finished report goes wherever you ask for it.
+
+When you refresh a source, the earlier copy is kept, so the evidence behind earlier claims is not lost. Pages captured in the browser must be recaptured in the browser; the plugin will not download them again.
 
 `/hyperplan` and `/ulw-research` need a request and run only in the main session.
 

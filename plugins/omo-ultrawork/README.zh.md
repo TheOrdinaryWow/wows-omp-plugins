@@ -59,6 +59,8 @@ omp config set magicKeywords.orchestrate false
 
 `mass-ulw` 是一个技能，适合能拆成很多子代理任务、其中一些任务依赖另一些的工作。代理写出每个任务和它依赖的任务；技能在开始前检查这张依赖图有没有错误或循环，然后分批运行已经可以开始的任务，并在开始下一批之前读完这一批的报告。最后一步会核对证据，因为子代理跑完不等于工作被接受。即使代理的脚本运行环境重启，进度也不会丢。
 
+在执行会花钱或无法撤销的运行之前，代理会先在主会话里问你。你关掉问题或没有回答，这次运行就不会开始。想按名字反复使用的图，可以放在项目的 `.omp/dags/` 或 `~/.omp/dags/` 里。保存或加载图本身不会启动任何运行，每次运行都从新的进度开始。
+
 输入 `mass ulw`、`mass-ulw`、`ulw-mass`、`mulw` 或 `meth` 会把代理引向这个技能（`mulw` 和 `meth` 本身不会打开 ultrawork）。如果只是几个相互独立的任务，直接用一次并行的 `task` 调用更简单。
 
 OmO 的原始介绍：[Dependency graphs: mass-ulw](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#dependency-graphs-mass-ulw)。
@@ -77,7 +79,7 @@ OmO 的原始介绍：[Dependency graphs: mass-ulw](https://github.com/code-yeon
 
 ### 用 `/hyperplan` 辩论计划
 
-`/hyperplan <request>` 让五位评审者针对计划草稿辩论三轮。每位评审者从一个角度挑刺：不必要的复杂度和范围蔓延、集成缺口和边界情况、未经验证的假设、架构缺陷，或者被忽略的替代方案。之后由一位独立的规划者根据辩论结果写出计划。回复以 `HYPERPLAN MODE ENABLED!` 开头。
+`/hyperplan <request>` 让五位评审者针对计划草稿辩论三轮。每位评审者从一个角度挑刺：不必要的复杂度和范围蔓延、集成缺口和边界情况、未经验证的假设、架构缺陷，或者被忽略的替代方案。之后由一位独立的规划者根据辩论结果写出计划，格式与 `/prometheus` 相同。回复以 `HYPERPLAN MODE ENABLED!` 开头。
 
 OmO 的原始介绍：[Adversarial alternative: /hyperplan](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/guide/orchestration.md#adversarial-alternative-hyperplan)。
 
@@ -86,6 +88,8 @@ OmO 的原始介绍：[Adversarial alternative: /hyperplan](https://github.com/c
 `/ulw-research <request>` 生成一份每个论断都能追溯到来源的报告。代理并行收集来源，追踪线索，搜索反面证据，交付前还要通过五道检查：结构、对来源的忠实度和语义、版面、视觉效果以及校对。完整的报告包含渲染好的图表，并配有描述性的替代文本。回复以 `ULW-RESEARCH MODE ENABLED!` 开头。
 
 工作笔记存放在 `<tmpdir>/ulw-research/` 或 `researchScratchDir` 指定的位置。最终报告放在你要求的地方。
+
+刷新来源时，插件会保留旧的副本，此前论断所依据的证据不会丢失。在浏览器里采集的页面，需要在浏览器里重新采集，插件不会直接重新下载。
 
 `/hyperplan` 和 `/ulw-research` 都需要带上请求，并且只能在主会话中运行。
 
