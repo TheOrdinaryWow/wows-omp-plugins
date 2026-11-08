@@ -108,7 +108,32 @@ test("describe keeps the same tree while nothing changes and rebuilds after a ch
   component.handleInput("\x1b[6~");
   const scrolled = component.describe();
   expect(scrolled).not.toBe(second);
-  expect(byKey(scrolled, "body")?.scroll).toMatchObject({ by: "page-down" });
+  // Tern moves the scroller above the node carrying the request, so it rides on the body scroller's content.
+  expect(nodes(byKey(scrolled, "body-scroll") as NativeNode)[1]?.scroll).toMatchObject({ by: "page-down" });
+  expect(nodes(scrolled).filter((node) => node.scroll)).toHaveLength(1);
+  expect(byKey(scrolled, "body-scroll")?.key).toBe(byKey(second, "body-scroll")?.key);
+  expect(component.describe()).toBe(scrolled);
+});
+
+test("console and preview recompute their fixed sheet extent on terminal resize", () => {
+  const terminal = { rows: 24 };
+  const resizingTui = { requestRender() {}, terminal } as unknown as TUI;
+  const components = [
+    new AdrConsole(entries, { query: "" }, theme, resizingTui, () => {}),
+    new AdrPreview("Write these", [], theme, resizingTui, () => {}),
+  ];
+  for (const component of components) {
+    terminal.rows = 24;
+    const first = component.describe();
+    expect(props(first).min).toEqual(props(first).max);
+    expect(component.describe()).toBe(first);
+    terminal.rows = 70;
+    const resized = component.describe();
+    expect(resized).not.toBe(first);
+    expect(props(resized).min).toEqual(props(resized).max);
+    expect(props(resized).min).not.toEqual(props(first).min);
+    expect(component.describe()).toBe(resized);
+  }
 });
 
 test("native clicks produce the same results as the keys", () => {
@@ -172,6 +197,12 @@ test("the preview lists Write, the files and Cancel, shows the selected file, an
   const second = preview.describe();
   expect(second).not.toBe(root);
   expect(markdown(second)).toEqual(['{"a":1}']);
+  preview.handleInput("\x1b[6~");
+  const scrolled = preview.describe();
+  expect(nodes(byKey(scrolled, "body-scroll") as NativeNode)[1]?.scroll).toMatchObject({ by: "page-down" });
+  expect(nodes(scrolled).filter((node) => node.scroll)).toHaveLength(1);
+  expect(byKey(scrolled, "body-scroll")?.key).toBe(byKey(second, "body-scroll")?.key);
+  expect(preview.describe()).toBe(scrolled);
 
   // Activating a file only explains, as Enter does; Cancel and Write resolve.
   preview.handleNativeEvent({ type: "activate", key: "split/sidebar/rows", item: "r1" });

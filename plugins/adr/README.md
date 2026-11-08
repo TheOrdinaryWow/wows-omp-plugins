@@ -135,6 +135,7 @@ Changes apply the next time you run an `/adr` command.
 - `/adr check` checks the records, not whether the code follows the decisions.
 - A change that touches several files is not all-or-nothing. If one is interrupted, `/adr check --fix` repairs the decision table.
 - Separate clones of a repository number ADRs independently, so their IDs can collide. Worktrees of the same clone share the numbering.
+- In Tern, the console and preview keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
 
 ## More details
 

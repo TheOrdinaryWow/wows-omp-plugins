@@ -84,6 +84,24 @@ export interface ConsoleState {
 }
 
 const PLUGIN = "ADR";
+// Tern sizes lg sheets by content, so fix the root's line extent from terminal height; only a list scrolls.
+const SHEET_MARGIN_LINES = 8;
+const SHEET_MIN_LINES = 16;
+const FILL = { grow: 1, shrink: 1, basis: 0, min: { h: 0 } } as const;
+const SCROLLER = { ...FILL, max: { lines: 10_000 } } as const;
+
+function sheetRoot(rows: number) {
+  const lines = Math.max(SHEET_MIN_LINES, rows - SHEET_MARGIN_LINES);
+  const h = `${lines}lines` as const;
+  return { gap: "md", min: { h }, max: { h } } as const;
+}
+
+/** Tern moves the scroller above the node that carries `scroll`, so the request rides on the scroller's content. */
+function scroller(key: string, children: NativeChild[], scroll: BodyScroll | undefined): NativeNode {
+  const content = col(children, { gap: "md" });
+  return node("list", SCROLLER, [scroll ? { ...content, scroll } : content], key);
+}
+
 /** Rows per wheel notch, as in the host's fullscreen plan review. */
 const WHEEL_ROWS = 3;
 
@@ -554,7 +572,8 @@ export class AdrConsole implements Component {
   describe(): NativeNode {
     const visible = this.#visible();
     const { entry } = this.#current(visible);
-    const sig = [this.#filter ?? "", this.#query, entry?.record.id ?? "", this.#scroll?.n ?? 0].join("\n");
+    const rows = terminalRows(this.tui);
+    const sig = [this.#filter ?? "", this.#query, entry?.record.id ?? "", this.#scroll?.n ?? 0, rows].join("\n");
     if (this.#native?.sig === sig && this.#native.message === this.#message) return this.#native.node;
 
     const filters = this.#filters();
@@ -596,6 +615,7 @@ export class AdrConsole implements Component {
         }),
       ),
       {
+        ...SCROLLER,
         selected: entry?.record.id ?? null,
         empty: this.entries.length
           ? "No ADRs match; Esc clears the search, a tab changes the filter"
@@ -603,11 +623,13 @@ export class AdrConsole implements Component {
         role: "omp.adr.list",
       },
     );
-    const body: NativeNode = {
-      ...node("col", { role: "omp.adr.body", grow: 1, gap: "sm" }, [this.#describeBody(entry)], "body"),
-      ...(this.#scroll ? { scroll: this.#scroll } : {}),
-    };
-    const sidebar = node("col", { max: { w: "32ch" }, shrink: 0 }, [list], "sidebar");
+    const body = node(
+      "col",
+      { ...FILL, role: "omp.adr.body" },
+      [scroller("body-scroll", [this.#describeBody(entry)], this.#scroll)],
+      "body",
+    );
+    const sidebar = node("col", { max: { w: "32ch" }, shrink: 0, min: { h: 0 } }, [list], "sidebar");
     const decisions = entry
       ? actionBar(
           [
@@ -622,13 +644,13 @@ export class AdrConsole implements Component {
     const message = this.#message;
     const children: NativeChild[] = [
       keyed(nativeRow([tabs, search, tools], { gap: "md", align: "center", wrap: true }), "head"),
-      keyed(nativeRow([sidebar, body], { gap: "lg", align: "start" }), "split"),
+      keyed(nativeRow([sidebar, body], { ...FILL, gap: "lg", align: "stretch" }), "split"),
     ];
     if (decisions) children.push(decisions);
     if (message)
       children.push(keyed(text(message.text, { tone: message.level === "error" ? "error" : "warning", wrap: "word" }), "message"));
     children.push(CONSOLE_HINTS);
-    const described = col(children, { gap: "md" });
+    const described = col(children, sheetRoot(rows));
     this.#native = { sig, message, node: described };
     return described;
   }
@@ -704,7 +726,7 @@ export class AdrPreview implements Component {
   #selected: number;
   #message: ConsoleMessage | undefined;
   #scroll: BodyScroll | undefined;
-  #native: { selected: number; message: ConsoleMessage | undefined; scroll: number; node: NativeNode } | undefined;
+  #native: { selected: number; message: ConsoleMessage | undefined; scroll: number; rows: number; node: NativeNode } | undefined;
   readonly #nativeBodies = new Map<number, NativeNode>();
   /** In Tern the preview is a large glass sheet titled like the terminal frame. */
   readonly nativeOverlay: NonNullable<Component["nativeOverlay"]> = {
@@ -839,8 +861,10 @@ export class AdrPreview implements Component {
   /** Write, the files and Cancel as a list beside the selected file; buttons for Write all and Cancel, then the hints. */
   describe(): NativeNode {
     const scroll = this.#scroll?.n ?? 0;
+    const height = terminalRows(this.tui);
     const memo = this.#native;
-    if (memo?.selected === this.#selected && memo.message === this.#message && memo.scroll === scroll) return memo.node;
+    if (memo?.selected === this.#selected && memo.message === this.#message && memo.scroll === scroll && memo.rows === height)
+      return memo.node;
     const count = `${this.files.length} file${this.files.length === 1 ? "" : "s"}`;
     const rows = selectList(
       "rows",
@@ -858,15 +882,24 @@ export class AdrPreview implements Component {
         }),
         item(`r${this.#cancelRow}`, { label: "Cancel", icon: "x", tone: "error" }),
       ],
-      { selected: `r${this.#selected}`, role: "omp.adr.preview.rows" },
+      { ...SCROLLER, selected: `r${this.#selected}`, role: "omp.adr.preview.rows" },
     );
-    const body: NativeNode = {
-      ...node("col", { role: "omp.adr.preview.body", grow: 1, gap: "sm" }, [this.#describeBody()], "body"),
-      ...(this.#scroll ? { scroll: this.#scroll } : {}),
-    };
+    const body = node(
+      "col",
+      { ...FILL, role: "omp.adr.preview.body" },
+      [scroller("body-scroll", [this.#describeBody()], this.#scroll)],
+      "body",
+    );
     const children: NativeChild[] = [
       keyed(text([span(this.title, "strong")], { wrap: "word" }), "title"),
-      keyed(nativeRow([node("col", { max: { w: "32ch" }, shrink: 0 }, [rows], "sidebar"), body], { gap: "lg", align: "start" }), "split"),
+      keyed(
+        nativeRow([node("col", { max: { w: "32ch" }, shrink: 0, min: { h: 0 } }, [rows], "sidebar"), body], {
+          ...FILL,
+          gap: "lg",
+          align: "stretch",
+        }),
+        "split",
+      ),
       actionBar([
         actionButton(`Write ${count}`, "write", { keys: "shift+w", tone: "accent" }),
         actionButton("Cancel", "cancel", { keys: "escape" }),
@@ -876,8 +909,8 @@ export class AdrPreview implements Component {
     if (message)
       children.push(keyed(text(message.text, { tone: message.level === "error" ? "error" : "warning", wrap: "word" }), "message"));
     children.push(PREVIEW_HINTS);
-    const described = col(children, { gap: "md" });
-    this.#native = { selected: this.#selected, message, scroll, node: described };
+    const described = col(children, sheetRoot(height));
+    this.#native = { selected: this.#selected, message, scroll, rows: height, node: described };
     return described;
   }
 
