@@ -1421,6 +1421,7 @@ describe("Atlas shared plan storage", () => {
         const row = ledger.items[0] as LedgerItem;
         expect(retryWindow(row)?.stop?.reason).toBe("elapsed");
         grantRetry(ledger, row, "Owner granted another window", "user");
+        reopenRow(ledger, row.id, "Version eight grants reopened implementation attempts");
         amendAcceptance(ledger, "T3", "independent result within the agreed tolerance", "Owner confirmed tolerance", "user");
       });
       await f.store.release(f.plan.id, "session-a");

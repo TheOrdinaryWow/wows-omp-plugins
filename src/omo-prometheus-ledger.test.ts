@@ -876,6 +876,47 @@ describe("Prometheus execution ledger", () => {
     expect(isComplete(ledger)).toBe(false);
   });
 
+  test("elapsed implementation attempts reload and remain recordable after a retry grant", () => {
+    for (const kind of ["T", "D", "X"] as const) {
+      const ledger = createLedger("local://example-plan.md", plan);
+      const id =
+        kind === "D"
+          ? addDiscoveredRow(ledger, "T1", {
+              title: "Acceptance blocker",
+              acceptance: "blocker resolved",
+              reason: "Prevents T1 acceptance",
+              agent: "deep-low",
+              blocksOrigin: true,
+            }).id
+          : kind === "X"
+            ? addFixRow(ledger, "F2", {
+                title: "Gate repair",
+                acceptance: "repair observed",
+                reason: "Quality rejection",
+                agent: "deep-low",
+              }).id
+            : "T1";
+      const row = startRow(ledger, id);
+      const attempt = row.attempt as string;
+      const startedAt = row.startedAt;
+      noteRetryDispatch(row, 100);
+      expireRetryWindows(ledger, 100 + RETRY_LIMIT_MS);
+      const restored = restoreLedger(JSON.parse(JSON.stringify(ledger)), ledger.planFilePath, plan, ledger.planSha256);
+      const retained = ledgerRows(restored).find((item) => item.id === id) as LedgerItem;
+      expect(retained.status).toBe("blocked");
+      expect(retained.attempt).toBe(attempt);
+      expect(retained.startedAt).toBe(startedAt);
+      expect(retained.receipt).toBeUndefined();
+      expect(() => recordReceipt(retained, receiptFor(retained, attempt, "Original"), "Inspected successful result")).toThrow();
+      grantRetry(restored, retained, "Owner grants recording the settled original result", "user");
+      recordReceipt(retained, receiptFor(retained, attempt, "Original"), "Inspected successful result");
+      expect(retained.status).toBe("done");
+      expect(retryWindow(retained)?.openedAt).toBeUndefined();
+      expect(retained.retry?.windows[0]?.stop?.reason).toBe("elapsed");
+      expect(restored.version).toBe(ledger.version);
+    }
+  });
+
   test("P1-origin X repair waits once without cycles, preserves gates and source budget", () => {
     const content = plan.replace("## Tasks", "Delivery: ship\n\n## Tasks");
     const ledger = createLedger("local://example-plan.md", content);

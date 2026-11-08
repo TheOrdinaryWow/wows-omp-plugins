@@ -1180,6 +1180,60 @@ async function scenario(name: string, root: string): Promise<void> {
     }
     return;
   }
+  if (["retry-expiry-settled", "heavy-retry-expiry-settled", "retry-expiry-settling", "retry-expiry-fresh"].includes(name)) {
+    const prepared = await prepare("T1");
+    const settling = name === "retry-expiry-settling";
+    await publish(prepared, "OriginalWorker", settling ? { status: "running", nativeStatus: "started", finalResult: false } : {});
+    ok(await call({ action: "status" }));
+    const current = await ledger();
+    const window = current.items[0]?.retry?.windows[0];
+    assert(window?.openedAt);
+    window.openedAt = Date.now() - 4 * 60 * 60 * 1000;
+    await writeFile(ledgerFile, JSON.stringify(current));
+    ok(await call({ action: "status" }));
+    const stopped = await row("T1");
+    assert.equal(stopped.status, "blocked");
+    assert.equal(stopped.attempt, prepared.item.attempt);
+    assert.equal(stopped.startedAt, prepared.item.startedAt);
+    assert.equal(stopped.receipt, undefined);
+    assert.equal(stopped.retry?.windows[0]?.stop?.reason, "elapsed");
+    refused(await done("T1", "OriginalWorker"));
+    if (settling) {
+      refused(await call({ action: "retry", id: "T1", evidence: "Wait for terminal success" }));
+      await publish(prepared, "OriginalWorker");
+    }
+    ok(await call({ action: "block", id: "T3", evidence: "Waiting for owner credentials" }));
+    const history = structuredClone(stopped.retry?.windows);
+    ok(await call({ action: "retry", id: "T1", evidence: "Record the original child's inspected successful result" }));
+    assert.deepEqual((await row("T1")).retry?.windows.slice(0, -1), history);
+    assert.equal((await row("T1")).attempt, prepared.item.attempt);
+    if (name === "retry-expiry-fresh") {
+      refused(await call({ action: "start", id: "T1" }));
+      ok(await call({ action: "reopen", id: "T1", evidence: "Owner chose fresh implementation work" }));
+      assert.equal((await row("T1")).attempt, undefined);
+      const fresh = await prepare("T1");
+      assert.notEqual(fresh.item.attempt, prepared.item.attempt);
+      refused(await done("T1", "OriginalWorker"));
+      await publish(fresh, "FreshWorker");
+      ok(await done("T1", "FreshWorker"));
+      assert((await row("T1")).retry?.windows[1]?.openedAt);
+      assert.equal((await row("T1")).receipt?.childAgentId, "FreshWorker");
+      return;
+    }
+    ok(await done("T1", "OriginalWorker"));
+    const recorded = await row("T1");
+    assert.equal(recorded.receipt?.childAgentId, "OriginalWorker");
+    assert.equal(recorded.receipt?.attempt, prepared.item.attempt);
+    assert.equal(recorded.status, name.startsWith("heavy-") ? "in_progress" : "done");
+    if (name.startsWith("heavy-")) {
+      assert.deepEqual(recorded.verification, {});
+      ok(await call({ action: "verify", id: "T1" }));
+      assert((await row("T1")).verification?.attempt);
+    }
+    assert.equal(recorded.retry?.windows[1]?.openedAt, undefined);
+    assert.deepEqual(recorded.retry?.windows[1]?.failures, []);
+    return;
+  }
   if (name === "retry-expiry-live") {
     const prepared = await prepare("T1");
     await publish(prepared, "ExpiredWorker", { status: "running", nativeStatus: "started", finalResult: false });
@@ -1199,6 +1253,17 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T1")).receipt, undefined);
     ok(await call({ action: "block", id: "T3", evidence: "Waiting for owner credentials" }));
     ok(await call({ action: "retry", id: "T1", evidence: "Owner grants a new hypothesis after expired work settled" }));
+    refused(await done("T1", "ExpiredWorker"));
+    ok(
+      await call({
+        action: "fail",
+        id: "T1",
+        childAgentId: "ExpiredWorker",
+        check: "native integration",
+        firstError: "Expired worker failed during final integration",
+        evidence: "Inspected final native failure after elapsed cancellation",
+      }),
+    );
     ok(await call({ action: "start", id: "T1" }));
     return;
   }
@@ -3298,6 +3363,10 @@ if (process.env[CHILD_ENV]) {
       "heavy-pre-spawn",
       "time-limit-long-run",
       "retry-expiry-live",
+      "retry-expiry-settled",
+      "heavy-retry-expiry-settled",
+      "retry-expiry-settling",
+      "retry-expiry-fresh",
       "retry-native-cancellation",
       "delivery-repair",
       "delivery-pr",

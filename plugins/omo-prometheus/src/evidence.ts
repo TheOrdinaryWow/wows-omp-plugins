@@ -711,6 +711,7 @@ export class ChildEvidence {
           )
             continue;
           const window = retryWindow(row);
+          if (window?.grant && assignment.dispatchedAt <= window.grant.confirmedAt) continue;
           if (
             window?.openedAt !== undefined &&
             window.dispatchReservation === undefined &&

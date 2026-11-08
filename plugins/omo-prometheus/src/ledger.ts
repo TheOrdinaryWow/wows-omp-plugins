@@ -795,13 +795,18 @@ export function chargeSupersededFailures(row: LedgerItem, failures: readonly Fai
   return retryWindow(row)?.stop !== undefined;
 }
 
-/** Halt a row whose window stopped. A HEAVY row keeps its recorded implementation for an owner-confirmed retry. */
+/** Halt a stopped row, retaining elapsed implementation attempts and recorded HEAVY implementation proof. */
 export function haltRow(ledger: ExecutionLedger, row: LedgerItem, reason: string): void {
   if (row.tier === "heavy" && row.receipt) {
     row.status = "blocked";
     row.evidence =
       `${row.evidence ?? ""}\n${reason} Recorded implementation proof is retained; owner-confirmed retry resumes independent verification.`.trim();
     resetVerification(row);
+  } else if (retryWindow(row)?.stop?.reason === "elapsed" && /^[TDX]/.test(row.id) && row.attempt && !row.receipt) {
+    row.status = "blocked";
+    row.evidence =
+      `${row.evidence ?? ""}\n${reason} Current implementation attempt is retained: after a retry grant, record its original child with done if native final success is confirmed; otherwise use fail, or reopen then start for fresh work.`.trim();
+    row.updatedAt = Math.max(Date.now(), row.updatedAt + 1);
   } else reopenRow(ledger, row.id, reason);
 }
 
@@ -850,9 +855,10 @@ export function grantRetry(
   if (timeLimit !== undefined && decidedBy !== "user")
     throw new Error("A retry timeLimit requires explicit user confirmation in the dialog");
   const timeLimitHours = timeLimit === undefined ? effectiveTimeLimitHours(row) : parseTimeLimit(timeLimit);
+  const retainedAttempt = retryWindow(row)?.stop?.reason === "elapsed" && /^[TDX]/.test(row.id) && row.attempt && !row.receipt;
   row.retry?.windows.push({ failures: [], timeLimitHours, grant: { confirmedAt: now, note: note.trim(), decidedBy } });
   const reason = `${decidedBy === "user" ? "Owner confirmed" : "The atlasRetry setting granted"} a new retry window: ${note.trim()}`;
-  if (row.tier === "heavy" && row.receipt) {
+  if ((row.tier === "heavy" && row.receipt) || retainedAttempt) {
     row.status = "in_progress";
     row.evidence = `${row.evidence ?? ""}\n${reason}`.trim();
     resetVerification(row);
@@ -1390,7 +1396,10 @@ export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: stri
   const row = rows.find((item) => item.id === id);
   if (!row) throw new Error(`Unknown ledger row ${id}`);
   assertRetryAvailable(row);
-  if (row.status !== "open") throw new Error(`${id} is ${row.status}; reopen it before starting a fresh attempt`);
+  if (row.status !== "open")
+    throw new Error(
+      `${id} is ${row.status}; reopen it to discard the current attempt before starting fresh, or use done for its successfully settled child after a retry grant`,
+    );
   const unfinished = row.dependsOn.filter((dependency) => rows.find((item) => item.id === dependency)?.status !== "done");
   if (unfinished.length) throw new Error(`${id} depends on unfinished rows: ${unfinished.join(", ")}`);
   const resolved = resolveAgent(row.agent, availableAgents).dispatchAgent;
