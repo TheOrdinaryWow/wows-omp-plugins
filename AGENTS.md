@@ -321,6 +321,16 @@ the matching keys. Verified by hand on Tern 0.9.5:
   tooltip, and file names before their directories.
 - An editor-replacing `ctx.ui.custom` gets no sheet; `/atlas` mounts as a
   fullscreen overlay when `isNativeRendering()` is true.
+- A `size: "lg"` sheet is 960px wide but as tall as its content, so a console
+  whose views differ in length changes size and pushes its actions off-screen.
+  The consoles give their root `col` equal `min.h`/`max.h` of
+  `max(16, terminal rows - 8)` lines (rows in the memo key), let only the pane
+  row grow (`grow: 1, shrink: 1, basis: 0, min: { h: 0 }`), and scroll each
+  pane in a `list` with a `max`: a `col` with `max.h` only clips, and a list
+  is the only plain node Tern scrolls. Its text cannot be selected. A
+  `NativeNode.scroll` request goes on the list's content, not the list: Tern
+  moves the scroller above the node that carries it. A huge `basis` on the
+  root does not size the sheet.
 - To look at it, run `tern serve --control /tmp/t.sock --out DIR`, then drive
   it with `tern ctl --control /tmp/t.sock type|key|click X Y|shot NAME`; shot
   PNGs are at twice the click coordinates. `PI_TUI_TSP_RECORD=file.jsonl omp`
