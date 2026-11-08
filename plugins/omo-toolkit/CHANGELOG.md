@@ -8,6 +8,15 @@
 - Align debugging and Git guidance with observed evidence, user-owned decisions, and previously authorized commit cadence.
 - Inject an agent selection protocol into the main agent's system prompt when the `task` roster lists omo-toolkit agents: domain-to-agent lanes, `deep-low` as the default, and handling of `ESCALATE: deep-high` and `ESCALATE: parent` results by re-dispatching with the same task `name`.
 
+## [0.8.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.7.0...omo-toolkit@0.8.0) (2026-11-08)
+
+
+### Features
+
+* **omo-toolkit:** add eval-integrity and resync review, git, data and chart skills ([4d931cf](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/4d931cfccc45b41fc1f276f9fcd0bd0d7915aaac))
+* **omo-toolkit:** resync frontend and visual-qa and add a native-browser rendered-page detector ([e801d56](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e801d568ca6aa083d62035e2d08d3839fa428747))
+* **omo-toolkit:** resync programming, debugging, refactor and remove-ai-slops with Bun scaffolders and test-retention helpers ([e079e74](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e079e745f9f8a87dea750f4ce3684f9c3f7caf48))
+
 ## [0.7.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.6.3...omo-toolkit@0.7.0) (2026-11-08)
 
 
