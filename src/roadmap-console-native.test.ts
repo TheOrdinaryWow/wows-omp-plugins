@@ -88,14 +88,14 @@ function buttons(root: NativeNode): Map<string, NativeNode> {
   );
 }
 
-function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}) {
+function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}, tui: TUI = TUI_STUB) {
   const choices: Array<ConsoleChoice | undefined> = [];
   const orders: StageOrder[] = [];
   const component = new RoadmapConsole(
     model,
     { on: ON, ...state },
     theme,
-    TUI_STUB,
+    tui,
     (choice) => choices.push(choice),
     (stage) => PLANS[stage],
     (order) => orders.push(order),
@@ -175,6 +175,22 @@ test("console describe returns the same node until the state changes", () => {
   expect(second).not.toBe(first);
   expect(selectedLabel(second)).toMatch(/S06/);
   expect(component.describe()).toBe(second);
+});
+
+test("console sheet extent follows terminal resizes without losing unchanged-frame memoization", () => {
+  const terminal = { rows: 24 };
+  const tui = { requestRender() {}, terminal } as unknown as TUI;
+  const { component } = mount(undefined, {}, tui);
+  const first = component.describe();
+  expect(component.describe()).toBe(first);
+  expect(props(first).max).toEqual(props(first).min);
+
+  terminal.rows = 48;
+  const resized = component.describe();
+  expect(resized).not.toBe(first);
+  expect(props(resized).min).not.toEqual(props(first).min);
+  expect(props(resized).max).toEqual(props(resized).min);
+  expect(component.describe()).toBe(resized);
 });
 
 test("console native selection and tabs mirror the keys, and activation runs Enter", () => {

@@ -171,6 +171,7 @@ Changes apply the next time you use `/roadmap` or the agent reads the roadmap.
 - `/roadmap check` checks the documents, not whether the code matches them.
 - A change that touches several files is not all-or-nothing, and IDs shown in a declined preview may be skipped afterwards.
 - Separate clones of a repository number independently, so their IDs can collide. Worktrees of the same clone share the numbering.
+- In Tern, the console and previews keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
 
 ## More details
 

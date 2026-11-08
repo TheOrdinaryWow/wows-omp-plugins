@@ -104,6 +104,22 @@ const LABEL_WIDTH = 10;
 /** Below this many columns the frame cannot hold both panes; lines are clipped instead of overflowing. */
 const MIN_FRAME_WIDTH = 24;
 
+// Tern sizes lg sheets by content, so fix the root's line extent from terminal height; only a list with max scrolls.
+const SHEET_MARGIN_LINES = 8;
+const SHEET_MIN_LINES = 16;
+const FILL = { grow: 1, shrink: 1, basis: 0, min: { h: 0 } } as const;
+const SCROLLER = { ...FILL, max: { lines: 10_000 } } as const;
+
+function sheetRoot(rows: number) {
+  const lines = Math.max(SHEET_MIN_LINES, rows - SHEET_MARGIN_LINES);
+  const h = `${lines}lines` as const;
+  return { gap: "md", min: { h }, max: { h } } as const;
+}
+
+function scroller(key: string, children: NativeChild[]): NativeNode {
+  return node("list", SCROLLER, [col(children, { gap: "md" })], key);
+}
+
 type Entry =
   | { kind: "stage"; id: string; title: string; stage: StageDoc }
   | { kind: "round"; id: string; title: string; round: RoundDoc }
@@ -449,22 +465,28 @@ abstract class SplitPane implements Component {
   }
 
   describe(): NativeNode {
-    const signature = [this.selected, this.message?.level ?? "", this.message?.text ?? "", this.nativeSignature()].join("\u0000");
+    const rows = this.tui.terminal?.rows ?? (process.stdout.rows || 40);
+    const signature = [rows, this.selected, this.message?.level ?? "", this.message?.text ?? "", this.nativeSignature()].join("\u0000");
     if (this.#nativeRoot && signature === this.#nativeSignature) return this.#nativeRoot;
     const sidebar = node(
       "col",
-      { max: { w: "40ch" }, shrink: 0, gap: "sm" },
+      { max: { w: "40ch" }, shrink: 0, gap: "sm", min: { h: 0 } },
       [
         ...this.describeSidebarTop(),
         selectList("items", this.describeItems(), {
+          ...SCROLLER,
           selected: this.count() ? `i${this.selected}` : null,
           empty: [span(this.emptySidebar(), "dim")],
         }),
       ],
       "sidebar",
     );
-    const body = node("col", { grow: 1, gap: "md" }, [this.describeBody()], "body");
-    const children: NativeChild[] = [...this.describeTop(), keyed(rowNode([sidebar, body], { gap: "lg", align: "start" }), "split")];
+    const detail = this.describeBody();
+    const body = node("col", FILL, [scroller(`scroll-${detail.key ?? "detail"}`, [detail])], "body");
+    const children: NativeChild[] = [
+      ...this.describeTop(),
+      keyed(rowNode([sidebar, body], { ...FILL, gap: "lg", align: "stretch" }), "split"),
+    ];
     if (this.message)
       children.push(
         keyed(
@@ -475,7 +497,7 @@ abstract class SplitPane implements Component {
     children.push(actionBar(this.describeActions()), hintsRow(this.nativeHints()));
     this.#nativeSignature = signature;
     // The sheet is the frame: a borderless column, titled by `nativeOverlay`.
-    this.#nativeRoot = col(children, { gap: "md" });
+    this.#nativeRoot = col(children, sheetRoot(rows));
     return this.#nativeRoot;
   }
 
