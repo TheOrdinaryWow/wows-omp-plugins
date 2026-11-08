@@ -64,26 +64,28 @@ omp plugin install omo-toolkit@wows-omp-plugins
 | 技能 | 适合做什么 |
 | --- | --- |
 | `git-master` | 在你授权后进行提交、变基、改写历史和追查历史。已批准的提交计划不需要再确认一次。 |
-| `review-work` | 在真实界面上检查完成的工作，外加一次独立评审。 |
+| `review-work` | 在真实界面上检查完成的工作，外加一次独立评审。结果可能是 INCONCLUSIVE（无法定论），它不算通过。 |
+| `eval-integrity` | 检查一项评估能否被信任：真值来源、数据泄漏，以及运行评估的人是否可能左右了结果。最后给出 PASS、FAIL 或 INCONCLUSIVE 的结论。它不会重新运行评估，也不批准部署。 |
 | `remove-ai-slops` | 清理最近的改动，不改变行为。 |
 | `refactor` | 重构和简化，规模与改动相称。 |
 | `debugging` | 根据证据找到原因，修复前后都做确认。 |
-| `frontend` | 网页和 HTML、CSS、SVG：规划、构建、精简、验证。 |
-| `visual-qa` | 在手机和桌面尺寸、浅色和深色下截图，逐项通过或不通过的清单、修改前后对比图，以及两位独立评审。 |
+| `frontend` | 网页和 HTML、CSS、SVG：规划、构建、精简、验证。新界面先做依据梳理（grounding）；渲染后的页面会在你的浏览器里检查，报告会写明哪些内容没能检查。 |
+| `visual-qa` | 在手机和桌面尺寸、浅色和深色下截图，逐项通过或不通过的清单、修改前后对比图，以及两位独立评审。评审之前，会先在浏览器中检查每个页面，并列出没能看到的部分。 |
 | `init-deep` | 为整个仓库生成或刷新 `AGENTS.md` 指引。只有你明确允许时才会提交、推送或开 PR，从不合并。 |
 | `coding-agent-sessions` | 查找和还原 OMP、Codex、Claude、OpenCode 等编码代理以前的会话。 |
 | `onboarding` | 带你看一遍已安装的功能，每一步都先征得你同意。 |
 | `give-me-tips` | 根据已安装的文档和配置，解释 OMP 或插件的提示、命令和功能。 |
 | `data-scientist` | 用 DuckDB、Polars 和 NumPy 分析 CSV、Parquet、JSON 和 NDJSON 文件。 |
-| `programming` | 按你仓库的习惯编写 Python、Rust、TypeScript/JavaScript 和 Go，按需生成新项目。 |
+| `programming` | 按你仓库的习惯编写 Python、Rust、TypeScript/JavaScript 和 Go，按需生成新项目。生成器基于 Bun 运行。 |
 | `ultimate-browsing` | 借助 OMP 自带的阅读器和浏览器，阅读拦截机器人的页面、特定平台的内容和带日期的归档。只提供指引。 |
 | `visualize` | 用一个独立的离线 HTML 页面（图表、表格、示意图）来回答，交给你之前会先在浏览器里检查。 |
 
 有些技能会运行辅助脚本，需要你的机器上有相应工具：
 
-- `frontend` 和 `visualize` 会运行一个草稿检查脚本，需要 Bun。可选的 Lighthouse 审计需要 Node、本地 Chrome，以及项目能用的 `lighthouse` 包；把它加进项目需要你批准。
+- `frontend` 和 `visualize` 会运行一个草稿检查脚本，需要 Bun。`frontend` 还会在 OMP 自带的浏览器里检查渲染后的页面，无需额外安装。可选的 Lighthouse 审计需要 Node、本地 Chrome，以及项目能用的 `lighthouse` 包；把它加进项目需要你批准。
 - `coding-agent-sessions` 需要 Python 3.11 或更高版本。
-- `data-scientist` 和 `programming` 的辅助脚本需要 Python 3.11 或更高版本和 uv。第一次运行可能会把依赖包下载到隔离环境中。安装插件时不会运行任何脚本。
+- `data-scientist` 的辅助脚本需要 Python 3.11 或更高版本和 uv。第一次运行可能会把依赖包下载到隔离环境中。
+- `programming` 的项目生成器需要 Bun。生成 Python 项目还需要 uv，生成 Rust 项目需要 Cargo，生成 Go 项目需要 Go，这些工具都要事先安装好。生成器本身不安装任何东西，两者在安装插件时都不会运行。
 
 原始的技能介绍见 OmO 的 [Built-in Skill Sets](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/reference/features.md#built-in-skill-sets)。
 
@@ -179,11 +181,12 @@ OmO 在 `omo.json` 里配置模型；在 OMP 中请改用模型角色和上面�
 - `visualize` 给你的是文件路径、摘要和截图，不会在聊天里直接显示 HTML。
 - 注释检查无法判断一条针对整个文件的发现是不是来自最近一次修改。
 - `coding-agent-sessions` 每次扫描最多查看最近的 2,000 个会话文件。会话很多时，请指定更小的目录。
+- `frontend` 的页面检查会把它在文件夹中找到的 HTML 文件列为未渲染。结果干净也不代表完成了完整的视觉或无障碍检查。
 
 ## 更多细节
 
-[REFERENCE.zh.md](REFERENCE.zh.md) 介绍了代理的工具权限、技能辅助脚本、注释检查器的调用方式、建议何时出现及其状态保存在哪里、`toolkit_init_deep` 工具、回退提示，以及在 RPC、ACP 编辑器和无界面模式下的表现。
+[REFERENCE.zh.md](REFERENCE.zh.md) 介绍了代理的工具权限、技能辅助脚本、渲染页面检查器、评审与评估规则、注释检查器的调用方式、建议何时出现及其状态保存在哪里、`toolkit_init_deep` 工具、回退提示，以及在 RPC、ACP 编辑器和无界面模式下的表现。
 
 ## 许可证
 
-原创的打包部分采用 MIT 许可证。移植的代理、技能和代理选择规程（`src/selection-protocol.ts`）是 OmO 修订版 `fe427efeed97e95f009dc6ca7fb17a3ac857f79f` 的衍生作品，适用 Sustainable Use License 1.0。修订版 `8a8db1d3094da8743989bf693ee5de77889de50e` 中新增的运行时组件和技能，同样是 Sustainable Use License 1.0 的衍生作品。原创的 OMP 接线和设置代码仍采用 MIT 许可证。前端设计参考资料在 `skills/frontend/` 中保留了 Apache License 2.0 署名。详见 `NOTICE`、`LICENSE-MIT` 和 `LICENSE-SUL-1.0`。
+原创的打包部分采用 MIT 许可证。移植的代理、技能和代理选择规程（`src/selection-protocol.ts`）是 OmO 修订版 `fe427efeed97e95f009dc6ca7fb17a3ac857f79f` 和 `adddd17004076e799c2de18ccfdee29e12525ace` 的衍生作品，适用 Sustainable Use License 1.0。修订版 `8a8db1d3094da8743989bf693ee5de77889de50e` 中新增的运行时组件和技能，同样是 Sustainable Use License 1.0 的衍生作品。原创的 OMP 接线和设置代码仍采用 MIT 许可证。部分前端规则和渲染页面检查器还分别遵循 Impeccable（Apache License 2.0）和 StyleGallery（MIT）。前端设计参考资料在 `skills/frontend/` 中保留了 Apache License 2.0 署名。详见 `NOTICE`、`LICENSE-MIT` 和 `LICENSE-SUL-1.0`。

@@ -64,26 +64,28 @@ Run a skill with `/skill:<name>`, or let the agent load it when the task matches
 | Skill | Use for |
 | --- | --- |
 | `git-master` | Commits, rebases, history rewrites and digging through history, when you have authorized them. An approved commit plan needs no second confirmation. |
-| `review-work` | Checking finished work on the real surface, plus one independent review. |
+| `review-work` | Checking finished work on the real surface, plus one independent review. A review can end INCONCLUSIVE, which is not a pass. |
+| `eval-integrity` | Checking whether an evaluation can be trusted: its ground truth, data leakage, and whether the people running it could have shaped the results. It ends with a PASS, FAIL or INCONCLUSIVE verdict. It does not rerun the evaluation or approve a deployment. |
 | `remove-ai-slops` | Cleaning up recent changes without changing behavior. |
 | `refactor` | Refactoring and simplifying, sized to the change. |
 | `debugging` | Finding the cause from evidence and confirming the fix before and after. |
-| `frontend` | Web pages and HTML, CSS or SVG work: plan, build, trim and verify. |
-| `visual-qa` | Screenshots on phone and desktop sizes in light and dark, a pass/fail checklist, before-and-after images and two independent reviewers. |
+| `frontend` | Web pages and HTML, CSS or SVG work: plan, build, trim and verify. New screens start with a grounding pass, and rendered pages are checked in your browser. The report says what it could not inspect. |
+| `visual-qa` | Screenshots on phone and desktop sizes in light and dark, a pass/fail checklist, before-and-after images and two independent reviewers. A browser check of each page runs first and lists what it could not see. |
 | `init-deep` | Generating or refreshing `AGENTS.md` guidance across the repository. It commits, pushes or opens a PR only when you explicitly allow it, and never merges. |
 | `coding-agent-sessions` | Finding and reconstructing earlier sessions from OMP, Codex, Claude, OpenCode and other coding agents. |
 | `onboarding` | A guided tour of what you have installed, with each step asking for your consent. |
 | `give-me-tips` | Explaining an OMP or plugin tip, command or feature from the installed docs and configuration. |
 | `data-scientist` | Analyzing CSV, Parquet, JSON and NDJSON files with DuckDB, Polars and NumPy. |
-| `programming` | Writing Python, Rust, TypeScript/JavaScript and Go that follows your repository, and generating new projects on request. |
+| `programming` | Writing Python, Rust, TypeScript/JavaScript and Go that follows your repository, and generating new projects on request with generators that run on Bun. |
 | `ultimate-browsing` | Reading pages that block bots, platform-specific content and dated archives, through OMP's own reader and browser. Guidance only. |
 | `visualize` | Answering with a standalone offline HTML page (charts, tables, diagrams), checked in a browser before you get it. |
 
 Some skills run helper scripts and need tools on your machine:
 
-- `frontend` and `visualize` run a draft check that needs Bun. The optional Lighthouse audit needs Node, a local Chrome and a `lighthouse` package the project can use; adding it to a project needs your approval.
+- `frontend` and `visualize` run a draft check that needs Bun. `frontend` also checks rendered pages in OMP's own browser, with nothing extra to install. The optional Lighthouse audit needs Node, a local Chrome and a `lighthouse` package the project can use; adding it to a project needs your approval.
 - `coding-agent-sessions` needs Python 3.11 or newer.
-- `data-scientist` and `programming` helpers need Python 3.11 or newer and uv. The first run may download packages into isolated environments. Nothing runs at install.
+- `data-scientist` helpers need Python 3.11 or newer and uv. The first run may download packages into isolated environments.
+- `programming` project generators need Bun. Python projects also need uv, Rust projects need Cargo and Go projects need Go, all already installed. The generators install nothing, and neither runs anything at install.
 
 The original skills are described in OmO's [Built-in Skill Sets](https://github.com/code-yeongyu/oh-my-openagent/blob/fe427efeed97e95f009dc6ca7fb17a3ac857f79f/docs/reference/features.md#built-in-skill-sets).
 
@@ -179,11 +181,12 @@ OmO configures models in `omo.json`; in OMP, use model roles and these overrides
 - `visualize` gives you a file path, a summary and screenshots, not HTML shown in the chat.
 - Comment checking cannot tell whether a finding covering the whole file came from the last edit.
 - `coding-agent-sessions` looks at up to the 2,000 most recent session files per scan. Point it at a narrower folder for larger stores.
+- `frontend`'s page check lists HTML files it finds in a folder as not rendered. A clean result is not a full visual or accessibility check.
 
 ## More details
 
-[REFERENCE.md](REFERENCE.md) documents the agents' tool access, the skill helpers, how the comment checker is called, when the advisor runs and where it stores its state, the `toolkit_init_deep` tool, the fallback hint, and behavior in RPC, ACP editors and headless runs.
+[REFERENCE.md](REFERENCE.md) documents the agents' tool access, the skill helpers, the rendered-page checker, the review and evaluation rules, how the comment checker is called, when the advisor runs and where it stores its state, the `toolkit_init_deep` tool, the fallback hint, and behavior in RPC, ACP editors and headless runs.
 
 ## License
 
-Original packaging is MIT. The ported agents, skills and agent selection protocol (`src/selection-protocol.ts`) are Sustainable Use License 1.0 derivatives of OmO revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. The runtime components and skills added at revision `8a8db1d3094da8743989bf693ee5de77889de50e` are also Sustainable Use License 1.0 derivatives. The original OMP wiring and settings code stay under MIT. The frontend design references keep their Apache License 2.0 attribution in `skills/frontend/`. See `NOTICE`, `LICENSE-MIT` and `LICENSE-SUL-1.0`.
+Original packaging is MIT. The ported agents, skills and agent selection protocol (`src/selection-protocol.ts`) are Sustainable Use License 1.0 derivatives of OmO revisions `fe427efeed97e95f009dc6ca7fb17a3ac857f79f` and `adddd17004076e799c2de18ccfdee29e12525ace`. The runtime components and skills added at revision `8a8db1d3094da8743989bf693ee5de77889de50e` are also Sustainable Use License 1.0 derivatives. The original OMP wiring and settings code stay under MIT. Some frontend rules and the rendered-page checker also follow Impeccable (Apache License 2.0) and StyleGallery (MIT). The frontend design references keep their Apache License 2.0 attribution in `skills/frontend/`. See `NOTICE`, `LICENSE-MIT` and `LICENSE-SUL-1.0`.

@@ -16,15 +16,34 @@
 
 技能通过 `skill://<name>` 读取。有些技能会按各自的说明用 `node`、`bun`、`python3` 或 `uv` 运行辅助脚本。
 
-- `frontend` 包括修改前基线、必需内容检查、无依赖的 Bun 草稿检查、组件库许可与访问检查，以及对现有界面小改动的例外。草稿检查的运行方式是 `bun <frontend-skill-directory>/scripts/perfection/check-draft-guard.ts <files-or-dirs> [--json]`。退出码：0 无问题，1 有发现，2 用法错误或显式目标无法读取。请在视觉 QA 之前运行；它不能代替渲染后的检查。
-- `visual-qa` 对每个列出的用例在 390 和 1440 CSS 像素宽度（页面布局另加 1920）下分别截取浅色和深色截图。修复现有 UI 时，它先冻结用例列表并截取 `before`。每项记为 PASS、FAIL 或 N/A。低风险工作进行两轮评审，产品界面三轮；到上限仍未解决的缺陷以 NEEDS HUMAN REVIEW 结束。
+- `frontend` 包括为新界面、流程、改版和设计系统工作做的依据梳理（grounding）、修改前基线、必需内容检查、无依赖的 Bun 草稿检查、渲染页面检测器、组件库许可与访问检查，以及对现有界面小改动的例外。草稿检查读取源文件，运行方式是 `bun <frontend-skill-directory>/scripts/perfection/check-draft-guard.ts <files-or-dirs> [--json]`。退出码：0 无问题，1 有发现，2 用法错误或显式目标无法读取。请在视觉 QA 之前运行。它不能代替渲染检查，渲染检查由下面的检测器完成。验证步骤要求提供带浏览器证据的 WCAG 2.2 AA PASS/FAIL/N/A 表格，该表格不是合规声明。
+- `visual-qa` 对每个列出的用例在 390 和 1440 CSS 像素宽度（页面布局另加 1920）下分别截取浅色和深色截图。修复现有 UI 时，它先冻结用例列表并截取 `before`。每项记为 PASS、FAIL 或 N/A。低风险工作进行两轮评审，产品界面三轮；到上限仍未解决的缺陷以 NEEDS HUMAN REVIEW 结束。评审员介入之前，检测器先对渲染页面运行：阻断性发现会使对应条目（E2、A9、C4、I3）不通过，或成为独立的 `[product][defect]` 条目；非阻断性发现只是证据，由评审员判定为缺陷还是口味问题；报告的限制属于证据缺口，因此零发现绝不等于通过。在附加的浏览器（attached browser）上，DPR 为 PNG 宽度除以 CSS 宽度。压力测试只在插件自有的标签页中运行，借用的标签页则用 `snapshotExpression()` 截取。A3 的行宽要求为拉丁文 65 到 75 个字符（手机上至少 45 个）。A13、B8、E7、F8 和 F9 是上下文相关的默认值：记录在案的偏差视为通过，未记录的偏差则按影响分类。G1 允许装饰性的氛围动画循环，但它必须在可见时才开始，移出视口和标签页隐藏时停止，并在减少动态效果时只显示一帧静态画面。
 - Lighthouse（可选）需要 Node、本地 Chrome，以及目标项目能解析到的 `lighthouse` 包。缺少时审计会明确提示并停止。
 - `coding-agent-sessions` 只使用 Python 标准库。从 OMP 返回的技能目录中用 `python3 -B` 运行；不会修改复制的插件目录。OMP 的回溯从原生归档开始，选中的原始记录仍是证据。
 - `onboarding` 涵盖已安装功能、配置映射、有限的历史回顾、预估的提示缓存折扣、由用户选择的原生记忆写入，以及符合条件时的 `init-deep` 建议。没有首次运行钩子，也不会自动导入。接受导览不代表授权查看历史、迁移设置、写入记忆或生成指引；每个重要步骤都单独询问，拒绝后跳过且不再重复询问。历史回顾默认只看当前项目、最近七天、20 个候选会话和五份完整记录。缓存折扣辅助脚本报告的是预估折扣，不是账单费用，也不是本插件带来的节省。写入记忆需要已启用且兼容的原生记忆工具，没有时什么都不保存。
 - `give-me-tips` 读取已安装的文档、实时结构、配置和源码，不会添加轮换的启动提示。
-- `data-scientist` 会在常驻、流式或溢写执行之间选择，并附带一个需要显式调用的快速查询辅助脚本。`programming` 带有可选的策略检查器，没有强制的规模门槛，也不会自动重构。它们的辅助脚本只在模型调用时运行；扩展不导入它们，安装时也不运行。生成器只写入新的目标目录，目标已存在时拒绝。可选的缓存辅助脚本只在设置了 `OMP_DATA_SCIENTIST_CACHE` 时写入该目录。
+- `data-scientist` 会在常驻、流式或溢写执行之间选择，并附带一个需要显式调用的快速查询辅助脚本。它的内存探测读取 Linux 的 `MemAvailable` 和 macOS 的 `vm_stat`，在其他平台上停止，而不是猜测。缓存辅助脚本写入 `OMP_DATA_SCIENTIST_CACHE`；未设置该变量时写入 `~/.cache/omp-data-scientist`。`programming` 带有可选的策略检查器、测试冗余扫描器和变异证明辅助脚本，没有强制的规模门槛，也不会自动重构。它的项目和脚本生成器是 Bun 启动器，运行方式为 `bun <skill-dir>/scripts/<language>/new-project.ts` 和 `bun <skill-dir>/scripts/python/new-script.ts`。它们需要事先安装好工具链（Python 项目需要 uv，Rust 需要 Cargo，Go 需要 Go），不安装依赖，不运行检查，只写入新目标目录，目标已存在时拒绝。初始化失败时可能留下不完整的目标目录，供检查。变异辅助脚本接受可重复的 JSON `--test` 对象 `{label, argv, failure: {exitCode, pattern}}`，并要求基线干净。辅助脚本只在模型调用时运行；扩展不导入它们，安装时也不运行任何东西。
 - `ultimate-browsing` 通过 `read` 和 OMP 浏览器处理被拦截的站点、平台原生阅读和带日期的归档来源。它不附带提取引擎、cookie 导出、解密或注入工具。
-- `visualize` 写出一个内联所有资源、自带浅色和深色配色的独立 HTML 文件。交付前会运行 frontend 草稿检查，并在窄屏和预期报告宽度下用浏览器检查页面。
+- `visualize` 写出一个独立的离线 HTML 文件，内联所有资源，并使用本地主题变量，提供浅色和深色两套配色。交付前会运行 frontend 草稿检查，并在窄屏和预期报告宽度下用原生浏览器检查页面，共四组主题与宽度截图。图表角色的 CSS 限定在图表范围内；另有一条有边界的路径用于轻量回答，不走完整的产品设计流程。
+
+## 前端渲染页面检测器
+
+检测器位于 `skills/frontend/scripts/detect/`。它没有依赖，也不安装任何浏览器引擎。
+
+- 渲染在 OMP 的 JS `eval` 单元中进行：把 `createNativeBrowserRenderer(browser, { open, maxElements })` 传给 `detectPage` 或 `detectFiles`。每一轮都会打开一个自有标签页，带唯一名称和该轮的视口，把 `SCRIPT_ERROR_PROBE` 作为初始化脚本，并设置 `wait_until: "load"`。随后等待 `SETTLE_EXPRESSION`（网页字体加三帧动画，最多等待一秒），按需运行内容压力脚本，再用 `snapshotExpression()` 截取。标签页一定会关闭，失败会包装为 `RenderError`。构造时会拒绝 `app.target` 以及渲染器自己设置的 open 键。内联 HTML 会写入临时文件，由 `close()` 删除。
+- CLI 从不渲染页面。`bun <frontend-skill-directory>/scripts/detect/cli.ts [--json] [--config <file>] <snapshot.json | source file or dir>...` 检查已保存的快照 JSON（单个对象或数组，由 `isPageSnapshot` 验证）以及源码文本。退出码 0 表示没有阻断性发现；1 表示至少有一个阻断性发现；2 表示用法错误、快照无法读取或无效、显式给出了 URL 或 HTML 目标、没有检查任何内容，或程序崩溃。目录中发现的 HTML 页面会被列为未渲染。
+- 阻断策略（`policy.ts`）：只有页面引擎中、来自以下 8 条客观规则的发现会阻断，且严重级别为 error 或 warning：`broken-image`、`content-hidden-at-rest`、`low-contrast`、`script-error`、`skipped-heading`、`text-occlusion`、`text-overflow` 和 `viewport-reflow`。审美、craft-default、`design-system-*` 以及所有源码文本发现都不会阻断。每条发现都带有 `blocking` 字段，`hasBlockingFindings` 取代了 `hasFailures`。项目中把某条规则设为 `advisory` 或 `off` 会解除其阻断。`data-detect-ignore` 豁免以及上述覆盖都需要在 `DESIGN.md` 中写明理由。
+- 覆盖披露：每次截取都会记录元素数量和上限、是否截断、开放的 shadow root 数量、iframe 与 frame 数量、样式表及无法读取的样式表数量，以及是否运行了内容压力。`detectPage` 和 `detectFiles` 返回 `DetectReport { findings, surfaces, sourceFiles, notRendered }`。文本报告和 JSON 报告都会列出每次截取及其限制，并附上说明：“零发现不等于完整的视觉或无障碍验证”。
+- 内容压力（`CONTENT_STRESS_SCRIPT`，它会设置 `globalThis.__detectContentStress`）只在自有标签页中运行。借用的标签页只用 `snapshotExpression()` 截取，不做压力测试。
+
+## 评审与评估技能
+
+- `review-work` 分别给出两个结果：QA（PASS、FAIL 或 INCONCLUSIVE）和门禁（pending、APPROVE、REJECT 或 INCONCLUSIVE）。INCONCLUSIVE 绝不算通过。门禁使用一个全新的原生 `task` 子代理（列表中有 `deep-high` 时用它，否则用 `effort: "hi"`）作为只读验证者，它把报告写入唯一的 `local://reviews/<goal-slug>-gate-<attempt>.md`。
+- 终止的评审者如果只返回一条确认消息、报告一个阻塞性前提，或结束时没有可用的结论，它所在的评审线就记为 INCONCLUSIVE。可以针对同一输入启动一个更小的替代评审者，但只能在原评审者终止之后。仍在运行的评审者被视为活跃，而不是沉默，等待超时也不会取消它。在 REJECT 并完成修复之后，新的评审者只覆盖增量改动、此前的阻断项和当前证据。
+- 新鲜度：每项检查都记录它实际检验了什么。相关源码（包括其导入方）、依赖、配置、生成输入或运行环境的改动，会使对应的检查结论失效。仅 HEAD 变化不会。
+- 工作树：拉取请求和分支在加锁的评审工作树中审查（`git worktree lock <path> --reason "review:<pr-or-branch>"`）。只有在使用该工作树的所有对象都已终止后，才会拆除它。崩溃、状态未知或仍在运行的评审会保留其恢复用的工作树。
+- PR 证据：只能通过原生已认证浏览器中可见的上传流程，把图片附到 GitHub 拉取请求上，并且需要单独的写入和上传授权。缺少授权、登录或访问权限时，会作为阻塞项报告。本地路径会标注为仅限本地，绝不会被当作 PR 可访问的证据。
+- `eval-integrity` 审计评估证据是否独立、是否有效：真值来源、数据泄漏、先入为主的框架（priming）、观察者效应和测量独立性。它的第一行必须且只能是一个结论：`**Verdict: PASS**`、`**Verdict: FAIL**` 或 `**Verdict: INCONCLUSIVE**`。缺少来源或真值时得出 INCONCLUSIVE。它不做实现评审，不处理数据，不重新计算结果，也不认证系统或批准部署。
 
 ## 不使用终端界面时
 
