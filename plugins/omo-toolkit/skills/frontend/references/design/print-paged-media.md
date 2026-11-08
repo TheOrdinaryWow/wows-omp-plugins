@@ -3,7 +3,7 @@ name: print-paged-media
 description: "Layer A paged-media reference. Load it when output is a document that breaks into pages - a PDF report, a print stylesheet, a headless-Chrome print pipeline, or an HTML deck printed to paper - instead of a continuously scrolling screen. Owns the page box, fragmentation properties, the atomic-block set, and the keep-together side effect that strands a block on a near-empty page. Adds zero visual taste; the style skill and DESIGN.md still own color, type, and spacing."
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Paged Media
 
@@ -75,4 +75,4 @@ pdftoppm -png -r 150 report.pdf out/page   # one PNG per page
 
 Read every page image for: blank or near-empty pages, a block stranded alone after a keep-together push, a table or figure split mid-exhibit, a heading orphaned at a page foot, clipped or overflowing text, and a running header or footer that drifted or vanished.
 
-Extracting the text proves the words are present. It cannot see any defect in this list - layout is exactly the information that extraction discards. Fix, re-render, and look again until the pages are clean; the same standard governs any research or multi-agent delivery verification.
+Extracting the text proves the words are present. It cannot see any defect in this list - layout is exactly the information that extraction discards. Fix, re-render, and look again until the pages are clean. Research-report delivery and multi-agent verification hold the same page-by-page standard (`ulw-research` and `mass-ulw` when omo-ultrawork is installed); a repair loop that stops on its own bounds lists each residual defect in its delivery record instead of calling the pages clean.

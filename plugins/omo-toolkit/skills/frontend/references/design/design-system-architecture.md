@@ -3,7 +3,7 @@ name: design-system-architecture
 description: "Mandatory reference for the Design System Gate. Defines DESIGN.md structure, creation workflow, validation rules, and memory management. Loaded automatically when the agent needs to create or update a project's design system."
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Design System Architecture
 
@@ -18,7 +18,7 @@ Every frontend project MUST have a `DESIGN.md` at its root. This file is the sin
 
 ## DESIGN.md Structure
 
-The file has 8 sections plus a greenfield-only `## 0. Research Log`. Every section is mandatory. Skip nothing.
+The file has 8 sections plus a greenfield-only `## 0. Research Log`, and section 9 once `grounding.md` has run. Every section is mandatory. Skip nothing.
 
 ```markdown
 # [Project Name] Design System
@@ -62,7 +62,7 @@ rather than borders, creating layers you feel more than see."
 | Status/info | --status-info | #2563EB | #3B82F6 | Informational |
 
 ### Rules
-- Accent marks the one or two most likely actions on a screen, on the control's background rather than its glyph or label. Peer choices differ by style, never by size. Nothing decorative carries accent.
+- Accent marks the screen's one primary action, on the control's background rather than its glyph or label; a second likely action takes a quieter style. Peer choices differ by style, never by size. Nothing decorative carries accent.
 - Never introduce a color not in this table. Extend the table first.
 
 ## 3. Typography
@@ -75,11 +75,11 @@ rather than borders, creating layers you feel more than see."
 | H1 | 36px / 2.25rem | 700 | 1.2 | -0.015em | Section headers |
 | H2 | 28px / 1.75rem | 600 | 1.3 | -0.01em | Subsection headers |
 | H3 | 22px / 1.375rem | 600 | 1.4 | 0 | Card titles |
-| Body/lg | 18px / 1.125rem | 400 | 1.6 | 0 | Lead paragraphs |
+| Body/lg | 18px / 1.125rem | 400 | 1.6 | 0 | Lead paragraphs, in the secondary ink |
 | Body | 16px / 1rem | 400 | 1.6 | 0 | Default text |
-| Body/sm | 14px / 0.875rem | 400 | 1.5 | 0 | Secondary info |
+| Body/sm | 14px / 0.875rem | 400 | 1.5 | 0 | Secondary info, in the secondary ink |
 | Caption | 12px / 0.75rem | 500 | 1.4 | 0.02em | Labels, metadata |
-| Overline | 11px / 0.6875rem | 600 | 1.3 | 0.08em | Section labels, uppercase |
+| Overline | 11px / 0.6875rem | 600 | 1.3 | 0.08em | Field, table and metadata labels, uppercase; by default not a label above a heading, unless the chosen route asks for one (`references/perfection/craft-floor.md`) |
 
 ### Font Stack
 - Primary: [specify — e.g. "Inter, system-ui, -apple-system, sans-serif"]
@@ -203,8 +203,11 @@ Surfaces use progressively lighter/darker shades. No borders, no shadows.
 ## 8. Accessibility Constraints & Accepted Debt
 
 ### Constraints
-- WCAG target: [e.g. 2.2 AA] — contrast floor [4.5:1 body / 3:1 large text], visible focus on every
-  interactive element, full keyboard reachability, `prefers-reduced-motion` respected (Section 6).
+- WCAG 2.2 AA at minimum ([AAA items the brief raises]): contrast 4.5:1 body / 3:1 large text, icons and
+  control edges; visible focus on every interactive element, never entirely hidden by other content; pointer targets at least
+  24x24 CSS px; full keyboard reachability; reflow at 320 CSS px; `prefers-reduced-motion` respected (Section 6).
+  The checked criteria and their PASS / FAIL / N/A results are stated in every deliverable (`SKILL.md` Verify); that table
+  is not a full WCAG conformance claim, and accepted debt below leaves its criterion FAIL.
 
 ### Accepted Debt
 | Item | Location | Why accepted | Owner / Exit |
@@ -212,16 +215,27 @@ Surfaces use progressively lighter/darker shades. No borders, no shadows.
 | [debt] | [file/screen] | [reason + user sign-off] | [when it gets fixed] |
 
 New debt is recorded here at the moment it is accepted — never silently.
+
+## 9. Ideal State & Gap Ledger (after grounding)
+
+- Guideline sources: [source → URL or path, the sections read]
+- Personas and journey steps: [persona → steps]
+- Ideal state: [one checkable line per journey step]
+
+| ID | Screen / state | Gap | Principle or rule broken | Evidence | Fix | Proof | Status |
+|----|----------------|-----|--------------------------|----------|-----|-------|--------|
 ```
 
 ## Creation Workflow
+
+Both paths below start with `grounding.md`: the routed guideline sources, the ideal state, and the gap ledger in section 9.
 
 ### For New Projects
 
 1. **Select references before taste** — no visual reference means `_INDEX.md` shortlist of 2-3 Layer B candidates, then exactly one Layer A style skill and one Layer B brand/design-system reference. When no present reference fits, record that gap and derive direction from direct evidence.
 2. **Assemble from references** — extract tokens, layout grammar, component anatomy, states, motion, and taste decisions, then recombine them into project-specific primitives. Customize for the user's product; never copy logos, trademarked assets, or brand-specific copy.
-3. **Define the system** — atmosphere, palette, typography, spacing, and one depth strategy, grounded in the selected references and product semantics. Sanity-check the palette and type pairing against contrast and readability requirements.
-4. **Document initial primitives** — only components you are about to build, including variants and states.
+3. **Define the system** — colour roles first (both themes), then atmosphere, typography, spacing, and one depth strategy, grounded in the selected references and product semantics. Sanity-check the palette and type pairing against contrast and readability requirements.
+4. **Document initial primitives** — only components you are about to build, including variants and states, starting from the project's own kit or, without one, a known component anatomy (shadcn/ui's, for example) restyled with the tokens; never an invented shape. Adding a component library as a dependency is the owner's choice.
 5. **Write it to `DESIGN.md`** at project root.
 6. **Build a primitive showcase first** — exercise each primitive's default, hover, active, focus, disabled, loading, empty, and error states at mobile/tablet/desktop widths before composing product screens.
 
@@ -241,7 +255,7 @@ After every component implementation, check:
 - [ ] All colors reference tokens from Section 2. No raw hex outside `DESIGN.md`.
 - [ ] All font sizes match Section 3 scale. No arbitrary sizes.
 - [ ] Spacing intent maps to a token (Section 4); browser mechanics (`clamp()`, intrinsic sizing, container units) stay raw. No arbitrary px.
-- [ ] Interactive elements have all required states from Section 5 and Section 6.
+- [ ] Interactive elements have all required states from Section 5 and Section 6, and keep one box across them: width and height match in every state, and no padding appears for a spinner or arrow.
 - [ ] Depth treatment matches the chosen strategy from Section 7.
 - [ ] Component reused 2+ times? Documented in Section 5.
 - [ ] Motion follows the timing and feedback-threshold tables, and every animation has its reduced-motion path.

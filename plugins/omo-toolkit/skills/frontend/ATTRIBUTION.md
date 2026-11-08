@@ -1,3 +1,10 @@
+> **OMP port.** This skill directory is a modified OMP port of oh-my-openagent's `frontend` skill at revision
+> `adddd17004076e799c2de18ccfdee29e12525ace`, distributed with omo-toolkit under the Sustainable Use License 1.0
+> (`../../LICENSE-SUL-1.0`). The notice below is upstream's, kept with the port's changes added in sections 6 and 7.
+> The materialized references of sections 1-4 are not bundled in this port; only the files physically present are.
+> The Impeccable- and StyleGallery-derived files of sections 6 and 7 are bundled and keep their Apache-2.0 and MIT
+> terms; `LICENSE-Apache-2.0.txt` sits beside this file.
+
 # ATTRIBUTION / NOTICE
 
 This package (`@oh-my-opencode/shared-skills`) includes third-party content that is
@@ -190,8 +197,9 @@ SOFTWARE.
 
 ## 5. Project-original files
 
-`frontend/SKILL.md`, `frontend/references/design/README.md`, `_INDEX.md`, `aside.md`,
-`design-system-architecture.md`, `react-dev-tooling-skill.md`,
+`frontend/SKILL.md` (apart from the browser-surface, type-and-spacing-floor, and generated-scaffold
+rules adapted from Impeccable, section 6), `frontend/references/design/README.md`, `_INDEX.md`, `aside.md`,
+`design-system-architecture.md`, `grounding.md`, `react-dev-tooling-skill.md`,
 `frontend/references/perfection/README.md`, `react-perf-tooling.md`, and
 `frontend/scripts/perfection/lighthouse-audit.py` are original to this project and require
 no third-party attribution. The perfection docs and script only invoke third-party tools
@@ -233,3 +241,121 @@ MIT-licensed `JCodesMore/ai-website-cloner-template` clone-website workflow that
 cites; no source from that template is copied. It carries no third-party attribution beyond
 that lineage note, and it grants no license to copy any target site's trademarks, brand
 assets, or proprietary copy.
+
+---
+
+## 6. Impeccable (Paul Bakaus): craft-floor rules
+
+`frontend/references/perfection/craft-floor.md`, the "Browser surfaces", "Type and spacing
+floor" and "No generated scaffold" rules in `frontend/SKILL.md`, and the matching
+`visual-qa/SKILL.md` checklist items (A3 measure, A13, B8, E7, F8, F9) are adapted from
+`skill/reference/craft-floor.md` of the Impeccable project. Unlike sections 1-4 these files
+are committed: they are rewritten in this project's words, with a few short phrases kept
+close to the source.
+
+- Source: https://github.com/pbakaus/impeccable
+- Adapted from upstream commit: 5e745ace7e151feb2a93d360d0281fe39448b857
+- Copyright 2025 Paul Bakaus
+- Licensed under the Apache License, Version 2.0 (the "License"); you may not use these
+  files except in compliance with the License. You may obtain a copy of the License at:
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed under
+  the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied. See the License for the specific language governing
+  permissions and limitations under the License. A full copy of the Apache-2.0 license
+  text is provided in `LICENSE-Apache-2.0.txt` alongside this notice.
+
+- **Changes (Apache-2.0 §4(b)):** the rules were selected and rewritten. Kept: the
+  browser-surface list, more space above a heading than below it, the 65-75ch body
+  measure, the 6rem display cap, the -0.04em tracking floor, and the scaffold and shadow
+  patterns listed above. Added: a property per browser surface, the 1.25x type-scale step,
+  the 1.5x above-versus-below heading ratio, the 2x between-versus-within group gap, the
+  phone measure floor, the split into floors and route-overridable defaults (the kicker is a
+  default here, not upstream's absolute ban), and the `/visual-qa` item mapping. Dropped
+  because they conflict with this skill: blur and `backdrop-filter` as general motion
+  materials (here they animate only in an ambience reveal the brief asked for), choosing
+  one theme per product category, decorative custom scrollbars, a blanket bounce-easing
+  ban, and the common-typeface ban.
+  The upstream `NOTICE.md` names only the MIT-licensed `platform-design-skills` origin of
+  its iOS and Android references, none of which is used here.
+- **OMP port changes:** every number is a contextual default rather than a floor (the type-scale
+  step and body measure included): the brief, a concrete reference, `DESIGN.md`, a chosen route or
+  the content itself (script, data density, platform) may set its own value, recorded in the brief
+  or `DESIGN.md`; the body measure applies to Latin script, other scripts being measured in their
+  own units; an unrecorded miss is classified by its effect (defect or taste) in `visual-qa`.
+
+---
+
+## 7. frontend-detect SDK: Impeccable detector logic and a StyleGallery reflow check
+
+`frontend/scripts/detect/` (the SDK, its rules under `rules/`, the CLI, and the native-browser
+renderer) and `frontend/references/perfection/detect.md` reimplement in TypeScript the rule logic of
+the Impeccable detector (`crates/core`, `crates/detect`, `crates/foundation/src/registry.rs`)
+at the upstream commit named in section 6. No Rust or JavaScript source is copied; the rule
+ids, thresholds, exemptions and the `data-impeccable-ignore` waiver attribute follow
+upstream so findings stay comparable, and the unit tests model upstream's fixture cases.
+The license, copyright line and license text pointer in section 6 apply to this derived
+work as well. In this port the unit tests are repository-only (`src/omo-toolkit-frontend-detect/`
+in wows-omp-plugins) and are not shipped with the skill; upstream's development parity scripts
+(`detect-parity.ts`, `detect-source-parity.ts`, `detect-parity-oracle.ts`) are not ported.
+
+- **Changes (Apache-2.0 §4(b)):** a new TypeScript implementation over a browser-captured
+  page snapshot instead of upstream's Rust engine and WASM bundle; every rule description
+  and fix hint is rewritten; `low-contrast` is an error rather than a warning; project
+  allowlists (`allowFonts`, `allowEasings`) and design tokens are configuration rather than
+  files; our own `data-detect-ignore` waiver is added beside upstream's; telemetry, the
+  hosted design-direction service, the edit hook, the live mode and the browser extension
+  are not ported.
+- **OMP port changes:** upstream's `Bun.WebView` renderer and its HTML probe placement are removed;
+  `render/native-browser.ts` renders through the OMP native browser instead, opening one owned tab
+  per pass with the script-error probe as an init script, refusing borrowed tabs, and running the
+  content-stress string only in those owned tabs. The in-page collector names the DOM surface it
+  reads instead of relying on DOM library types and records coverage (element cap, open shadow
+  roots, frames, unreadable stylesheets, content stress). Findings carry `blocking`: only the eight
+  objective-defect page rules in `policy.ts` block at error or warning severity; taste and
+  craft-default rules and every source-text rule never block. Reports name each inspected capture,
+  its limits and their scope, and `detectPage`/`detectFiles` return that report. The CLI lints
+  snapshot JSON and source text and never renders. Sources are reformatted for this repository's
+  Biome style with a shared `core/guards.ts`, and each file carries a modification notice.
+
+The `viewport-reflow` rule and the reflow pass in `detect.ts` (render at 320, 375, 768,
+1024 and 1440 px, append an unbroken stress string at 320 px, report horizontal overflow)
+follow the layout verification matrix and `tests/pattern-runtime.spec.mjs` of StyleGallery; only
+its code (MIT) is adapted here, no StyleGallery documentation (CC BY 4.0) is copied.
+
+- Source: https://github.com/changeroa/StyleGallery
+- Adapted from upstream commit: 0bf928f6269b1cb6cf24f04e0bf28a8ce2bbc0ff
+- Code licensed under the MIT License; documentation under CC BY 4.0:
+
+```
+MIT License
+
+Copyright (c) 2026 IYEN
+
+This license applies to the source code in this repository: scripts, CLI and
+MCP server implementations, the website and server code under `site/`,
+validators, and test code. The Markdown documentation, pattern and recipe
+prose, and domain documents are licensed separately under CC BY 4.0; see
+LICENSE-DOCS. Third-party material adapted into this repository keeps its
+original rights; see NOTICE.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

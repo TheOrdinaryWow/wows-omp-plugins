@@ -1,4 +1,4 @@
-// Modified OMP port of oh-my-openagent at 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Modified OMP port of oh-my-openagent at adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0: ../../../../../LICENSE-SUL-1.0 (internal business and personal/noncommercial use; free noncommercial distribution).
 import { type CssRule, type Declaration, parseCss } from "./css-parse";
 import { hasAccentOutline, hasEdgeStripe, hasInsetShadowStripe, hasRadius, isPseudoBar, roundedCorners } from "./declarations";

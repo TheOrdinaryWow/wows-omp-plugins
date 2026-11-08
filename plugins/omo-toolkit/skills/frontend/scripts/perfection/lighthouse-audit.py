@@ -8,7 +8,7 @@
 # ]
 # ///
 
-# Modified OMP port of oh-my-openagent at 8a8db1d3094da8743989bf693ee5de77889de50e.
+# Modified OMP port of oh-my-openagent at adddd17004076e799c2de18ccfdee29e12525ace.
 # Sustainable Use License 1.0: ../../../../LICENSE-SUL-1.0.
 # Internal business and personal/noncommercial use; free noncommercial distribution.
 # ─── How to run ───
@@ -18,7 +18,6 @@
 # 3. Run:
 #      uv run lighthouse-audit.py https://example.com
 #      uv run lighthouse-audit.py https://example.com --desktop-only
-#      uv run lighthouse-audit.py https://example.com --threshold 95
 # ──────────────────
 
 """Lighthouse audit via real Playwright Chrome.

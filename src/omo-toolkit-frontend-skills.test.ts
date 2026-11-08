@@ -1,4 +1,4 @@
-// Fixture data ported from oh-my-openagent at 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Fixture data ported from oh-my-openagent at adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0: ../plugins/omo-toolkit/LICENSE-SUL-1.0.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";

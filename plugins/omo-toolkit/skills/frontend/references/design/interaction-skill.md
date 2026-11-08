@@ -3,7 +3,7 @@ name: interaction-skill
 description: "Layer A interaction-mechanics reference anchored to the beui.dev catalog. Stacks on any style skill whenever work adds or changes motion or interaction — micro-interactions, animated components, transitions, gestures, hover/press/state feedback, loading/success/error morphs, 'make it feel alive'. Mandates reading the mapped beui.dev component source before designing an interaction; owns interaction mechanics and reduced-motion discipline; owns zero visual taste. Load it alongside a style skill; it does not replace one."
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Interaction Mechanics — beui.dev-Anchored
 

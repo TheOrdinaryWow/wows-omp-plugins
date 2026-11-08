@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Frontend Design References — Index
 
@@ -15,7 +15,7 @@ All reference files live flat in this directory. Three layers:
 
 | File | Purpose | Load when |
 |---|---|---|
-| `design-system-architecture.md` | Defines the `DESIGN.md` structure — 8 sections plus a greenfield-only `## 0. Research Log` (atmosphere, color tokens, typography scale, spacing system, components, motion, depth, accessibility constraints & accepted debt). Creation workflow for new and existing projects. Validation rules and memory management. | Phase 0 fires and no `DESIGN.md` exists in the project. Also load when extracting a design system from existing code. |
+| `design-system-architecture.md` | Defines the `DESIGN.md` structure — 8 sections plus a greenfield-only `## 0. Research Log` and a section 9 gap ledger after grounding (atmosphere, color tokens, typography scale, spacing system, components, motion, depth, accessibility constraints & accepted debt). Creation workflow for new and existing projects. Validation rules and memory management. | Phase 0 fires and no `DESIGN.md` exists in the project. Also load when extracting a design system from existing code. |
 
 ---
 
@@ -63,6 +63,7 @@ Beyond the 12-file Layer A library, the design ruleset carries project-original 
 | `interaction-skill.md` | Interaction mechanics anchored to the beui.dev catalog: find the nearest pattern, read its real source through the curl recipe, extract the mechanism (spring config, layout strategy, enter/exit order, reduced-motion path), and adapt it to `DESIGN.md` motion tokens. | Any work adding or changing interaction or motion — micro-interactions, animated components, transitions, gestures, hover/press/state feedback, loading/success/error morphs, "make it feel alive". |
 | `ambience-skill.md` | Ambience mechanics anchored to the react-bits catalog: hero atmosphere and animated backgrounds, typographic reveals, scroll chapters, card surface effects. Find the nearest pattern in its intent map, read the source through the curl recipe, extract the mechanism, and run the retrofit checklist (reduced-motion static state, off-screen pause, compositor-only, tokens, budget). Cursor effects are quarantined to `gpt-tasteskill.md` briefs. | Any work adding a hero atmosphere, animated or shader background, text reveal (split, blur, shimmer, typewriter, count-up, marquee), scroll storytelling, or spotlight / tilt / glare / glowing-border cards. |
 | `layout-skill.md` | Layout mechanics: scroll ownership, the two silent CSS contracts, named primitives, content-stress matrix. Zero visual direction. | App shells, dashboards, split panes, or a layout that breaks under real content. |
+| `grounding.md` | The routed guideline sources, persona and journey principles, ideal state, and the gap ledger in `DESIGN.md` section 9. | A new screen or flow, a redesign, or design-system creation or rework, before the brief. |
 | `lazyweb.md` | Curl-only real-product screen research for design direction. | Greenfield design research lanes. |
 | `stylegallery.md` | Curl-only lookup of named spatial pattern contracts: primary problem, constraints, scroll ownership, anti-patterns. | A concrete spatial problem needs a documented pattern, alongside `layout-skill.md` mechanics. |
 | `clone-from-url.md` | Runtime extraction workflow (browser + `getComputedStyle`) for cloning a named site. | A live site or URL is the visual reference. |

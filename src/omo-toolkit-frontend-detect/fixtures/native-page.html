@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Detect fixture</title>
+<style>
+body { margin: 0; font: 16px/1.5 Georgia, serif; color: #1a1a1a; background: #ffffff; }
+main { padding: 24px; max-width: 640px; }
+.kicker { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: #5b3df5; margin: 0 0 8px; }
+.faint { color: #b0b0b0; }
+.wide { white-space: nowrap; }
+</style></head>
+<body><main>
+<p class="kicker">Features</p>
+<h1>Run history</h1>
+<h3>Recent runs</h3>
+<p class="faint">Last run finished 4 minutes ago with no errors reported by the scheduler.</p>
+<div id="host"></div>
+<iframe title="embedded" srcdoc="<p>inside a frame</p>"></iframe>
+</main>
+<script>document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = "<p>shadow text</p>";</script>
+</body></html>

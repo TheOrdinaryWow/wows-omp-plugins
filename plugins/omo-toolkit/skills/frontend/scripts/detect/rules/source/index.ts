@@ -1,0 +1,38 @@
+// Modified OMP port of oh-my-openagent at adddd17004076e799c2de18ccfdee29e12525ace (Sustainable Use License 1.0: ../../../../../../LICENSE-SUL-1.0).
+// Adapted from the Impeccable detector (Apache-2.0, Copyright 2025 Paul Bakaus); licenses and changes: ../../../../ATTRIBUTION.md section 7.
+import type { SourceRule } from "../../rule";
+import { aiColorPalette } from "./ai-color-palette";
+import { aphoristicCadence } from "./aphoristic-cadence";
+import { borderAccentOnRounded } from "./border-accent-on-rounded";
+import { bounceEasing } from "./bounce-easing";
+import { brokenImage } from "./broken-image";
+import { codexGridBackground } from "./codex-grid-background";
+import { darkGlow } from "./dark-glow";
+import { emDashOveruse } from "./em-dash-overuse";
+import { gradientText } from "./gradient-text";
+import { grayOnColor } from "./gray-on-color";
+import { marketingBuzzword } from "./marketing-buzzword";
+import { marquee } from "./marquee";
+import { monotonousSpacing } from "./monotonous-spacing";
+import { overusedFont } from "./overused-font";
+import { radialHalo } from "./radial-halo";
+import { sideTab } from "./side-tab";
+
+export const SOURCE_RULES: readonly SourceRule[] = [
+  sideTab,
+  borderAccentOnRounded,
+  overusedFont,
+  gradientText,
+  grayOnColor,
+  aiColorPalette,
+  bounceEasing,
+  brokenImage,
+  codexGridBackground,
+  monotonousSpacing,
+  emDashOveruse,
+  marketingBuzzword,
+  aphoristicCadence,
+  darkGlow,
+  radialHalo,
+  marquee,
+];

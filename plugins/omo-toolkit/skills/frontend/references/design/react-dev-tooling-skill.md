@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # React Dev Tooling Defaults
 
@@ -224,7 +224,7 @@ If any of those leak into production, the dev gate is broken. Fix the gate befor
 ## Cross-skill references
 
 - For **render performance / Lighthouse 100** work, see `../perfection/react-perf-tooling.md` — Playwright + `react-scan/lite` integration used during automated audits.
-- For **debugging an in-flight React bug**, see `../../debugging/references/tools/react-devtools.md` — runtime/static use during a bug hunt rather than initial setup.
+- For **browser runtime inspection during an in-flight React bug** (rendered state, console, network), load `skill://debugging` and follow its `references/tools/browser-qa.md`; React-specific inspection uses the React dev tooling this file sets up.
 - The Phase 0 Design System Gate (in `README.md`) and this React Dev Tooling Gate are both pre-implementation gates. Run Phase 0 first (design system must exist), then this gate (dev tooling must be installed).
 
 ## Mantra

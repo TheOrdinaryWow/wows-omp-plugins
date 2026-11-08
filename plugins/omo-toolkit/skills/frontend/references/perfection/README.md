@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 
 # Frontend Perfectionist
@@ -92,7 +92,6 @@ Quick audit via the cross-platform Python CLI (macOS, Linux, Windows):
 
 ```bash
 uv run <skill-directory>/scripts/perfection/lighthouse-audit.py https://localhost:3000
-uv run <skill-directory>/scripts/perfection/lighthouse-audit.py https://localhost:3000 --threshold 95
 uv run <skill-directory>/scripts/perfection/lighthouse-audit.py https://localhost:3000 --desktop-only
 ```
 

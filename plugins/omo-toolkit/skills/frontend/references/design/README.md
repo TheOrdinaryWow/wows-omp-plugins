@@ -1,4 +1,4 @@
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Frontend Design Router
 
@@ -12,7 +12,9 @@ Only the files physically present here are bundled. `_INDEX.md` is the upstream 
 
 ## Phase 0: Design System Gate
 
-Look for `DESIGN.md`, `design-system.md`, or `design-tokens.md` at root, then `docs/`, then `src/`.
+Look for `DESIGN.md`, `design-system.md`, or `design-tokens.md` at root, then `docs/`, then `src/`. A chart, table or diagram delivered beside a reply skips this gate and grounding (`../../SKILL.md`); it keeps the build rules, the Draft guard and the lint.
+
+**New screen/flow, redesign, or design-system creation or rework:** run `grounding.md` before the brief, whichever branch below applies; it writes the ideal state and the gap ledger into `DESIGN.md` section 9.
 
 **It exists:** read all of it and follow its tokens, primitives and states. Add a needed token to the contract before using it. Any layout or structure change still needs a `Layout:` line before code; an existing design system does not decide this region's scroller for you.
 
@@ -51,7 +53,8 @@ Runtime tools must be behind `NODE_ENV === 'development'` or `import.meta.env.DE
 - Live reference: `clone-from-url.md`; print/paged output: `print-paged-media.md`; Aside direction: `aside.md`.
 - Shipped-product research: `lazyweb.md`; use only the user's connected Mobbin MCP if available, never scrape Mobbin.
 - Design contract, personas, critique, debt or handoff: `../designpowers/README.md` and the applicable lane.
-- Code changes/audits: `../perfection/README.md`; React also loads its React performance reference.
+- Ground a new screen/flow, a redesign or design-system work: `grounding.md`, before the brief.
+- Code changes/audits: `../perfection/README.md`, `../perfection/craft-floor.md` and `../perfection/detect.md`; React also loads its React performance reference.
 
 For a marketing/landing redesign, research at least three shipped examples in the same category before editing. Record what is weak today, the observed conventions, the proposed direction and its reasons in the change description. User-selected sites, permitted catalog surfaces and Lazyweb are source material, not permission to copy brand assets or component source.
 
@@ -61,4 +64,4 @@ At most one visual direction at a time; layout, interaction and ambience are ort
 
 Read the contract or styled sibling and write the brief before code. Verify installed dependencies and Tailwind version instead of assuming either. Full-height heroes use `min-height: 100dvh`; Next.js state/motion lives in client leaves. Tokens follow the contract; repeated new primitives go back into section 5. No `as any` or `@ts-ignore` to force borrowed components to fit.
 
-Run the draft guard on changed CSS/components/HTML before visual QA. Subtract jobless decoration without dropping or merging any required content. `skill://visual-qa` receives the brief, `Layout:` line, required-content list and fixed pre-edit captures. It checks B7, A12, required content and paired before/after within its bounded review budget. Taste is recorded, not an endless redesign loop. Concrete references use reference-fidelity mode. For expressive briefs only, also judge whether the requested distinctive material survived; operational work is complete when the brief and bounded QA gate hold.
+Run the draft guard on changed CSS/components/HTML before visual QA, then the rendered detector (`../perfection/detect.md`) once the page renders: blocking findings are fixed, every other finding is fixed or its decision recorded. Subtract jobless decoration without dropping or merging any required content. `skill://visual-qa` receives the brief, `Layout:` line, required-content list, detect report and fixed pre-edit captures. It checks B7, A12, required content and paired before/after within its bounded review budget. Taste is recorded, not an endless redesign loop. Concrete references use reference-fidelity mode. For expressive briefs only, also judge whether the requested distinctive material survived; operational work is complete when the brief and bounded QA gate hold.

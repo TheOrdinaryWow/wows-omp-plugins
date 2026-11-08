@@ -3,7 +3,7 @@ name: layout-skill
 description: "Layer A layout-mechanics reference. Stacks on any style skill when the screen is an app shell, dashboard, settings, list-detail, mail/inbox, or any layout with fixed regions plus a scrolling body — or when a layout breaks under long, empty, or unbroken content. Owns spatial structure and scroll ownership; owns zero visual taste. Load it alongside a style skill; it does not replace one."
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Layout Mechanics
 

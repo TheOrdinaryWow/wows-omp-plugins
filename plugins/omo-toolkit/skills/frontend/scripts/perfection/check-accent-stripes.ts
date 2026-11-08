@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Modified OMP port of oh-my-openagent at 8a8db1d3094da8743989bf693ee5de77889de50e.
+// Modified OMP port of oh-my-openagent at adddd17004076e799c2de18ccfdee29e12525ace.
 // Sustainable Use License 1.0: ../../../../LICENSE-SUL-1.0 (internal business and personal/noncommercial use; free noncommercial distribution).
 // Flags coloured one-side bars on any box and accent outlines on rounded cards in CSS, Tailwind and JSX.
 // Usage: bun check-accent-stripes.ts [--json] <file-or-dir>...   Exit 0 clean, 1 findings, 2 usage or unreadable target.
