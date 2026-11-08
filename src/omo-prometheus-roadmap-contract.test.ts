@@ -287,8 +287,8 @@ async function scenario(name: string, root: string): Promise<void> {
     if (name === "restored") {
       // A marker written before criteria existed still resumes.
       const markerPath = join(artifacts, "local/prometheus/bound.proposal.json");
-      const marker = JSON.parse(await readFile(markerPath, "utf8"));
-      assert.equal(marker.version, 4);
+      const { reviewHistory: _reviewHistory, ...marker } = JSON.parse(await readFile(markerPath, "utf8"));
+      assert.equal(marker.version, 5);
       await writeFile(markerPath, JSON.stringify({ ...marker, version: 3 }));
     }
     await hook("session_shutdown");
