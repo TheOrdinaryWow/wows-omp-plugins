@@ -183,7 +183,7 @@ The plan's `Delivery:` line governs execution, and children always do the pushes
 | ACP editors | The same dialogs through form elicitation. No widget. |
 | SDK, `--no-ui`, print | No dialogs; use the subcommands. Deleting needs `--yes`. `/atlas resume` works only from the one session that executed the plan; otherwise it names the sessions to open. |
 
-Prometheus planning needs Plan Mode's interactive approval, so it runs only in the TUI, RPC and ACP. In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation and the progress widget shows a native progress bar. Clicks select, double-clicks open, and the tabs, buttons and keys all work. Atlas and Prometheus tool calls appear as native cards, and the model's guidance stays folded until a card is expanded.
+Prometheus planning needs Plan Mode's interactive approval, so it runs only in the TUI, RPC and ACP. In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation and the progress widget shows a native progress bar. Clicks select, double-clicks open, and the tabs, buttons and keys all work. Atlas and Prometheus tool calls appear as native cards. An `atlas_ledger` card shows the changed row and plan progress; expanded, it adds that row's acceptance, evidence, time limit and retry state and the rows that can start next. A refused `atlas_release` names its reason and the unfinished rows or untriaged findings. The text the model received sits in a folded "Model text" section of an expanded card, formatted: tables as tables, JSON indented, `Label: value` lines as aligned fields.
 
 ## Ownership
 
