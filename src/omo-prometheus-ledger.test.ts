@@ -300,7 +300,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(10);
+    expect(restored.version).toBe(11);
     expect(restored.fixes).toEqual([]);
     expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -316,7 +316,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(10);
+    expect(restored.version).toBe(11);
     expect(restored.gitBaseline).toBeUndefined();
     expect(restored.fixes.map((row) => row.id)).toEqual(["X1"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -354,7 +354,7 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(10);
+    expect(restored.version).toBe(11);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
   });
 
@@ -442,18 +442,34 @@ describe("Prometheus execution ledger", () => {
     expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, content, ledger.planSha256).deliveries).toHaveLength(1);
   });
 
-  test("discovered rows dispatch at once, hold back every gate, and are refused once a gate has started", () => {
+  test("discovered rows wait for their origin, hold back every gate, and are refused once a gate has started", () => {
     const ledger = createLedger("local://example-plan.md", plan);
     const found = { title: "Repair the parser", acceptance: "the parser test passes", agent: "task", reason: "T1 exposed it" };
     expect(() => addDiscoveredRow(ledger, "F1", found)).toThrow("T or D row");
     expect(() => addDiscoveredRow(ledger, "T1", { ...found, reason: " " })).toThrow("why it belongs");
     const d1 = addDiscoveredRow(ledger, "T1", { ...found, tier: "heavy" });
-    expect(d1).toMatchObject({ id: "D1", origin: "T1", reason: "T1 exposed it", tier: "heavy", dependsOn: [], status: "open" });
+    expect(d1).toMatchObject({
+      id: "D1",
+      origin: "T1",
+      reason: "T1 exposed it",
+      tier: "heavy",
+      dependsOn: ["T1"],
+      blocksOrigin: false,
+      status: "open",
+    });
     expect(addDiscoveredRow(ledger, "D1", found).id).toBe("D2");
     expect(ledger.gates.every((gate) => JSON.stringify(gate.dependsOn) === JSON.stringify(["T1", "T2", "T3", "D1", "D2"]))).toBe(true);
-    expect(nextDispatchable(ledger).map((row) => row.id)).toEqual(["T1", "D1", "D2"]);
+    expect(nextDispatchable(ledger).map((row) => row.id)).toEqual(["T1"]);
+    expect(() => startRow(ledger, "D1")).toThrow("depends on unfinished rows: T1");
+    expect(() => startRow(ledger, "D2")).toThrow("depends on unfinished rows: D1");
     expect(ledgerRows(ledger).map((row) => row.id)).toEqual(["T1", "T2", "T3", "D1", "D2", "F1", "F2", "F3", "F4"]);
     expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).discoveries).toHaveLength(2);
+    const unordered = structuredClone(ledger);
+    if (unordered.discoveries[0]) unordered.discoveries[0].dependsOn = [];
+    expect(() => restoreLedger(unordered, ledger.planFilePath, plan, ledger.planSha256)).toThrow("row D1");
+    const circular = structuredClone(ledger);
+    if (circular.discoveries[0]) circular.discoveries[0].dependsOn = ["D2"];
+    expect(() => restoreLedger(circular, ledger.planFilePath, plan, ledger.planSha256)).toThrow("row D1");
     const rebound = structuredClone(ledger);
     if (rebound.discoveries[0]) rebound.discoveries[0].origin = "F2";
     expect(() => restoreLedger(rebound, ledger.planFilePath, plan, ledger.planSha256)).toThrow("discovered row D1");
@@ -469,6 +485,34 @@ describe("Prometheus execution ledger", () => {
       { title: "Legacy importer leaks handles", origin: "T1" },
     ]);
     expect(ledger.deferred.map((finding) => finding.id)).toEqual(["O1"]);
+  });
+
+  test("an explicit origin-acceptance blocker may start before its origin, and its ordering survives reload", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    const blocker = addDiscoveredRow(ledger, "T1", {
+      title: "Repair a prerequisite defect",
+      acceptance: "the input is usable",
+      agent: "task",
+      reason: "T1 cannot meet its acceptance with the broken input",
+      blocksOrigin: true,
+    });
+    expect(blocker).toMatchObject({ dependsOn: [], blocksOrigin: true });
+    expect(nextDispatchable(ledger).map((row) => row.id)).toEqual(["T1", "D1"]);
+    const resumed = restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256);
+    expect(startRow(resumed, blocker.id).status).toBe("in_progress");
+    const incidental = addDiscoveredRow(resumed, "D1", {
+      title: "Follow-up cleanup",
+      acceptance: "the cleanup is checked",
+      agent: "task",
+      reason: "inside this change",
+    });
+    expect(() => startRow(resumed, incidental.id)).toThrow("unfinished rows: D1");
+    const origin = resumed.discoveries[0] as LedgerItem;
+    recordReceipt(origin, receiptFor(origin, origin.attempt as string, "BlockerChild"), "input repaired");
+    expect(startRow(resumed, incidental.id).status).toBe("in_progress");
+    const malformed = structuredClone(resumed);
+    if (malformed.discoveries[0]) malformed.discoveries[0].dependsOn = ["T1"];
+    expect(() => restoreLedger(malformed, ledger.planFilePath, plan, ledger.planSha256)).toThrow("row D1");
   });
 
   test("deferred findings keep stable ids, take one disposition each by whether the roadmap is usable in the repository, and persist", () => {
@@ -502,7 +546,7 @@ describe("Prometheus execution ledger", () => {
     expect(addDeferredFinding(ledger, { title: "Late finding", reason: "outside" }).id).toBe("O3");
 
     const restored = restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(10);
+    expect(restored.version).toBe(11);
     expect(restored.deferred.map((finding) => [finding.id, finding.triage?.disposition])).toEqual([
       ["O1", "duplicate"],
       ["O2", "report"],
@@ -536,7 +580,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(10);
+    expect(restored.version).toBe(11);
     expect(restored.deferred.map(({ id, title, triage }) => ({ id, title, triage }))).toEqual([
       { id: "O1", title: "First", triage: undefined },
       { id: "O2", title: "Second", triage: undefined },
@@ -546,7 +590,7 @@ describe("Prometheus execution ledger", () => {
   test("owner rulings replace a T, D or X row's acceptance in force, never a gate's or P1's, and persist as version nine", () => {
     const shipped = plan.replace("# Work plan\n", "# Work plan\n\nDelivery: pr\n");
     const ledger = createLedger("local://example-plan.md", shipped, ["task", "deep-low", "sonic"]);
-    expect(ledger.version).toBe(10);
+    expect(ledger.version).toBe(11);
     expect(ledger.rulings).toEqual([]);
     expect(renderOwnerRulings(ledger)).toBe("");
     const t1 = ledger.items[0];
@@ -650,7 +694,7 @@ describe("Prometheus execution ledger", () => {
     const legacy = { ...rest, version: 6 };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(10);
+    expect(restored.version).toBe(11);
     expect(restored.rulings).toEqual([]);
     expect(restored.deferred.map((finding) => finding.id)).toEqual(["O1"]);
     // Version six carried no rulings, so a stray one is not trusted.
@@ -741,7 +785,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, content, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(10);
+    expect(restored.version).toBe(11);
     // Rows approved before tiers existed keep the LIGHT evidence rule, even where the plan text names HEAVY.
     expect([...restored.items, ...restored.fixes].map((row) => row.tier)).toEqual(["light", "light", "light", "light"]);
     expect(restored.delivery).toBe("ship");
@@ -1013,7 +1057,7 @@ describe("Prometheus execution ledger", () => {
       const text = plan.replace("  - Agent: deep-low", `  - Time limit: ${field}\n  - Agent: deep-low`);
       const old = { ...createLedger("local://legacy.md", plan), version: 9, planSha256: planDigest(text) };
       const restored = restoreLedger(old, old.planFilePath, text, old.planSha256);
-      expect(restored.version).toBe(10);
+      expect(restored.version).toBe(11);
       expect(restored.planTimeLimits).toBe(false);
       expect(restored.items[0]?.timeLimitHours).toBe(4);
       expect(restoreLedger(restored, old.planFilePath, text, old.planSha256).items[0]?.timeLimitHours).toBe(4);

@@ -12,6 +12,18 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 评审轮数由插件自己计算。每派出一次 Momus，或 Momus 与 Oracle 一起，算一轮，包括评审者读不到计划的那一轮。达到 `reviewRoundLimit` 时，用户可以选择为这个计划增加轮数，或者停止；停止时 Prometheus 会按现状提出计划，并列出尚未解决的阻塞问题。没有可交互的用户时，评审在达到上限后停止。
 
+规划策略还要求在评审停滞时停止：一轮未批准计划的评审，如果既没有提出真正新增、符合阻塞条件的问题，也没有确认已记录的问题解决，就必须停下并询问业主。换一种说法重复旧问题、非阻塞建议都不算进展。没有答复就不能再派下一轮。这是提示词层面的语义判断，与运行时强制执行的 `reviewRoundLimit` 相互独立；其中一个允许继续，不会免除另一个的停止条件。
+
+### 批准前评审诊断
+
+每名评审者接收一份明确绑定：在自己的任务正文或共享上下文中，用独立行写出 `absolute_plan_path:`、`review_round:` 和 `review_kind:`，每项恰好一次。目标必须是规划者自己的 `artifacts/local/` 目录内、使用规范绝对路径的普通文件。原生派发时，插件保存该路径及其 SHA-256，不从叙述中猜测计划路径，也不在结果返回后对后来修改的计划重新计算摘要。Momus 和 Oracle 都会被记录，携带同一契约的回退评审者也一样；观察通过 `tool_execution_end` 和所属原生任务的最终结果完成，不新增 `tool_result` 钩子。仅有生命周期完成事件不会归档结果。
+
+尽力保存的归档位于 `<absolute_plan_path>.reviews/NNN-<kind>-<verdict>.md`，其中 kind 为 `routine` 或 `high_accuracy`，verdict 为 `okay`、`reject` 或 `inconclusive`。元数据记录派发绑定、计划摘要、原生评审会话的记录文件路径、请求及实际代理、工具调用和记录时间，后面附评审输出。文件独占分配、不覆盖旧文件，按评审会话去重；规范路径包含检查和不跟随链接的普通文件检查会拒绝符号链接目标或存储。只归档成功的最终原生结果中以独立规划判定行开头的输出；原生执行失败或被取消不算规划判定。存储失败只写日志，不改变工具结果、提出计划的资格或执行权限。
+
+批准时，源计划已有的评审历史会复制到 Atlas 计划包的 `reviews/`，包括先前修订的判定。因此已批准的计划包中可能保留早期驳回记录；每份诊断都保留自己派发时的摘要。这些文件仅用于诊断：缺失、损坏、过时或标为 `[OKAY]` 的诊断都不能授予或撤销原生批准、完成某一行，或替代批准计划、回执和检查点的校验。派发观察仅存在于当前进程；已写出的诊断在重启后保留，但不会重建重启时丢失的在途评审观察。
+
+版本 5 的提案标记内嵌这份诊断历史，因此原生 “Approve and execute” 即使只复制计划和标记、不复制旁边的评审目录，也能把诊断带入新会话。版本 3 和版本 4 的标记仍可在没有这份可选历史时恢复；标记中的批准来源校验不依赖诊断。
+
 ## 计划语法
 
 - `## Tasks`：从 `T1` 开始编号的 `- [ ] T<n>. <title>` 行，每行带缩进的 `Agent:`、`Depends on:`、`Acceptance:`，以及可选的 `Tier: LIGHT | HEAVY`（不区分大小写）和 `Time limit: <N>h`。缺少 tier 即为 LIGHT。时限必须是 1 至 72 的整数小时，默认 `4h`；字段名不区分大小写，取值无效或重复声明都会导致解析失败。其他参与解析的字段取值无效或重复时也会报错。规划技能要求的其他正文行（`Closes:`、`References:`、`Mechanisms:`、`QA happy:`、`QA failure:`、`Commit:`）只供子代理和评审者阅读，解析器会忽略它们。
@@ -87,11 +99,12 @@ Prometheus 根据会话 `task` 工具列出的代理制定计划，Momus 也按�
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
-ledger.json      row progress, deferred findings, owner rulings and durable retry windows (version 9), plus Git HEAD at approval
+ledger.json      row progress, discovery ordering, deferred findings, owner rulings and retry windows (version 11), plus Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
 evidence/        copied native outputs and origin receipts
+reviews/         optional copied pre-approval review diagnostics, never approval or completion proof
 ownership/       exclusive execution ownership records
 ```
 
@@ -104,7 +117,7 @@ Atlas 持有计划期间，会话的计划引用是 `atlas://<plan-id>/plan.md`�
 | 行 | 来源 | 等待 |
 | --- | --- | --- |
 | `T1…` | 已批准的计划 | 各自 `Depends on:` 中的行 |
-| `D1…` | 任何关口开始之前的 `discover` scope `in`；每行注明是哪个 T 或 D 行的工作发现了它 | 无 |
+| `D1…` | 任何关口开始之前的 `discover` scope `in`；每行注明是哪个 T 或 D 行的工作发现了它 | 来源行；只有 `blocksOrigin: true` 声明它阻塞来源行验收时例外；历史 D 行保留原顺序 |
 | `X1…` | F1–F4 或 P1 否决工作后的 `fix`；`origin` 指定该行 | 无 |
 | `F1`–`F4` | 已批准的计划 | 所有 T 行和 D 行，以及各自的 X 行 |
 | `P1` | `Delivery: pr` 或 `ship` | 所有关口和所有 X 行 |
@@ -119,7 +132,7 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 | `verify` | 已记录实现的 HEAVY 行：绑定不同的全新验证者并返回严格 schema（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`，可选 `failure: {failureClass, check, firstError}`）。结果会列出该行所有重试窗口中已归档的验证者诊断路径，供新验证者独立判断哪些检查结果仍适用。没有失败详情的旧输出仍有效，非 PASS 默认按 unknown 计数。替换前必须等在途原生工作结束。取消结束后直接调用 `verify`；`reopen` 会主动丢弃实现。 |
 | `fail` | 指定 `id`、检查过的 `evidence`、`check`、`firstError`、可选 `failureClass`（product/harness/unknown）及所属原生 `childAgentId`，认证一个最终原生代次并只记录一次。关联的原生失败没有已注册子代理时可以省略 id，但仅凭这一点不能判断失败来自派发。原生观察证明子代理尚未执行就被拒绝派发时，会归档诊断，但不增加计数失败、不消耗环境修复预留，也不改变产品工作计时；实现预留保持不变，验证派发则仅恢复为待验证。不生成成功回执。 |
 | `retry` | 已耗尽的行加上 `evidence` 中改变的假设：锁外由业主确认（或由 `atlasRetry` 决定），再检查所有权、历史和未变的验收，追加新窗口；已有 HEAVY 实现会保留。可选 `timeLimit: "14h"` 使用计划的时限语法，只有用户在对话框中确认了展示的时限，才会从本窗口起修改时限。由设置授予的窗口忽略这次时限变更请求，沿用此前批准的时限。拒绝、附加状态变化或子代理仍在运行都不会授权；没有对话框时，会批准的设置只能授予窗口，不能修改时限。 |
-| `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），一旦有关口开始或存在修正行即被拒绝；`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
+| `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），记录 `dependsOn: [origin]`。可选 `blocksOrigin: true` 表示该缺陷阻塞来源行验收，此时不记录来源依赖；在 `evidence` 中说明原因，并避免写入者重叠。一旦有关口开始或存在修正行即被拒绝。`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
 | `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当路线图在本仓库中可用时允许。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当本仓库中没有可用的路线图时允许，引用可省略。是否可用取自一次新的路线图绑定回复中的 `usable` 标志；没有回复表示没有路线图，旧版路线图的回复不带这个标志时，`todo` 和 `report` 都接受。 |
 | `fix` | 为否决的 F1–F4 或 P1 追加正常 tier 的 X 行，只重新打开来源行。P1 对每个 X 恰好依赖一次，X 从不依赖 P1。来源额度耗尽后，没有重试授权就不能继续自动修复。 |
 | `block`、`reopen` | 丢弃指定行的实现尝试和回执；依赖它的已完成行保留各自的证明。不要仅为替换已结束的取消验证者而使用这两个操作，应直接调用 `verify`。 |
@@ -129,6 +142,8 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 只有子代理真实最终结果提供的证明才能把一行标记为完成；失败的、不属于本计划的或仍在运行的子代理，以及手写的引用，都不能完成工作。HEAVY 行还需要一份通过的验证者回执，验证者必须是验证开始之后创建的另一个子代理。验证状态（`pending`、`running`、`passed`、`failed`）由行推导，从不存储。`atlas_release` 要求每一行都有有效回执、HEAVY 行都有验证者回执、每条范围外发现都已分诊（拒绝时会列出未分诊的发现），并且需要完成释放的确认。该确认由 `atlasRelease` 决定（默认 `ask`，即对话框）：`ask-then-approve` 和 `ask-then-decline` 在 `atlasAskTimeout` 分钟后决定，`approve` 和 `decline` 从不显示对话框。释放被拒绝后，Atlas 保持激活，直到 `/atlas exit`。计划完成和 `atlas:completed` 从不等待分诊。
 
 成功输出和原始回执复制到 `evidence/` 并校验摘要，因此原会话删除后已验证进度仍保留。最终诊断（含未通过的验证者）复制为 `failure-<outcome-digest>.md`，路径和摘要由版本化执行记录引用；它们只是上下文，不是完成证明或检查点绑定。成功证明缺失或变化只重新打开对应行。恢复时 HEAVY 保留有效实现，仅丢弃未完成的验证者绑定。检查点仍为版本 2，批准文件的字节不变。
+
+执行记录 v11 为新建的附带发现写入 `blocksOrigin: false`，并要求唯一依赖就是发现它的 T/D 来源行；`true` 则要求没有依赖。校验会拒绝互相矛盾的依赖列表，`start` 会拒绝来源尚未完成的行。加载 v10 及更早版本时，历史 D 行保留空依赖、缺省的 `blocksOrigin`，不凭空宣称它阻塞来源验收，也不改变已完成证明。所有受支持的旧版执行记录都会在加载时升级；批准文件和检查点格式不变。
 
 验证者因 harness 未通过时，实现尝试、开始时间、子代理 id、回执和实现证据都会保留，但该行不会因此完成。失败历史和第二次 harness 失败即停止的规则仍然生效。报告中只要有产品失败，就必须归为 product/unknown，不能因为最先出现的是环境错误而归为 harness。新验证者可以采用先前独立验证中的检查结果，但必须引用保存的输出，并说明其间的源码、依赖、生成资源、配置和验收变更为何不可能影响该项检查。仅有提交 SHA 不够，实现者自己的证据也不能代替独立验证。
 
@@ -174,6 +189,7 @@ F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）
 - 延后发现按 `todo`（Roadmap TODO）、`duplicate`、`wontfix` 或 `report` 分类。存在可用 roadmap 时拒绝 `report`；仓库没有 roadmap 时选用 `report`。
 - 已记录的失败在重启和会话交接后仍然保留；Atlas 尚未记录的失败则不会。被阻塞的工作保持未完成：Atlas 会保留并列出能追溯到子代理的未验证提交或文件，从不回滚它们；仍有缺口时不能进入交付。
 - 从 Atlas Dispatch 或 `/atlas <plan>` 启动计划时，Atlas 会自己发出第一条执行消息。
+- 子代理在创建资源时就明确临时根目录、进程/容器和运行时缓存的归属，显式设置缓存与环境路径；独立子代理使用各自的根目录。清理仅移除自己拥有的资源，不清空共享缓存，也不删除其他工作者的文件或进程。尚未完成的 PR 交付仍需要的资源会保留，并报告归属及后续用途。
 
 ## 不使用终端界面时
 

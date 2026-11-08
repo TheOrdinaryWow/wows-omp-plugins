@@ -86,6 +86,8 @@ export interface LedgerItem {
   origin?: string;
   /** D rows: why the defect belongs to this plan. */
   reason?: string;
+  /** D rows: false waits for the origin; true blocks its acceptance. Absent only for legacy immediate-dispatch rows. */
+  blocksOrigin?: boolean;
   /** Survives every attempt reset, acceptance amendment, and attaching session. */
   retry?: { windows: RetryWindow[] };
   updatedAt: number;
@@ -132,7 +134,7 @@ export interface OwnerRuling {
 }
 
 export interface ExecutionLedger {
-  version: 10;
+  version: 11;
   /** Earlier plans did not approve Time limit fields, even if their free text contained them. */
   planTimeLimits: boolean;
   ledgerId: string;
@@ -438,7 +440,7 @@ function buildLedger(
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 10,
+    version: 11,
     planTimeLimits: !ignoreTimeLimits,
     ledgerId: randomUUID(),
     planFilePath,
@@ -940,7 +942,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     version !== 7 &&
     version !== 8 &&
     version !== 9 &&
-    version !== 10
+    version !== 10 &&
+    version !== 11
   ) {
     throw new Error("Unsupported execution ledger version");
   }
@@ -996,7 +999,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       !validAgent(row.agent) ||
       typeof row.origin !== "string" ||
       !(taskIds.includes(row.origin) || discoveries.slice(0, index).some((earlier) => earlier?.id === row.origin)) ||
-      (row.tier !== "light" && row.tier !== "heavy")
+      (row.tier !== "light" && row.tier !== "heavy") ||
+      (version >= 11 && row.blocksOrigin !== undefined && typeof row.blocksOrigin !== "boolean")
     ) {
       throw new Error(`Malformed execution ledger discovered row ${row?.id ?? index}`);
     }
@@ -1024,7 +1028,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   const rows = [...saved.items, ...discoveries, ...fixes, ...saved.gates, ...deliveries];
   const definitions = [
     ...expected.items,
-    ...discoveries.map((row) => ({ ...row, dependsOn: [] })),
+    ...discoveries.map((row) => ({ ...row, dependsOn: version >= 11 && row.blocksOrigin === false ? [row.origin as string] : [] })),
     ...fixes.map((fix) => ({ ...fix, dependsOn: [] })),
     ...expected.gates.map((gate) => ({ ...gate, dependsOn: gateDependencies(gate.id) })),
     ...deliveryDefinitions,
@@ -1137,7 +1141,9 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       for (const window of row.retry?.windows ?? []) window.timeLimitHours = 4;
     }
   }
-  saved.version = 10;
+  // Version eleven makes origin ordering prospective; historical D rows retain their immediate-dispatch contract.
+  if (version < 11) for (const row of discoveries) delete row.blocksOrigin;
+  saved.version = 11;
   return saved;
 }
 
@@ -1267,13 +1273,13 @@ export function gatesStarted(ledger: ExecutionLedger): boolean {
 }
 
 /**
- * Append an in-scope defect found mid-execution as a D row that can dispatch at once; every gate waits for it.
+ * Append an in-scope defect; incidental work waits for its origin, while an explicit acceptance blocker may dispatch now.
  * Refused once a gate has started: from then on a gate's rejection (fix rows) carries further corrections.
  */
 export function addDiscoveredRow(
   ledger: ExecutionLedger,
   origin: string,
-  found: { title: string; acceptance: string; agent: string; reason: string; tier?: string },
+  found: { title: string; acceptance: string; agent: string; reason: string; tier?: string; blocksOrigin?: boolean },
   availableAgents?: readonly string[],
 ): LedgerItem {
   if (gatesStarted(ledger)) {
@@ -1296,12 +1302,13 @@ export function addDiscoveredRow(
     acceptance,
     dispatchAgent: resolveAgent(agent, availableAgents).dispatchAgent,
     timeLimitHours: 4,
-    dependsOn: [],
+    dependsOn: found.blocksOrigin === true ? [] : [origin],
     status: "open",
     tier: checkedTier(found.tier),
     evidence: `Discovered during ${origin}: ${reason}`,
     origin,
     reason,
+    blocksOrigin: found.blocksOrigin === true,
     updatedAt: Date.now(),
   };
   ledger.discoveries.push(row);

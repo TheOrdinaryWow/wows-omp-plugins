@@ -45,6 +45,8 @@ In OMP's ordinary `/plan` mode, small and clear requests stay on the normal path
 
 The plan goes through OMP's normal approval. If OMP's plan autosave is on, the approved copy is also saved under `.omp/plans/`. The [`reviewLevel`](#settings) setting decides whether Momus alone, or Momus and Oracle together, review the plan before you see it.
 
+Reviewer verdicts are saved beside the plan and kept with its approved copy for later reference. They do not replace your approval. If a review round neither finds a new blocking problem nor confirms that a recorded one is fixed, Prometheus stops and asks you what to do, even before `reviewRoundLimit` is reached.
+
 Prometheus keeps the plan to what is actually needed. Each part of the desired result says who depends on it and where the requirement comes from (your request, a decision you confirmed, or something the repository already promises). Each task lists what it adds, and a `## Must not build` section lists what is deliberately left out. The proposal shows both, along with reviewer suggestions Prometheus decided not to follow. For a hard design or algorithm question, Prometheus may also consult `architect` or `ultrabrain` when they are available.
 
 ### What a plan looks like
@@ -79,7 +81,7 @@ After approval, the main session becomes Atlas. Atlas does not edit files or run
 
 Subagents may find problems along the way:
 
-- A problem within the change's reach becomes a new task (`D1`, `D2`, …) that runs before the final reviews.
+- A problem within the change's reach becomes a new task (`D1`, `D2`, …) that runs before the final reviews. It normally waits for the task that found it to finish; if it prevents that task from meeting its acceptance, it can be handled first. Existing discovered tasks keep their ordering after a plugin update.
 - A problem outside it becomes a finding (`O1`, `O2`, …) that Atlas sorts as a roadmap TODO, a duplicate, won't fix or report only. Atlas cannot finish while a finding is unsorted, and the final report lists them all.
 
 Atlas keeps going until the plan is done. If the plan or ledger files go missing, get damaged, or no longer match the approved plan, Atlas pauses until you restore them, or until you exit with `/atlas exit` and approve a changed plan.

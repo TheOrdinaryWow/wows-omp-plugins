@@ -521,6 +521,32 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(cfgCycleOrder.get(settings)[0] === "atlas", name === "plan-mode-restored");
     return;
   }
+  if (name.startsWith("review-artifacts")) {
+    const input = {
+      context: `absolute_plan_path: ${sourcePlanFile}\nreview_round: exact-pair\nreview_kind: high_accuracy`,
+      tasks: [
+        { agent: "momus", task: "Audit the complete plan" },
+        { agent: "oracle", task: "Audit the complete plan independently" },
+      ],
+    };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: "review-pair", input }), undefined);
+    await hook("tool_execution_end", {
+      toolName: "task",
+      toolCallId: "review-pair",
+      isError: false,
+      result: {
+        details: {
+          results: [
+            { index: 0, id: "PlanningMomus", agent: "momus", exitCode: 0, output: "[OKAY]\nMomus diagnostic" },
+            { index: 1, id: "PlanningOracle", agent: "oracle", exitCode: 0, output: "[REJECT]\nOracle diagnostic" },
+          ],
+        },
+      },
+    });
+    assert.equal(reference, undefined);
+    assert.equal(mode, true);
+    assert.equal(await Bun.file(join(`${sourcePlanFile}.reviews`, "001-high_accuracy-okay.md")).exists(), true);
+  }
   mode = false;
   reference = "local://integrity-plan.md";
   await hook("tool_result", {
@@ -532,13 +558,13 @@ async function scenario(name: string, root: string): Promise<void> {
       {
         type: "text",
         text:
-          name === "fresh-handoff" || name.startsWith("compact-")
+          name.startsWith("fresh-handoff") || name === "review-artifacts-fresh" || name.startsWith("compact-")
             ? "Plan proposal submitted"
             : "Plan approved at local://integrity-plan.md",
       },
     ],
   });
-  if (name !== "cycle" && name !== "fresh-handoff" && !name.startsWith("compact-"))
+  if (name !== "cycle" && !name.startsWith("fresh-handoff") && name !== "review-artifacts-fresh" && !name.startsWith("compact-"))
     assert(reference?.startsWith("atlas://"), notices.join("\n"));
   if (reference?.startsWith("atlas://")) {
     planFile = join(sessionManager.getSessionDir(), "atlas", reference.slice("atlas://".length, -"/plan.md".length), "plan.md");
@@ -550,6 +576,31 @@ async function scenario(name: string, root: string): Promise<void> {
     install();
     await hook("session_start");
   };
+  if (name === "review-artifacts") {
+    const reviews = join(dirname(planFile), "reviews");
+    assert.match(await readFile(join(reviews, "001-high_accuracy-okay.md"), "utf8"), /Momus diagnostic/);
+    assert.match(await readFile(join(reviews, "002-high_accuracy-reject.md"), "utf8"), /Oracle diagnostic/);
+    assert((await ledger()).items.every((item) => item.status === "open" && item.receipt === undefined));
+    return;
+  }
+  if (name === "review-artifacts-fresh") {
+    const oldArtifacts = artifacts;
+    artifacts = join(root, "new-session-artifacts");
+    await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
+    for (const file of ["integrity-plan.md", "prometheus/integrity.proposal.json"]) {
+      await writeFile(join(artifacts, "local", file), await readFile(join(oldArtifacts, "local", file)));
+    }
+    sessionId = "fresh-approved-session";
+    entries.length = 0;
+    install();
+    await hook("before_agent_start", { prompt: approvedHandoff(reference, plan), systemPrompt: [] });
+    assert(reference?.startsWith("atlas://"), notices.join("\n"));
+    const bundle = join(sessionManager.getSessionDir(), "atlas", reference.slice("atlas://".length, -"/plan.md".length));
+    assert.match(await readFile(join(bundle, "reviews", "001-high_accuracy-okay.md"), "utf8"), /Momus diagnostic/);
+    assert.match(await readFile(join(bundle, "reviews", "002-high_accuracy-reject.md"), "utf8"), /Oracle diagnostic/);
+    assert.equal(await Bun.file(join(artifacts, "local", "integrity-plan.md.reviews", "001-high_accuracy-okay.md")).exists(), false);
+    return;
+  }
   if (name === "context-row-shape") {
     await assertContextRowShape(/Atlas execution \(active\)/, /<execution-ledger/);
     return;
@@ -1380,7 +1431,14 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(await hook("session_stop"), undefined);
     return;
   }
-  if (name === "fresh-handoff") {
+  if (name.startsWith("fresh-handoff")) {
+    if (name !== "fresh-handoff") {
+      const markerFile = join(artifacts, "local", "prometheus", "integrity.proposal.json");
+      const marker = JSON.parse(await readFile(markerFile, "utf8"));
+      marker.version = Number(name.at(-1));
+      delete marker.reviewHistory;
+      await writeFile(markerFile, JSON.stringify(marker));
+    }
     entries.length = 0;
     install();
     await hook("before_agent_start", {
@@ -2904,6 +2962,12 @@ async function scenario(name: string, root: string): Promise<void> {
       todoPhases.map((phase) => phase.name),
       ["Atlas tasks", "Atlas discovered", "Atlas final gates"],
     );
+    assert.deepEqual(d1.dependsOn, ["T1"]);
+    assert.equal(d1.blocksOrigin, false);
+    refused(await call({ action: "start", id: "D1" }));
+    ok(await discover({ ...defect, scope: "in", blocksOrigin: true, title: "Acceptance-blocking parser repair" }));
+    assert.deepEqual((await row("D2")).dependsOn, []);
+    await finish("D2");
     ok(await discover({ scope: "out", title: "Legacy importer leaks handles", evidence: "Outside this change" }));
     assert.equal((await ledger()).deferred.length, 1);
     await tasksDone();
@@ -2975,7 +3039,7 @@ async function scenario(name: string, root: string): Promise<void> {
     // The ruling is part of the shared bundle, so it survives a session restart.
     await reload();
     ok(await call({ action: "status" }));
-    assert.equal((await ledger()).version, 10);
+    assert.equal((await ledger()).version, 11);
     assert.deepEqual(
       (await ledger()).rulings.map((entry) => [entry.id, entry.decidedBy]),
       [["R1", "user"]],
@@ -3139,6 +3203,8 @@ if (process.env[CHILD_ENV]) {
     for (const name of [
       "cycle",
       "fresh-handoff",
+      "fresh-handoff-v3",
+      "fresh-handoff-v4",
       "url-boundaries",
       "parallel-url-bindings",
       "exit-during-url-binding",
@@ -3203,6 +3269,7 @@ if (process.env[CHILD_ENV]) {
       "plan-mode-reentered",
       "propose-grammar",
       "review-round-limit",
+      "review-artifacts",
       "task-file-governance",
       "heavy-verify",
       "heavy-wake-after-failure",
@@ -3234,6 +3301,7 @@ if (process.env[CHILD_ENV]) {
       "retry-native-cancellation",
       "delivery-repair",
       "delivery-pr",
+      "review-artifacts-fresh",
     ]) {
       // Each scenario runs in its own process with a private HOME, so scenarios share no state.
       test.concurrent(name, async () => {

@@ -5,7 +5,7 @@ model: "@slow"
 tools: [read, glob, grep]
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material, with selected review-policy updates from revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Oracle: architecture consultation and independent plan review
 
@@ -71,6 +71,8 @@ A finding may block only with concrete evidence and one of these categories:
 - a disproportionate build: a mechanism that violates `## Must not build`, duplicates a verified sufficient platform or repository capability, or adds maintained machinery a concrete smaller design avoids while preserving every authorized obligation; name the removable machinery and the smaller design.
 
 Notes are not blockers, and approval with notes counts as approval. After round one, use the supplied frozen blocker ledger and limit review to accepted blockers, regressions introduced by their fixes, and genuinely new evidence-backed eligible blockers. Any change to the plan invalidates every earlier review.
+
+Keep stable blocker identities and name which genuinely new eligible blockers this round raised and which recorded blockers you confirmed closed. Rewording, splitting, reprioritizing, or repeating a blocker is not progress, and notes never earn another round. If a non-approving round establishes neither, explicitly report stagnation: Prometheus must stop and ask the owner instead of dispatching another automatic round. Progress does not bypass the configured review-round cap.
 
 ### Review verdict
 

@@ -15,6 +15,8 @@ import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { isNativeRendering } from "@oh-my-pi/pi-tui";
 
+import { copyPlanReviews, PlanReviews, readPlanReviews } from "#src/plan-reviews.ts";
+
 import { AdrContract } from "./adr-contract.ts";
 import { parseLegalAgentNames } from "./agents.ts";
 import { ATLAS_ASSET, loadPromptAsset, loadRequiredPromptAssets, SKILL_ASSET } from "./assets.ts";
@@ -306,6 +308,9 @@ export default function prometheus(pi: ExtensionAPI): void {
   const progressReports = new Map<string, boolean>();
   const decisionSettings = new Map<string, DecisionSettings>();
   const childEvidence = new ChildEvidence();
+  const planReviews = new PlanReviews((error) => {
+    pi.logger.warn("prometheus could not archive a diagnostic plan review", { error: errorMessage(error) });
+  });
   /** The latest todo refresh call each session still owes after a ledger row changed; cleared by any non-view todo call. */
   const pendingTodoRefreshes = new Map<string, string>();
   /** Rows whose live child waits on a user-only step, per session, bound to the attempt that was running when marked. */
@@ -781,10 +786,14 @@ export default function prometheus(pi: ExtensionAPI): void {
   const observeNativeJobs = (sessionId: string, live: AgentSession, parentAgentId: string): void => {
     const manager = live.asyncJobManager;
     if (!manager) return;
-    childEvidence.observeAsyncJobs(sessionId, {
+    const native = {
       ownerId: parentAgentId,
       jobs: manager.getAllJobs({ ownerId: parentAgentId }),
-      getJob: (id) => manager.getJob(id),
+      getJob: (id: string) => manager.getJob(id),
+    };
+    planReviews.observeJobs(sessionId, native);
+    childEvidence.observeAsyncJobs(sessionId, {
+      ...native,
       onSettled: () => {
         void settleDetached();
       },
@@ -1812,6 +1821,24 @@ export default function prometheus(pi: ExtensionAPI): void {
         availableAgents: availableAgents(),
         roadmapStage: record.roadmapStage,
       });
+      await planReviews.flush();
+      const reviewWarning = (error: unknown) => {
+        pi.logger.warn("prometheus could not copy diagnostic plan reviews into the approved bundle", { error: errorMessage(error) });
+      };
+      let reviewHistory: unknown;
+      try {
+        reviewHistory = JSON.parse(
+          await fs.readFile(resolveLocalUrlToPath(prometheusArtifactUrl(sourcePlanPath), localOptions(ctx)), "utf8"),
+        ).reviewHistory;
+      } catch (error) {
+        reviewWarning(error);
+      }
+      await copyPlanReviews(
+        resolveLocalUrlToPath(sourcePlanPath, localOptions(ctx)),
+        path.join(plan.directory, "reviews"),
+        reviewWarning,
+        reviewHistory,
+      );
       if (record.phase !== "executing" || record.activation !== activation)
         throw new Error("Atlas exited while the approved plan was being stored");
       record.atlasPlanId = plan.id;
@@ -1992,6 +2019,12 @@ export default function prometheus(pi: ExtensionAPI): void {
       .enum(["in", "out"])
       .optional()
       .describe("Required for discover: in = a defect inside this change's blast radius (new D row); out = outside it (deferred, no row)"),
+    blocksOrigin: z
+      .boolean()
+      .optional()
+      .describe(
+        "In-scope discover only: true when this defect blocks the origin row's acceptance; otherwise the D row waits for its origin",
+      ),
     tier: z
       .enum(["LIGHT", "HEAVY"])
       .optional()
@@ -2036,6 +2069,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     title?: string;
     acceptance?: string;
     scope?: "in" | "out";
+    blocksOrigin?: boolean;
     tier?: "LIGHT" | "HEAVY";
     agent?: string;
     disposition?: "todo" | "duplicate" | "wontfix" | "report";
@@ -2509,6 +2543,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                 agent: params.agent?.trim() || "task",
                 reason: evidence ?? "",
                 tier: params.tier,
+                blocksOrigin: params.blocksOrigin,
               },
               availableAgents(),
             );
@@ -2517,7 +2552,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               content: [
                 {
                   type: "text" as const,
-                  text: `${found.id} records in-scope work found during ${item.id}; it can dispatch now and every gate waits for it.\n\n${ledgerSummary(ledger, found.id)}`,
+                  text: `${found.id} records in-scope work found during ${item.id}; ${found.blocksOrigin ? "it blocks the origin's acceptance and may dispatch now" : `it waits for ${item.id} to finish`}. Every gate waits for it.\n\n${ledgerSummary(ledger, found.id)}`,
                 },
               ],
               details: {
@@ -2905,8 +2940,8 @@ export default function prometheus(pi: ExtensionAPI): void {
         };
         // A present but invalid plugin marker must pause this handoff, not silently become ordinary execution.
         if (
-          // Version 4 adds the stage's declared criteria and revision; version 3 markers still resume without them.
-          (marker.version !== 3 && marker.version !== 4) ||
+          // Version 5 carries diagnostic history through fresh-session approval; older markers still resume without it.
+          (marker.version !== 3 && marker.version !== 4 && marker.version !== 5) ||
           typeof marker.planFilePath !== "string" ||
           !planReferencesMatch(marker.planFilePath, reference) ||
           typeof marker.proposedByToolCallId !== "string" ||
@@ -3116,6 +3151,10 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (record?.phase === "planning" && isPlanReviewDispatch(event.input)) {
         const roundDetail = await reviewRoundBlockReason(ctx, record);
         if (roundDetail) return { block: true, reason: roundDetail };
+        const artifactsDir = ctx.sessionManager.getArtifactsDir();
+        if (artifactsDir && provenanceBlockReason("task") === undefined) {
+          await planReviews.remember(ctx.sessionManager.getSessionId(), event.toolCallId, event.input, artifactsDir);
+        }
       }
     }
     if (record?.phase !== "executing") return undefined;
@@ -3311,13 +3350,18 @@ export default function prometheus(pi: ExtensionAPI): void {
         else pi.logger.warn("prometheus stored the proposal without declared roadmap criteria", { error: coverage.error });
       }
       const markerFile = resolveLocalUrlToPath(prometheusArtifactUrl(proposedPath), localOptions(ctx));
+      await planReviews.flush();
+      const reviewHistory = await readPlanReviews(resolveLocalUrlToPath(proposedPath, localOptions(ctx)), (error) => {
+        pi.logger.warn("prometheus could not collect diagnostic review history for the native handoff", { error: errorMessage(error) });
+      });
       await writeLedgerAtomic(markerFile, {
-        version: 4,
+        version: 5,
         planFilePath: proposedPath,
         planSha256: record.planSha256,
         proposedByToolCallId: event.toolCallId,
         sourceSessionId: sessionId,
         roadmapStage: record.roadmapStage,
+        reviewHistory,
         createdAt: Date.now(),
       });
     } catch (error) {
@@ -3361,9 +3405,13 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("message_end", (_event, ctx) => observeFinalJobs(ctx));
 
-  // Notification-only: the user's answer ends every user-wait mark, so the waiting rows count as movable again.
-  pi.on("tool_execution_end", (event, ctx) => {
+  // Observation-only: archive native reviewer outcomes without adding a result-rewriting hook.
+  pi.on("tool_execution_end", async (event, ctx) => {
     if (event.toolName === "ask" && !event.isError) awaitingUser.delete(ctx.sessionManager.getSessionId());
+    if (event.toolName === "task" && provenanceBlockReason("task") === undefined) {
+      await planReviews.observeResult(ctx.sessionManager.getSessionId(), event.toolCallId, event.result);
+      observeFinalJobs(ctx);
+    }
   });
 
   pi.on("session_stop", async (_event, ctx) => {

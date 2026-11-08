@@ -12,6 +12,18 @@ Prometheus calls `architect` for an open boundary or decomposition question, and
 
 The plugin counts review rounds itself. Each dispatch of Momus, or of Momus and Oracle together, is one round, including a round where the reviewer could not read the plan. At `reviewRoundLimit` the user chooses between adding rounds for that plan and stopping; stopping makes Prometheus propose the plan as it stands with the open blockers listed. Without an interactive user, review stops at the limit.
 
+The planning policy also stops on stagnation: a non-approving round that neither raises a genuinely new eligible blocker nor confirms a recorded blocker closed must stop and ask the owner. Rewording an existing blocker and non-blocking notes do not count as progress. No answer authorizes another round. This is a prompt-level semantic judgment, separate from the runtime-enforced `reviewRoundLimit`; either stop still applies when the other would permit continuation.
+
+### Pre-approval review diagnostics
+
+Each reviewer receives one explicit binding, as standalone `absolute_plan_path:`, `review_round:`, and `review_kind:` lines in its task body or shared context, each exactly once. The target must be a canonical regular file inside the planner's own `artifacts/local/` directory. At native dispatch the plugin snapshots that exact path and SHA-256, rather than inferring a plan path from prose or hashing a later revision at result time. Both Momus and Oracle, including fallback reviewers carrying that contract, are observed through `tool_execution_end` and owned native final job results, without a new `tool_result` hook. Lifecycle completion alone does not archive a result.
+
+The best-effort archive is `<absolute_plan_path>.reviews/NNN-<kind>-<verdict>.md`, where kind is `routine` or `high_accuracy` and verdict is `okay`, `reject`, or `inconclusive`. Metadata records the exact dispatch binding, plan hash, native reviewer session transcript path, requested/actual agent, tool call and recording time, followed by the reviewer's output. Files are allocated exclusively without replacement and deduplicated by reviewer session; canonical containment and no-follow regular-file checks reject symlinked targets/storage. Only a standalone leading planning verdict from a successful native final result is archived; failed or cancelled native runs are not planning verdicts. Storage failures are logged and never alter task results, proposal eligibility or execution authority.
+
+At approval, available history for the source plan, including verdicts for earlier revisions, is copied into the Atlas bundle's `reviews/` directory. An approved copy may therefore contain earlier rejections; every artifact keeps its own dispatch hash. These files are diagnostics only: missing, corrupt, stale or `[OKAY]` artifacts never grant or revoke native approval, satisfy a row, or replace the approved-plan/receipt/checkpoint checks. Review dispatch observation is process-local; already written diagnostics survive restart, but an in-flight review lost across restart is not reconstructed.
+
+The version-5 proposal marker embeds this diagnostic history so native "Approve and execute" can carry it into a fresh session even though the host copies only the plan and marker, not the adjacent review directory. Version-3 and version-4 markers still resume without that optional history; the marker's approval provenance checks do not depend on diagnostics.
+
 ## Plan grammar
 
 - `## Tasks`: rows `- [ ] T<n>. <title>` numbered from `T1`, each with indented `Agent:`, `Depends on:`, `Acceptance:`, optional `Tier: LIGHT | HEAVY` (case-insensitive) and optional `Time limit: <N>h`. A missing tier means LIGHT. The limit is an integer from 1 to 72 hours (default `4h`); its key is case-insensitive, and invalid or duplicate limits are parse errors. Other invalid or repeated parsed fields are also errors. The other body lines the planning skill requires (`Closes:`, `References:`, `Mechanisms:`, `QA happy:`, `QA failure:`, `Commit:`) are read by children and reviewers only; the parser ignores them.
@@ -87,11 +99,12 @@ Native approval creates a bundle at `ctx.sessionManager.getSessionDir()/atlas/<p
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
-ledger.json      row progress, deferred findings, owner rulings and durable retry windows (version 9), plus Git HEAD at approval
+ledger.json      row progress, discovery ordering, deferred findings, owner rulings and retry windows (version 11), plus Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
 evidence/        copied native outputs and origin receipts
+reviews/         optional copied pre-approval review diagnostics, never approval or completion proof
 ownership/       exclusive execution ownership records
 ```
 
@@ -104,7 +117,7 @@ The ledger tracks each row's acceptance criteria, dependencies, status, requeste
 | Rows | Origin | Waits for |
 | --- | --- | --- |
 | `T1…` | the approved plan | their `Depends on:` rows |
-| `D1…` | `discover` scope `in`, before any gate has started; each names the T or D row whose work surfaced it | nothing |
+| `D1…` | `discover` scope `in`, before any gate has started; each names the T or D row whose work surfaced it | its origin, unless `blocksOrigin: true` declares an acceptance blocker; legacy D rows keep their prior ordering |
 | `X1…` | `fix` after F1–F4 or P1 rejected the work; `origin` names that row | nothing |
 | `F1`–`F4` | the approved plan | every T and D row, plus their own X rows |
 | `P1` | `Delivery: pr` or `ship` | every gate and every X row |
@@ -119,7 +132,7 @@ Atlas drives it with `atlas_ledger`:
 | `verify` | HEAVY row with recorded implementation: binds a distinct fresh verifier and strict schema (`rowId`, `planSha256`, `attempt`, `verdict`, `summary`, `evidence`, optional `failure: {failureClass, check, firstError}`). Lists this row's earlier archived verifier diagnostics from all retry windows for an independent applicability judgment. Old outputs without failure details remain valid; non-PASS defaults to counted unknown. Live native work must settle before replacement. After cancellation settles, call `verify` directly; `reopen` deliberately discards implementation. |
 | `fail` | With `id`, inspected `evidence`, `check`, `firstError`, optional `failureClass` (product/harness/unknown) and owned `childAgentId`, authenticates a terminal native generation and records it once. The child id may be absent for a correlated native failure with no registered child, but that absence alone never proves dispatch origin. A native-proven pre-execution dispatch rejection is archived without charging counted failures, harness repair or product-work time; implementation keeps its reservation and verification alone returns to pending. No success receipt is minted. |
 | `retry` | Exhausted row plus changed hypothesis in `evidence`: outside-lock owner confirmation (or the `atlasRetry` decision), then ownership/history/unchanged-acceptance recheck; appends a new window, retaining recorded HEAVY implementation when present. Optional `timeLimit: "14h"` uses the plan grammar and changes the limit from this window onward only if the user confirms the displayed limit in the dialog. A setting-granted window ignores the requested override and keeps the previous approved limit. Decline, changed attachment or live children grant nothing; without a dialog only an approving setting grants the window, never a changed limit. |
-| `discover` | `scope: "in"` appends a D row (title, acceptance, reason, optional agent and tier), refused once a gate has started or a fix row exists; `scope: "out"` records the next deferred finding `O<n>` with no row, at any time. |
+| `discover` | `scope: "in"` appends a D row (title, acceptance, reason, optional agent and tier) with `dependsOn: [origin]`. Optional `blocksOrigin: true` declares that the defect prevents the origin's acceptance and instead records no origin dependency; explain the blocker in `evidence` and avoid overlapping writers. Refused once a gate has started or a fix row exists. `scope: "out"` records the next deferred finding `O<n>` with no row, at any time. |
 | `triage` | Records where the deferred finding named by `id` went, with the reference in `evidence`; a later triage replaces it. `todo`: the Roadmap TODO id (`T` and at least three digits), only when the roadmap is usable in this repository. `duplicate`: what it duplicates. `wontfix`: the reason. `report`: only when no roadmap is usable in this repository; the reference is optional. Usability is the `usable` flag of a fresh roadmap binding answer; no answer means no roadmap, and an older roadmap's answer without the flag accepts either `todo` or `report`. |
 | `fix` | Appends an ordinary tiered X row for rejecting F1–F4 or P1; reopens only its origin. P1 depends on every X exactly once; X never depends on P1. An exhausted source cannot create automatic repairs without a retry grant. |
 | `block`, `reopen` | Discard the named row's implementation attempt and receipt; completed dependents keep their proof. Do not use them merely to replace a settled, cancelled verifier: call `verify` instead. |
@@ -129,6 +142,8 @@ Atlas drives it with `atlas_ledger`:
 A row is done only with proof from the child's real final result; a failed, foreign or still-running child, or a hand-written reference, cannot complete work. A HEAVY row also needs a passing receipt from a different child created after verification started. Verification status (`pending`, `running`, `passed`, `failed`) is derived, never stored. `atlas_release` needs a valid receipt for every row, the verifier receipts of HEAVY rows, a triage for every deferred finding (it names the untriaged ones), and the release confirmation. That confirmation follows `atlasRelease` (default `ask`, a dialog): `ask-then-approve` and `ask-then-decline` decide after `atlasAskTimeout` minutes, and `approve` and `decline` never show a dialog. A declined release keeps Atlas active until `/atlas exit`. Plan completion and `atlas:completed` never wait for triage.
 
 Child success outputs and original receipts are copied into `evidence/` and rechecked against their digests, so verified progress survives deleting the originating session. Terminal diagnostics (including failed verifiers) are copied as `failure-<outcome-digest>.md` and referenced with their digest from the versioned ledger; they provide context, never completion authority or checkpoint bindings. Missing/changed success proof reopens only that row. On resume, HEAVY retains a valid implementation and drops only an unfinished verifier binding. Checkpoint stays version 2; approval bytes are unchanged.
+
+Ledger v11 stores `blocksOrigin: false` on new incidental D rows and requires their sole dependency to be their T/D origin; `true` requires no dependency. Validation rejects contradictory dependency lists, and `start` refuses an unfinished origin prerequisite. Loading v10 and earlier preserves every historical D row's empty dependencies with `blocksOrigin` absent, without inventing an acceptance-blocker claim or changing completed proof. All supported earlier ledger versions upgrade on load; approval and checkpoint formats are unchanged.
 
 A harness verifier non-PASS preserves the implementation attempt, start time, child id, receipt and implementation evidence; it never completes the row. Failure history and the second-harness stop still apply. Reports with any product failure must use product/unknown, not harness even when an environmental error appeared first. A fresh verifier may adopt a previous independent check result only after explaining why intervening source, dependency, generated-asset, configuration and acceptance changes cannot affect it and citing preserved output. A commit SHA alone is insufficient, and implementer-only evidence never substitutes for independent verification.
 
@@ -174,6 +189,7 @@ The plan's `Delivery:` line governs execution, and children always do the pushes
 - Deferred findings are triaged as `todo` (a Roadmap TODO), `duplicate`, `wontfix` or `report`. `report` is refused while a usable roadmap exists, and is the choice when the repository has none.
 - Recorded failures survive restarts and session handoffs; a failure Atlas had not recorded yet does not. Blocked work stays unfinished: Atlas keeps and lists unverified commits or files it can trace to a child and never rolls them back, and delivery cannot proceed while gaps remain.
 - Starting a plan from Atlas Dispatch or `/atlas <plan>` makes Atlas send the first execution message itself.
+- Child assignments establish temporary-root, process/container and runtime-cache ownership when resources are created, with explicit cache/environment paths and independent roots for independent children. Cleanup removes only owned resources, never shared caches or another worker's files/processes; resources still needed by unfinished PR delivery are retained and reported with their owner and remaining use.
 
 ## Without the terminal UI
 

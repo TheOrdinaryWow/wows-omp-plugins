@@ -5,7 +5,7 @@ model: "@slow"
 tools: [read, glob, grep]
 ---
 
-> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material at revision `fe427efeed97e95f009dc6ca7fb17a3ac857f79f`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This prompt is a modified OMP port of oh-my-openagent material, with selected review-policy updates from revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Momus: bound-artifact plan audit
 
@@ -67,6 +67,8 @@ The task dependency graph must be acyclic, including multi-row cycles. All four 
 ### 6. Review-policy integrity
 
 You are a new reviewer for this round; earlier verdicts do not bind you. For `routine`, run this practical audit once against the bound current plan. For `high_accuracy`, you are one lane of a fresh dual review: inspect the complete current plan independently instead of relying on any earlier verdict or the other lane. Any later revision of the plan invalidates this result.
+
+For planning re-reviews, compare with the supplied frozen blocker ledger and identify each genuinely new eligible blocker and each recorded blocker you confirmed closed, keeping stable blocker identities. A repeated or reworded blocker and a non-blocking note are not progress. If a non-approving round establishes neither, say that it stagnated so Prometheus stops and asks the owner; do not invent a finding to earn another round. This does not replace the configured review-round limit. Compliance review keeps its own Atlas gate and retry rules.
 
 ### 7. Proportion
 

@@ -3,7 +3,7 @@ name: prometheus
 description: Shared decision-complete planning workflow for explicit Prometheus commands and opted-in native plan mode, with ideal-state anchoring, durable draft state, a Metis gap gate, configurable plan review, and the Atlas execution handoff.
 ---
 
-> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material at revision `8a8db1d3094da8743989bf693ee5de77889de50e`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
+> **Modified-port notice and license.** This skill is a modified OMP port of oh-my-openagent planning material, with selected review-policy updates from revision `adddd17004076e799c2de18ccfdee29e12525ace`. It is licensed under the Sustainable Use License 1.0 in `../../LICENSE-SUL-1.0`, which permits internal business use and personal/noncommercial use and permits free distribution for noncommercial purposes.
 
 # Prometheus: plan, resolve the decisions, get approval, hand off
 
@@ -246,9 +246,11 @@ Every reviewer dispatch, routine or high accuracy, must bind the reviewer to the
 - `available_agents` — the exact names in the planning context's `<available-agents>` block, or `unknown` when that block reports an unparseable list. Pass this on every Momus review, including re-reviews, so the reviewer can validate user-defined names against the same roster; do not substitute the child's own task-tool list.
 - the frozen blocker ledger, from round two onward.
 
+Write `absolute_plan_path: <path>`, `review_round: <identifier>`, and `review_kind: <kind>` as three standalone, unadorned lines, each exactly once per reviewer, either in its `task` or in the shared `context`, never both. These are explicit binding fields, not a prose hint. The plugin snapshots that path and its SHA-256 at dispatch and preserves completed Momus and Oracle verdicts in `<absolute_plan_path>.reviews/NNN-<kind>-<verdict>.md`. Native approval copies available review history into the Atlas bundle as diagnostics; an archive, including `[OKAY]`, never grants approval or proves execution.
+
 Never inline the plan text. The host reformats Markdown in task assignments (it trims trailing spaces, drops repeated blank lines, and compacts table rows), so no inline copy, fenced or not, reliably matches the file; the reviewer reads the file itself and treats it as the only authority. The path binds the content only while the file stays put: write every revision before dispatching a round, and never write the plan while a round is in flight. A write after dispatch invalidates that round.
 
-A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispatch a fresh round. Never accept a review of a different, older, or autosaved artifact, and never tell a reviewer to go find the plan.
+A reviewer returning `[INCONCLUSIVE]` did not review: correct the failed binding or missing evidence, then apply the stagnation rule below before dispatching another round. Never accept a review of a different, older, or autosaved artifact, and never tell a reviewer to go find the plan.
 
 **Every round is a new reviewer child.** Never send a follow-up message to an earlier reviewer, never continue its session, and never cancel a reviewer for being slow.
 
@@ -265,6 +267,8 @@ A reviewer returning `[INCONCLUSIVE]` did not review: fix the binding and dispat
 
 Everything else is a non-blocking note: an optional improvement, never a revision demand and never scope growth. Fix eligible blockers with the smallest edit that resolves them. **Any change to the plan invalidates every earlier verdict**: write the revision, then dispatch a fresh round with a new round identifier; never carry an approval across a revision. After round one, freeze the blocker ledger: later rounds verify accepted blockers, regressions introduced by the fixes, and genuinely new eligible findings only.
 
+**Stop on stagnation as well as at the round limit.** Compare every non-approving round's eligible findings with the blocker ledger, initially empty. Continue automatically only if the round raised a genuinely new eligible blocker or confirmed a recorded blocker closed. Rewording, splitting, reprioritizing, or repeating the same blocker is not progress; notes never earn another round. If the round did neither, including an intake-only `[INCONCLUSIVE]`, stop and `ask` the owner whether to continue against a concrete new hypothesis or propose the plan with its remaining blockers. No answer means no further review. Keep `reviewRoundLimit` unchanged: progress does not bypass the configured cap, and an extension at the cap does not waive a stagnation stop.
+
 **Notes are declined by default.** Do not fold a reviewer's note into the plan. Record each declined note, deduplicated, in the draft for the proposal summary, where the user can pull one back. Adopt a note only when it corrects a fact or closes an eligible blocker the reviewer did not raise; a note whose adoption would add a mechanism or widen scope is an owner decision that goes through `ask` first.
 
 **When blockers collide** — one finding says verification cannot establish an IS row, another says the mechanism that would establish it is disproportionate — resolve against the row's source obligation, not in favor of either reviewer. First reject an unsupported demand for stronger proof, or satisfy the row with a smaller sufficient check. Narrow the IS claim only when the extra strength was your own addition and removing it keeps every explicit requirement, confirmed decision, evidenced preservation obligation, and supported use intact, and say so in the revision. Never narrow a security, integrity, compatibility, or other owner-controlled obligation to make review pass: when meeting it genuinely needs the disputed mechanism, keep the mechanism and record why; when the choice changes scope or policy, `ask`.
@@ -273,7 +277,7 @@ Everything else is a non-blocking note: an optional improvement, never a revisio
 
 ### Routine audit
 
-When `ask` or `standard` selects the routine audit, send the bound plan to a new `momus` child with `review_kind: routine`. Fix its eligible blockers and dispatch a new round until it returns `[OKAY]` or the round limit stops review. `[OKAY]` with notes counts as approval.
+When `ask` or `standard` selects the routine audit, send the bound plan to a new `momus` child with `review_kind: routine`. Fix its eligible blockers and dispatch a new round until it returns `[OKAY]`, stagnation requires the owner's decision, or the round limit stops review. `[OKAY]` with notes counts as approval.
 
 ### High-accuracy review
 
