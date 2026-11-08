@@ -90,6 +90,8 @@ A foreign live/paused goal blocks start/resume. Native pause, budget limit, user
 
 Final acceptance needs every current criterion, any batch gates, real-surface or source QA, and a PASS review from a separate child of this session. Failed goals retry only with `retryFailed:true`, and blocked or empty work is not success. Resume refuses a foreign driver, and only an explicit `/ulw-loop resume` rebuilds a missing or completed driver. A bare SDK session gets no continuation controller from this plugin.
 
+In Tern, `ulw_loop` cards show the operation and current goal, goal state and a bounded list of criteria. Evidence and checkpoint cards report what changed; acquiring a goal is never shown as acceptance. Expand a card to find the folded **Model text**, with the full receipt formatted for reading. Plain terminals and model-visible results are unchanged.
+
 ## Research procedure
 
 The `/ulw-research` procedure is private and runs on OMP's native agents; it is not a skill the model can load, and natural-language research uses the same private payload. If an active `ulw-loop` owns the goal, research uses that loop's goals and evidence; otherwise it keeps its own journal and creates no loop or native goal. It builds a machine-readable claim graph from the collected sources.

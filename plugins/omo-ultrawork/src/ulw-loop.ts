@@ -7,6 +7,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 
 import { LOOP_ASSET, LOOP_DEFINE_ASSET, LOOP_WORKFLOW_ASSET, loadPromptAsset } from "#src/assets.ts";
 import { readHostSetting } from "#src/host-settings.ts";
+import { loopCard } from "#src/loop-card.ts";
 import {
   captureQualityGate,
   copyEvidence,
@@ -448,6 +449,7 @@ export function registerLoop(pi: ExtensionAPI, host: LoopHost): LoopIntegration 
         : "write";
     },
     strict: true,
+    ...loopCard,
     async execute(_id, params: LoopParameters, _signal, _update, ctx) {
       const op = params.op;
       try {
