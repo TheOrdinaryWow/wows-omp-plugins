@@ -2557,41 +2557,49 @@ async function scenario(name: string, root: string): Promise<void> {
     }
     // The child fails natively, then Atlas wakes it instead of recording the failure, and the wake succeeds.
     const prepared = await prepare("T1");
-    await publish(prepared, "Revived", { finalError: diskFull });
-    await publish(prepared, "Revived", { status: "running", nativeStatus: "started", finalResult: false });
-    const wake = Promise.withResolvers<void>();
-    const wakeJob = {
-      id: "job-Revived-2",
-      agentId: "Revived",
-      type: "task" as const,
-      ownerId: "Main",
-      startTime: Date.now(),
-      label: "IRC follow-up",
-      status: "running",
-      agentOutputPublished: true,
-      promise: wake.promise,
-    };
-    nativeJobs.push(wakeJob);
-    await publish(prepared, "Revived", { nativeStatus: "completed", finalResult: false, content: "Implemented after disk cleanup" });
-    wakeJob.status = "completed";
-    await hook("context", { messages: [] });
-    wake.resolve();
-    await hook("tool_result", { toolName: "task", toolCallId: "unrelated", isError: false, details: {}, content: [] });
-    ok(await done("T1", "Revived"));
-    const current = await row("T1");
-    const failures = current.retry?.windows.flatMap((window) => window.failures) ?? [];
-    if (name === "heavy-wake-after-failure") {
-      assert.equal(current.status, "in_progress");
-      assert.equal(current.receipt?.childAgentId, "Revived");
-      assert.equal(failures.length, 1);
-      assert.equal(failures[0]?.firstError, diskFull);
-      // The charged generation no longer holds the row: its verifier can start.
-      ok(await call({ action: "verify", id: "T1" }));
-    } else {
-      assert.equal(current.status, "blocked");
-      assert.equal(current.receipt, undefined);
-      assert.equal(failures.length, 2);
-      assert.equal(current.retry?.windows[0]?.stop?.reason, "signature");
+    const originalNow = Date.now;
+    const wakeAt = originalNow();
+    // The synchronous failure and wake job may share a clock tick; force that boundary instead of relying on scheduling.
+    Date.now = () => wakeAt;
+    try {
+      await publish(prepared, "Revived", { finalError: diskFull });
+      await publish(prepared, "Revived", { status: "running", nativeStatus: "started", finalResult: false });
+      const wake = Promise.withResolvers<void>();
+      const wakeJob = {
+        id: "job-Revived-2",
+        agentId: "Revived",
+        type: "task" as const,
+        ownerId: "Main",
+        startTime: Date.now(),
+        label: "IRC follow-up",
+        status: "running",
+        agentOutputPublished: true,
+        promise: wake.promise,
+      };
+      nativeJobs.push(wakeJob);
+      await publish(prepared, "Revived", { nativeStatus: "completed", finalResult: false, content: "Implemented after disk cleanup" });
+      wakeJob.status = "completed";
+      await hook("context", { messages: [] });
+      wake.resolve();
+      await hook("tool_result", { toolName: "task", toolCallId: "unrelated", isError: false, details: {}, content: [] });
+      ok(await done("T1", "Revived"));
+      const current = await row("T1");
+      const failures = current.retry?.windows.flatMap((window) => window.failures) ?? [];
+      if (name === "heavy-wake-after-failure") {
+        assert.equal(current.status, "in_progress");
+        assert.equal(current.receipt?.childAgentId, "Revived");
+        assert.equal(failures.length, 1);
+        assert.equal(failures[0]?.firstError, diskFull);
+        // The charged generation no longer holds the row: its verifier can start.
+        ok(await call({ action: "verify", id: "T1" }));
+      } else {
+        assert.equal(current.status, "blocked");
+        assert.equal(current.receipt, undefined);
+        assert.equal(failures.length, 2);
+        assert.equal(current.retry?.windows[0]?.stop?.reason, "signature");
+      }
+    } finally {
+      Date.now = originalNow;
     }
     return;
   }

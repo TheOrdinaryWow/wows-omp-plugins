@@ -530,8 +530,8 @@ export class ChildEvidence {
   }
 
   /**
-   * Bind returned assignments to the parent's native task jobs. Only the exact job promise's settlement records a final
-   * outcome; the retained promise survives the manager evicting its row.
+   * Bind returned assignments without a terminal member result to the parent's native task jobs. A synchronous final
+   * result already authenticates its generation; the retained job promise authenticates an asynchronous one after eviction.
    */
   observeAsyncJobs(sessionId: string, native: NativeJobs): void {
     for (const job of native.jobs) {
@@ -551,6 +551,7 @@ export class ChildEvidence {
             assignment.sessionId !== sessionId ||
             assignment.nativeChildId !== job.agentId ||
             assignment.returnedAt === undefined ||
+            assignment.finalStatus !== undefined ||
             job.startTime < assignment.dispatchedAt ||
             job.startTime > assignment.returnedAt ||
             assignment.observingSettlement
