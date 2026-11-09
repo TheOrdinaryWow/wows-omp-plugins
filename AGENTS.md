@@ -305,6 +305,9 @@ consequence; option descriptions render muted with inline markdown.
 
 ## Tern native rendering
 
+Tern's own documentation is at <https://docs.stencil.so/tern/index.html>;
+consult it when writing or changing a Tern integration.
+
 In Tern, omp speaks the Tern Surface Protocol and asks each component for
 `describe(cx)` instead of `render()`; a component without it shows up as raw
 TUI rows. The adr, roadmap and omo-prometheus consoles therefore keep
