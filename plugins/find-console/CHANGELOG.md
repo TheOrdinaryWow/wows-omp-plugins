@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.2.1...find-console@0.2.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **find-console:** load on bundled omp hosts by translating local models through completeSimple ([39ac207](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/39ac20703cafa460ace622aac7f32f4a692ce8db))
+
 ## [0.2.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.2.0...find-console@0.2.1) (2026-11-06)
 
 
