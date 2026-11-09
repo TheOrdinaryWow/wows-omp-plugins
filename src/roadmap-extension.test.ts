@@ -335,6 +335,22 @@ function holdOverlap(h: Harness, stageId = "S01") {
   return { shown: shown.promise, resolve: answer.resolve, reject: answer.reject };
 }
 
+function callJoiningOverlap(h: Harness, repo: Repo, input: { stage: string; intent: string }) {
+  const joined = Promise.withResolvers<boolean>();
+  const prefix = `${JSON.stringify([h.session.sessionManager.getSessionId(), repo.repoRoot, input.stage]).slice(0, -1)},`;
+  const original = Map.prototype.get;
+  // SDK preflight can outlive an unrelated status read; wait until this call looks up the actual pending flight.
+  Map.prototype.get = function (key) {
+    const value = original.call(this, key);
+    if (typeof key === "string" && key.startsWith(prefix)) joined.resolve(value instanceof Promise);
+    return value;
+  };
+  const pending = call(h, "roadmap_overlap", input).finally(() => {
+    Map.prototype.get = original;
+  });
+  return { pending, joined: joined.promise };
+}
+
 function observeLockWaits() {
   const original = scheduler.wait;
   const requests = new AsyncLocalStorage<() => void>();
@@ -2029,11 +2045,12 @@ async function acceptance(name: string, root: string): Promise<void> {
           const pending = call(h, "roadmap_overlap", { stage: "S01", intent: "First free-work request" });
           await held.shown;
           if (name === "overlap-flight-concurrent" || name === "overlap-flight-cancel" || name === "overlap-flight-error") {
-            const second = call(h, "roadmap_overlap", { stage: "S01", intent: "Second free-work request" });
+            const second = callJoiningOverlap(h, repo, { stage: "S01", intent: "Second free-work request" });
             assert((await call(h, "roadmap_status", {})).ok);
+            assert(await second.joined, "the second call must join the pending overlap dialog before it settles");
             if (name === "overlap-flight-error") held.reject(new Error("Overlap dialog failed"));
             else held.resolve(name === "overlap-flight-cancel" ? undefined : "free");
-            const receipts = await Promise.all([pending, second]);
+            const receipts = await Promise.all([pending, second.pending]);
             assert.equal(h.ui.overlapCalls.length, 1, "concurrent native calls must share the pending dialog");
             if (name === "overlap-flight-concurrent") {
               for (const receipt of receipts) {
