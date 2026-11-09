@@ -5,7 +5,6 @@ import { formatModelRoleAlias, roleCandidatePool } from "@oh-my-pi/pi-coding-age
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { JudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
 import type { CostGateApi } from "@oh-my-pi/pi-coding-agent/session/cost-gate";
-import { tinyModelClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 
 import type { ConsoleReport } from "#src/report.ts";
 
@@ -47,28 +46,19 @@ export async function translateQuery(options: {
       });
       if (!model) throw new Error("role is not configured or has no available model");
       onProgress?.(`translating with ${role}: ${model.provider}/${model.id}`);
-      let text: string | null;
-      if (model.api === "local-inference") {
-        text = await tinyModelClient.chat(
-          model.id,
-          [
-            { role: "system", content: TRANSLATION_PROMPT },
-            { role: "user", content: query },
-          ],
-          { signal, maxTokens: 128 },
-        );
-      } else {
-        costGate?.admit();
-        const message = await completeSimple(
-          model,
-          { systemPrompt: [TRANSLATION_PROMPT], messages: [{ role: "user", content: query, timestamp: Date.now() }] },
-          {
-            apiKey: ctx.modelRegistry.resolver(model, ctx.sessionManager.getSessionId()),
-            disableReasoning: true,
-            maxTokens: 128,
-            signal,
-          },
-        );
+      const local = model.api === "local-inference";
+      if (!local) costGate?.admit();
+      const message = await completeSimple(
+        model,
+        { systemPrompt: [TRANSLATION_PROMPT], messages: [{ role: "user", content: query, timestamp: Date.now() }] },
+        {
+          apiKey: local ? undefined : ctx.modelRegistry.resolver(model, ctx.sessionManager.getSessionId()),
+          disableReasoning: true,
+          maxTokens: 128,
+          signal,
+        },
+      );
+      if (!local) {
         costGate?.record(message.usage.cost.total);
         cost += message.usage.cost.total;
         onUsage?.({
@@ -81,15 +71,15 @@ export async function translateQuery(options: {
           stopReason: message.stopReason,
           errorMessage: message.errorMessage,
         });
-        if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(message.errorMessage ?? message.stopReason);
-        text = message.content
-          .filter((part) => part.type === "text")
-          .map((part) => part.text)
-          .join("");
       }
+      if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(message.errorMessage ?? message.stopReason);
+      const text = message.content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join("");
       signal.throwIfAborted();
       const translated = text
-        ?.trim()
+        .trim()
         .replace(/^(["'`])([\s\S]*)\1$/, "$2")
         .replace(/\s+/g, " ");
       if (!translated || translated.length > 1024 || needsTranslation(translated) || !/[a-z]/i.test(translated))

@@ -25,7 +25,17 @@ function exerciseCostGate(mode: "capped-main" | "capped-sub" | "no-session" | "r
     let judgeCalls = 0;
     mock.module("@oh-my-pi/pi-ai", () => ({
       ...ai,
-      completeSimple: async () => {
+      completeSimple: async (model) => {
+        if (model.api === "local-inference") {
+          localCalls++;
+          return {
+            role: "assistant", api: model.api, provider: model.provider, model: model.id,
+            content: [{ type: "text", text: "find implementation" }], stopReason: "stop",
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            timestamp: Date.now(),
+          };
+        }
         remoteCalls++;
         return {
           role: "assistant", api: "openai-completions", provider: "openai", model: "fixture-remote",
@@ -49,11 +59,6 @@ function exerciseCostGate(mode: "capped-main" | "capped-sub" | "no-session" | "r
           });
         },
       }),
-    }));
-    const tiny = await import("@oh-my-pi/pi-coding-agent/tiny/title-client");
-    mock.module("@oh-my-pi/pi-coding-agent/tiny/title-client", () => ({
-      ...tiny,
-      tinyModelClient: { chat: async () => { localCalls++; return "find implementation"; } },
     }));
     const { Settings, withActiveSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
     const { cfgModelRoles } = await import("@oh-my-pi/pi-coding-agent/config/model-settings");
