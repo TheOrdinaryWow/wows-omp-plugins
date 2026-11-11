@@ -1586,6 +1586,14 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(await hook("session_stop"), undefined);
     return;
   }
+  if (name === "resume-approved-reference") {
+    // Since omp 18.18 a restarted session restores the reference of its last native approval.
+    reference = "local://integrity-plan.md";
+    await reload();
+    assert(reference?.startsWith("atlas://"));
+    ok(await call({ action: "status" }));
+    return;
+  }
   if (name === "resume-reference-mismatch") {
     reference = "local://other-plan.md";
     await reload();
@@ -3282,6 +3290,7 @@ if (process.env[CHILD_ENV]) {
       "parallel-url-bindings",
       "exit-during-url-binding",
       "resume-absolute-reference",
+      "resume-approved-reference",
       "resume-missing-ledger",
       "rollback",
       "changed-output",

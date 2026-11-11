@@ -1027,6 +1027,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         !planReferencesMatch(reference, DEFAULT_PLAN_REFERENCE) &&
         !planReferencesMatch(reference, atlasPlanUrl(plan.id)) &&
         !planReferencesMatch(reference, plan.planFilePath) &&
+        !planReferencesMatch(reference, plan.sourcePlanPath) &&
         !planReferencesMatch(reference, previousReference)
       ) {
         throw new Error("the host plan reference differs from the persisted approved Atlas plan");
