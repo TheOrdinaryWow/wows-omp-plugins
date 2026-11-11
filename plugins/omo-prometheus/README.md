@@ -75,11 +75,28 @@ Every plan ends with a task list and the final reviews:
 - [ ] F4. Success-criteria fidelity
 ```
 
-Each task names the agent that does it, what it depends on and how to tell it is done. `Tier: HEAVY` marks risky work (security, migrations, public APIs, possible data loss and the like), which a second, independent subagent has to check before it counts. Prometheus picks the most specific agent your session offers, preferring those of omo-toolkit. If that agent is gone by the time the task runs, Atlas uses a fallback, and you do not have to approve again. The full plan format is in the [reference](REFERENCE.md#plan-grammar).
+Each task names the agent that does it, what it depends on, how to tell it is done and its tier, `LIGHT` or `HEAVY` (see [Set how carefully each task is checked](#set-how-carefully-each-task-is-checked)). Prometheus picks the most specific agent your session offers, preferring those of omo-toolkit. If that agent is gone by the time the task runs, Atlas uses a fallback, and you do not have to approve again. The full plan format is in the [reference](REFERENCE.md#plan-grammar).
+
+### Set how carefully each task is checked
+
+Every task is either `LIGHT` or `HEAVY`. A `LIGHT` task is done on its own proof: its subagent shows its checks pass, and the final reviews cover the whole change. A `HEAVY` task gets a second check from a fresh subagent that did not do the work, and it counts as done only after that check passes.
+
+The tier depends on what an uncaught defect would cost, not on which part of the code the task touches. A task is `HEAVY` when a defect its own checks could miss would plausibly lead to:
+
+- unauthorized access, a bypassed permission or policy check, a security feature that silently stops working, or exposed secrets;
+- loss or corruption of data kept in storage;
+- a destructive or irreversible migration, or a storage format change that cannot be undone;
+- money or paid quota charged, settled or credited wrongly;
+- breaking existing callers of a published interface or one shared across components;
+- a concurrency bug on a production path.
+
+A task is also `HEAVY` when it changes shared behavior that several modules must change together, or when it is by itself a very large new production subsystem. Everything else is `LIGHT`. That includes tests and benchmarks, documentation, scripts and CI, front-end pages that call existing APIs, and changes inside one module whose failures show up in the task's own checks, such as logging, renames, configuration parsing and additive features.
+
+While it plans, Prometheus asks OMP's `judge` role to settle each task's tier from the task text. That role is OMP's judge model, the one it uses to classify tasks. Only a judgment model counts, such as TypeSafe's Jev or an OpenRouter decision model; an ordinary chat model is never asked. When the judge is sure, its tier stands. When it is not sure, when no such judge is configured, or when `tierJudge` is off, Prometheus picks the tier by the rules above and writes a `Tier basis:` line with its reason. You can also settle a tier yourself: tell Prometheus before you approve, and the plan records `Tier basis: owner — <reason>`. The [reference](REFERENCE.md#tier-judge) has the exact rules.
 
 ### How Atlas carries out a plan
 
-After approval, the main session becomes Atlas. Atlas does not edit files or run commands itself; it sends every task to a subagent and tracks progress in a ledger. A task is done only when its subagent's final result proves it, and ticking the box in the plan file changes nothing. Tasks run in dependency order.
+After approval, the main session becomes Atlas. Atlas does not edit files or run commands itself; it sends every task to a subagent and tracks progress in a ledger. A task is done only when its subagent's final result proves it, and ticking the box in the plan file changes nothing. Tasks run in dependency order, with one exception: a task that depends on a `HEAVY` task starts as soon as that task's implementation is recorded, while its independent check is still running. Final reviews and delivery still wait for everything. If the check then fails, the repair runs as usual, and tasks already running are told about any interface the repair changes.
 
 Subagents may find problems along the way:
 
@@ -90,11 +107,11 @@ Atlas keeps going until the plan is done. If the plan or ledger files go missing
 
 A task stops being retried after two identical failures in a row, a third failure, or four hours of work unless the plan sets another limit (see below). A failure doesn't count when the checking subagent shows that every earlier failure is now fixed and it found a different problem, up to three such failures per try. Once no other task is ready to start, you can give the stopped task another try without losing its history, even while other tasks are still running. A failure that comes from the test harness rather than the product gets one extra repair. If the subagent that checks a `Tier: HEAVY` task is stopped by a broken environment and finds nothing wrong with the change, the finished work is kept and only the check runs again. A subagent call that fails before any subagent starts costs the task no retry. The [reference](REFERENCE.md#retry-windows-and-delivery-repair) has the exact rules.
 
-The checking subagents report every problem they find in one pass, fail a task only for its own acceptance, and after a fix recheck what the fix can affect instead of starting over. Problems in other tasks' code go on the list of discovered tasks and findings instead.
+A `HEAVY` task's first check looks at everything. It reports every problem it finds in one pass and fails the task only for its own acceptance. After a failed check and its repair, the next check is narrower: it confirms that each listed problem is fixed and that the repair broke nothing. It fails the task again only for a listed problem that is still there, a regression the repair caused, or a newly found problem with a severe result: exposed secrets or credentials, unauthorized access, lost or corrupted stored data, an irreversible migration or stored-format upgrade, a broken caller of a published contract, or a concurrency bug on a path that carries user traffic or data. Any other new finding goes on the list of discovered tasks or findings, and the task is not reopened for it. Problems in other tasks' code go on that list too.
 
 If a task reaches its time limit but its subagent has already finished successfully, granting another try keeps that result without making the subagent repeat the work.
 
-Prometheus keeps long test suites out of individual tasks. Each task and its checker run the tests the change touches, and a suite that takes hours runs once, in the real-surface QA review at the end. A task or final review that needs more than four hours gets a line such as `Time limit: 14h` (1 to 72 hours), and approving the plan approves that limit. When Atlas asks you to give a stopped task another try, it can propose a higher limit; the limit changes only if you confirm it in that dialog. A checker that runs again may reuse an earlier checker's result for a test, but only after explaining why nothing that changed since could affect it.
+Prometheus keeps long test suites out of individual tasks. Each task and its checker run the tests the change touches, and a suite that takes hours runs once, in the real-surface QA review at the end. A task or final review that needs more than four hours gets a line such as `Time limit: 14h` (1 to 72 hours), and approving the plan approves that limit. When Atlas asks you to give a stopped task another try, it can propose a higher limit; the limit changes only if you confirm it in that dialog. A checker that runs again may reuse an earlier checker's result for a test, but only after explaining why nothing that changed since could affect it. Atlas never adds repeated or stress runs of a test, or a pass threshold stricter than the plan's acceptance; a repeat count applies only when the plan or one of your rulings states it. An intermittent failure is traced before anyone is blamed. In a test the task added or changed, the failure is that task's problem, unless the test's own timing is wrong and the product clearly behaves correctly. A test the task did not touch is rerun alone and checked on the plan's starting commit: if it fails there too, it is a known flaky check for the plan; if it does not, the failure is recorded as a finding instead of failing the task.
 
 When a task needs you, Atlas marks it blocked and carries on with everything that does not depend on it. Questions that would not change the work go into its reply; when nothing else can move, it asks you in a dialog and waits. A running subagent that only needs you to do something outside the session, such as starting Docker or signing in, is left running with its work intact: Atlas asks you, then tells the subagent to continue. The final report lists every assumption it made. If you fix a blocker yourself, tell Atlas which commit or files did it, and a new subagent checks the task again. Atlas never rolls back unverified work; it keeps it and lists it.
 
@@ -199,6 +216,8 @@ Settings are read when a session starts, so restart the session after changing t
 | --- | --- | --- |
 | `reviewLevel` | `ask` | How plans are reviewed before you see them (see below). |
 | `reviewRoundLimit` | `5` | The most review rounds per plan. `0` or empty means no limit. At the limit you choose whether to allow more rounds or have Prometheus propose the plan as it stands, with the open problems listed. |
+| `tierJudge` | `true` | Lets OMP's judge role settle each task's tier during planning. When off, Prometheus decides every tier itself and writes a reason for each one. |
+| `tierJudgeConfidence` | `0.6` | How sure the judge must be before its tier is final, from 0 to 1. Below this value Prometheus decides the tier and writes the reason. A lower value lets the judge decide more tasks, a higher one leaves more to Prometheus. |
 | `delivery` | `ask` | How finished work leaves the repository: `ask`, `direct`, `pr` or `ship` (see [Deliver the result](#deliver-the-result)). |
 | `atlasWidget` | `true` | Show the progress widget above the editor while Atlas runs. |
 | `progressReports` | `false` | Have Atlas post a short chat update before each batch of tasks and after each task: progress, result, how it was checked, any problem and the next step. |
@@ -253,6 +272,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus atlasRelease approve
 - Planning with Prometheus needs Plan Mode's interactive approval, so it does not run in headless or SDK sessions.
 - Plans from versions before the shared ledger cannot be resumed. Have them approved again.
 - In Tern, the plan list and plan view keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
+- The tier judge reads only each task's text. A task whose risk does not show in its description can be judged `LIGHT`, so check the tiers of risky tasks before you approve and ask Prometheus to change any that are wrong. Your change is recorded as an owner decision.
 
 ## More details
 
