@@ -275,6 +275,28 @@ calls a chat-model fallback. Automatic routing fails open: a missing native judg
 keeps the requested agent and warns once per session. A pin that cannot apply
 must instead refuse the call; never run a pinned task on the agent's own model.
 
+## Task tiers in omo-prometheus
+
+Planners marked about three quarters of all tasks HEAVY under the old rule
+("touches authentication, security, migrations, …"), and every HEAVY task costs
+an independent verifier plus its repair rounds. Decided by the maintainer:
+
+- A tier follows the consequence of a defect the task's own acceptance misses,
+  never the area the task touches. The written criteria live once in the
+  planning skill; reviewers and Atlas restate them briefly.
+- During planning the plugin asks OMP's native judge two questions per task
+  (tier, kind of deliverable) and takes the smaller probability as the chance of
+  HEAVY (`src/tier-judge.ts`). A confident answer is binding, an undecided one
+  leaves the tier to the planner with a `Tier basis:` line, and the user may
+  decide any row (`Tier basis: owner — …`). No judge runs during execution.
+- The question texts and the formula were tuned against labelled tasks from
+  real plans, with plans held out for the final check. A weighted
+  per-consequence formula and a severity score both did worse. Do not reword a
+  question or change the formula without measuring again on labelled tasks;
+  the figures are in the plugin's REFERENCE.
+- Like judge-dispatch, it never calls a chat-model judge. Without a native
+  judge the planner decides every tier and writes its reason.
+
 ## UI runs in three environments
 
 Every user-facing surface a plugin adds (commands, dialogs, widgets, status
