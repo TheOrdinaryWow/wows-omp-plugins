@@ -30,6 +30,7 @@ const content = `# Bound execution
 - [ ] T1. Deliver the stage
   - Agent: task
   - Depends on: none
+  - Tier basis: module-local failures appear in the acceptance run
   - Acceptance: stage behavior is verified
 
 ## Final gates

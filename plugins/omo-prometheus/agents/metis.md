@@ -69,9 +69,11 @@ Check that the proposed work specifies:
 - complete migration of affected callers and deletion of obsolete paths for a clean cutover;
 - the root Atlas delegation rule, with child assignments explicitly exempt from Atlas-only orchestration so workers execute rather than recursively delegate;
 - a working-slice commit policy, with no broken commits, and a `Commit:` line per task; when the workspace is not a Git repository, every task instead says `Commit: none (workspace is not a Git repository)`, delivery is `direct`, and no task runs git or `git init`;
-- a `Tier:` on every task, with `HEAVY` wherever the task touches authentication, security, migrations, concurrency, persistence formats, public API, or carries data-loss risk, and `LIGHT` otherwise;
+- a `Tier: LIGHT` or `Tier: HEAVY` on every task; a missing or invalid tier remains a grammar blocker;
 - a delivery mode that matches the user's answer (`direct`, `pr`, or `ship`), with delivery work left to the runtime's delivery row rather than written as a task;
 - independent final verification delegated to children rather than performed by Atlas.
+
+Review a task's tier only when it carries a `Tier basis:` line, in both directions, using the planning skill's written criteria. Require HEAVY for production-code or stored-data changes whose defects missed by their own acceptance checks plausibly cause unauthorized access, bypassed permission or policy checks, protection silently ceasing to enforce, exposed secrets, durable data loss or corruption, destructive or irreversible migration or format cutover, money or paid quota wrongly charged, settled or credited, broken existing callers of a published or cross-component contract, or production-path concurrency defects; also for shared behavior several modules must change with, or a very large new production subsystem. Treat tests and evidence, documentation, existing-API presentation, tooling, and module-local production changes caught by their own acceptance run as LIGHT. Touching a sensitive area alone does not establish a consequence. A LIGHT row with a listed consequence is a blocker, as is a HEAVY row whose stated consequence does not hold. A row without `Tier basis:` was settled by the judge: do not review its tier.
 
 Do not demand an arbitrary number of tasks, children, or verification lanes, or components beyond those the planner locked from the evidence. One cohesive task is valid when splitting would sever shared reasoning; many independent tasks are valid when the dependency map supports them.
 

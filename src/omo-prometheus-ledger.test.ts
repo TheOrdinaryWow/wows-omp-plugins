@@ -445,6 +445,52 @@ describe("Prometheus execution ledger", () => {
     expect(() => restoreLedger(downgraded, ledger.planFilePath, heavyPlan, ledger.planSha256)).toThrow("Malformed execution ledger row T2");
   });
 
+  test.each([undefined, "acceptance catches module-local failures", "owner — user confirmed this tier"])(
+    "parses optional Tier basis without changing persisted rows: %s",
+    (basis) => {
+      const text = basis === undefined ? plan : plan.replace("  - Agent: deep-low", `  - Tier basis: ${basis}\n  - Agent: deep-low`);
+      const parsed = parsePlanChecklist(text);
+      expect(parsed.errors).toEqual([]);
+      expect(parsed.items[0]?.tierBasis).toBe(basis);
+      expect(parsed.items[0]?.title).toBe("Establish the baseline");
+      expect(parsed.items[0]?.bodyLines).toContain("  - Acceptance: initial behavior observed");
+      const ledger = createLedger("local://basis-plan.md", text);
+      const row = startRow(ledger, "T1");
+      recordReceipt(row, receiptFor(row, row.attempt ?? "", "Implementer"), "observed baseline");
+      const saved = JSON.stringify(ledger);
+      expect(saved).not.toMatch(/tierBasis|bodyLines/);
+      const restored = restoreLedger(JSON.parse(saved), ledger.planFilePath, text, ledger.planSha256);
+      expect(restored.version).toBe(ledger.version);
+      expect(restored.items[0]).toEqual(row);
+    },
+  );
+
+  test("reads Tier basis case-insensitively and refuses a duplicate", () => {
+    const text = plan.replace("  - Agent: deep-low", "  - tIeR BaSiS: module-local\n  - Agent: deep-low");
+    expect(parsePlanChecklist(text).items[0]?.tierBasis).toBe("module-local");
+    expect(
+      parsePlanChecklist(text.replace("  - tIeR BaSiS: module-local", "  - tIeR BaSiS: module-local\n  - Tier basis: repeated")).errors,
+    ).toContain("T1: duplicate Tier basis field");
+  });
+
+  test("exposes indented body lines in plan order including fenced content without parsing fenced fields", () => {
+    const text = plan.replace(
+      "  - Acceptance: initial behavior observed",
+      "  - Acceptance: initial behavior observed\n\n  ```\n  - Tier: not-a-field\n  code\n  ```",
+    );
+    const parsed = parsePlanChecklist(text);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.items[0]?.bodyLines).toEqual([
+      "  - Agent: deep-low",
+      "  - Depends on: none",
+      "  - Acceptance: initial behavior observed",
+      "  ```",
+      "  - Tier: not-a-field",
+      "  code",
+      "  ```",
+    ]);
+  });
+
   test("T and F time limits bind integer hours; invalid or duplicate limits refuse plan approval", () => {
     const limitPlan = (value: string, row = "T1") =>
       row === "T1"

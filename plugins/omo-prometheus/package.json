@@ -30,6 +30,18 @@
         "min": 0,
         "description": "Most plan-review rounds per plan before asking whether to raise the limit or propose the plan as it stands; 0 or empty means unlimited"
       },
+      "tierJudge": {
+        "type": "boolean",
+        "default": true,
+        "description": "Let OMP's native judge settle task tiers before plan reviews and proposals"
+      },
+      "tierJudgeConfidence": {
+        "type": "number",
+        "default": 0.6,
+        "min": 0,
+        "max": 1,
+        "description": "Minimum confidence for a binding tier judgment; below it the planner decides and writes a Tier basis"
+      },
       "delivery": {
         "type": "enum",
         "values": [

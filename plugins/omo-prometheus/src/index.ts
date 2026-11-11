@@ -15,7 +15,7 @@ import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { isNativeRendering } from "@oh-my-pi/pi-tui";
 
-import { copyPlanReviews, PlanReviews, readPlanReviews } from "#src/plan-reviews.ts";
+import { copyPlanReviews, PlanReviews, planReviewBindings, readPlanReviews } from "#src/plan-reviews.ts";
 
 import { AdrContract } from "./adr-contract.ts";
 import { parseLegalAgentNames } from "./agents.ts";
@@ -82,6 +82,7 @@ import {
   ledgerRows,
   movableRows,
   nextDispatchable,
+  type ParsedPlan,
   parsePlanChecklist,
   parseTimeLimit,
   planDigest,
@@ -110,6 +111,7 @@ import {
   type RoadmapStageAnswer,
 } from "./roadmap-contract.ts";
 import { forceStructuredResults, restoreStructuredResults } from "./structured-results.ts";
+import { DEFAULT_TIER_JUDGE_SETTINGS, parseTierJudgeSettings, resolveTierJudge, TierJudge, type TierJudgeSettings } from "./tier-judge.ts";
 import {
   activateCard,
   gitCard,
@@ -304,6 +306,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   const authorizedActivationCalls = new Map<string, string>();
   const reviewLevels = new Map<string, ReviewLevel>();
   const reviewRoundLimits = new Map<string, number>();
+  const tierJudgeSettings = new Map<string, TierJudgeSettings>();
+  const tierJudges = new Map<string, TierJudge>();
   const deliverySettings = new Map<string, DeliverySetting>();
   const atlasWidgets = new Map<string, boolean>();
   const progressReports = new Map<string, boolean>();
@@ -395,6 +399,10 @@ export default function prometheus(pi: ExtensionAPI): void {
       reviewRoundLimits.set(sessionId, DEFAULT_REVIEW_ROUND_LIMIT);
       pi.logger.warn("prometheus reviewRoundLimit is invalid; using 5", { error: errorMessage(error) });
     }
+    tierJudgeSettings.set(
+      sessionId,
+      parseTierJudgeSettings(settings, (message) => pi.logger.warn(`prometheus ${message}`)),
+    );
     try {
       deliverySettings.set(sessionId, parseDeliverySetting(settings.delivery));
     } catch (error) {
@@ -423,6 +431,34 @@ export default function prometheus(pi: ExtensionAPI): void {
       display: true,
       attribution: "agent",
     });
+  };
+
+  const tierBlockReason = (ctx: ExtensionContext, tasks: ParsedPlan["items"]): Promise<string | undefined> => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    let judge = tierJudges.get(sessionId);
+    if (!judge) {
+      judge = new TierJudge(
+        () => resolveTierJudge(ctx),
+        (message) => commandNotice(ctx, message, "warning"),
+      );
+      tierJudges.set(sessionId, judge);
+    }
+    return judge.check(tasks, tierJudgeSettings.get(sessionId) ?? DEFAULT_TIER_JUDGE_SETTINGS);
+  };
+
+  const reviewTierBlockReason = async (ctx: ExtensionContext, input: unknown): Promise<string | undefined> => {
+    const reasons: string[] = [];
+    for (const planPath of new Set(planReviewBindings(input).map((binding) => binding.absolute_plan_path))) {
+      let content: string;
+      try {
+        content = await fs.readFile(planPath, "utf8");
+      } catch {
+        continue;
+      }
+      const reason = await tierBlockReason(ctx, parsePlanChecklist(content, availableAgents()).items);
+      if (reason) reasons.push(`${planPath}: ${reason}`);
+    }
+    return reasons.length ? reasons.join("\n") : undefined;
   };
 
   /** Prometheus plans inside native plan mode; with plan.enabled off the host refuses /plan and xd://propose never exists. */
@@ -1713,12 +1749,16 @@ export default function prometheus(pi: ExtensionAPI): void {
       // The host resolves the plan itself and reports a missing file.
       return undefined;
     }
-    const { errors, roadmapCriteria } = parsePlanChecklist(content, availableAgents());
+    const { items, errors, roadmapCriteria } = parsePlanChecklist(content, availableAgents());
     const reasons: string[] = [];
     if (errors.length) {
       reasons.push(
         `Prometheus refused this proposal: ${planUrl} does not follow the plan grammar Atlas executes (${errors.join("; ")}). Rewrite it with \`## Tasks\` (sequential T rows with Agent, Depends on and Acceptance) and \`## Final gates\` (exactly F1–F4 with their required titles), then propose again.`,
       );
+    }
+    if (!errors.length) {
+      const tierReason = await tierBlockReason(ctx, items);
+      if (tierReason) reasons.push(tierReason);
     }
     // Coverage is declared before approval only against a roadmap that reports the stage's current criteria.
     const stage = roadmap.requestBinding(ctx.sessionManager.getSessionId())?.stage;
@@ -3204,6 +3244,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       const taskSpawnDetail = taskSpawnBlockReason(record?.phase, event.input);
       if (taskSpawnDetail) return { block: true, reason: taskSpawnDetail };
       if (record?.phase === "planning" && isPlanReviewDispatch(event.input)) {
+        const tierDetail = await reviewTierBlockReason(ctx, event.input);
+        if (tierDetail) return { block: true, reason: tierDetail };
         const roundDetail = await reviewRoundBlockReason(ctx, record);
         if (roundDetail) return { block: true, reason: roundDetail };
         const artifactsDir = ctx.sessionManager.getArtifactsDir();
@@ -3586,6 +3628,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       restoreStructuredResults(live);
     }
     const sessionId = ctx.sessionManager.getSessionId();
+    tierJudges.delete(sessionId);
+    tierJudgeSettings.delete(sessionId);
     plansSessions.delete(ctx.sessionManager);
     herdrDag.release(sessionId, "shutdown");
     clearObservation(ctx, sessionId);

@@ -221,7 +221,11 @@ const DELIVERY_ROWS = {
 const VERIFY_AGENT = "deep-high";
 const PLAN_GATED: Record<string, true> = { metis: true, momus: true };
 
-type ParsedItem = Omit<LedgerItem, "updatedAt">;
+type ParsedItem = Omit<LedgerItem, "updatedAt"> & {
+  /** Planning-only metadata: never copied into the execution ledger. */
+  tierBasis?: string;
+  bodyLines: string[];
+};
 
 export interface ParsedPlan {
   items: ParsedItem[];
@@ -253,7 +257,7 @@ export function parsePlanChecklist(
   const roadmapCriteria: ParsedPlan["roadmapCriteria"] = [];
   const field = legacy
     ? /^\s+(?:-\s*)?(Agent|Depends on|Acceptance):\s*(.*?)\s*$/i
-    : /^\s+(?:-\s*)?(Agent|Depends on|Acceptance|Tier):\s*(.*?)\s*$/i;
+    : /^\s+(?:-\s*)?(Agent|Depends on|Acceptance|Tier|Tier basis):\s*(.*?)\s*$/i;
   const timeLimitField = /^\s+(?:-\s*)?Time limit:\s*(.*?)\s*$/i;
   let section: "tasks" | "gates" | undefined;
   let hasTasks = false;
@@ -310,6 +314,8 @@ export function parsePlanChecklist(
       current.tier = "light";
       errors.push(`${current.id}: Tier must be LIGHT or HEAVY`);
     }
+    const tierBasis = fields.get("tier basis");
+    if (tierBasis !== undefined) current.tierBasis = tierBasis;
     current.acceptance = fields.get("acceptance") ?? "";
     if (!current.acceptance) errors.push(`${current.id}: Acceptance must describe an observable check`);
     body = [];
@@ -318,6 +324,7 @@ export function parsePlanChecklist(
 
   for (const [index, line] of planContent.split(/\r?\n/).entries()) {
     const trimmed = line.trim();
+    if (current && /^\s+\S/.test(line)) current.bodyLines.push(line);
     const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
     const fenceMarker = fenceMatch?.[1];
     if (fence) {
@@ -367,6 +374,7 @@ export function parsePlanChecklist(
         acceptance: title.trim(),
         dependsOn: [],
         status: /[xX]/.test(mark) ? "done" : mark === "~" ? "in_progress" : "open",
+        bodyLines: [],
       };
       if (!entry.title) errors.push(`Line ${index + 1}: checklist title is empty`);
       if (section === "tasks") {
@@ -432,7 +440,7 @@ function buildLedger(
   const parsed = parsePlanChecklist(planContent, availableAgents, { legacy, ignoreTimeLimits });
   if (parsed.errors.length) throw new Error(parsed.errors.join("; "));
   const now = Date.now();
-  const withDispatch = (item: ParsedItem): LedgerItem => ({
+  const withDispatch = ({ tierBasis: _tierBasis, bodyLines: _bodyLines, ...item }: ParsedItem): LedgerItem => ({
     ...item,
     dispatchAgent: resolveAgent(item.agent, availableAgents).dispatchAgent,
     timeLimitHours: item.timeLimitHours ?? 4,
@@ -460,6 +468,7 @@ function buildLedger(
             acceptance: delivery.acceptance,
             dependsOn: parsed.gates.map((gate) => gate.id),
             status: "open",
+            bodyLines: [],
           }),
         ]
       : [],

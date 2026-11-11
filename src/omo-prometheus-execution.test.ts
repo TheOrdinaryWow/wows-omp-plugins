@@ -25,14 +25,17 @@ const plan = `# Execution integrity
 - [ ] T1. Implement the prerequisite
   - Agent: task
   - Depends on: none
+  - Tier basis: module-local failures appear in the acceptance run
   - Acceptance: prerequisite behavior is observed
 - [ ] T2. Exercise the dependent behavior
   - Agent: task
   - Depends on: T1
+  - Tier basis: evidence-only work changes no production behavior
   - Acceptance: dependent behavior is observed
 - [ ] T3. Update independent behavior
   - Agent: task
   - Depends on: none
+  - Tier basis: module-local failures appear in the acceptance run
   - Acceptance: independent behavior is observed
 
 ## Final gates
@@ -499,6 +502,40 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(await propose(JSON.stringify({ title: "integrity" })), undefined);
     // An unresolvable slug is left to the host, which reports the missing plan itself.
     assert.equal(await propose("absent"), undefined);
+    return;
+  }
+  if (name === "tier-judge-fallback") {
+    await mkdir(join(root, ".omp"), { recursive: true });
+    await writeFile(
+      join(root, ".omp", "plugin-overrides.json"),
+      JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { reviewRoundLimit: 1 } } }),
+    );
+    await hook("session_start");
+    const unbased = plan.replace(/^ {2}- Tier basis:.*\n/gm, "");
+    await writeFile(sourcePlanFile, unbased);
+    const propose = () =>
+      hook("tool_call", {
+        toolName: "write",
+        toolCallId: `tier-proposal-${sequence++}`,
+        input: { path: "xd://propose", content: "integrity" },
+      });
+    const refusal = (await propose()) as { block?: boolean; reason?: string } | undefined;
+    assert.equal(refusal?.block, true);
+    for (const id of ["T1", "T2", "T3"]) assert(refusal?.reason?.includes(`${id}:`), refusal?.reason ?? "missing refusal");
+    assert.match(refusal?.reason ?? "", /add Tier basis:/);
+    const review = () =>
+      dispatchTask({
+        agent: "momus",
+        task: `absolute_plan_path: ${sourcePlanFile}\nreview_round: r${sequence++}\nreview_kind: routine`,
+      });
+    for (let i = 0; i < 2; i++) assert.match((await review())?.reason ?? "", /refused these task tiers/);
+    assert.equal(selections.length, 0);
+    await writeFile(sourcePlanFile, plan);
+    assert.equal(await propose(), undefined);
+    assert.equal(await review(), undefined);
+    interactive = false;
+    assert.match((await review())?.reason ?? "", /limit of 1 rounds and no user is available/);
+    assert.equal(notices.filter((notice) => notice.includes("needs a native judge")).length, 1);
     return;
   }
   if (name === "plan-mode-restored" || name === "plan-mode-reentered") {
@@ -3400,6 +3437,7 @@ if (process.env[CHILD_ENV]) {
       "plan-mode-restored",
       "plan-mode-reentered",
       "propose-grammar",
+      "tier-judge-fallback",
       "review-round-limit",
       "review-artifacts",
       "task-file-governance",
