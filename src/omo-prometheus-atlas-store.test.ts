@@ -519,7 +519,7 @@ describe("Atlas shared plan storage", () => {
       await finish(f, upgraded, "session-b", "T2");
       await finish(f, upgraded, "session-b", "F4");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBe(12);
       expect(saved.fixes).toEqual([]);
       expect(saved.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
@@ -540,12 +540,12 @@ describe("Atlas shared plan storage", () => {
       expect((await upgraded.details(f.root)).find((detail) => detail.plan.id === f.plan.id)?.done).toBe(2);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(resumed.gitBaseline).toBeUndefined();
       expect(ledgerRows(resumed).map((row) => row.status)).toEqual(["done", "open", "done", "open", "open", "open", "open"]);
       await finish(f, upgraded, "session-b", "T2");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBe(12);
       expect(saved.items.map((row) => row.status)).toEqual(["done", "done", "done"]);
       expect(saved.items[0]?.receipt?.sessionId).toBe("session-a");
       expect(saved.items[1]?.receipt?.sessionId).toBe("session-b");
@@ -1163,7 +1163,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.rows.map((row) => row.tier)).toEqual(["light", "light", "light", undefined, undefined, undefined, undefined]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(ledgerRows(resumed).map((row) => `${row.id}:${row.status}`)).toEqual([
         "T1:done",
         "T2:open",
@@ -1177,7 +1177,7 @@ describe("Atlas shared plan storage", () => {
       // LIGHT rows still finish on their own child's evidence, and the plan completes after its gates.
       for (const id of ["T2", "F1", "F2", "F3", "F4"]) await finish(f, upgraded, "session-b", id);
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBe(12);
       expect(saved.deliveries).toEqual([]);
       expect(saved.discoveries).toEqual([]);
       expect(JSON.parse(await fs.readFile(path.join(f.plan.directory, "checkpoint.json"), "utf8")).version).toBe(2);
@@ -1231,7 +1231,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.deferred?.map((finding) => finding.id)).toEqual(["O1", "O2"]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(resumed.items[0]?.status).toBe("done");
       expect(untriagedFindings(resumed).map((finding) => finding.id)).toEqual(["O1", "O2"]);
       // Reading alone never rewrites the previous-format bundle.
@@ -1241,7 +1241,7 @@ describe("Atlas shared plan storage", () => {
       await upgraded.transaction(f.plan.id, "session-b", (ledger) => triageFinding(ledger, "O2", "wontfix", "Tracked upstream", true));
       await finish(f, upgraded, "session-b", "T3");
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBe(12);
       expect(saved.deferred.map(({ id, title, triage }) => [id, title, triage?.disposition])).toEqual([
         ["O1", "Importer leaks handles", undefined],
         ["O2", "Flaky clock test", "wontfix"],
@@ -1272,7 +1272,7 @@ describe("Atlas shared plan storage", () => {
       expect(detail?.rulings).toEqual([]);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(resumed.rulings).toEqual([]);
       expect(resumed.items[0]?.status).toBe("done");
       expect(resumed.deferred.map((finding) => finding.id)).toEqual(["O1"]);
@@ -1288,7 +1288,7 @@ describe("Atlas shared plan storage", () => {
         amendAcceptance(ledger, t3.id, "independent result within the relaxed tolerance", "The user relaxed the tolerance", "user");
       });
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBe(12);
       expect(saved.rulings).toMatchObject([{ id: "R1", rowId: "T3", acceptance: "independent result within the relaxed tolerance" }]);
       expect(saved.items[2]?.acceptance).toBe("independent result is verified");
       expect(await fs.readFile(checkpointPath, "utf8")).toBe(checkpointBefore);
@@ -1351,7 +1351,7 @@ describe("Atlas shared plan storage", () => {
       expect((await resumedStore.details(f.root))[0]?.done).toBe(2);
       await resumedStore.acquire(f.plan.id, "session-b");
       const resumed = await resumedStore.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(resumed.items[0]?.receipt).toEqual(before.items[0]?.receipt);
       expect(resumed.items[0]?.verification).toEqual(before.items[0]?.verification);
       expect(resumed.items[1]?.receipt).toEqual(before.items[1]?.receipt);
@@ -1392,7 +1392,7 @@ describe("Atlas shared plan storage", () => {
           tier: "HEAVY",
         });
       });
-      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(11);
+      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(12);
       expect(await fs.readFile(path.join(f.plan.directory, "approval.json"), "utf8")).toBe(approvedBytes);
       expect(await fs.readFile(f.plan.planFilePath, "utf8")).toBe(planBytes);
       await resumedStore.release(f.plan.id, "session-b");
@@ -1433,7 +1433,7 @@ describe("Atlas shared plan storage", () => {
       const resumedStore = new AtlasStore(f.root);
       await resumedStore.acquire(f.plan.id, "session-b");
       const resumed = await resumedStore.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(resumed.rulings.map((ruling) => ruling.decidedBy)).toEqual(["user"]);
       const row = resumed.items[0] as LedgerItem;
       expect(row.retry?.windows.map((window) => window.grant?.decidedBy)).toEqual([undefined, "user"]);
@@ -1442,7 +1442,7 @@ describe("Atlas shared plan storage", () => {
       expect(await fs.readFile(f.plan.ledgerPath, "utf8")).toBe(oldBytes);
       await finish(f, resumedStore, "session-b", "T3");
       const written = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(written.version).toBe(11);
+      expect(written.version).toBe(12);
       expect(written.rulings[0]?.decidedBy).toBe("user");
       expect(written.items[2]?.status).toBe("done");
     });
@@ -1507,7 +1507,7 @@ describe("Atlas shared plan storage", () => {
       const resumedStore = new AtlasStore(f.root);
       await resumedStore.acquire(f.plan.id, "session-b");
       const resumed = await resumedStore.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(resumed.planTimeLimits).toBe(false);
       expect(resumed.items[0]?.receipt).toEqual(before.items[0]?.receipt);
       expect(resumed.items[0]?.attempt).toBe(before.items[0]?.attempt);
@@ -1523,7 +1523,7 @@ describe("Atlas shared plan storage", () => {
       expect(await fs.readFile(f.plan.ledgerPath, "utf8")).toBe(oldBytes);
       expect(await fs.readFile(path.join(f.plan.directory, "checkpoint.json"), "utf8")).toBe(checkpointBytes);
       await resumedStore.transaction(f.plan.id, "session-b", (ledger) => startVerification(ledger, "T1"));
-      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(11);
+      expect(JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")).version).toBe(12);
       expect(await fs.readFile(path.join(f.plan.directory, "approval.json"), "utf8")).toBe(approvalBytes);
       await resumedStore.release(f.plan.id, "session-b");
     }, heavy);
@@ -1556,7 +1556,7 @@ describe("Atlas shared plan storage", () => {
       const upgraded = new AtlasStore(f.root);
       await upgraded.acquire(f.plan.id, "session-b");
       const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
-      expect(resumed.version).toBe(11);
+      expect(resumed.version).toBe(12);
       expect(resumed.discoveries[0]?.receipt).toEqual(before.discoveries[0]?.receipt);
       expect(resumed.discoveries[0]?.status).toBe("done");
       expect(resumed.items[2]?.receipt).toEqual(before.items[2]?.receipt);
@@ -1576,9 +1576,62 @@ describe("Atlas shared plan storage", () => {
         expect(() => startRow(ledger, found.id)).toThrow("unfinished rows: T1");
       });
       const saved = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBe(12);
       expect(saved.discoveries[0]?.receipt).toEqual(before.discoveries[0]?.receipt);
       expect(await fs.readFile(path.join(f.plan.directory, "approval.json"), "utf8")).toBe(approvalBytes);
+      await upgraded.release(f.plan.id, "session-b");
+    });
+  });
+
+  test("a bundle written by ledger version eleven keeps its failure history and counts later progress failures separately", async () => {
+    await fixture(async (f) => {
+      const charge = (store: AtlasStore, session: string, key: string, firstError: string, progress?: true) =>
+        store.transaction(f.plan.id, session, async (ledger, plan) => {
+          const row = ledger.items[0] as LedgerItem;
+          if (row.status === "open") startRow(ledger, row.id);
+          noteRetryDispatch(row);
+          const outcome: FailedOutcome = {
+            outcomeKey: key,
+            toolCallId: `dispatch-${key}`,
+            sessionId: session,
+            childAgentId: `Failed${key}`,
+            attempt: row.attempt as string,
+            at: Date.now(),
+            failureClass: "product",
+            check: "browser acceptance",
+            firstError,
+            signature: "",
+            evidence: `Inspected ${key}`,
+            ...(progress ? { progress } : {}),
+          };
+          await store.saveFailure(plan, row, outcome, firstError);
+          recordFailure(ledger, row, outcome);
+        });
+      await f.store.acquire(f.plan.id, "session-a");
+      await charge(f.store, "session-a", "one", "dialog dismisses on backdrop click");
+      await charge(f.store, "session-a", "two", "phone close target is 30px wide");
+      await f.store.release(f.plan.id, "session-a");
+      const before = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      const oldBytes = JSON.stringify({ ...structuredClone(before), version: 11 });
+      await fs.writeFile(f.plan.ledgerPath, oldBytes);
+      const upgraded = new AtlasStore(f.root);
+      await upgraded.acquire(f.plan.id, "session-b");
+      const resumed = await upgraded.transaction(f.plan.id, "session-b", (ledger) => structuredClone(ledger), { resume: true });
+      expect(resumed.version).toBe(12);
+      expect(resumed.items[0]?.retry).toEqual(before.items[0]?.retry);
+      expect(await fs.readFile(f.plan.ledgerPath, "utf8")).toBe(oldBytes);
+      await charge(upgraded, "session-b", "three", "stacked toasts cover the close control", true);
+      const progressed = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      expect(progressed.version).toBe(12);
+      expect(retryWindow(progressed.items[0] as LedgerItem)?.stop).toBeUndefined();
+      expect(retryWindow(progressed.items[0] as LedgerItem)?.failures.map((outcome) => outcome.progress)).toEqual([
+        undefined,
+        undefined,
+        true,
+      ]);
+      await charge(upgraded, "session-b", "four", "long profile name overflows the phone layout");
+      const stopped = JSON.parse(await fs.readFile(f.plan.ledgerPath, "utf8")) as ExecutionLedger;
+      expect(retryWindow(stopped.items[0] as LedgerItem)?.stop?.reason).toBe("attempts");
       await upgraded.release(f.plan.id, "session-b");
     });
   });

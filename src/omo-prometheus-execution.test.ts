@@ -941,7 +941,18 @@ async function scenario(name: string, root: string): Promise<void> {
     }
     ok(await call({ action: "reopen", id: "T1" }));
     refused(await call({ action: "start", id: "T1" }));
-    refused(await call({ action: "retry", id: "T1", evidence: "Different repair hypothesis" }));
+    const refusal = await call({ action: "retry", id: "T1", evidence: "Different repair hypothesis" });
+    refused(refusal);
+    assert.match(refusal.content.map((part) => part.text ?? "").join("\n"), /Dispatch the rows that are ready/);
+    if (name === "retry-fail") {
+      // A row that is already running does not hold the retry request back; only the missing dialog refuses it here.
+      ok(await call({ action: "start", id: "T3" }));
+      interactive = false;
+      const running = await call({ action: "retry", id: "T1", evidence: "Different repair hypothesis" });
+      refused(running);
+      assert.match(running.content.map((part) => part.text ?? "").join("\n"), /no confirmation dialog is available/);
+      interactive = true;
+    }
     ok(await call({ action: "block", id: "T3", evidence: "Independent task needs owner credentials" }));
     const grant = () =>
       call({ action: "retry", id: "T1", evidence: "Different repair hypothesis; unchanged acceptance", timeLimit: "14h" });
@@ -3120,7 +3131,7 @@ async function scenario(name: string, root: string): Promise<void> {
     // The ruling is part of the shared bundle, so it survives a session restart.
     await reload();
     ok(await call({ action: "status" }));
-    assert.equal((await ledger()).version, 11);
+    assert.equal((await ledger()).version, 12);
     assert.deepEqual(
       (await ledger()).rulings.map((entry) => [entry.id, entry.decidedBy]),
       [["R1", "user"]],

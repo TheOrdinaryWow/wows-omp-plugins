@@ -99,7 +99,7 @@ Prometheus 根据会话 `task` 工具列出的代理制定计划，Momus 也按�
 ```text
 plan.md          exact approved plan
 approval.json    source approval, workspace, plan identity and roadmap stage (version 3)
-ledger.json      row progress, discovery ordering, deferred findings, owner rulings and retry windows (version 11), plus Git HEAD at approval
+ledger.json      row progress, discovery ordering, deferred findings, owner rulings and retry windows (version 12), plus Git HEAD at approval
 timeline.jsonl   append-only observation events (not execution proof)
 label.json       optional display name, independent of the immutable approval
 checkpoint.json  independent attempt and receipt bindings, including verification attempts (version 2)
@@ -129,9 +129,9 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 | `status` | 所有行及其生效的验收（裁定替换了计划原文时标注 `amended by Rn`）、业主裁定、带编号和分诊结果的范围外发现、交付方式和可派发的行。 |
 | `start` | 预留一个前置条件已完成的开放行并返回尝试绑定；关口还会得到 `outputSchema`，HEAVY 行会得到上一次验证失败。 |
 | `done` | 记录经认证的原生最终成功。LIGHT 行和 P1 完成；HEAVY 记录实现后还需验证者 PASS。关口或验证者 FAIL/INCONCLUSIVE 会归档诊断，并按重试规则处理。验证者因 harness 未通过时保留实现，仅把验证恢复为待验证；窗口停止时该行转为阻塞。product/unknown 失败仍会重新打开实现。 |
-| `verify` | 已记录实现的 HEAVY 行：绑定不同的全新验证者并返回严格 schema（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`，可选 `failure: {failureClass, check, firstError}`）。结果会列出该行所有重试窗口中已归档的验证者诊断路径，供新验证者独立判断哪些检查结果仍适用。没有失败详情的旧输出仍有效，非 PASS 默认按 unknown 计数。替换前必须等在途原生工作结束。取消结束后直接调用 `verify`；`reopen` 会主动丢弃实现。 |
+| `verify` | 已记录实现的 HEAVY 行：绑定不同的全新验证者并返回严格 schema（`rowId`、`planSha256`、`attempt`、`verdict`、`summary`、`evidence`，可选 `failure: {failureClass, check, firstError, priorResolved}`）。结果会列出该行所有重试窗口中已归档的验证者诊断路径，供新验证者独立判断哪些检查结果仍适用。没有失败详情的旧输出仍有效，非 PASS 默认按 unknown 计数。替换前必须等在途原生工作结束。取消结束后直接调用 `verify`；`reopen` 会主动丢弃实现。 |
 | `fail` | 指定 `id`、检查过的 `evidence`、`check`、`firstError`、可选 `failureClass`（product/harness/unknown）及所属原生 `childAgentId`，认证一个最终原生代次并只记录一次。关联的原生失败没有已注册子代理时可以省略 id，但仅凭这一点不能判断失败来自派发。原生观察证明子代理尚未执行就被拒绝派发时，会归档诊断，但不增加计数失败、不消耗环境修复预留，也不改变产品工作计时；实现预留保持不变，验证派发则仅恢复为待验证。不生成成功回执。 |
-| `retry` | 已耗尽的行加上 `evidence` 中改变的假设：锁外由业主确认（或由 `atlasRetry` 决定），再检查所有权、历史和未变的验收，追加新窗口；已有 HEAVY 实现会保留。可选 `timeLimit: "14h"` 使用计划的时限语法，只有用户在对话框中确认了展示的时限，才会从本窗口起修改时限。由设置授予的窗口忽略这次时限变更请求，沿用此前批准的时限。拒绝、附加状态变化或子代理仍在运行都不会授权；没有对话框时，会批准的设置只能授予窗口，不能修改时限。 |
+| `retry` | 已耗尽的行加上 `evidence` 中改变的假设：锁外由业主确认（或由 `atlasRetry` 决定），再检查所有权、历史和未变的验收，追加新窗口；已有 HEAVY 实现会保留。还有其他行可以派发时会被拒绝，正在进行的行不会挡住申请。可选 `timeLimit: "14h"` 使用计划的时限语法，只有用户在对话框中确认了展示的时限，才会从本窗口起修改时限。由设置授予的窗口忽略这次时限变更请求，沿用此前批准的时限。拒绝、附加状态变化或子代理仍在运行都不会授权；没有对话框时，会批准的设置只能授予窗口，不能修改时限。 |
 | `discover` | `scope: "in"` 追加一个 D 行（标题、验收、原因，可选代理和 tier），记录 `dependsOn: [origin]`。可选 `blocksOrigin: true` 表示该缺陷阻塞来源行验收，此时不记录来源依赖；在 `evidence` 中说明原因，并避免写入者重叠。一旦有关口开始或存在修正行即被拒绝。`scope: "out"` 记录下一条不建行的范围外发现 `O<n>`，任何时候都可以。 |
 | `triage` | 记录 `id` 指定的范围外发现的去向，引用写在 `evidence` 中；再次分诊会替换之前的结果。`todo`：路线图 TODO 编号（`T` 加至少三位数字），仅当路线图在本仓库中可用时允许。`duplicate`：与什么重复。`wontfix`：原因。`report`：仅当本仓库中没有可用的路线图时允许，引用可省略。是否可用取自一次新的路线图绑定回复中的 `usable` 标志；没有回复表示没有路线图，旧版路线图的回复不带这个标志时，`todo` 和 `report` 都接受。 |
 | `fix` | 为否决的 F1–F4 或 P1 追加正常 tier 的 X 行，只重新打开来源行。P1 对每个 X 恰好依赖一次，X 从不依赖 P1。来源额度耗尽后，没有重试授权就不能继续自动修复。 |
@@ -143,7 +143,7 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 
 成功输出和原始回执复制到 `evidence/` 并校验摘要，因此原会话删除后已验证进度仍保留。最终诊断（含未通过的验证者）复制为 `failure-<outcome-digest>.md`，路径和摘要由版本化执行记录引用；它们只是上下文，不是完成证明或检查点绑定。成功证明缺失或变化只重新打开对应行。恢复时 HEAVY 保留有效实现，仅丢弃未完成的验证者绑定。检查点仍为版本 2，批准文件的字节不变。
 
-执行记录 v11 为新建的附带发现写入 `blocksOrigin: false`，并要求唯一依赖就是发现它的 T/D 来源行；`true` 则要求没有依赖。校验会拒绝互相矛盾的依赖列表，`start` 会拒绝来源尚未完成的行。加载 v10 及更早版本时，历史 D 行保留空依赖、缺省的 `blocksOrigin`，不凭空宣称它阻塞来源验收，也不改变已完成证明。所有受支持的旧版执行记录都会在加载时升级；批准文件和检查点格式不变。
+执行记录 v11 为新建的附带发现写入 `blocksOrigin: false`，并要求唯一依赖就是发现它的 T/D 来源行；`true` 则要求没有依赖。校验会拒绝互相矛盾的依赖列表，`start` 会拒绝来源尚未完成的行。加载 v10 及更早版本时，历史 D 行保留空依赖、缺省的 `blocksOrigin`，不凭空宣称它阻塞来源验收，也不改变已完成证明。执行记录 v12 允许失败记录带可选的 `progress: true`（见下文重试窗口一节）；v11 及更早版本没有这个字段，计数不变。所有受支持的旧版执行记录都会在加载时升级；批准文件和检查点格式不变。
 
 验证者因 harness 未通过时，实现尝试、开始时间、子代理 id、回执和实现证据都会保留，但该行不会因此完成。失败历史和第二次 harness 失败即停止的规则仍然生效。报告中只要有产品失败，就必须归为 product/unknown，不能因为最先出现的是环境错误而归为 harness。新验证者可以采用先前独立验证中的检查结果，但必须引用保存的输出，并说明其间的源码、依赖、生成资源、配置和验收变更为何不可能影响该项检查。仅有提交 SHA 不够，实现者自己的证据也不能代替独立验证。
 
@@ -154,6 +154,8 @@ Atlas 通过 `atlas_ledger` 驱动执行记录：
 每个重试窗口的 `grant` 都记录 `decidedBy`：你在对话框中确认时为 `user`，由 `atlasRetry` 授予时为 `setting`。由设置授予的窗口按每行计数，达到 `atlasAutoRetryLimit`（默认 `1`，`0` 表示不限）后，`approve` 等同于 `decline`，`ask-then-approve` 等同于 `ask-then-decline`；你仍可在对话框中授予。Atlas 通过 `<decision-policy>` 标签获知这一策略；设置可以批准时，它会直接请求授权，而不是先通过 `ask` 询问。
 
 连续两次计数签名相同或第三次计数执行失败即停止；product 和 unknown 计数。有证据表明未运行产品行为的 harness 失败可获得一次不计数修复，下次实际开始执行时消耗预留；第二次 harness 执行失败即停止。这些限制与经过的时间相互独立。T/D/X 工作和正在运行的关口，从原生派发被接受起按当前批准的时限计时，包括会话离线时间：默认 `4h`，也可使用计划中的 `Time limit:` 或用户确认的重试时限。每次关口重跑从新的有效派发重新计时，等待其 X 修复行不计时。HEAVY 行记录实现后，等待验证者不计时；验证者开始执行时使用相同的有效时限重新计时。验证过期会阻塞该行，但保留已认证的实现回执；获得授权后继续独立验证，不必重新实现。P1 被动等待 CI/评审例外。过期会在持有所有权的恢复过程中先落盘，再允许本次变更被拒绝；恢复、宿主返回、继续执行和工作操作都会检查，而不是实时调度器。会列出活动子代理 id，供取消并观察原生最终状态。重新打开、裁定、替换子代理或新 X 不重置失败历史；已知原生失败必须在替换前记录。验收失败和 harness 分类仍须依据检查过的证据。远程等待、故意复现失败、取消和需要业主的阻塞本身不算产品失败周期。
+
+进展失败不计数：验证者或关口输出的 `failure.priorResolved` 为 `true`，表示它重跑了本窗口之前每一项失败检查且都已通过，这次是另一个缺陷。只有窗口里已有更早的执行失败、之前没有签名相同的失败、且进展失败不足三个时，插件才记下 `progress: true`；否则照常计数。Atlas 自己调用 `fail` 不能声明进展。
 
 T/D/X 行因超时停止时，如果尚未记录实现回执，会保留当前尝试及其开始时间绑定，并把该行标为阻塞。仍在运行的子代理要取消，并等待原生最终状态。重试获准后，保留的尝试恢复为 `in_progress`：原来的子代理如果已经成功结束，包括在处理停止期间才结束的情况，就用它的 `childAgentId` 调用 `done`，不要另派子代理重复确认。父子代理身份、原生派发、精确尝试绑定、隔离后处理结束后的原生最终成功、所属产物和输出摘要仍按原有规则检查。LIGHT 行随之完成，HEAVY 行仍需另一个独立验证者。记录结果既不派发新工作，也不启动新窗口的计时。子代理失败则用 `fail` 记录；如果决定重新做，先用 `reopen` 丢弃保留的尝试，再 `start`。现有执行记录和检查点格式已能表达这一状态，无须改版；此前的窗口和失败记录都保留。
 

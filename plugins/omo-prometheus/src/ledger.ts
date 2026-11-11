@@ -43,6 +43,8 @@ export interface FailedOutcome {
   signature: string;
   evidence: string;
   output?: { path: string; sha256: string };
+  /** The failing child proved every earlier failed check of its window fixed and reports a different defect; not counted toward the attempt limit. */
+  progress?: true;
 }
 
 /** Who settled an Atlas decision: the user in its dialog, or the plugin setting for that decision without an answer. */
@@ -134,7 +136,7 @@ export interface OwnerRuling {
 }
 
 export interface ExecutionLedger {
-  version: 11;
+  version: 12;
   /** Earlier plans did not approve Time limit fields, even if their free text contained them. */
   planTimeLimits: boolean;
   ledgerId: string;
@@ -440,7 +442,7 @@ function buildLedger(
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 11,
+    version: 12,
     planTimeLimits: !ignoreTimeLimits,
     ledgerId: randomUUID(),
     planFilePath,
@@ -595,7 +597,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const window = retryWindow(item);
     if (window) {
       notes.push(
-        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${window.failures.length} total diagnostics; time limit ${effectiveTimeLimitHours(item)}h; opened ${window.openedAt !== undefined ? new Date(window.openedAt).toISOString() : "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
+        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${progressFailures(window).length}/${PROGRESS_FAILURE_LIMIT} uncounted progress failures; ${window.failures.length} total diagnostics; time limit ${effectiveTimeLimitHours(item)}h; opened ${window.openedAt !== undefined ? new Date(window.openedAt).toISOString() : "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
       );
     }
   }
@@ -685,8 +687,27 @@ export function retryWindow(row: LedgerItem): RetryWindow | undefined {
   return row.retry?.windows.at(-1);
 }
 
+/** Failures that a later child proved fixed while finding a different defect are not counted, at most this many per window. */
+export const PROGRESS_FAILURE_LIMIT = 3;
+
 export function countedFailures(window: RetryWindow): FailedOutcome[] {
-  return window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass !== "harness");
+  return window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass !== "harness" && !failure.progress);
+}
+
+function progressFailures(window: RetryWindow): FailedOutcome[] {
+  return window.failures.filter((failure) => failure.progress);
+}
+
+/** A progress claim stands only after an earlier execution failure, with a signature no earlier failure had, within the allowance. */
+function provesProgress(window: RetryWindow, failure: FailedOutcome): boolean {
+  const earlier = window.failures.filter((old) => old.origin !== "dispatch" && old.failureClass !== "harness");
+  return (
+    failure.origin !== "dispatch" &&
+    failure.failureClass !== "harness" &&
+    earlier.length > 0 &&
+    earlier.every((old) => old.signature !== failure.signature) &&
+    progressFailures(window).length < PROGRESS_FAILURE_LIMIT
+  );
 }
 
 /** Strip volatile log metadata narrowly; product paths, assertion values and error codes stay meaningful. */
@@ -746,7 +767,8 @@ function chargeWindow(row: LedgerItem, failure: FailedOutcome): boolean {
   }
   row.retry ??= { windows: [{ failures: [], timeLimitHours: row.timeLimitHours ?? 4 }] };
   const window = retryWindow(row) as RetryWindow;
-  const diagnostic = { ...failure, signature: failureSignature(failure.check, failure.firstError) };
+  const diagnostic: FailedOutcome = { ...failure, signature: failureSignature(failure.check, failure.firstError) };
+  if (diagnostic.progress && !provesProgress(window, diagnostic)) delete diagnostic.progress;
   window.failures.push(diagnostic);
   if (failure.origin === "dispatch") {
     if (!failure.verifyAttempt) window.dispatchReservation = row.attempt;
@@ -757,7 +779,7 @@ function chargeWindow(row: LedgerItem, failure: FailedOutcome): boolean {
   if (failure.failureClass === "harness") {
     if (window.harnessRepair) window.stop ??= { reason: "harness", at: failure.at };
     else window.harnessRepair = { failureKey: failure.outcomeKey };
-  } else {
+  } else if (!diagnostic.progress) {
     const counted = countedFailures(window);
     if (counted.length >= 2 && counted.at(-2)?.signature === diagnostic.signature) window.stop ??= { reason: "signature", at: failure.at };
     else if (counted.length >= 3) window.stop ??= { reason: "attempts", at: failure.at };
@@ -909,7 +931,8 @@ function validRetry(value: LedgerItem["retry"], version: number, approvedLimit =
         outcomes.has(failure.outcomeKey) ||
         (failure.verifyAttempt !== undefined && !nonEmpty(failure.verifyAttempt)) ||
         (failure.childAgentId !== undefined && !nonEmpty(failure.childAgentId)) ||
-        (failure.output !== undefined && (!nonEmpty(failure.output.path) || !/^[a-f0-9]{64}$/.test(failure.output.sha256)))
+        (failure.output !== undefined && (!nonEmpty(failure.output.path) || !/^[a-f0-9]{64}$/.test(failure.output.sha256))) ||
+        (failure.progress !== undefined && (version < 12 || failure.progress !== true))
       )
         return false;
       outcomes.add(failure.outcomeKey);
@@ -917,10 +940,11 @@ function validRetry(value: LedgerItem["retry"], version: number, approvedLimit =
     const counted = countedFailures(window);
     const repeated = counted.length >= 2 && counted.at(-2)?.signature === counted.at(-1)?.signature;
     if (
-      !window.stop &&
-      (counted.length >= 3 ||
-        repeated ||
-        window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass === "harness").length >= 2)
+      (!window.stop &&
+        (counted.length >= 3 ||
+          repeated ||
+          window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass === "harness").length >= 2)) ||
+      progressFailures(window).length > PROGRESS_FAILURE_LIMIT
     )
       return false;
     return (
@@ -949,7 +973,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     version !== 8 &&
     version !== 9 &&
     version !== 10 &&
-    version !== 11
+    version !== 11 &&
+    version !== 12
   ) {
     throw new Error("Unsupported execution ledger version");
   }
@@ -1149,7 +1174,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   }
   // Version eleven makes origin ordering prospective; historical D rows retain their immediate-dispatch contract.
   if (version < 11) for (const row of discoveries) delete row.blocksOrigin;
-  saved.version = 11;
+  // Version twelve adds uncounted progress failures; no earlier failure claimed progress.
+  saved.version = 12;
   return saved;
 }
 

@@ -81,6 +81,7 @@ import {
   type LedgerItem,
   ledgerRows,
   movableRows,
+  nextDispatchable,
   parsePlanChecklist,
   parseTimeLimit,
   planDigest,
@@ -2350,14 +2351,14 @@ export default function prometheus(pi: ExtensionAPI): void {
           throw new Error("retry needs an exhausted row and evidence describing the changed hypothesis for another window");
         const pending = childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, row.id);
         if (pending.length) throw new Error(`Cancel and observe native terminal settlement first: ${pending.join(", ")}`);
-        if (movableWithoutUser(ctx.sessionManager.getSessionId(), ledger).length)
-          throw new Error("Keep independent movable work progressing before asking for a retry grant");
+        if (nextDispatchable(ledger).length)
+          throw new Error("Dispatch the rows that are ready before asking for a retry grant; rows already running do not hold it back");
         return {
           state: JSON.stringify(row.retry),
           automaticGrants: automaticRetryGrants(row),
           acceptance: effectiveAcceptance(ledger, row).text,
           timeLimit: `${effectiveTimeLimitHours(row)}h`,
-          history: `${ledgerSummary(ledger, row.id)}\n\nFailure history:\n${row.retry?.windows.flatMap((window, index) => window.failures.map((failure) => `Window ${index + 1}: ${failure.failureClass}; ${failure.check}; ${failure.firstError}\nSignature: ${failure.signature}\n${failure.evidence}${failure.output ? `\n${failure.output.path}` : ""}`)).join("\n\n") || "No failed outcome; elapsed limit reached"}`,
+          history: `${ledgerSummary(ledger, row.id)}\n\nFailure history:\n${row.retry?.windows.flatMap((window, index) => window.failures.map((failure) => `Window ${index + 1}: ${failure.failureClass}${failure.progress ? " (progress: earlier failures proved fixed; not counted)" : ""}; ${failure.check}; ${failure.firstError}\nSignature: ${failure.signature}\n${failure.evidence}${failure.output ? `\n${failure.output.path}` : ""}`)).join("\n\n") || "No failed outcome; elapsed limit reached"}`,
         };
       });
       const decisions = decisionSettings.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_DECISION_SETTINGS;
@@ -2716,6 +2717,8 @@ export default function prometheus(pi: ExtensionAPI): void {
                 failureClass: verdict?.failure?.failureClass ?? params.failureClass ?? "unknown",
                 evidence,
                 signature: "",
+                // Only the failing child's structured output may claim progress; Atlas's own `fail` parameters cannot.
+                ...(verdict?.failure?.priorResolved === true ? { progress: true as const } : {}),
               };
               if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited during failure capture");
               await chargeSuperseded(failure.outcomeKey);

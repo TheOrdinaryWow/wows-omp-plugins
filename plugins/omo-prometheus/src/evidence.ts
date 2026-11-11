@@ -103,6 +103,7 @@ interface FailureDetails {
   failureClass: FailureClass;
   check: string;
   firstError: string;
+  priorResolved?: boolean;
 }
 
 interface BoundVerdict {
@@ -119,6 +120,11 @@ const FAILURE_SCHEMA = {
     failureClass: { enum: ["product", "harness", "unknown"] },
     check: { type: "string", minLength: 1 },
     firstError: { type: "string", minLength: 1 },
+    priorResolved: {
+      type: "boolean",
+      description:
+        "true only when you reran every earlier failed check the row's current retry window lists, each now passes, and this failure is a different defect",
+    },
   },
 };
 
@@ -131,7 +137,8 @@ function failureDetails(result: Record<string, unknown>): FailureDetails | undef
     typeof failure.check !== "string" ||
     !failure.check.trim() ||
     typeof failure.firstError !== "string" ||
-    !failure.firstError.trim()
+    !failure.firstError.trim() ||
+    (failure.priorResolved !== undefined && typeof failure.priorResolved !== "boolean")
   ) {
     throw new Error("Invalid child failure details");
   }
