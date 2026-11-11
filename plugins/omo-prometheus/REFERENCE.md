@@ -57,11 +57,11 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 
 One refusal lists every offending row at once.
 
-**Fallback.** When `tierJudge` is off, no native judge is configured, or the judge call fails or times out, every task needs a `Tier basis:` line and nothing else is enforced. A missing native judge is reported once per session. A failed call is reported each time with its error.
+**Fallback.** When `tierJudge` is off or no native judge is configured, every task needs a `Tier basis:` line and nothing else is enforced. When a judge call fails or times out, tiers the judge settled earlier in the session stay binding and every other task needs a `Tier basis:` line for that check. A missing native judge is reported once per session. A failed check is reported each time with its error.
 
-**Caching.** A settled judgment is kept for the rest of the session and not asked again. A failed call is never cached.
+**Caching.** A settled judgment is kept for the rest of the session and not asked again, so an unchanged task is judged once. A failed call is never cached.
 
-**Measured figures.** Judge `typesafe/jev-1.14.0`, threshold 0.6, 468 tasks from 47 approved plans: the judge settles 84% of tasks (37% HEAVY, 46% LIGHT) and leaves 16% to the planner; planners had marked 76% HEAVY. On 13 plans held out from tuning, it agreed with the hand-labelled tier on 93% of clearly labelled tasks and made no confident LIGHT call on a task labelled HEAVY. The judge reads only the task text.
+**Measured figures.** Judge `typesafe/jev-1.14.0`, threshold 0.6, 468 tasks from 47 approved plans: the judge settles 84% of tasks (37% HEAVY, 46% LIGHT) and leaves 16% to the planner; planners had marked 76% HEAVY. Each task also got a reference tier, assigned by reading it against the written criteria without seeing the judge's answer. On 13 plans held out from tuning, the judge agreed with that reference on 93% of the tasks whose reference tier was clear-cut and made no confident LIGHT call on a task whose reference was HEAVY. The judge reads only the task text.
 
 ## Atlas tool guard
 
