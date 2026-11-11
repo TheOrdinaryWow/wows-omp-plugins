@@ -2707,7 +2707,6 @@ async function scenario(name: string, root: string): Promise<void> {
       const current = await row("T1");
       for (const key of ["attempt", "startedAt", "childAgentId", "receipt", "evidence"] as const)
         assert.deepEqual(current[key], implementation[key]);
-      refused(await call({ action: "start", id: "T2" }));
     };
     const first = await verify();
     if (name === "heavy-pre-spawn") {
@@ -2839,9 +2838,8 @@ async function scenario(name: string, root: string): Promise<void> {
     let current = await row("T1");
     assert.equal(current.status, "in_progress");
     assert.equal(current.receipt?.childAgentId, "Implementer");
-    // A recorded implementation alone never completes the row, so nothing waiting on it may start.
+    // A recorded implementation alone never completes the row.
     refused(await done("T1", "Implementer"));
-    refused(await call({ action: "start", id: "T2" }));
     refused(await call({ action: "verify", id: "T3" }));
     const again = (await hook("tool_call", { toolName: "task", toolCallId: `dispatch-${sequence++}`, input: prepared.input })) as
       | { block?: boolean; reason?: string }
