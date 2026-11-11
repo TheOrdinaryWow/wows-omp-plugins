@@ -178,7 +178,7 @@ v9 之前已有的重试窗口授权和业主裁定都经过用户对话框，�
 
 ## 最终关口的输入
 
-F1 读取经哈希校验的 `plan.md`（插件在 F1 开始时打印其路径）、执行记录摘要，以及从计划基线提交以来以只读方式收集的 Git 证据（`git diff --stat`、`git log --oneline`、`git status --short`），无法获取时写明“unavailable”。`momus` 以 `review_kind: compliance` 运行 F1。只有格式匹配的结构化 `PASS` 才算通过。关口子代理只报告、从不修复。
+F1 读取经哈希校验的 `plan.md`，以及插件在 F1 开始时写入的合规材料 `evidence/compliance-F1-<attempt>.md`：完整的执行记录摘要、业主裁定（没有时写明没有），以及从计划基线提交以来以只读方式收集的 Git 证据（`git diff --stat`、`git log --oneline`、`git status --short`），无法获取时写明“unavailable”。`start` 结果只打印绑定行（`review_kind: compliance`、`absolute_plan_path`、`compliance_bundle_path`），这些材料都不经过宿主渲染的提示文本。这份材料只是上下文，不是完成证明。`momus` 以 `review_kind: compliance` 运行 F1，只用只读工具检查，从不要求它运行 Git、构建或测试。只有格式匹配的结构化 `PASS` 才算通过。关口子代理只报告、从不修复。
 
 每个关口返回 `PASS`、`FAIL` 或 `INCONCLUSIVE`；非 PASS 结果会消耗该关口的重试窗口。每项修正都成为一个以该关口为来源的 X 行，之后只有这个关口由新的子代理重跑。重试窗口用尽的关口会阻塞，直到通过对话框或 `atlasRetry` 授予新的窗口。
 

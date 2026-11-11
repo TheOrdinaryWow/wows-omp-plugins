@@ -115,7 +115,7 @@ export interface ComplianceEvidence {
  */
 export async function collectComplianceEvidence(options: { cwd: string; baseline?: string; since: number }): Promise<ComplianceEvidence> {
   const { cwd } = options;
-  const header = `F1 compliance evidence, collected read-only by the plugin in ${cwd}. Pass this block to the F1 child verbatim as \`diff_stat\`.`;
+  const header = `F1 compliance evidence, collected read-only by the plugin in ${cwd}.`;
   const inside = await runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
   if (!inside.ok || inside.stdout.trim() !== "true") {
     return {

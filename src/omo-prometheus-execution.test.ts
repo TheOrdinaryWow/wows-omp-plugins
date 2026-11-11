@@ -3139,10 +3139,12 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T1")).status, "done");
     await finish("T2");
     await finish("T3");
-    // F1 and F4 judge against the plan plus every ruling; F2 and F3 need none.
+    // F1 reads the plan plus every ruling from its compliance bundle; F4 gets them inline; F2 and F3 need none.
     const rulings =
       /Owner rulings — amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed/;
-    assert.match((await prepare("F1")).startText ?? "", rulings);
+    const f1 = (await prepare("F1")).startText ?? "";
+    assert.doesNotMatch(f1, /Owner rulings/);
+    assert.match(await readFile(/compliance_bundle_path: (\S+)/.exec(f1)?.[1] ?? "missing", "utf8"), rulings);
     assert.doesNotMatch((await prepare("F2")).startText ?? "", /Owner rulings/);
     assert.match((await prepare("F4")).startText ?? "", rulings);
     return;
@@ -3150,11 +3152,16 @@ async function scenario(name: string, root: string): Promise<void> {
   await tasksDone();
   if (name === "untrusted-children") {
     const review = await prepare("F1");
-    // The workspace is a plain temporary directory: F1 still starts, with a plain statement instead of a diff.
-    assert.match(review.startText ?? "", /Git evidence unavailable: the plan workspace is not a Git work tree/);
-    assert.doesNotMatch(review.startText ?? "", /\$ git diff --stat/);
-    // Atlas binds the compliance reviewer to the approved bundle file instead of an inline plan copy.
+    // The workspace is a plain temporary directory: F1 still starts, and its bundle states that no diff exists.
+    const bundlePath = /compliance_bundle_path: (\S+)/.exec(review.startText ?? "")?.[1] ?? "missing";
+    assert.ok(bundlePath.startsWith(join(dirname(planFile), "evidence")), review.startText ?? "missing start text");
+    const bundle = await readFile(bundlePath, "utf8");
+    assert.match(bundle, /Git evidence unavailable: the plan workspace is not a Git work tree/);
+    assert.doesNotMatch(bundle, /\$ git diff --stat/);
+    assert.match(bundle, /## ledger_summary\n\nPlan ledger: /);
+    // The binding names the approved bundle file instead of carrying an inline plan copy.
     assert.ok(review.startText?.includes(`absolute_plan_path: ${planFile}`), review.startText ?? "missing start text");
+    assert.doesNotMatch(review.startText ?? "", /Git evidence unavailable/);
     await writeFile(join(artifacts, "Bogus.md"), "PASS");
     refused(await done("F1", "Bogus"));
     for (const [child, options] of [

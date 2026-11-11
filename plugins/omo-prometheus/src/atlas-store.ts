@@ -1287,6 +1287,32 @@ export class AtlasStore {
     failure.output = { path: file, sha256 };
   }
 
+  /**
+   * Write the F1 compliance binding an attempt's child reads by path, so ledger summary, rulings and Git evidence never
+   * travel through host-rendered prompt text. Context only: no ledger state or completion proof refers to it.
+   */
+  async saveComplianceBundle(plan: AtlasPlan, sessionId: string, attempt: string, text: string): Promise<string> {
+    await this.#assertOwner(plan, sessionId);
+    const evidenceDir = path.join(plan.directory, "evidence");
+    await directory(evidenceDir);
+    const file = path.join(evidenceDir, `compliance-F1-${attempt}.md`);
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(text);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(temporary, file);
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+    await syncDirectory(evidenceDir);
+    return file;
+  }
+
   async saveReceipt(plan: AtlasPlan, receipt: ChildReceipt, nativeOutputPath: string): Promise<void> {
     const scope = scopes.getStore();
     if (!scope?.active || scope.store !== this || scope.plan.id !== plan.id || scope.plan.directory !== plan.directory) {

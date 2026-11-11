@@ -176,7 +176,7 @@ Grants and owner rulings from before v9 went through the user's dialog, so their
 
 ## Final gate inputs
 
-F1 reads the hash-verified `plan.md` (its path is printed when F1 starts), the ledger summary, and read-only Git evidence since the plan's baseline commit (`git diff --stat`, `git log --oneline`, `git status --short`) or a plain "unavailable". `momus` runs F1 with `review_kind: compliance`. Only a matching structured `PASS` counts. Gate children report and never fix.
+F1 reads the hash-verified `plan.md` and a compliance bundle the plugin writes when F1 starts, `evidence/compliance-F1-<attempt>.md`: the full ledger summary, the owner rulings (or a statement that there are none), and read-only Git evidence since the plan's baseline commit (`git diff --stat`, `git log --oneline`, `git status --short`) or a plain "unavailable". The `start` result prints only the binding lines (`review_kind: compliance`, `absolute_plan_path`, `compliance_bundle_path`), so none of that material passes through host-rendered prompt text. The bundle is context, never completion proof. `momus` runs F1 with `review_kind: compliance` and judges by inspection with read-only tools; it is never asked to run Git, builds or tests. Only a matching structured `PASS` counts. Gate children report and never fix.
 
 Each gate returns `PASS`, `FAIL` or `INCONCLUSIVE`; non-PASS results use up the gate's retry window. Each correction becomes an X row whose origin is that gate, and only that gate reruns with a fresh child. A gate whose window runs out blocks until a new window is granted, in the dialog or through `atlasRetry`.
 

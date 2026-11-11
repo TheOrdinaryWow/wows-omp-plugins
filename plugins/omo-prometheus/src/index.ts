@@ -2436,7 +2436,9 @@ export default function prometheus(pi: ExtensionAPI): void {
       let changedRow: LedgerItem | undefined;
       let completion: Omit<AtlasCompleted, "v" | "at"> | undefined;
       let completedPlan: AtlasPlan | undefined;
-      let compliance: { cwd: string; baseline?: string; since: number } | undefined;
+      let compliance:
+        | { cwd: string; baseline?: string; since: number; plan: AtlasPlan; attempt: string; ledgerSummary: string; rulings: string }
+        | undefined;
       try {
         const result = await withExecutionLedger(ctx, record, async (ledger, plan, store) => {
           const wasComplete = isComplete(ledger);
@@ -2597,16 +2599,23 @@ export default function prometheus(pi: ExtensionAPI): void {
             };
           }
           if (params.action === "start") {
+            startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             if (item.id === "F1") {
               // Git runs after the ledger lock is released; an unrecorded baseline is dated by the earliest execution start.
-              const starts = ledgerRows(ledger).flatMap((row) => (row.startedAt === undefined ? [] : [row.startedAt]));
-              compliance = { cwd: plan.cwd, baseline: ledger.gitBaseline, since: starts.length ? Math.min(...starts) : ledger.createdAt };
-              planBinding = `\nF1 plan binding (copy literally; never inline the plan text): review_kind: compliance; absolute_plan_path: ${plan.planFilePath}`;
+              const starts = ledgerRows(ledger).flatMap((row) => (row.startedAt === undefined || row.id === "F1" ? [] : [row.startedAt]));
+              compliance = {
+                cwd: plan.cwd,
+                baseline: ledger.gitBaseline,
+                since: starts.length ? Math.min(...starts) : ledger.createdAt,
+                plan,
+                attempt: item.attempt as string,
+                ledgerSummary: ledgerSummary(ledger),
+                rulings: renderOwnerRulings(ledger),
+              };
             }
-            startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
             if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
-            // F1 judges compliance and F4 fidelity against the plan as the user amended it; F2 and F3 need no ruling.
-            if (item.id === "F1" || item.id === "F4") rulings = renderOwnerRulings(ledger);
+            // F1 reads its rulings from the compliance bundle; F4 judges fidelity against the plan as the user amended it.
+            if (item.id === "F4") rulings = renderOwnerRulings(ledger);
             const amended = effectiveAcceptance(ledger, item).ruling;
             if (amended) {
               note = `\n${item.id} acceptance was amended by ${amended.id}: give the child the effective acceptance below, not the plan's original text.`;
@@ -2807,6 +2816,35 @@ export default function prometheus(pi: ExtensionAPI): void {
         const drift = completedPlan && stageDriftNotice(ctx, completedPlan);
         if (drift) notify(ctx, drift, "warning");
         const gitEvidence = compliance && (await collectComplianceEvidence(compliance));
+        const complianceBundle =
+          compliance && gitEvidence && ownership
+            ? await ownership.store.saveComplianceBundle(
+                compliance.plan,
+                ctx.sessionManager.getSessionId(),
+                compliance.attempt,
+                [
+                  "# F1 compliance binding",
+                  "",
+                  `Written by the plugin when F1 attempt ${compliance.attempt} started. This file is the authority for ledger_summary, the owner rulings and diff_stat; read it whole.`,
+                  "",
+                  "review_kind: compliance",
+                  `absolute_plan_path: ${compliance.plan.planFilePath}`,
+                  "",
+                  "## ledger_summary",
+                  "",
+                  compliance.ledgerSummary,
+                  "",
+                  "## Owner rulings",
+                  "",
+                  compliance.rulings || "The ledger holds no owner ruling.",
+                  "",
+                  "## diff_stat",
+                  "",
+                  gitEvidence.text,
+                  "",
+                ].join("\n"),
+              )
+            : undefined;
         if (changedRow) {
           const refresh = atlasTodoRefreshCall(changedRow);
           if (pi.getActiveTools().includes("todo")) pendingTodoRefreshes.set(ctx.sessionManager.getSessionId(), refresh);
@@ -2817,7 +2855,14 @@ export default function prometheus(pi: ExtensionAPI): void {
               { type: "text" as const, text: refresh },
               ...result.content,
               ...(drift ? [{ type: "text" as const, text: `${drift} Name this in the final report.` }] : []),
-              ...(gitEvidence ? [{ type: "text" as const, text: gitEvidence.text }] : []),
+              ...(complianceBundle
+                ? [
+                    {
+                      type: "text" as const,
+                      text: `F1 binding (copy these lines literally into the F1 assignment, with a fresh review_round; never inline the plan, the ledger, the rulings or the Git evidence):\nreview_kind: compliance\nabsolute_plan_path: ${compliance?.plan.planFilePath}\ncompliance_bundle_path: ${complianceBundle}`,
+                    },
+                  ]
+                : []),
               ...(report ? [{ type: "text" as const, text: report }] : []),
             ],
             details: gitEvidence ? { ...result.details, complianceEvidence: gitEvidence } : result.details,
