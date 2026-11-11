@@ -559,11 +559,23 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
   if (name.startsWith("review-artifacts")) {
-    const input = {
-      context: `absolute_plan_path: ${sourcePlanFile}\nreview_round: exact-pair\nreview_kind: high_accuracy`,
+    const binding = `absolute_plan_path: ${sourcePlanFile}\nreview_round: exact-pair\nreview_kind: high_accuracy`;
+    const contextBound = {
+      context: binding,
       tasks: [
         { agent: "momus", task: "Audit the complete plan" },
         { agent: "oracle", task: "Audit the complete plan independently" },
+      ],
+    };
+    const refused = (await hook("tool_call", { toolName: "task", toolCallId: "review-pair-context", input: contextBound })) as
+      | { block?: boolean; reason?: string }
+      | undefined;
+    assert.match(refused?.reason ?? "", /go in each reviewer's own `task` text, never in the shared `context`/);
+    const input = {
+      context: "Independent pre-approval review",
+      tasks: [
+        { agent: "momus", task: `${binding}\nAudit the complete plan` },
+        { agent: "oracle", task: `${binding}\nAudit the complete plan independently` },
       ],
     };
     assert.equal(await hook("tool_call", { toolName: "task", toolCallId: "review-pair", input }), undefined);

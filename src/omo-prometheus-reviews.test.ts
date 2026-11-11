@@ -31,22 +31,28 @@ function result(id: string, output: string, fields: Record<string, unknown> = {}
 }
 
 describe("Prometheus pre-approval review diagnostics", () => {
-  test("reads only explicit single or batch review contracts without inferring a path from prose", () => {
+  test("reads only explicit review contracts in each task's own text without inferring a path from prose", () => {
     expect(planReviewBindings(reviewTask("/plans/current.md"))).toMatchObject([
       { index: 0, absolute_plan_path: "/plans/current.md", review_round: "r1", review_kind: "routine", requestedAgent: "momus" },
     ]);
     expect(
       planReviewBindings({
-        context: "absolute_plan_path: /plans/current.md\nreview_round: pair-1\nreview_kind: high_accuracy",
+        context: "Shared review constraints",
         tasks: [
-          { agent: "momus", task: "Audit independently" },
-          { agent: "oracle", task: "Audit independently" },
+          reviewTask("/plans/current.md", "high_accuracy", "momus", "pair-1"),
+          reviewTask("/plans/current.md", "high_accuracy", "oracle", "pair-1"),
         ],
       }).map((binding) => [binding.index, binding.requestedAgent]),
     ).toEqual([
       [0, "momus"],
       [1, "oracle"],
     ]);
+    expect(
+      planReviewBindings({
+        context: "absolute_plan_path: /plans/current.md\nreview_round: pair-1\nreview_kind: high_accuracy",
+        tasks: [{ agent: "momus", task: "Audit independently" }],
+      }),
+    ).toEqual([]);
     for (const task of [
       "Review /plans/current.md; review_kind: routine; review_round: r1",
       "absolute_plan_path: local://current.md\nreview_kind: routine\nreview_round: r1",

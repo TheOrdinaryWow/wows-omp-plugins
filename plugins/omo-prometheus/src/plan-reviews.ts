@@ -43,7 +43,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
-/** Read only the explicit contract fields, never a path inferred from review prose. */
+/** Read only the explicit contract fields in each task's own text, never a path inferred from review prose. */
 export function planReviewBindings(input: unknown): ReviewBinding[] {
   const args = object(input);
   if (!args) return [];
@@ -52,17 +52,14 @@ export function planReviewBindings(input: unknown): ReviewBinding[] {
     const task = object(raw);
     if (typeof task?.task !== "string" || task.taskFile !== undefined) return [];
     const fields = new Map<string, string>();
-    for (const text of [args.context, task.task]) {
-      if (typeof text !== "string") continue;
-      for (const line of text.split("\n")) {
-        const separator = line.indexOf(":");
-        if (separator < 0) continue;
-        const key = line.slice(0, separator).trim();
-        if (key !== "absolute_plan_path" && key !== "review_round" && key !== "review_kind") continue;
-        const value = line.slice(separator + 1).trim();
-        if (!value || fields.has(key)) return [];
-        fields.set(key, value);
-      }
+    for (const line of task.task.split("\n")) {
+      const separator = line.indexOf(":");
+      if (separator < 0) continue;
+      const key = line.slice(0, separator).trim();
+      if (key !== "absolute_plan_path" && key !== "review_round" && key !== "review_kind") continue;
+      const value = line.slice(separator + 1).trim();
+      if (!value || fields.has(key)) return [];
+      fields.set(key, value);
     }
     const absolute_plan_path = fields.get("absolute_plan_path");
     const review_round = fields.get("review_round");

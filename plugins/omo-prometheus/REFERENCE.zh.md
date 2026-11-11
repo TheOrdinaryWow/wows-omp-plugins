@@ -16,7 +16,7 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 ### 批准前评审诊断
 
-每名评审者接收一份明确绑定：在自己的任务正文或共享上下文中，用独立行写出 `absolute_plan_path:`、`review_round:` 和 `review_kind:`，每项恰好一次。目标必须是规划者自己的 `artifacts/local/` 目录内、使用规范绝对路径的普通文件。原生派发时，插件保存该路径及其 SHA-256，不从叙述中猜测计划路径，也不在结果返回后对后来修改的计划重新计算摘要。Momus 和 Oracle 都会被记录，携带同一契约的回退评审者也一样；观察通过 `tool_execution_end` 和所属原生任务的最终结果完成，不新增 `tool_result` 钩子。仅有生命周期完成事件不会归档结果。
+每名评审者接收一份明确绑定：在自己的任务正文中，用独立行写出 `absolute_plan_path:`、`review_round:` 和 `review_kind:`，每项恰好一次。规划或执行期间，如果 `task` 调用的共享 `context` 里出现其中任何一行，或出现 `compliance_bundle_path:`，调用会被拒绝：Momus 和 Oracle 只从自己的任务正文读取绑定，找不到就直接返回 `[INCONCLUSIVE]`，不做评审。目标必须是规划者自己的 `artifacts/local/` 目录内、使用规范绝对路径的普通文件。原生派发时，插件保存该路径及其 SHA-256，不从叙述中猜测计划路径，也不在结果返回后对后来修改的计划重新计算摘要。Momus 和 Oracle 都会被记录，携带同一契约的回退评审者也一样；观察通过 `tool_execution_end` 和所属原生任务的最终结果完成，不新增 `tool_result` 钩子。仅有生命周期完成事件不会归档结果。
 
 尽力保存的归档位于 `<absolute_plan_path>.reviews/NNN-<kind>-<verdict>.md`，其中 kind 为 `routine` 或 `high_accuracy`，verdict 为 `okay`、`reject` 或 `inconclusive`。元数据记录派发绑定、计划摘要、原生评审会话的记录文件路径、请求及实际代理、工具调用和记录时间，后面附评审输出。文件独占分配、不覆盖旧文件，按评审会话去重；规范路径包含检查和不跟随链接的普通文件检查会拒绝符号链接目标或存储。只归档成功的最终原生结果中以独立规划判定行开头的输出；原生执行失败或被取消不算规划判定。存储失败只写日志，不改变工具结果、提出计划的资格或执行权限。
 

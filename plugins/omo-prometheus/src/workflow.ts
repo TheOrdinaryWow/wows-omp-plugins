@@ -196,6 +196,9 @@ function parseTaskSpawns(input: unknown): ParsedTaskSpawn[] | undefined {
 const PLAN_GATED_AGENTS: Record<string, true> = { metis: true, momus: true };
 const PLAN_GATED_SPAWN_REASON =
   "`metis` and `momus` are spawnable only during Prometheus planning; during Atlas execution only `momus` with `review_kind: compliance` is allowed for F1. Use `reviewer` outside planning.";
+const REVIEW_BINDING_LINE = /^\s*(?:absolute_plan_path|review_round|review_kind|compliance_bundle_path)\s*:/m;
+const REVIEW_BINDING_CONTEXT_REASON =
+  "Review binding lines (`absolute_plan_path`, `review_round`, `review_kind`, `compliance_bundle_path`) go in each reviewer's own `task` text, never in the shared `context`: reviewers look for the binding only in their assignment and return [INCONCLUSIVE] without reviewing when it is not there. Move the lines into every reviewer's task and dispatch again.";
 
 /** Return a block reason for plan-gated reviewer spawns, or undefined for an allowed/ordinary task call. */
 export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: unknown): string | undefined {
@@ -209,6 +212,8 @@ export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: 
     if (phase === "executing" || gated || review)
       return "Prometheus/Atlas-governed task calls do not accept taskFile; put every assignment inline in task so review and row bindings can be checked.";
   }
+  if ((phase === "planning" || phase === "executing") && typeof args?.context === "string" && REVIEW_BINDING_LINE.test(args.context))
+    return REVIEW_BINDING_CONTEXT_REASON;
   const routes = parseTaskSpawns(input);
   if (!routes) return undefined;
   const gated = routes.filter((route) => route.requestedAgent && PLAN_GATED_AGENTS[route.requestedAgent] === true);
@@ -225,14 +230,11 @@ export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: 
 const PLAN_REVIEW_KIND = /\breview_kind\s*:\s*(?:routine|high_accuracy)\b/;
 
 /**
- * Whether a native task call dispatches a pre-proposal plan review round: any task, or the shared context, carrying a
- * `routine` or `high_accuracy` review binding. Keying on the binding rather than the agent also counts reviewer fallbacks.
+ * Whether a native task call dispatches a pre-proposal plan review round: any task carrying a `routine` or
+ * `high_accuracy` review binding. Keying on the binding rather than the agent also counts reviewer fallbacks.
  */
 export function isPlanReviewDispatch(input: unknown): boolean {
-  const routes = parseTaskSpawns(input);
-  if (!routes?.length) return false;
-  const context = record(input)?.context;
-  return (typeof context === "string" && PLAN_REVIEW_KIND.test(context)) || routes.some((route) => PLAN_REVIEW_KIND.test(route.assignment));
+  return parseTaskSpawns(input)?.some((route) => PLAN_REVIEW_KIND.test(route.assignment)) ?? false;
 }
 
 export const DEFAULT_REVIEW_ROUND_LIMIT = 5;
