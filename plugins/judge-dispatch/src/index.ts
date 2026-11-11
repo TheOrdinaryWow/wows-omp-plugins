@@ -24,10 +24,7 @@ import { readHostSetting } from "#src/host-settings.ts";
 import { registerLegacyRouteRecords, setRoutingWorkingMessage, showRouteOutcomes, showRoutingStatus } from "#src/indicator.ts";
 import {
   acceptRoutingDecision,
-  ExplicitSpawnClaims,
-  type ExplicitSpawnModel,
   hasTier,
-  isPinnedSpawnName,
   isWorkflowOwnedAgent,
   type JudgeDispatchSettings,
   type ParsedTaskRoute,
@@ -224,8 +221,7 @@ async function judgeRoute(
   const candidates = config.routeAgent ? routable : routable.filter((candidate) => candidate.name === spawnAgent);
   if (candidates.length === 0) return "no alternatives";
   const routesAgent = config.routeAgent && candidates.length >= 2;
-  const difficultyApplies = (agent: string): boolean =>
-    route.explicitModel === undefined && ((config.judgeEffort && !route.explicitEffort) || hasTier(config.modelTiers, agent));
+  const difficultyApplies = (agent: string): boolean => (config.judgeEffort && !route.explicitEffort) || hasTier(config.modelTiers, agent);
   // Ask both together only if every possible final agent can use the difficulty.
   // Agent-specific tiers otherwise need the agent answer before difficulty can matter.
   const judgesDifficulty = routesAgent ? candidates.every((candidate) => difficultyApplies(candidate.name)) : difficultyApplies(spawnAgent);
@@ -352,7 +348,7 @@ async function routeOutcome(
 /**
  * Turn an outcome into the task-call rewrite, recording the spawn change its hook
  * will apply: a configured model tier for a routine or demanding difficulty, else,
- * with `judgeEffort`, one thinking-level step. Pins keep their own model and level.
+ * with `judgeEffort`, one thinking-level step.
  */
 function planRoute(
   route: ParsedTaskRoute,
@@ -370,7 +366,7 @@ function planRoute(
     ...(outcome.escalation ? { escalation: outcome.escalation } : {}),
   };
   const difficulty = outcome.difficulty;
-  if (route.explicitModel !== undefined || !difficulty || difficulty === "standard") return choice;
+  if (!difficulty || difficulty === "standard") return choice;
   const agent = outcome.agent ?? route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
   const candidate = candidates.find((entry) => entry.name === agent);
   if (!candidate) return choice;
@@ -380,7 +376,7 @@ function planRoute(
   const tier = tierFor(config.modelTiers, agent, difficulty);
   if (tier) {
     try {
-      const model = explicitSpawnModel(tier.startsWith("@") ? tier.slice(1) : tier, ctx);
+      const model = tierSpawnModel(tier.startsWith("@") ? tier.slice(1) : tier, ctx);
       const tierPrimary = resolvePrimary(model.patterns, settings, ctx);
       // A selector without its own level runs at the agent's `thinkingLevel`, for the tier as for the agent's model.
       const level = (resolved: ResolvedPrimary | undefined) =>
@@ -506,8 +502,8 @@ function unknownSettingsNotifier(pi: ExtensionAPI): (ctx: ExtensionContext, raw:
   };
 }
 
-/** Resolve a pinned or tier target to the patterns its spawn receives, refusing one the host would not resolve as named. */
-function explicitSpawnModel(target: string, ctx: ExtensionContext): ExplicitSpawnModel {
+/** Resolve a tier target to the patterns its spawn receives, refusing one the host would not resolve as named. */
+function tierSpawnModel(target: string, ctx: ExtensionContext): { target: string; patterns: string[] } {
   const settings = scopedSettings(ctx);
   const role = target.includes("/") ? undefined : target;
   const display = role === undefined ? target : `@${role}`;
@@ -532,60 +528,7 @@ function explicitSpawnModel(target: string, ctx: ExtensionContext): ExplicitSpaw
   if (!resolveModelOverride(role === undefined ? selectors : [...selectors, ...chain], { getAvailable: () => enabled }, settings).model) {
     throw new Error(`no enabled model resolves for ${display}`);
   }
-  return {
-    target: display,
-    patterns: [...selectors, ...chain],
-    note: `judge-dispatch pinned ${role === undefined ? "model" : "role"} ${display}`,
-  };
-}
-
-/**
- * Rename every pinned item of a task call to a unique spawn name with its model
- * claim, and strip the pin from its agent. Throws on the first pin that cannot
- * apply; the caller then releases the call's claims and refuses the call.
- */
-function applyPins(
-  input: Record<string, unknown>,
-  routes: readonly ParsedTaskRoute[],
-  claims: ExplicitSpawnClaims,
-  toolCallId: string,
-  ctx: ExtensionContext,
-): { input: Record<string, unknown>; routes: ParsedTaskRoute[]; confirmation: string } {
-  const models = routes.map((route) => {
-    if (route.explicitModel === undefined) return undefined;
-    if (route.nativeModel) throw new Error("an item cannot combine its native model field with an agent@model pin; use only one");
-    const label = `${route.requestedAgent ?? ""}@${route.explicitModel}`;
-    if (!route.requestedAgent || !route.explicitModel) {
-      throw new Error(`write the agent as <agent>@<model role> or <agent>@<provider>/<model>, not ${JSON.stringify(label)}`);
-    }
-    if (route.requestedAgent === "seance") {
-      throw new Error("seance bypasses the model-pin spawn hook; put the selector in that item's native model field instead");
-    }
-    if (isWorkflowOwnedAgent(route.requestedAgent)) throw new Error(`workflow-owned agent ${route.requestedAgent} keeps its own model`);
-    try {
-      return explicitSpawnModel(route.explicitModel, ctx);
-    } catch (error) {
-      throw new Error(`${label}: ${errorMessage(error)}`);
-    }
-  });
-  const applied: string[] = [];
-  const choices = routes.map((route, index): RouteChoice | undefined => {
-    const model = models[index];
-    if (!model || !route.requestedAgent) return undefined;
-    const spawnName = claims.claim(toolCallId, route.name ?? route.requestedAgent, model);
-    applied.push(
-      `${route.name ?? "an unnamed item"} with agent ${route.requestedAgent}@${route.explicitModel} now runs as ${spawnName} on ${model.target}`,
-    );
-    return { agent: route.requestedAgent, spawnName };
-  });
-  return {
-    input: rewriteTaskRoutes(input, routes, choices),
-    routes: routes.map((route, index) => {
-      const model = models[index];
-      return model ? { ...route, explicitModel: model.target } : route;
-    }),
-    confirmation: `judge-dispatch rewrote the pinned items of this task call before they ran: ${applied.join("; ")}. OMP shows and stores that rewrite in place of the call you wrote, which is why your call lists the bare agent and the new name; the pin is in effect, so do not re-dispatch.`,
-  };
+  return { target: display, patterns: [...selectors, ...chain] };
 }
 
 /** Whether an approved Prometheus plan executes on this branch, read from its latest valid workflow state rather than wording. */
@@ -602,9 +545,6 @@ function prometheusExecuting(ctx: ExtensionContext): boolean {
   return false;
 }
 
-const PIN_GUIDANCE =
-  "judge-dispatch: when the user asks to run a subagent on a specific OMP model role or model rather than its agent's own, write that task item's agent as `<agent>@<model role>` (for example `scout@smol`) or `<agent>@<provider>/<model>`. The judge then still routes the agent, never the model or its thinking level. judge-dispatch rewrites the call before it runs, and OMP keeps that rewrite in place of your call: it then shows the bare agent and a name ending in `_jd` plus 12 hex digits (built from the item's name, or its agent when unnamed). That rewrite is the pin taking effect, not a mistake, so never re-dispatch because of it. Address the child by the id the task result returns. To rerun a pinned task, write the pin in its agent again. A pin that cannot apply refuses the call with the reason. To retry or escalate a task, re-dispatch it with the same name so routing raises it.";
-
 export default function judgeDispatch(pi: ExtensionAPI): void {
   const notifyUnavailable = unavailableNotifier(pi);
   const warnUnknownSettings = unknownSettingsNotifier(pi);
@@ -618,19 +558,11 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
     }
     return routing;
   };
-  const claims = new ExplicitSpawnClaims();
-
-  pi.on("before_agent_start", (event) => {
-    if (!pi.getActiveTools().includes("task")) return undefined;
-    return { systemPrompt: [...event.systemPrompt, PIN_GUIDANCE] };
-  });
 
   pi.on("tool_execution_end", (event, ctx) => {
     if (event.toolName !== "task") return;
     const result: unknown = event.result;
     const details = result && typeof result === "object" && "details" in result ? result.details : undefined;
-    // Background jobs spawn after this result and consume their claims then; any other settled call already spawned every child it will.
-    if (!(details && typeof details === "object" && "async" in details && details.async)) claims.settle(event.toolCallId);
     try {
       observeTaskOutcomes(routingFor(ctx), ctx, event.toolCallId, details);
     } catch (error) {
@@ -642,34 +574,11 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
     if (event.toolName !== "task") return undefined;
     let working = false;
     let indicator = false;
-    // Once pinned items carry their spawn names, every later outcome must keep them.
-    let pinned: { input: Record<string, unknown>; additionalContext: string } | undefined;
     try {
       const input = event.input as Record<string, unknown>;
-      let routes = parseTaskInput(input);
-      const pins = routes?.some((route) => route.explicitModel !== undefined) ?? false;
+      const routes = parseTaskInput(input);
       // Prometheus owns agent, effort and model choices while executing its approved plan.
-      if (prometheusExecuting(ctx)) {
-        return pins ? { block: true, reason: "Task models cannot be pinned while an approved Prometheus plan executes" } : undefined;
-      }
-      const reserved = routes?.find((route) => route.explicitModel === undefined && route.name && isPinnedSpawnName(route.name));
-      if (reserved) {
-        return {
-          block: true,
-          reason: `Task name ${reserved.name} ends like a model-pin spawn name, which judge-dispatch reserves; use another name, and to rerun a pinned task write its agent as <agent>@<model role> or <agent>@<provider>/<model> again`,
-        };
-      }
-      let named = input;
-      if (routes && pins) {
-        try {
-          const applied = applyPins(input, routes, claims, event.toolCallId, ctx);
-          ({ input: named, routes } = applied);
-          pinned = { input: named, additionalContext: applied.confirmation };
-        } catch (error) {
-          claims.settle(event.toolCallId);
-          return { block: true, reason: `judge-dispatch could not pin the task model: ${errorMessage(error)}` };
-        }
-      }
+      if (prometheusExecuting(ctx)) return undefined;
       const routing = routingFor(ctx);
       for (const route of routes ?? []) {
         if (route.name && (route.nativeModel || route.assignment === undefined)) routing.pending.add(route.name, null);
@@ -682,21 +591,21 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
       const deadlineMs = routingDeadlineMs(readHostSetting(settings, "extensionHandlers.toolCallTimeoutMs"));
       if (deadlineMs === undefined) {
         if (indicator) showRoutingStatus(pi, ctx, "kept the requested agent: extensionHandlers.toolCallTimeoutMs leaves no time to judge");
-        return pinned;
+        return undefined;
       }
       const taskTool = pi.getAllTools().find((tool) => tool.name === "task");
       const legalNames = taskTool ? parseLegalAgentNames(taskTool.description) : undefined;
       if (!legalNames?.length) {
         if (indicator) showRoutingStatus(pi, ctx, "kept the requested agent: the task tool lists no agents to route between");
-        return pinned;
+        return undefined;
       }
-      if (!routes) return pinned;
+      if (!routes) return undefined;
       const judged = routes;
-      // The host reports each child by item position; pins and unrouted items must not feed difficulty escalation.
+      // The host reports each child by item position; unrouted items must not feed difficulty escalation.
       const names: (string | undefined)[] = [];
       for (const route of judged) {
         const unrouted = route.nativeModel || route.assignment === undefined;
-        names[route.index ?? 0] = !unrouted && route.explicitModel === undefined ? route.name : undefined;
+        names[route.index ?? 0] = unrouted ? undefined : route.name;
       }
       routing.dispatched.set(event.toolCallId, { at: Date.now(), names });
       for (const oldest of routing.dispatched.keys()) {
@@ -725,14 +634,14 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         const choices = judged.map((route, index) =>
           planRoute(route, outcomes[index] as RouteOutcome, config, candidates, routing.pending, settings, ctx),
         );
-        const rewritten = rewriteTaskRoutes(named, judged, choices);
+        const rewritten = rewriteTaskRoutes(input, judged, choices);
         if (indicator) showRouteOutcomes(pi, ctx, judged, outcomes, choices);
         // Past the last abort check nothing can fail open any more, so the raised routes are the ones this call returns.
         for (const [index, route] of judged.entries()) {
           const outcome = outcomes[index];
           if (route.name && typeof outcome === "object" && outcome.escalation) routing.escalations.consume(route.name);
         }
-        return rewritten === input ? undefined : { ...pinned, input: rewritten };
+        return rewritten === input ? undefined : { input: rewritten };
       });
     } catch (error) {
       pi.logger.warn("judge-dispatch task interception failed open", { error: errorMessage(error) });
@@ -740,7 +649,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         const timedOut = error instanceof DOMException && error.name === "TimeoutError";
         showRoutingStatus(pi, ctx, `kept the requested agent: routing ${timedOut ? "timed out" : "failed"}`);
       }
-      return pinned;
+      return undefined;
     } finally {
       if (working) setRoutingWorkingMessage(pi, ctx);
     }
@@ -748,36 +657,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
 
   pi.on("before_subagent_spawn", async (event, ctx) => {
     if (event.invocationKind !== "task" || !event.spawnKey) return undefined;
-    let explicit: ExplicitSpawnModel | undefined;
     try {
-      const claim = claims.take(event.spawnKey);
-      if (claim === "lost") {
-        return {
-          block: true,
-          reason: `Task ${event.spawnKey} carries a model-pin spawn name, but its pin is no longer known to judge-dispatch; dispatch it again with the pin in its agent (<agent>@<role>), or use a name without the _jd suffix`,
-        };
-      }
-      explicit = claim;
-      if (explicit) {
-        if (prometheusExecuting(ctx)) {
-          return {
-            block: true,
-            reason: `Task ${event.spawnKey} pinned ${explicit.target} before the approved Prometheus plan started executing, so it was not started; dispatch it again after execution ends`,
-          };
-        }
-        // OMP gives a lone pattern the chain of the agent's own role (or `default`); a pin whose target has no chain must not borrow it.
-        if (explicit.patterns.length === 1) {
-          const chains = readHostSetting(scopedSettings(ctx), "retry.fallbackChains") as Record<string, unknown>;
-          const inherited = (event.modelRole ? chains[event.modelRole] : undefined) ?? chains.default;
-          if (Array.isArray(inherited) && inherited.length > 0) {
-            return {
-              block: true,
-              reason: `Task ${event.spawnKey} pinned ${explicit.target}, which has no fallback chain, but OMP would retry it on the ${event.modelRole ?? "default"} chain; configure ${explicit.target.startsWith("@") ? `retry.fallbackChains.${explicit.target.slice(1)}` : "retry.fallbackChains.default"}`,
-            };
-          }
-        }
-        return { model: explicit.patterns, note: explicit.note };
-      }
       const routing = routingFor(ctx);
       const route = routing.pending.take(event.spawnKey, event.agent);
       if (!route) return undefined;
@@ -803,8 +683,6 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
       if (route.difficulty === "routine") routing.escalations.lowered(event.spawnKey, route.difficulty);
       return { model, note: route.note };
     } catch (error) {
-      if (explicit)
-        return { block: true, reason: `Task ${event.spawnKey} could not apply its pinned ${explicit.target}: ${errorMessage(error)}` };
       pi.logger.warn("judge-dispatch spawn routing failed open", { error: errorMessage(error) });
       return undefined;
     }

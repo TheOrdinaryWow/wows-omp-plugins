@@ -47,8 +47,6 @@ interface ChildScenario {
   difficultyConfidence?: number;
   hostKey?: string;
   explicitRole?: boolean;
-  emptyRoleChain?: boolean;
-  defaultChain?: string[];
   disabledProviders?: string[];
   /** `task.agentModelOverrides` entries. */
   agentModels?: Record<string, string[]>;
@@ -160,9 +158,8 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       if (scenario.explicitRole) {
         cfgModelRoles.override(settings, { abliterated: "openai/gpt-5-mini", task: "openai/gpt-5" });
         cfgRetryFallbackChains.override(settings, {
-          abliterated: scenario.emptyRoleChain ? [] : ["openai/gpt-5"],
+          abliterated: ["openai/gpt-5"],
           task: ["openai/gpt-5-mini"],
-          ...(scenario.defaultChain ? { default: scenario.defaultChain } : {}),
         });
       }
       if (scenario.disabledProviders) cfgDisabledProviders.override(settings, scenario.disabledProviders);
@@ -398,21 +395,8 @@ async function registerTests(): Promise<void> {
   const { describe, expect, setDefaultTimeout, test } = await import("bun:test");
   // Every test boots a real host in a child process; the 5s default is too tight when the suite runs in parallel.
   setDefaultTimeout(30_000);
-  const pinnedTask = (name: string, agent: string) => ({ task: `Review ${name}`, agent, name });
+  const reviewTask = (name: string, agent: string) => ({ task: `Review ${name}`, agent, name });
   const taskSpawn = { agent: "task", modelRole: "task", patterns: ["openai/gpt-5"] };
-  const roleSpawn = { model: ["openai/gpt-5-mini", "openai/gpt-5"], note: "judge-dispatch pinned role @abliterated" };
-  const modelSpawn = { model: ["openai/gpt-5-mini", "openai/gpt-5"], note: "judge-dispatch pinned model openai/gpt-5-mini" };
-  const blocked = (reason: string) => ({ block: true, reason: expect.stringContaining(reason) });
-  const lost = blocked("its pin is no longer known to judge-dispatch");
-  const prometheus = (phase: string) => [{ type: "custom", customType: "wows-omp-omo-prometheus.state", data: { phase } }];
-  // A pinned item runs under its own name (or agent) plus a unique token, which its spawn key must carry.
-  const spawned = (name: string) => expect.stringMatching(new RegExp(`^${name}_jd[0-9a-f]{12}$`));
-  // Pinned results also tell the parent model how its pinned items were renamed.
-  const pinNotice = expect.stringContaining("judge-dispatch rewrote the pinned items of this task call");
-  const dispatchedPin = (name: string) => ({
-    input: { ...pinnedTask(name, "task"), name: spawned(name) },
-    additionalContext: pinNotice,
-  });
 
   describe.serial("judge-dispatch through the host judge role", () => {
     test("a native judge that is not Jev routes task calls and journals usage", async () => {
@@ -452,10 +436,10 @@ async function registerTests(): Promise<void> {
       });
     });
 
-    test("a taskFile batch item keeps its agent and pin while inline siblings are routed", async () => {
-      const file = { name: "FromFile", agent: "task@abliterated", taskFile: "local://missing-assignment.md", effort: "lo" };
+    test("a taskFile batch item keeps its agent while inline siblings are routed", async () => {
+      const file = { name: "FromFile", agent: "task", taskFile: "local://missing-assignment.md", effort: "lo" };
       const plain = { name: "PlainFile", agent: "task", taskFile: "/missing/assignment.md" };
-      const inline = pinnedTask("Inline", "task");
+      const inline = reviewTask("Inline", "task");
       const input = { context: "shared", tasks: [file, inline, plain] };
       await withProjects([{ judgeEffort: true }], async ([project]) => {
         const report = await runIsolatedScenario({
@@ -473,15 +457,11 @@ async function registerTests(): Promise<void> {
           ],
           response: "success",
           hostKey: HOST_KEY,
-          explicitRole: true,
           agentModels: { task: ["openai/gpt-5"], scout: ["openai/gpt-5"] },
         });
         expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          {
-            input: { ...input, tasks: [{ ...file, agent: "task", name: spawned("FromFile") }, { ...inline, agent: "scout" }, plain] },
-            additionalContext: pinNotice,
-          },
-          { spawnKey: spawned("FromFile"), result: roleSpawn },
+          { input: { ...input, tasks: [file, { ...inline, agent: "scout" }, plain] } },
+          { spawnKey: "FromFile", result: null },
           { spawnKey: "Inline", result: { model: ["openai/gpt-5:high"], note: "judge-dispatch demanding task: thinking medium → high" } },
           { spawnKey: "PlainFile", result: null },
         ]);
@@ -491,9 +471,9 @@ async function registerTests(): Promise<void> {
     });
 
     test("native item models keep their agent, exact selector and effort without tiers or thinking steps", async () => {
-      const native = { ...pinnedTask("Native", "task"), model: " openai/gpt-5:low " };
-      const effort = { ...pinnedTask("Effort", "task"), model: "openai/gpt-5:high", effort: "lo" };
-      const inline = pinnedTask("Inline", "task");
+      const native = { ...reviewTask("Native", "task"), model: " openai/gpt-5:low " };
+      const effort = { ...reviewTask("Effort", "task"), model: "openai/gpt-5:high", effort: "lo" };
+      const inline = reviewTask("Inline", "task");
       const batch = { context: "shared", tasks: [native, effort, inline] };
       await withProjects([{ judgeEffort: true, modelTiers: "demanding=@abliterated" }], async ([project]) => {
         const report = await runIsolatedScenario({
@@ -522,14 +502,17 @@ async function registerTests(): Promise<void> {
           { input: { ...batch, tasks: [native, effort, { ...inline, agent: "scout" }] } },
           { spawnKey: "Native-2", result: null },
           { spawnKey: "Effort", result: null },
-          { spawnKey: "Inline", result: { model: roleSpawn.model, note: "judge-dispatch demanding tier @abliterated" } },
+          {
+            spawnKey: "Inline",
+            result: { model: ["openai/gpt-5-mini", "openai/gpt-5"], note: "judge-dispatch demanding tier @abliterated" },
+          },
         ]);
         expect(report.requests).toHaveLength(1);
       });
     });
 
     test("native models cannot inherit a same-named pending tier from another dispatch", async () => {
-      const routed = pinnedTask("Shared", "task");
+      const routed = reviewTask("Shared", "task");
       const native = { ...routed, model: "openai/gpt-5" };
       await withProjects([{ routeAgent: false, judgeEffort: true, modelTiers: "demanding=@abliterated" }], async ([project]) => {
         const report = await runIsolatedScenario({
@@ -557,35 +540,6 @@ async function registerTests(): Promise<void> {
           { spawnKey: "Shared-2", result: null },
         ]);
         expect(report.requests).toHaveLength(1);
-      });
-    });
-
-    test("a native model combined with an agent pin refuses the whole call without reserving pins", async () => {
-      const good = pinnedTask("Good", "task@abliterated");
-      const conflict = { ...pinnedTask("Conflict", "task@abliterated"), model: "openai/gpt-5" };
-      await withProjects([{}], async ([project]) => {
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                { call: conflict, id: "flat" },
-                { call: { context: "shared", tasks: [good, conflict] }, id: "batch" },
-                { spawn: taskSpawn, allocate: "Good" },
-              ],
-            },
-          ],
-          response: "success",
-          hostKey: HOST_KEY,
-          explicitRole: true,
-        });
-        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          blocked("cannot combine its native model field with an agent@model pin"),
-          blocked("cannot combine its native model field with an agent@model pin"),
-          { spawnKey: "Good", result: null },
-        ]);
-        expect(report.requests).toEqual([]);
       });
     });
 
@@ -781,12 +735,12 @@ async function registerTests(): Promise<void> {
               project: agentTier as string,
               calls: 0,
               steps: [
-                { call: pinnedTask("Tiered", "task"), id: "tiered" },
+                { call: reviewTask("Tiered", "task"), id: "tiered" },
                 { spawn: { agent: "scout", patterns: ["openai/gpt-5"] }, from: "tiered" },
               ],
             },
-            { project: missing as string, calls: 1, inputs: [pinnedTask("Missing", "task")] },
-            { project: unsure as string, calls: 1, inputs: [pinnedTask("Unsure", "task")] },
+            { project: missing as string, calls: 1, inputs: [reviewTask("Missing", "task")] },
+            { project: unsure as string, calls: 1, inputs: [reviewTask("Unsure", "task")] },
           ],
           response: "success",
           hostKey: HOST_KEY,
@@ -795,13 +749,13 @@ async function registerTests(): Promise<void> {
         });
         const [tiered, failOpen, lowConfidence] = report.sessions;
         expect(tiered?.steps, diagnostics(report)).toEqual([
-          { input: { ...pinnedTask("Tiered", "task"), agent: "scout" } },
+          { input: { ...reviewTask("Tiered", "task"), agent: "scout" } },
           { spawnKey: "Tiered", result: tierSpawn },
         ]);
         expect(tiered?.notifications.map((notice) => notice.message)).toEqual([
           "judge-dispatch  task → scout (0.99) · model openai/gpt-5 → @abliterated (0.99)",
         ]);
-        expect(failOpen?.results).toEqual([{ input: { ...pinnedTask("Missing", "task"), agent: "scout" } }]);
+        expect(failOpen?.results).toEqual([{ input: { ...reviewTask("Missing", "task"), agent: "scout" } }]);
         expect(failOpen?.notifications.map((notice) => notice.message)).toEqual([
           "judge-dispatch  task → scout (0.99) · model openai/gpt-5 kept (tier @missing-role: unknown model role missing-role) · difficulty demanding (0.99)",
         ]);
@@ -833,7 +787,7 @@ async function registerTests(): Promise<void> {
 
     test("standard work, a low-confidence difficulty, and a tier equal to the primary leave the spawn unchanged", async () => {
       await withProjects([{ modelTiers: "demanding=@abliterated" }, { modelTiers: "demanding=@task" }], async ([tier, same]) => {
-        const input = pinnedTask("Keep", "scout");
+        const input = reviewTask("Keep", "scout");
         const scenario = (project: string): ChildScenario => ({
           sessions: [
             {
@@ -862,262 +816,6 @@ async function registerTests(): Promise<void> {
         expect(unsure.sessions[0]?.notifications.map((notice) => notice.message)).toEqual(["judge-dispatch  scout"]);
         expect(noOp.sessions[0]?.notifications.map((notice) => notice.message)).toEqual([
           "judge-dispatch  scout · difficulty demanding (0.99)",
-        ]);
-      });
-    });
-
-    test("a pinned role keeps judged agent routing but skips tiers and thinking steps", async () => {
-      const task = pinnedTask("ReviewLogic", "task@abliterated");
-      const scoutSpawn = { ...taskSpawn, agent: "scout" };
-      await withProjects([{ judgeEffort: true, modelTiers: "demanding=@task" }], async ([project]) => {
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                { call: task, id: "pinned" },
-                { spawn: scoutSpawn, from: "pinned" },
-                { spawn: { ...scoutSpawn, spawnKey: "parent.ReviewLogic" } },
-                { spawn: { ...scoutSpawn, spawnKey: "parent.ReviewLogic-2" } },
-                { spawn: { ...scoutSpawn, spawnKey: "parent.Something_jd0123456789ab" } },
-              ],
-            },
-          ],
-          response: "success",
-          hostKey: HOST_KEY,
-          agentModels: { task: ["openai/gpt-5"], scout: ["openai/gpt-5"] },
-          explicitRole: true,
-        });
-        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          {
-            input: { ...task, agent: "scout", name: expect.stringMatching(/^ReviewLogic_jd[0-9a-f]{12}$/) },
-            additionalContext: expect.stringMatching(
-              /ReviewLogic with agent task@abliterated now runs as ReviewLogic_jd[0-9a-f]{12} on @abliterated/,
-            ),
-          },
-          { spawnKey: spawned("ReviewLogic"), result: roleSpawn },
-          { spawnKey: "parent.ReviewLogic", result: null },
-          { spawnKey: "parent.ReviewLogic-2", result: null },
-          { spawnKey: "parent.Something_jd0123456789ab", result: lost },
-        ]);
-        expect(report.requests.map((request) => Object.keys(JSON.parse(request.body).questions))).toEqual([["agent"]]);
-        expect(report.sessions[0]?.notifications).toEqual([
-          { message: "judge-dispatch  task → scout (0.99) · model pinned to @abliterated", level: "info" },
-        ]);
-      });
-    });
-
-    test("a concrete model pin works without a judge credential and survives only an unsettled or background call", async () => {
-      const unnamed = { task: "Review the boundary", agent: "task@openai/gpt-5-mini" };
-      const preflightFailure = {
-        content: [{ type: "text", text: "Task execution failed: Unknown agent" }],
-        details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
-      };
-      const backgroundJob = {
-        content: [{ type: "text", text: "Spawned agent task" }],
-        details: { projectAgentsDir: null, results: [], totalDurationMs: 0, async: { state: "running", jobId: "task", type: "task" } },
-      };
-      await withProjects([{}], async ([project]) => {
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                { call: unnamed, id: "concrete" },
-                { spawn: taskSpawn, from: "concrete" },
-                { call: unnamed, id: "settled" },
-                { end: "settled", result: preflightFailure },
-                { spawn: taskSpawn, from: "settled" },
-                { call: unnamed, id: "background" },
-                { end: "background", result: backgroundJob },
-                { spawn: taskSpawn, from: "background" },
-              ],
-            },
-          ],
-          response: "success",
-          explicitRole: true,
-          defaultChain: ["openai/gpt-5"],
-        });
-        const dispatched = { input: { ...unnamed, agent: "task", name: spawned("task") }, additionalContext: pinNotice };
-        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          dispatched,
-          { spawnKey: spawned("task"), result: modelSpawn },
-          dispatched,
-          null,
-          { spawnKey: spawned("task"), result: lost },
-          dispatched,
-          null,
-          { spawnKey: spawned("task"), result: modelSpawn },
-        ]);
-        expect(report.requests).toEqual([]);
-      });
-    });
-
-    test("invalid pins refuse the whole call without rewriting it", async () => {
-      const item = (agent: string) => ({ task: "Review the boundary", agent });
-      await withProjects([{}], async ([project]) => {
-        const refusals: [Record<string, unknown>, string][] = [
-          [item("scout@missing-role"), "unknown model role missing-role"],
-          [item("scout@openai/gpt-5,openai/gpt-5-mini"), "single provider/model selector"],
-          [item("scout@pi/abliterated"), "single provider/model selector"],
-          [item("scout@openai/gpt-9-missing"), "no enabled model resolves for openai/gpt-9-missing"],
-          [item("metis@abliterated"), "workflow-owned agent metis"],
-          [item("@abliterated"), '"@abliterated"'],
-          [item("scout@"), '"scout@"'],
-          [
-            { context: "shared", tasks: [pinnedTask("Good", "task@abliterated"), pinnedTask("Bad", "task@missing-role")] },
-            "task@missing-role: unknown model role missing-role",
-          ],
-          [
-            pinnedTask("Review_jd0123456789ab", "task"),
-            "Task name Review_jd0123456789ab ends like a model-pin spawn name, which judge-dispatch reserves; use another name",
-          ],
-        ];
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                ...refusals.map(([call], index) => ({ call, id: `refused-${index}` })),
-                { spawn: taskSpawn, allocate: "Good" },
-                { spawn: { ...taskSpawn, spawnKey: "parent.Good" } },
-              ],
-            },
-          ],
-          response: "success",
-          explicitRole: true,
-        });
-        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          ...refusals.map(([, reason]) => blocked(reason)),
-          { spawnKey: "Good", result: null },
-          { spawnKey: "parent.Good", result: null },
-        ]);
-
-        const disabled = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                { call: item("scout@openai/gpt-5-mini"), id: "model" },
-                { call: item("scout@abliterated"), id: "role" },
-              ],
-            },
-          ],
-          response: "success",
-          explicitRole: true,
-          disabledProviders: ["openai"],
-        });
-        expect(disabled.sessions[0]?.steps, diagnostics(disabled)).toEqual([
-          blocked("no enabled model resolves for openai/gpt-5-mini"),
-          blocked("no enabled model resolves for @abliterated"),
-        ]);
-      });
-    });
-
-    test("same-named pinned items get distinct spawn names that reach only their own spawn", async () => {
-      const role = pinnedTask("Twin", "task@abliterated");
-      const model = pinnedTask("Twin", "task@openai/gpt-5-mini");
-      const plain = pinnedTask("Twin", "task");
-      await withProjects([{}], async ([project]) => {
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                { call: { context: "shared", tasks: [role, model, plain] }, id: "twins" },
-                { spawn: taskSpawn, from: "twins", item: 1 },
-                { spawn: taskSpawn, from: "twins", item: 2 },
-                { spawn: taskSpawn, from: "twins", item: 0 },
-              ],
-            },
-          ],
-          response: "success",
-          explicitRole: true,
-          defaultChain: ["openai/gpt-5"],
-        });
-        const steps = report.sessions[0]?.steps ?? [];
-        expect(steps, diagnostics(report)).toEqual([
-          {
-            input: {
-              context: "shared",
-              tasks: [{ ...role, agent: "task", name: spawned("Twin") }, { ...model, agent: "task", name: spawned("Twin") }, plain],
-            },
-            additionalContext: pinNotice,
-          },
-          { spawnKey: spawned("Twin"), result: modelSpawn },
-          { spawnKey: "Twin", result: null },
-          { spawnKey: spawned("Twin"), result: roleSpawn },
-        ]);
-        const keys = steps.slice(1).map((step) => (step && typeof step === "object" && "spawnKey" in step ? step.spawnKey : undefined));
-        expect(new Set(keys).size).toBe(3);
-      });
-    });
-
-    test("a pinned role without a fallback chain never inherits the agent's own role chain", async () => {
-      await withProjects([{}], async ([project]) => {
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                { call: pinnedTask("Empty", "task@abliterated"), id: "empty" },
-                { call: pinnedTask("Chained", "task@task"), id: "chained" },
-                { spawn: taskSpawn, from: "empty" },
-                { spawn: taskSpawn, from: "chained" },
-              ],
-            },
-          ],
-          response: "success",
-          explicitRole: true,
-          emptyRoleChain: true,
-        });
-        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          dispatchedPin("Empty"),
-          dispatchedPin("Chained"),
-          { spawnKey: spawned("Empty"), result: blocked("has no fallback chain") },
-          {
-            spawnKey: spawned("Chained"),
-            result: { model: ["openai/gpt-5", "openai/gpt-5-mini"], note: "judge-dispatch pinned role @task" },
-          },
-        ]);
-      });
-    });
-
-    test("Prometheus execution refuses pins at dispatch and at spawn but leaves unpinned calls alone", async () => {
-      await withProjects([{}], async ([project]) => {
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [
-                { branch: prometheus("executing") },
-                { call: pinnedTask("T1", "task@abliterated"), id: "pinned" },
-                { call: pinnedTask("T1", "task"), id: "unpinned" },
-                { branch: prometheus("idle") },
-                { call: pinnedTask("T2", "task@abliterated"), id: "before" },
-                { branch: prometheus("executing") },
-                { spawn: taskSpawn, from: "before" },
-              ],
-            },
-          ],
-          response: "success",
-          explicitRole: true,
-        });
-        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          null,
-          blocked("cannot be pinned while an approved Prometheus plan executes"),
-          null,
-          null,
-          dispatchedPin("T2"),
-          null,
-          { spawnKey: spawned("T2"), result: blocked("before the approved Prometheus plan") },
         ]);
       });
     });
@@ -1202,37 +900,9 @@ async function registerTests(): Promise<void> {
       });
     });
 
-    test("seance pins refuse the whole call without rewriting or retaining another item's pin", async () => {
-      await withProjects([{}], async ([project]) => {
-        const item = (agent: string) => ({ agent, task: "Consult the saved session", sourceSession: "saved-session" });
-        const inputs = [
-          { context: "Saved context", tasks: [item("seance@abliterated")] },
-          { context: "Saved context", tasks: [item("seance@openai/gpt-5-mini")] },
-          { context: "Saved context", tasks: [pinnedTask("Good", "task@abliterated"), item("seance@abliterated")] },
-        ];
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 0,
-              steps: [...inputs.map((call, index) => ({ call, id: `seance-pin-${index}` })), { spawn: taskSpawn, allocate: "Good" }],
-            },
-          ],
-          response: "success",
-          explicitRole: true,
-        });
-        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          ...inputs.map(() => ({ block: true, reason: expect.any(String) })),
-          { spawnKey: "Good", result: null },
-        ]);
-        expect(report.requests).toEqual([]);
-        expect(report.sessions[0]?.notifications).toEqual([]);
-      });
-    });
-
-    test("unknown or disabled rosters, unresolved access, and reserved sources do not change agent or effort", async () => {
+    test("unknown or disabled rosters, unresolved access, reserved sources and agent@model forms do not change agent or effort", async () => {
       await withProjects([{ judgeEffort: true }], async ([project]) => {
-        const inputs = ["metis", "momus", "oracle", "audit-auditor", "unknown-agent"].map((agent) => ({
+        const inputs = ["metis", "momus", "oracle", "audit-auditor", "unknown-agent", "deep-low@abliterated"].map((agent) => ({
           agent,
           task: "Review this plan",
           effort: "lo",
@@ -1485,7 +1155,7 @@ async function registerTests(): Promise<void> {
     });
 
     test("a tier naming the agent's own model at another thinking level applies that level instead of a step", async () => {
-      const own = pinnedTask("Own", "scout");
+      const own = reviewTask("Own", "scout");
       await withProjects(
         [{ modelTiers: "scout.demanding=openai/gpt-5:high" }, { judgeEffort: true, modelTiers: "scout.demanding=openai/gpt-5:high" }],
         async ([tierOnly, withSteps]) => {
@@ -1519,7 +1189,7 @@ async function registerTests(): Promise<void> {
       await withProjects(
         Array.from({ length: 3 }, () => ({ modelTiers: "routine=@abliterated,demanding=@abliterated" })),
         async (projects) => {
-          const input = pinnedTask("Fix", "task");
+          const input = reviewTask("Fix", "task");
           const pending = {
             details: {
               results: [],

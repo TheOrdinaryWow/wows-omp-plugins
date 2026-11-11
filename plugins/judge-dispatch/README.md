@@ -11,15 +11,13 @@ English | [简体中文](README.zh.md)
 
 When the agent hands a task to a subagent, it picks which agent type does the work (`task`, `explore`, `deep-low` and so on), and that choice is not always right. With this plugin, OMP's judge model looks at each task first. It can switch the agent type to a better fit, and it can rate the task `routine`, `standard` or `demanding`. You decide what the rating does: run easy tasks with less thinking and hard ones with more, or send them to models you pick. The judge never picks a model itself. When it is unsure, the task runs exactly as the agent asked.
 
-You can also tell the agent to run one particular task on a specific model or model role, for example "run the review on the abliterated role".
-
 ## Install
 
 ```bash
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below); running one task on a specific model works without one.
+You need OMP 18.17.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below).
 
 ## Quick start
 
@@ -95,19 +93,13 @@ The plugin tells the agent to retry or escalate a task by sending it again under
 
 The raised attempt keeps the agent that was asked for and is not judged again. The status line shows `escalated to demanding after ESCALATE: deep-high` or `raised to standard after a failed lowered run`. These records last until OMP restarts.
 
-### Run one task on a specific model
+### Run one task on another model
 
-Tell the agent which model role or model to use for one task, for example "run the review on the abliterated role". The plugin teaches the agent to write that task's agent as `<agent>@<role>` or `<agent>@<provider>/<model>`:
+OMP can run one task on a model you pick. Turn on its per-call model setting in your own OMP settings, not the project's: set `task.perCallModel` to `on`. The agent then writes that one task's `model` field as an exact `provider/model-id`, with an optional `:level` for thinking. Only models you have already set up can be used: a chat role in your `modelRoles`, the selected agent's own model, or the model the session is using. If you set `task.perCallModelAllow`, the model must also be on that list. OMP refuses any other model.
 
-```text
-task({"name":"ReviewLogic","agent":"deep-low@abliterated","task":"Review the logic"})
-```
+judge-dispatch leaves a task that has a `model` exactly as written. It does not judge the agent, ask about difficulty, or change the model or thinking level.
 
-The subagent then runs as `deep-low` on that role's model, with the role's fallback models. The role must exist in your OMP `modelRoles`, and a specific model must be enabled and have credentials. A pinned task gets no tier or thinking step, though the judge may still switch its agent type. Pins work even without a judge.
-
-The subagent's ID gets a suffix such as `ReviewLogic_jd0123456789ab`, so no other task with the same name can take over its model. The agent is told about this and uses the new ID. The rewritten call is what OMP shows; that is the pin working, not an error.
-
-If a pin cannot be applied, the whole call is refused with the reason, instead of quietly running on the agent's usual model. That happens for an unknown role, a model that cannot be used, a workflow agent such as `metis`, a task that also sets OMP's own `model` field, and any pin while an omo-prometheus plan is being carried out. For `seance`, put the model in that task's `model` field instead.
+The old `agent@role` form is gone. OMP now rejects a name such as `deep-low@abliterated` as an unknown agent.
 
 ### What you see
 
@@ -160,15 +152,14 @@ Settings are read on every task, so changes apply right away. If a value is inva
 
 ## Known limitations
 
-- Subagents started from `eval` scripts (`agent()`, `workpool()`) are not routed and cannot be pinned to a model; only `task` calls can.
-- A pinned subagent's ID has a `_jd…` suffix instead of the name you gave it.
+- Subagents started from `eval` scripts (`agent()`, `workpool()`) are not routed.
 - When the agent makes several `task` calls in one turn, OMP may show only the last status line.
 - Retry and escalation records are lost when OMP restarts, and only a retry under the same name finds them.
 - The thinking step needs OMP to know which thinking levels a model supports. A model without that information keeps its level.
 
 ## More details
 
-[REFERENCE.md](REFERENCE.md) covers how tiers and pins expand into model lists, the exact thinking-step rules, the retry and escalation records, how decisions reach the subagent, and timeouts.
+[REFERENCE.md](REFERENCE.md) covers how tiers expand into model lists, the exact thinking-step rules, the retry and escalation records, how decisions reach the subagent, and timeouts.
 
 ## License
 

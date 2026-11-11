@@ -225,21 +225,18 @@ is accepted on their own evidence (Atlas rows, audit fixers, ultrawork lanes)
 must name the checks in every assignment.
 
 `judge-dispatch` changes a child's agent type only by rewriting `task` tool calls,
-and its thinking level and model only at spawn. OMP's
-`before_subagent_spawn` hook can replace a child's model patterns but not its agent
-type or role identity, and its `spawnKey` is the child id the host allocates from
-the item's `name`. A per-task model pin therefore rides in the `agent` string
-(`deep-low@abliterated`): strict tool schemas and the host's `"+": "delete"` item
-schema leave no room for an extra field, `agent` is the field that names what
-spawns, and without the plugin OMP refuses `x@role` as an unknown agent instead of
-silently dropping the pin. The plugin renames the pinned item to a unique spawn
-name. Do not move the pin to a separate tool or an extra item field: that
-reintroduces cross-round state or breaks under strict schemas. `eval.agent()` and
-`workpool()` remain unrouted and cannot be pinned.
-OMP 18.14.2 added a per-item `model` field behind `task.perCallModel`. The plugin
-leaves such an item's agent, model and thinking level exactly as written and
-refuses an item that also carries an `@` pin. The plugin never changes the user's
-global model roles or fallback settings.
+and its thinking level and model only at spawn. OMP's `before_subagent_spawn` hook
+can replace a child's model patterns but not its agent type or role identity, and
+its `spawnKey` is the child id the host allocates from the item's `name`.
+`eval.agent()` and `workpool()` remain unrouted.
+judge-dispatch has no per-task model pin. The per-task model route is OMP's native
+`task.perCallModel` item field `model`, available since 18.14.2 and so present on every
+supported OMP. The plugin leaves such an item's agent, model and thinking level exactly
+as written. It never changes the user's global model roles or fallback settings.
+Decided by the maintainer on 2026-11-12: the `agent@…` pin was removed because it
+duplicated that field, let any enabled model through regardless of the operator's
+approval (`task.perCallModelAllow`, which project settings cannot grant), and could not
+restore its model on cold revival. Do not reintroduce a plugin-side pin.
 An earlier "enhanced" mode used a hypothetical routing API that no OMP release
 shipped and was removed. Build only on host surfaces exposed by released OMP.
 
@@ -272,8 +269,7 @@ Judging goes through OMP's `judge` role (`resolveJudge`); the plugin keeps no
 credentials or provider settings of its own. It judges only when the chain's
 first usable candidate is native (a judgment API, calibrated confidence), never
 calls a chat-model fallback. Automatic routing fails open: a missing native judge
-keeps the requested agent and warns once per session. A pin that cannot apply
-must instead refuse the call; never run a pinned task on the agent's own model.
+keeps the requested agent and warns once per session.
 
 ## Task tiers in omo-prometheus
 

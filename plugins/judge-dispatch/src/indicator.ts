@@ -54,8 +54,7 @@ function routeLine(route: ParsedTaskRoute, outcome: RouteOutcome, choice: RouteC
 
   const model = choice?.model;
   const primary = singleLine(model?.primary ?? "default");
-  if (route.explicitModel) parts.push(`model pinned to ${singleLine(route.explicitModel)}`);
-  else if (model?.keptReason !== undefined)
+  if (model?.keptReason !== undefined)
     parts.push(`model ${primary} kept (tier ${singleLine(model.tier)}: ${singleLine(model.keptReason)})`);
   else if (model) parts.push(`model ${primary} → ${singleLine(model.tier)}${basis}`);
   if (choice?.thinking) parts.push(`thinking ${choice.thinking.from} → ${choice.thinking.to}${basis}`);

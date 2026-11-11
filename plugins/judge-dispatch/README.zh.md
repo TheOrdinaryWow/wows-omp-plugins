@@ -11,15 +11,13 @@
 
 代理把任务交给子代理时，会选一种代理类型来做（`task`、`explore`、`deep-low` 等等），这个选择不一定对。装上这个插件后，OMP 的判定模型会先看一遍每个任务。它可以把代理换成更合适的类型，也可以把任务评为 `routine`、`standard` 或 `demanding`。评级有什么用由你决定：让简单的任务少思考、难的任务多思考，或者交给你指定的模型。判定模型自己从不挑模型。它拿不准的时候，任务会完全按代理原来的要求运行。
 
-你还可以让代理把某一个任务放到指定的模型或模型角色上跑，比如“用 abliterated 角色跑这次审查”。
-
 ## 安装
 
 ```bash
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）；为单个任务指定模型则不需要。
+需要 OMP 18.17.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）。
 
 ## 快速上手
 
@@ -95,19 +93,13 @@ routine=@smol,demanding=@slow,ultrabrain.demanding=openai/gpt-6.1:xhigh
 
 提级后的尝试保留原本要求的代理，也不会再次判定。状态行会显示 `escalated to demanding after ESCALATE: deep-high` 或 `raised to standard after a failed lowered run`。这些记录在 OMP 重启后失效。
 
-### 让某个任务用指定模型
+### 让某个任务换一个模型运行
 
-告诉代理某个任务用哪个模型角色或模型，比如“用 abliterated 角色跑这次审查”。插件会教代理把这个任务的 agent 写成 `<agent>@<role>` 或 `<agent>@<provider>/<model>`：
+OMP 可以让某一个任务跑在你指定的模型上。在你自己的 OMP 设置里（不是项目设置）把 `task.perCallModel` 设为 `on`。之后代理会把这个任务的 `model` 字段写成一个精确的 `provider/model-id`，还可以加 `:level` 指定思考级别。只能用你已经配好的模型：在 `modelRoles` 里配置的聊天角色、所选代理自己的模型，或者会话当前使用的模型。如果你设置了 `task.perCallModelAllow`，模型还必须在这个列表里。其他模型都会被 OMP 拒绝。
 
-```text
-task({"name":"ReviewLogic","agent":"deep-low@abliterated","task":"Review the logic"})
-```
+judge-dispatch 会原样保留带有 `model` 的任务，不判断代理，不询问难度，也不改变模型或思考级别。
 
-子代理会以 `deep-low` 身份运行在这个角色的模型上，并使用该角色的回退模型。角色必须存在于你的 OMP `modelRoles` 中；具体模型必须已启用并有凭据。固定了模型的任务不套用档位，也不调整思考级别，但判定模型仍可能更换它的代理类型。没有配置判定模型时，固定照样有效。
-
-子代理的 ID 会带上一个后缀，比如 `ReviewLogic_jd0123456789ab`，这样同名的其他任务就抢不走它的模型。代理会被告知这一点，并使用新的 ID。OMP 显示的是改写后的调用，这是固定在起作用，不是出错。
-
-固定无法生效时，整个调用会被拒绝并说明原因，而不是悄悄换回代理平时的模型。这些情况包括：角色不存在、模型无法使用、`metis` 这类工作流代理、任务同时设置了 OMP 自己的 `model` 字段，以及 omo-prometheus 执行计划期间的任何固定。`seance` 任务请改用它的 `model` 字段指定模型。
+以前的 `agent@role` 写法已经去掉了。OMP 现在会把 `deep-low@abliterated` 这样的代理名当作未知代理拒绝。
 
 ### 你会看到什么
 
@@ -160,15 +152,14 @@ omp plugin config list wows-omp-plugin-judge-dispatch
 
 ## 已知限制
 
-- 从 `eval` 脚本启动的子代理（`agent()`、`workpool()`）不参与路由，也不能固定模型；只有 `task` 调用可以。
-- 固定了模型的子代理，ID 会带 `_jd…` 后缀，而不是你起的名字。
+- 从 `eval` 脚本启动的子代理（`agent()`、`workpool()`）不参与路由。
 - 代理在一轮里发起多个 `task` 调用时，OMP 可能只显示最后一行状态。
 - 重试和升级记录在 OMP 重启后丢失，而且只有同名的重试才能用上它们。
 - 思考级别调整需要 OMP 知道模型支持哪些思考级别。缺少这项信息的模型保持原级别。
 
 ## 更多细节
 
-[REFERENCE.zh.md](REFERENCE.zh.md) 介绍了档位和固定如何展开成模型列表、思考级别调整的具体规则、重试与升级记录、判定结果如何作用到子代理，以及超时。
+[REFERENCE.zh.md](REFERENCE.zh.md) 介绍了档位如何展开成模型列表、思考级别调整的具体规则、重试与升级记录、判定结果如何作用到子代理，以及超时。
 
 ## 许可证
 

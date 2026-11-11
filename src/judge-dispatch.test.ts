@@ -8,7 +8,6 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { EscalationMemo, taskResultOutput } from "../plugins/judge-dispatch/src/escalation.ts";
 import {
   acceptRoutingDecision,
-  ExplicitSpawnClaims,
   PendingSpawnRoutes,
   parseLegalAgentNames,
   parseModelTiers,
@@ -93,23 +92,20 @@ describe("task input routing", () => {
     expect(input.tasks[2]).not.toHaveProperty("name");
   });
 
-  test("parses file-backed identity and pins without loading assignments or changing taskFile", () => {
-    const file = { name: "FromFile", agent: "task@abliterated", taskFile: "local://missing-assignment.md" };
+  test("parses file-backed identity without loading assignments or changing taskFile", () => {
+    const file = { name: "FromFile", agent: "task", taskFile: "local://missing-assignment.md" };
     const inline = { agent: "task", task: "Review the inline assignment" };
     const input = { context: "shared", tasks: [file, inline] };
     const routes = parseTaskInput(input);
     if (!routes) throw new Error("expected valid mixed task input");
     expect(routes).toEqual([
-      { index: 0, context: "shared", requestedAgent: "task", explicitModel: "abliterated", name: "FromFile" },
+      { index: 0, context: "shared", requestedAgent: "task", name: "FromFile" },
       { index: 1, context: "shared", requestedAgent: "task", assignment: inline.task },
     ]);
-    expect(parseTaskInput(file)).toEqual([{ index: null, requestedAgent: "task", explicitModel: "abliterated", name: "FromFile" }]);
-    expect(rewriteTaskRoutes(input, routes, [{ agent: "task", spawnName: "FromFile_jd0123456789ab" }, { agent: "scout" }])).toEqual({
+    expect(parseTaskInput(file)).toEqual([{ index: null, requestedAgent: "task", name: "FromFile" }]);
+    expect(rewriteTaskRoutes(input, routes, [undefined, { agent: "scout" }])).toEqual({
       ...input,
-      tasks: [
-        { ...file, agent: "task", name: "FromFile_jd0123456789ab" },
-        { ...inline, agent: "scout" },
-      ],
+      tasks: [file, { ...inline, agent: "scout" }],
     });
   });
 
@@ -433,54 +429,5 @@ describe("escalation memo", () => {
       difficulty: "demanding",
     });
     expect(outcome(envelope("Fixed the deadlock.\nESCALATE: deep-high"))).toBeUndefined();
-  });
-});
-
-describe("pinned task models", () => {
-  test("splits a pin into its base agent and raw target in flat and batch items", () => {
-    const flat = { task: "Inspect the boundary", agent: " scout @ openai/gpt-5-mini:high ", name: "Review" };
-    expect(parseTaskInput(flat)).toEqual([
-      {
-        index: null,
-        assignment: "Inspect the boundary",
-        requestedAgent: "scout",
-        explicitModel: "openai/gpt-5-mini:high",
-        name: "Review",
-      },
-    ]);
-    const routes = parseTaskInput({
-      context: "shared",
-      tasks: [
-        { task: "Pinned role", agent: "task@abliterated" },
-        { task: "Plain", agent: "task" },
-      ],
-    });
-    expect(routes?.map(({ requestedAgent, explicitModel }) => ({ requestedAgent, explicitModel }))).toEqual([
-      { requestedAgent: "task", explicitModel: "abliterated" },
-      { requestedAgent: "task", explicitModel: undefined },
-    ]);
-  });
-
-  test("keeps malformed pins visible so the caller can refuse them", () => {
-    const parsed = (agent: string) => parseTaskInput({ task: "Inspect the boundary", agent })?.[0];
-    expect(parsed("@abliterated")).toEqual(expect.objectContaining({ explicitModel: "abliterated" }));
-    expect(parsed("@abliterated")?.requestedAgent).toBeUndefined();
-    expect(parsed("scout@")).toEqual(expect.objectContaining({ requestedAgent: "scout", explicitModel: "" }));
-  });
-
-  test("each claim gets a unique spawn name that only its own spawn key consumes once; a pinned name without a claim is lost", () => {
-    const model = { target: "@abliterated", patterns: ["openai/gpt-5-mini"], note: "note" };
-    const claims = new ExplicitSpawnClaims();
-    const first = claims.claim("call", "Scout", model);
-    const second = claims.claim("call", "Scout", model);
-    expect(first).toMatch(/^Scout_jd[0-9a-f]{12}$/);
-    expect(second).toMatch(/^Scout_jd[0-9a-f]{12}$/);
-    expect(second).not.toBe(first);
-    expect(claims.claim("call", "parent.child", model)).toMatch(/^parent-child_jd[0-9a-f]{12}$/);
-    for (const key of ["Scout", "Scout-2", `${first}x`, `${first}-2`]) expect(claims.take(key)).toBeUndefined();
-    expect(claims.take(`parent.${second}`)).toBe(model);
-    expect(claims.take(` ${first} `)).toBe(model);
-    expect(claims.take(first)).toBe("lost");
-    expect(claims.take("Other_jd0123456789ab")).toBe("lost");
   });
 });

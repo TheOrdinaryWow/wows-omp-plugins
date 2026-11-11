@@ -47,8 +47,6 @@ export interface ParsedTaskRoute {
   /** Native model approvals can depend on the original agent, so the whole route stays unchanged. */
   nativeModel?: true;
   requestedAgent?: string;
-  /** Model role or `provider/model` selector the caller pinned after `@` in the agent field (`scout@abliterated`). */
-  explicitModel?: string;
   /** Spawn label the caller supplied, if any. */
   name?: string;
 }
@@ -90,8 +88,6 @@ export interface RouteChoice {
   agentConfidence?: number;
   /** Spawn label to write when the call has none, so the spawn hook can find this route's decision. */
   name?: string;
-  /** Unique spawn name replacing the caller's name on an explicitly bound item. */
-  spawnName?: string;
   /** The difficulty acted on: a confident judgment, or one forced by an escalation. */
   difficulty?: TaskDifficulty;
   difficultyConfidence?: number;
@@ -241,17 +237,6 @@ function optionalNonEmptyString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
-/** Separates an agent from the model role or selector a caller pins it to: `scout@abliterated`. */
-const AGENT_MODEL_SEPARATOR = "@";
-
-function agentFields(value: unknown): Pick<ParsedTaskRoute, "requestedAgent" | "explicitModel"> {
-  const agent = optionalNonEmptyString(value);
-  const at = agent?.indexOf(AGENT_MODEL_SEPARATOR) ?? -1;
-  if (!agent || at < 0) return agent ? { requestedAgent: agent } : {};
-  const requestedAgent = agent.slice(0, at).trim();
-  return { ...(requestedAgent ? { requestedAgent } : {}), explicitModel: agent.slice(at + 1).trim() };
-}
-
 function parseTaskItem(item: Record<string, unknown>): Omit<ParsedTaskRoute, "index" | "context"> | undefined {
   const hasTask = item.task !== undefined;
   const hasTaskFile = item.taskFile !== undefined;
@@ -262,9 +247,10 @@ function parseTaskItem(item: Record<string, unknown>): Omit<ParsedTaskRoute, "in
   if (Object.hasOwn(item, "agent") && typeof item.agent !== "string") return undefined;
   const solutionSpace = optionalNonEmptyString(item.solutionSpace);
   const name = optionalNonEmptyString(item.name);
+  const requestedAgent = optionalNonEmptyString(item.agent);
   return {
     ...(assignment ? { assignment } : {}),
-    ...agentFields(item.agent),
+    ...(requestedAgent ? { requestedAgent } : {}),
     ...(solutionSpace ? { solutionSpace } : {}),
     ...(item.effort !== undefined ? { explicitEffort: true } : {}),
     ...(item.model !== undefined ? { nativeModel: true } : {}),
@@ -301,13 +287,12 @@ export function parseTaskInput(input: unknown): ParsedTaskRoute[] | undefined {
 
 function rewriteTaskItem(item: Record<string, unknown>, choice: RouteChoice | undefined): Record<string, unknown> {
   const agentChanged = choice?.agent !== undefined && choice.agent !== item.agent;
-  const renamed = choice?.spawnName !== undefined && choice.spawnName !== item.name;
   const nameAdded = choice?.name !== undefined && optionalNonEmptyString(item.name) === undefined;
-  if (!agentChanged && !renamed && !nameAdded) return item;
+  if (!agentChanged && !nameAdded) return item;
   return {
     ...item,
     ...(agentChanged ? { agent: choice.agent } : {}),
-    ...(renamed ? { name: choice.spawnName } : nameAdded ? { name: choice.name } : {}),
+    ...(nameAdded ? { name: choice.name } : {}),
   };
 }
 
@@ -437,65 +422,4 @@ export class PendingSpawnRoutes {
  */
 export function taskSpawnName(key: string): string {
   return key.slice(key.lastIndexOf(".") + 1).trim();
-}
-
-/** Model patterns a pinned task item, or a model tier, applies at spawn. */
-export interface ExplicitSpawnModel {
-  /** `@role` or the `provider/model` selector the caller pinned. */
-  target: string;
-  patterns: string[];
-  note: string;
-}
-
-/** A pinned item's spawn name: its own name, then `_jd` and a unique 12-hex token. */
-const PINNED_SPAWN_NAME = /_jd[0-9a-f]{12}$/;
-
-/** Whether a task name or spawn key has the shape judge-dispatch reserves for pinned spawns. */
-export function isPinnedSpawnName(name: string): boolean {
-  return PINNED_SPAWN_NAME.test(taskSpawnName(name));
-}
-
-/**
- * Pinned task items awaiting their spawns. The spawn hook sees only the child id
- * the host allocates from an item's name, so each pinned item is renamed to a
- * unique spawn name: OMP's `-N` collision suffix and other tasks reusing the
- * caller's name can never take the pin. One registry serves the plugin instance,
- * because a background job may spawn after its session was switched away.
- *
- * A cancelled background job never spawns and never settles, so the registry
- * evicts its oldest claims past a bound; `take` reports such a spawn as lost
- * rather than letting it start on the agent's own model.
- */
-export class ExplicitSpawnClaims {
-  #claims = new Map<string, { model: ExplicitSpawnModel; toolCallId: string }>();
-
-  /** Reserve a unique spawn name for one pinned item of the task call `toolCallId`. */
-  claim(toolCallId: string, name: string, model: ExplicitSpawnModel): string {
-    // A dot would nest the id under a parent, hiding the spawn name from `taskSpawnName`.
-    const base = name.replaceAll(".", "-");
-    let spawnName = "";
-    while (!spawnName || this.#claims.has(spawnName)) {
-      spawnName = `${base}_jd${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
-    }
-    this.#claims.set(spawnName, { model, toolCallId });
-    for (const oldest of this.#claims.keys()) {
-      if (this.#claims.size <= PENDING_SPAWN_LIMIT) break;
-      this.#claims.delete(oldest);
-    }
-    return spawnName;
-  }
-
-  /** Drop the claims of a task call that settled without a background job: none of its items spawns later. */
-  settle(toolCallId: string): void {
-    for (const [spawnName, claim] of this.#claims) if (claim.toolCallId === toolCallId) this.#claims.delete(spawnName);
-  }
-
-  /** Consume the claim a spawn key belongs to; `lost` when the key is a pinned spawn name whose claim is gone. */
-  take(spawnKey: string): ExplicitSpawnModel | "lost" | undefined {
-    const spawnName = taskSpawnName(spawnKey);
-    const claim = this.#claims.get(spawnName);
-    if (!claim) return isPinnedSpawnName(spawnName) ? "lost" : undefined;
-    this.#claims.delete(spawnName);
-    return claim.model;
-  }
 }
