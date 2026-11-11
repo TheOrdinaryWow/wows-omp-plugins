@@ -1257,7 +1257,9 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T1")).attempt, prepared.item.attempt);
     if (name === "retry-expiry-fresh") {
       refused(await call({ action: "start", id: "T1" }));
-      ok(await call({ action: "reopen", id: "T1", evidence: "Owner chose fresh implementation work" }));
+      const reopened = await call({ action: "reopen", id: "T1", evidence: "Owner chose fresh implementation work" });
+      ok(reopened);
+      assert.doesNotMatch(reopened.content.map((part) => part.text ?? "").join("\n"), /atlas_ledger amend before start/);
       assert.equal((await row("T1")).attempt, undefined);
       const fresh = await prepare("T1");
       assert.notEqual(fresh.item.attempt, prepared.item.attempt);
@@ -1943,6 +1945,7 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "final-native-outcome") {
     let prepared = await prepare("T1");
+    assert.doesNotMatch(prepared.startText ?? "", /earlier attempts/);
     await publish(prepared, "EarlyCompletion", { finalResult: false });
     refused(await done("T1", "EarlyCompletion"));
     await publish(prepared, "CaptureFailed", { finalError: "Isolated patch capture failed after subprocess completion" });
@@ -1959,6 +1962,8 @@ async function scenario(name: string, root: string): Promise<void> {
       }),
     );
     prepared = await prepare("T1");
+    const preserved = (await row("T1")).retry?.windows[0]?.failures[0]?.output?.path;
+    assert(preserved && prepared.startText?.includes("earlier attempts") && prepared.startText.includes(preserved));
     await publish(prepared, "PendingCapture", { asyncStatus: "running" });
     refused(await done("T1", "PendingCapture"));
     const pending = nativeJobs.find((job) => job.agentId === "PendingCapture");
@@ -3190,7 +3195,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T1")).acceptance, "prerequisite behavior is observed");
     assert.equal((await row("T1")).status, "blocked");
     assert.match(text(recorded), /T1 acceptance: prerequisite p95 latency stays under 250 ms \(amended by R1\)/);
-    ok(await call({ action: "reopen", id: "T1" }));
+    assert.match(text(await call({ action: "reopen", id: "T1" })), /record it with atlas_ledger amend before start/);
     const restarted = await prepare("T1");
     assert.match(restarted.startText ?? "", /T1 acceptance was amended by R1/);
     assert.match(restarted.startText ?? "", /T1 acceptance: prerequisite p95 latency stays under 250 ms \(amended by R1\)/);

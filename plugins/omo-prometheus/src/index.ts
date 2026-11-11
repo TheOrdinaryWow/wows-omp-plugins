@@ -2660,6 +2660,14 @@ export default function prometheus(pi: ExtensionAPI): void {
             if (amended) {
               note = `\n${item.id} acceptance was amended by ${amended.id}: give the child the effective acceptance below, not the plan's original text.`;
             }
+            if (/^[TDX]/.test(item.id)) {
+              const preserved =
+                item.retry?.windows.flatMap((window) =>
+                  window.failures.flatMap((failure) => (!failure.verifyAttempt && failure.output ? [failure.output.path] : [])),
+                ) ?? [];
+              if (preserved.length)
+                note += `\nPreserved output of ${item.id}'s earlier attempts (adopt every result nothing since can change; rerun only what failed, was never reached, or a ruling or the new diff affects):\n${preserved.join("\n")}`;
+            }
             if (item.tier === "heavy") {
               note += `\n${item.id} is HEAVY: mark its implementation child done, then bind a distinct fresh verifier with atlas_ledger verify.`;
               if (item.verification?.verdict === "fail") {
@@ -2837,8 +2845,11 @@ export default function prometheus(pi: ExtensionAPI): void {
             if ((params.action === "reopen" && item.status === "open") || (params.action === "block" && item.status === "blocked")) {
               throw new Error(`${item.id} is already ${item.status}`);
             }
+            const answered = params.action === "reopen" && item.status === "blocked" && /^[TDX]/.test(item.id);
             reopenRow(ledger, item.id, evidence);
             if (params.action === "block") item.status = "blocked";
+            if (answered)
+              note = `\nIf an owner answer changed how ${item.id}'s acceptance is met and no ruling records that change yet, record it with atlas_ledger amend before start: until a ruling replaces it, the acceptance status shows stays in force for the child, the verifier, F1 and F4.`;
           }
           changedRow = item;
           const schemaLabel = params.action === "verify" ? "Verifier task outputSchema" : "Gate task outputSchema";
