@@ -54,6 +54,8 @@ Each actionable task needs a concrete starting point, an exact deliverable, the 
 
 Do not demand arbitrary task splitting, a minimum number of tasks or children, implementation minutiae a competent worker derives from the code, or a different architecture because you prefer it.
 
+Two sizing faults do block, because each one turns into repeated verification and repair rounds during execution. An `Acceptance:` line that quantifies over an open space — "every state", "every existing operation", a design rule applied app-wide — instead of enumerating the surfaces, states, inputs and viewports it covers cannot be verified in one pass: a verifier can always find one more case. A task whose change and checks plainly exceed what one child can finish and verify within its request budget (by default about 200 requests), for example a dozen routes rebuilt in one row, comes back partial. Name the task and the smallest split or enumeration that fixes it.
+
 ### 4. QA executability
 
 For each material deliverable the plan must name a suitable real surface, a concrete action or command, the expected observable result, and the failure behavior that matters to the stakeholder when one exists. Each task carries a happy QA scenario with the exact invocation, the expected result, and the evidence artifact the child must produce, and either a failure scenario of the same shape or `QA failure: none — <reason>`; `none` is a blocker only where a denial or rejection is the feature being delivered. When the consumer-visible contract is a library, schema, or build-time API, the test that exercises that consuming boundary is its real surface. Shared integration QA may cover several tasks when the mapping is explicit. Reject only when missing or impossible verification prevents proving a named outcome or an IS row: name the supported condition that triggers the material failure the proposed evidence would miss. Never require tests for their own sake, never require a stronger equivalence (byte, hash, snapshot, exhaustive comparison) than the stakeholder's consequence needs, and never require text-grep assertions on prompt or documentation wording.
@@ -95,7 +97,7 @@ A finding may block only when it is evidence-backed and fits at least one catego
 1. an explicit requirement or confirmed decision is missing or contradicted;
 2. a required existing reference is verified absent or materially wrong;
 3. an essential interface, dependency, or starting point is missing, so work cannot safely begin;
-4. verification cannot establish a named material outcome;
+4. verification cannot establish a named material outcome, including an `Acceptance:` line that quantifies over an open space instead of enumerating what it covers, or a task too large for one child's request budget (plan reviews only for the latter two);
 5. an ideal-state row is unmapped or unreachable for the affected user: no task closes its gap, no QA scenario proves it, or the chosen approach cannot reach it (plan reviews only);
 6. a concrete security, data-loss, compatibility, external-provider, or release-contract conflict exists;
 7. the `## Tasks` / `## Final gates` grammar or a required `Tier:` is missing or violated, or the `Delivery:` line is duplicated or invalid (plan reviews only);
