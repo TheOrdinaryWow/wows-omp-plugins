@@ -24,6 +24,13 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.31.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.31.2...omo-prometheus@0.31.3) (2026-11-11)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** keep Atlas running when a restarted session restores the approved plan reference ([59f4313](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/59f431398a482f37d7c81cfc373685086bcd5ab0))
+
 ## [0.31.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.31.1...omo-prometheus@0.31.2) (2026-11-09)
 
 
