@@ -2690,6 +2690,7 @@ async function scenario(name: string, root: string): Promise<void> {
     const verify = async (): Promise<PreparedAssignment> => {
       const started = await call({ action: "verify", id: "T1" });
       ok(started);
+      assert.match(started.content.map((part) => part.text ?? "").join("\n"), /^verification_scope: full$/m);
       const item = await row("T1");
       const current = await ledger();
       const input = {
@@ -2848,6 +2849,7 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match(again?.reason ?? "", /already recorded/);
     const started = await call({ action: "verify", id: "T1" });
     ok(started);
+    assert.match(started.content.map((part) => part.text ?? "").join("\n"), /^verification_scope: full$/m);
     current = await row("T1");
     const attempt = current.verification?.attempt;
     const verifyStartedAt = current.verification?.startedAt;
@@ -2908,9 +2910,13 @@ async function scenario(name: string, root: string): Promise<void> {
       assert(current.evidence?.includes(`Verification failed: Verifier ${verdict}`));
       assert.equal(current.retry?.windows[0]?.failures.length, 1);
       assert(current.retry?.windows[0]?.failures[0]?.output?.path);
-      const restarted = await call({ action: "start", id: "T1" });
-      ok(restarted);
-      assert(restarted.content.some((part) => part.text?.includes(`give this to the implementation child: Verifier ${verdict}`)));
+      const repair = await prepare("T1");
+      assert(repair.startText?.includes(`give this to the implementation child: Verifier ${verdict}`));
+      await publish(repair, "Repairer");
+      ok(await done("T1", "Repairer"));
+      const confirmation = await call({ action: "verify", id: "T1" });
+      ok(confirmation);
+      assert.match(confirmation.content.map((part) => part.text ?? "").join("\n"), /^verification_scope: confirmation$/m);
       return;
     }
     assert.equal(current.status, "done");
@@ -2920,6 +2926,34 @@ async function scenario(name: string, root: string): Promise<void> {
     await reload();
     ok(await call({ action: "status" }));
     assert.equal((await row("T1")).status, "done");
+    return;
+  }
+  if (name === "duplicate-bindings") {
+    ok(await call({ action: "start", id: "T1" }));
+    const item = await row("T1");
+    const marker = `atlas_assignment: ${JSON.stringify({ planSha256: (await ledger()).planSha256, rows: { T1: item.attempt } })}`;
+    for (const [context, task, locations] of [
+      [marker, `${marker}\nImplement T1`, /shared context \(1\) and task body \(1\)/],
+      ["Shared contract", `${marker}\n${marker}\nImplement T1`, /task body \(2\)/],
+      [`${marker}\n${marker}`, "Implement T1", /shared context \(2\)/],
+    ] as const) {
+      const result = (await hook("tool_call", {
+        toolName: "task",
+        toolCallId: `duplicate-${sequence++}`,
+        input: { context, tasks: [{ agent: item.dispatchAgent, task }] },
+      })) as { block?: boolean; reason?: string } | undefined;
+      assert.equal(result?.block, true);
+      assert.match(result?.reason ?? "", /Task item 1 has 2 atlas_assignment JSON lines/);
+      assert.match(result?.reason ?? "", locations);
+    }
+    assert.equal(
+      await hook("tool_call", {
+        toolName: "task",
+        toolCallId: `corrected-${sequence++}`,
+        input: { context: marker, tasks: [{ agent: item.dispatchAgent, task: "Implement T1" }] },
+      }),
+      undefined,
+    );
     return;
   }
   if (name === "research-children") {
@@ -3379,6 +3413,7 @@ if (process.env[CHILD_ENV]) {
       "heavy-harness-retry",
       "heavy-cancel-verify",
       "research-children",
+      "duplicate-bindings",
       "structured-results",
       "isolation-required",
       "non-git-workspace",

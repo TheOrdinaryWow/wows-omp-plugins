@@ -282,8 +282,19 @@ export class ChildEvidence {
     const dispatchedAt = Date.now();
     const assignments = tasks.map((task, index): Assignment => {
       if (!object(task) || typeof task.task !== "string") throw new Error("Every task needs an assignment body");
-      const text = `${typeof input.context === "string" ? input.context : ""}\n${task.task}`;
-      const markers = [...text.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)];
+      const contextMarkers =
+        typeof input.context === "string" ? [...input.context.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)] : [];
+      const taskMarkers = [...task.task.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)];
+      const markers = [...contextMarkers, ...taskMarkers];
+      if (markers.length > 1) {
+        const locations = [
+          ...(contextMarkers.length ? [`shared context (${contextMarkers.length})`] : []),
+          ...(taskMarkers.length ? [`task body (${taskMarkers.length})`] : []),
+        ];
+        throw new Error(
+          `Task item ${index + 1} has ${markers.length} atlas_assignment JSON lines in ${locations.join(" and ")}; include exactly one, in the item's task body or the shared context, never both`,
+        );
+      }
       if (markers.length !== 1) {
         throw new Error(
           "Each task must include exactly one atlas_assignment JSON line from ledger start; dispatch read-only research children in their own task call",

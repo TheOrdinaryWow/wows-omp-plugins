@@ -2633,6 +2633,12 @@ export default function prometheus(pi: ExtensionAPI): void {
             schema = verifyOutputSchema(ledger, item);
             rulings = renderOwnerRulings(ledger);
             planBinding = `\nVerifier binding for a fresh ${item.verification?.dispatchAgent} child (copy literally): atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, verify: { [item.id]: item.verification?.attempt } })}`;
+            const scope = retryWindow(item)?.failures.some(
+              (failure) => failure.verifyAttempt && failure.failureClass !== "harness" && failure.origin !== "dispatch",
+            )
+              ? "confirmation"
+              : "full";
+            planBinding += `\nverification_scope: ${scope}`;
             const diagnostics =
               item.retry?.windows.flatMap((window) =>
                 window.failures.flatMap((failure) => (failure.verifyAttempt && failure.output ? [failure.output.path] : [])),
