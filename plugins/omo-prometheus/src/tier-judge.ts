@@ -42,7 +42,6 @@ const QUESTIONS_JSON = JSON.stringify(QUESTIONS);
 const CONCURRENCY = 4;
 const TIMEOUT_MS = 30_000;
 const UNAVAILABLE = Symbol("native-judge-unavailable");
-const FAILED = Symbol("native-judge-failed");
 type NativeJudge = Pick<ChainJudge, "withCandidate">;
 type PlanTask = ParsedPlan["items"][number];
 
@@ -167,11 +166,11 @@ export class TierJudge {
     );
   }
 
-  async #query(state: string, signal: AbortSignal): Promise<TierProbabilities | typeof UNAVAILABLE | typeof FAILED> {
+  async #query(state: string, signal: AbortSignal): Promise<TierProbabilities | typeof UNAVAILABLE | Error> {
     let reachedNative = false;
     try {
       this.#judge ??= this.#resolve();
-      return await this.#judge.withCandidate<TierProbabilities | typeof UNAVAILABLE | typeof FAILED>(
+      return await this.#judge.withCandidate<TierProbabilities | typeof UNAVAILABLE | Error>(
         async (candidate, kind) => {
           if (kind !== "native") return UNAVAILABLE;
           reachedNative = true;
@@ -180,23 +179,30 @@ export class TierJudge {
             return { heavy: answers.tier.probabilities.HEAVY, production: answers.kind.probabilities.production };
           } catch (error) {
             if (signal.aborted) throw error;
-            this.#notice(
-              `Prometheus tier judge call failed: ${error instanceof Error ? error.message : String(error)}. Every task needs a Tier basis: line for this check.`,
-            );
-            return FAILED;
+            return error instanceof Error ? error : new Error(String(error));
           }
         },
         { signal },
       );
     } catch (error) {
       if (signal.aborted) throw error;
-      return reachedNative ? FAILED : UNAVAILABLE;
+      if (!reachedNative) return UNAVAILABLE;
+      return error instanceof Error ? error : new Error(String(error));
     }
   }
 
   async check(tasks: readonly PlanTask[], settings: TierJudgeSettings, callerSignal?: AbortSignal): Promise<string | undefined> {
     const decisions = new Map<string, TierDecision>();
-    if (settings.enabled && tasks.some((task) => !ownerBasis(task))) {
+    const keys = new Map<string, string>();
+    const states = new Map<string, string>();
+    for (const task of tasks) {
+      if (ownerBasis(task)) continue;
+      const state = tierJudgeState(task);
+      const key = createHash("sha256").update(state).update(QUESTIONS_JSON).digest("hex");
+      keys.set(task.id, key);
+      if (!this.#answers.has(key)) states.set(key, state);
+    }
+    if (settings.enabled && states.size) {
       const controller = new AbortController();
       const signal = callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal;
       const interrupted = Promise.withResolvers<never>();
@@ -206,50 +212,49 @@ export class TierJudge {
         () => controller.abort(new DOMException("Tier judge check exceeded 30 seconds", "TimeoutError")),
         TIMEOUT_MS,
       );
-      let fallback = false;
+      let failure: unknown;
       try {
         signal.throwIfAborted();
-        const states = new Map<string, string>();
-        const keys = new Map<string, string>();
-        for (const task of tasks) {
-          if (ownerBasis(task)) continue;
-          const state = tierJudgeState(task);
-          const key = createHash("sha256").update(state).update(QUESTIONS_JSON).digest("hex");
-          keys.set(task.id, key);
-          if (!this.#answers.has(key)) states.set(key, state);
-        }
         const pending = [...states];
         let next = 0;
+        let stopped = false;
         const work = async () => {
-          while (!fallback && next < pending.length) {
+          while (!stopped && next < pending.length) {
             signal.throwIfAborted();
             const entry = pending[next++];
             if (!entry) break;
             const [key, state] = entry;
             const answer = await this.#query(state, signal);
             signal.throwIfAborted();
-            if (answer === UNAVAILABLE || answer === FAILED) {
-              if (answer === UNAVAILABLE) this.#unavailable();
-              fallback = true;
+            if (answer === UNAVAILABLE) {
+              this.#unavailable();
+              stopped = true;
+            } else if (answer instanceof Error) {
+              failure ??= answer;
+              stopped = true;
             } else this.#answers.set(key, answer);
           }
         };
         await Promise.race([Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, work)), interrupted.promise]);
         signal.throwIfAborted();
-        if (!fallback) {
-          for (const task of tasks) {
-            const key = keys.get(task.id);
-            const answer = key ? this.#answers.get(key) : undefined;
-            if (answer) decisions.set(task.id, decideTier(answer, settings.minimumConfidence));
-          }
-        }
       } catch (error) {
-        this.#notice(
-          `Prometheus tier judge check failed: ${error instanceof Error ? error.message : String(error)}. Every task needs a Tier basis: line for this check.`,
-        );
+        failure ??= error;
       } finally {
         clearTimeout(timer);
         signal.removeEventListener("abort", onAbort);
+      }
+      if (failure !== undefined) {
+        this.#notice(
+          `Prometheus tier judge call failed: ${failure instanceof Error ? failure.message : String(failure)}. Tasks it has not settled need a Tier basis: line for this check.`,
+        );
+      }
+    }
+    // Answers from earlier checks still bind when this check could not reach the judge.
+    if (settings.enabled) {
+      for (const task of tasks) {
+        const key = keys.get(task.id);
+        const answer = key ? this.#answers.get(key) : undefined;
+        if (answer) decisions.set(task.id, decideTier(answer, settings.minimumConfidence));
       }
     }
     const reasons = tasks.flatMap((task) => {

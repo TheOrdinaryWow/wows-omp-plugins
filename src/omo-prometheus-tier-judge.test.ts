@@ -290,6 +290,27 @@ describe("tier judge session", () => {
     expect(notices.every((notice) => notice.includes("controlled failure"))).toBe(true);
   });
 
+  test("keeps earlier judgments binding while the judge is down and asks a basis only of unsettled tasks", async () => {
+    const notices: string[] = [];
+    let down = false;
+    const gate = new TierJudge(
+      () =>
+        judgeFixture(async () => {
+          if (down) throw new Error("controlled outage");
+          return { heavy: 0.1, production: 1 };
+        }),
+      (message) => notices.push(message),
+    );
+    const settled = task("T1");
+    expect(await gate.check([settled], DEFAULT_TIER_JUDGE_SETTINGS)).toBeUndefined();
+    down = true;
+    const added = [2, 3, 4, 5, 6].map((n) => ({ ...task(`T${n}`), bodyLines: [`  - Change: new work ${n}`] }));
+    const refusal = await gate.check([{ ...settled, tier: "heavy" }, ...added], DEFAULT_TIER_JUDGE_SETTINGS);
+    expect(refusal).toMatch(/T1: the judge decided LIGHT/);
+    for (const row of added) expect(refusal).toContain(`${row.id}: no native tier judgment is available`);
+    expect(notices).toHaveLength(1);
+  });
+
   test("combines caller cancellation with the check deadline even when the candidate ignores abort", async () => {
     const started = Promise.withResolvers<AbortSignal | undefined>();
     const answer = Promise.withResolvers<TierProbabilities>();
