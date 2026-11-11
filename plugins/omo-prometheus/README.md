@@ -47,6 +47,8 @@ The plan goes through OMP's normal approval. If OMP's plan autosave is on, the a
 
 Reviewer verdicts are saved beside the plan and kept with its approved copy for later reference. They do not replace your approval. If a review round neither finds a new blocking problem nor confirms that a recorded one is fixed, Prometheus stops and asks you what to do, even before `reviewRoundLimit` is reached.
 
+Plans keep each task small enough for one subagent to finish and check, and each acceptance check lists the pages, states and screen sizes it covers. Momus rejects a task whose acceptance says "every state" or applies a design rule across the whole app, and a task too large for one subagent, because during the run both turn into round after round of fixes.
+
 Prometheus keeps the plan to what is actually needed. Each part of the desired result says who depends on it and where the requirement comes from (your request, a decision you confirmed, or something the repository already promises). Each task lists what it adds, and a `## Must not build` section lists what is deliberately left out. The proposal shows both, along with reviewer suggestions Prometheus decided not to follow. For a hard design or algorithm question, Prometheus may also consult `architect` or `ultrabrain` when they are available.
 
 ### What a plan looks like
@@ -86,7 +88,9 @@ Subagents may find problems along the way:
 
 Atlas keeps going until the plan is done. If the plan or ledger files go missing, get damaged, or no longer match the approved plan, Atlas pauses until you restore them, or until you exit with `/atlas exit` and approve a changed plan.
 
-A task stops being retried after two identical failures in a row, a third failure, or four hours of work unless the plan sets another limit (see below). When nothing else can move, you can give it another try without losing its history. A failure that comes from the test harness rather than the product gets one extra repair. If the subagent that checks a `Tier: HEAVY` task is stopped by a broken environment and finds nothing wrong with the change, the finished work is kept and only the check runs again. A subagent call that fails before any subagent starts costs the task no retry. The [reference](REFERENCE.md#retry-windows-and-delivery-repair) has the exact rules.
+A task stops being retried after two identical failures in a row, a third failure, or four hours of work unless the plan sets another limit (see below). A failure doesn't count when the checking subagent shows that every earlier failure is now fixed and it found a different problem, up to three such failures per try. Once no other task is ready to start, you can give the stopped task another try without losing its history, even while other tasks are still running. A failure that comes from the test harness rather than the product gets one extra repair. If the subagent that checks a `Tier: HEAVY` task is stopped by a broken environment and finds nothing wrong with the change, the finished work is kept and only the check runs again. A subagent call that fails before any subagent starts costs the task no retry. The [reference](REFERENCE.md#retry-windows-and-delivery-repair) has the exact rules.
+
+The checking subagents report every problem they find in one pass, fail a task only for its own acceptance, and after a fix recheck what the fix can affect instead of starting over. Problems in other tasks' code go on the list of discovered tasks and findings instead.
 
 If a task reaches its time limit but its subagent has already finished successfully, granting another try keeps that result without making the subagent repeat the work.
 
