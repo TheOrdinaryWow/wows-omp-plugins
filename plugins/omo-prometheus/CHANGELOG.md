@@ -24,6 +24,16 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.31.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.31.3...omo-prometheus@0.31.4) (2026-11-11)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** hand F1 its ledger, rulings and Git evidence as a file and stop asking read-only momus to run checks ([98af042](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/98af042b7e8402074b59751dc58ce11b23549094))
+* **omo-prometheus:** let exhausted rows ask for a retry while others run and stop counting failures that prove earlier ones fixed ([85e788c](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/85e788c83a175de74cb8e8f9c63688c12eeb2a03))
+* **omo-prometheus:** make verifiers and gates report every defect at once and recheck only what a repair can affect ([5eb3a83](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/5eb3a83f362d11ef586bdcd83c78ce0957df8657))
+* **omo-prometheus:** size plan tasks and acceptance to what one child can finish and verify within its request budget ([649442a](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/649442a164ef5e7659adb5d758b63a1219f1661c))
+
 ## [0.31.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.31.2...omo-prometheus@0.31.3) (2026-11-11)
 
 
