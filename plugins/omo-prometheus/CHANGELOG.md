@@ -24,6 +24,20 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.32.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.31.4...omo-prometheus@0.32.0) (2026-11-11)
+
+
+### Features
+
+* **omo-prometheus:** judge plan task tiers before review and proposal ([c98c5d9](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/c98c5d934feb1fbe76dff5827c249a8492d0ea0e))
+
+
+### Bug Fixes
+
+* **omo-prometheus:** bound verifier confirmation and clarify dispatch bindings ([89efcdc](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/89efcdc2d12708e17c06ad1600061b40f7846374))
+* **omo-prometheus:** dispatch task dependents after implementation is recorded ([fc804cf](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/fc804cf8c9c031273589e0854332a5a65485f899))
+* **omo-prometheus:** keep settled tiers binding when a judge call fails ([e22418a](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e22418aee30f50a8cec8369d022a1609f02bf5db))
+
 ## [0.31.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.31.3...omo-prometheus@0.31.4) (2026-11-11)
 
 
