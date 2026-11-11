@@ -18,6 +18,13 @@
 * Recognize both live task-agent roster formats without treating unknown policy as an empty list.
 * Preserve workflow-owned reviewer roles, approved Prometheus execution routes, and read-only agent capabilities when judging task calls.
 
+## [0.9.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/judge-dispatch@0.8.3...judge-dispatch@0.9.0) (2026-11-11)
+
+
+### Features
+
+* **judge-dispatch:** drop agent@model pins in favor of OMP's per-call model field ([caa473e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/caa473eb987650a2bfa96a00995c6553d3c92ed9))
+
 ## [0.8.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/judge-dispatch@0.8.2...judge-dispatch@0.8.3) (2026-11-06)
 
 
