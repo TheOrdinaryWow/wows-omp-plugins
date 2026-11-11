@@ -15,6 +15,7 @@ import {
   effectiveAcceptance,
   effectiveTimeLimitHours,
   type ItemStatus,
+  isPrerequisiteSatisfied,
   type LedgerItem,
   type OwnerRuling,
   type RetryWindow,
@@ -55,7 +56,7 @@ export interface LedgerCardRow {
 export interface LedgerCardProgress {
   done: number;
   total: number;
-  /** Open rows whose dependencies are all done; absent in results from older versions. */
+  /** Open rows whose prerequisites permit dispatch; absent in results from older versions. */
   next?: string[];
 }
 
@@ -136,9 +137,12 @@ export function ledgerCardRow(ledger: ExecutionLedger, row: LedgerItem): LedgerC
 
 export function ledgerProgress(ledger: Partial<ExecutionLedger>): LedgerCardProgress {
   const rows = cardRows(ledger);
-  const done = new Set(rows.filter((row) => row.status === "done").map((row) => row.id));
-  const next = rows.filter((row) => row.status === "open" && (row.dependsOn ?? []).every((id) => done.has(id))).map((row) => row.id);
-  return { done: done.size, total: rows.length, next };
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const done = rows.filter((row) => row.status === "done").length;
+  const next = rows
+    .filter((row) => row.status === "open" && (row.dependsOn ?? []).every((id) => isPrerequisiteSatisfied(row, byId.get(id))))
+    .map((row) => row.id);
+  return { done, total: rows.length, next };
 }
 
 /** A non-empty trimmed string, or undefined for anything else (partial streaming args, older details). */

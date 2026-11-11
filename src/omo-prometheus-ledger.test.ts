@@ -20,6 +20,7 @@ import {
   isComplete,
   type LedgerItem,
   ledgerRows,
+  movableRows,
   nextDispatchable,
   noteRetryDispatch,
   parsePlanChecklist,
@@ -152,6 +153,68 @@ describe("Prometheus execution ledger", () => {
     expect(nextDispatchable(ledger).map((item) => item.id)).toEqual(["F1", "F2", "F3", "F4"]);
     for (const gate of ledger.gates) gate.status = "done";
     expect(isComplete(ledger)).toBe(false); // Status-only completion cannot authorize release.
+  });
+
+  test.each(["pending", "running"] as const)("T rows can start after a HEAVY implementation is recorded with verification %s", (state) => {
+    const ledger = createLedger("local://example-plan.md", heavyPlan);
+    const baseline = startRow(ledger, "T1");
+    recordReceipt(baseline, receiptFor(baseline, baseline.attempt ?? "", "Baseline"), "baseline evidence");
+    const prerequisite = startRow(ledger, "T2");
+    recordReceipt(prerequisite, receiptFor(prerequisite, prerequisite.attempt ?? "", "Implementer"), "implementation evidence");
+    if (state === "running") startVerification(ledger, prerequisite.id);
+    const saved = JSON.parse(JSON.stringify(ledger));
+
+    const resumed = restoreLedger(saved, ledger.planFilePath, heavyPlan, ledger.planSha256);
+
+    expect(resumed).toBe(saved);
+    expect(resumed).toEqual(JSON.parse(JSON.stringify(ledger)));
+    expect(resumed.version).toBe(12);
+    expect(nextDispatchable(resumed).map((row) => row.id)).toEqual(["T3"]);
+    expect(movableRows(resumed).map((row) => row.id)).toEqual(["T2", "T3"]);
+    expect(renderLedgerSummary(resumed)).toContain("Next dispatchable: T3");
+    expect(startRow(resumed, "T3").status).toBe("in_progress");
+    expect(isComplete(resumed)).toBe(false);
+  });
+
+  test.each([
+    { tier: "heavy", status: "open", receipt: false },
+    { tier: "heavy", status: "open", receipt: true },
+    { tier: "heavy", status: "blocked", receipt: true },
+    { tier: "heavy", status: "in_progress", receipt: false },
+    { tier: "light", status: "in_progress", receipt: false },
+    { tier: "light", status: "in_progress", receipt: true },
+  ] as const)("T rows refuse an unfinished $tier prerequisite in $status with receipt=$receipt", (state) => {
+    const ledger = createLedger("local://example-plan.md", state.tier === "heavy" ? heavyPlan : plan);
+    const prerequisite = ledger.items[1];
+    if (!prerequisite) throw new Error("Missing T2");
+    prerequisite.status = state.status;
+    if (state.receipt) prerequisite.receipt = receiptFor(prerequisite, "implementation", "Implementer");
+
+    expect(nextDispatchable(ledger).map((row) => row.id)).not.toContain("T3");
+    expect(movableRows(ledger).map((row) => row.id)).not.toContain("T3");
+    expect(() => startRow(ledger, "T3")).toThrow("depends on unfinished rows: T2");
+    if (state.tier === "heavy" && !state.receipt) {
+      expect(() => startRow(ledger, "T3")).toThrow("implementation must be recorded first for: T2");
+    }
+  });
+
+  test("D rows and final gates still wait for a HEAVY prerequisite's verification", () => {
+    const ledger = createLedger("local://example-plan.md", heavyPlan);
+    const discovered = addDiscoveredRow(ledger, "T2", {
+      title: "Repair an incidental defect",
+      acceptance: "the affected scenario passes",
+      agent: "task",
+      reason: "T2 exposed it",
+    });
+    if (ledger.items[0]) ledger.items[0].status = "done";
+    const prerequisite = startRow(ledger, "T2");
+    recordReceipt(prerequisite, receiptFor(prerequisite, prerequisite.attempt ?? "", "Implementer"), "implementation evidence");
+    if (ledger.items[2]) ledger.items[2].status = "done";
+    startVerification(ledger, prerequisite.id);
+
+    expect(nextDispatchable(ledger)).toEqual([]);
+    expect(() => startRow(ledger, discovered.id)).toThrow("depends on unfinished rows: T2");
+    for (const gate of ledger.gates) expect(() => startRow(ledger, gate.id)).toThrow("depends on unfinished rows: T2, D1");
   });
 
   test("pins the full plan content", () => {
@@ -439,6 +502,11 @@ describe("Prometheus execution ledger", () => {
     for (const gate of ledger.gates) startRow(ledger, gate.id);
     addFixRow(ledger, "F3", { title: "Fix QA", acceptance: "scenario passes", agent: "task", reason: "failed", tier: "HEAVY" });
     expect(ledger.fixes[0]?.tier).toBe("heavy");
+    const fix = startRow(ledger, "X1");
+    recordReceipt(fix, receiptFor(fix, fix.attempt ?? "", "FixImplementer"), "fix implementation evidence");
+    for (const gate of ledger.gates) gate.status = "done";
+    expect(nextDispatchable(ledger)).toEqual([]);
+    expect(() => startRow(ledger, "P1")).toThrow("depends on unfinished rows: X1");
     expect(ledger.deliveries[0]?.dependsOn).toEqual(["F1", "F2", "F3", "F4", "X1"]);
     for (const row of [...ledger.items, ...ledger.fixes, ...ledger.gates]) {
       row.status = "done";
@@ -731,12 +799,15 @@ describe("Prometheus execution ledger", () => {
     expect(row.verification?.dispatchAgent).toBe("deep-high");
     expect(verificationStatus(row)).toBe("running");
     expect(renderLedgerSummary(ledger)).toContain(`"verify":{"T2":"${row.verification?.attempt}"}`);
+    const dependent = startRow(ledger, "T3");
+    const runningDependent = structuredClone(dependent);
 
     recordVerification(ledger, row, { verdict: "fail", childAgentId: "Verifier", summary: "rollback path loses rows" });
     expect(row.status).toBe("open");
     expect(row.receipt).toBeUndefined();
     expect(row.evidence).toBe("Verification failed: rollback path loses rows");
     expect(verificationStatus(row)).toBe("failed");
+    expect(dependent).toEqual(runningDependent);
     startRow(ledger, "T2");
     // The failure survives a fresh implementation attempt so its assignment can carry it.
     expect(row.verification?.summary).toBe("rollback path loses rows");

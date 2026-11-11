@@ -15,6 +15,7 @@ import {
   amendAcceptance,
   createLedger,
   ledgerRows,
+  recordReceipt,
   renderLedgerSummary,
   startRow,
 } from "../plugins/omo-prometheus/src/ledger.ts";
@@ -84,6 +85,35 @@ const planContent = `# Plan
 - [ ] F3. Real-surface QA
 - [ ] F4. Success-criteria fidelity
 `;
+
+test("ledger cards offer T dependents after recorded HEAVY implementation without offering gates", () => {
+  const content = planContent.replace("  - Depends on: none", "  - Tier: HEAVY\n  - Depends on: none");
+  const ledger = createLedger("/plans/plan.md", content, ["task"]);
+  const row = startRow(ledger, "T1");
+  recordReceipt(
+    row,
+    {
+      receiptId: "implementation",
+      ledgerId: ledger.ledgerId,
+      planSha256: ledger.planSha256,
+      rowId: row.id,
+      attempt: row.attempt ?? "",
+      childAgentId: "Implementer",
+      parentAgentId: "Main",
+      sessionId: "session",
+      childCreatedAt: Date.now(),
+      outputSha256: "a".repeat(64),
+      capturedAt: Date.now(),
+      nativeFinal: true,
+    },
+    "implementation evidence",
+  );
+
+  expect(ledgerProgress(ledger)).toEqual({ done: 0, total: 6, next: ["T2"] });
+  expect(ledgerProgress({ items: ledger.items })).toEqual({ done: 0, total: 2, next: ["T2"] });
+  row.status = "blocked";
+  expect(ledgerProgress(ledger).next).toEqual([]);
+});
 
 test("every tool and displayed message gets a native presentation", () => {
   for (const name of ["atlas_ledger", "atlas_git", "atlas_release", "prometheus_activate"]) {

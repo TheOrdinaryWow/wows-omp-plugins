@@ -498,13 +498,24 @@ export function refreshDispatchAgents(ledger: ExecutionLedger, availableAgents?:
   return changed;
 }
 
-export function nextDispatchable(ledger: ExecutionLedger): LedgerItem[] {
-  const rows = ledgerRows(ledger);
-  const done = new Set(rows.filter((item) => item.status === "done").map((item) => item.id));
-  return rows.filter((item) => item.status === "open" && item.dependsOn.every((id) => done.has(id)));
+/** Only plan tasks may consume a HEAVY prerequisite's recorded implementation before its verification passes. */
+export function isPrerequisiteSatisfied(row: LedgerItem, prerequisite: LedgerItem | undefined): boolean {
+  return (
+    prerequisite?.status === "done" ||
+    (row.id.startsWith("T") &&
+      prerequisite?.tier === "heavy" &&
+      prerequisite.status === "in_progress" &&
+      prerequisite.receipt !== undefined)
+  );
 }
 
-/** Rows that can still progress without the user: in progress, or open with every prerequisite done. */
+export function nextDispatchable(ledger: ExecutionLedger): LedgerItem[] {
+  const rows = ledgerRows(ledger);
+  const byId = new Map(rows.map((item) => [item.id, item]));
+  return rows.filter((item) => item.status === "open" && item.dependsOn.every((id) => isPrerequisiteSatisfied(item, byId.get(id))));
+}
+
+/** Rows that can still progress without the user: in progress, or open with satisfied prerequisites. */
 export function movableRows(ledger: ExecutionLedger): LedgerItem[] {
   const next = new Set(nextDispatchable(ledger).map((item) => item.id));
   return ledgerRows(ledger).filter((item) => item.status === "in_progress" || next.has(item.id));
@@ -1426,8 +1437,23 @@ export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: stri
     throw new Error(
       `${id} is ${row.status}; reopen it to discard the current attempt before starting fresh, or use done for its successfully settled child after a retry grant`,
     );
-  const unfinished = row.dependsOn.filter((dependency) => rows.find((item) => item.id === dependency)?.status !== "done");
-  if (unfinished.length) throw new Error(`${id} depends on unfinished rows: ${unfinished.join(", ")}`);
+  const unfinished = row.dependsOn.filter(
+    (dependency) =>
+      !isPrerequisiteSatisfied(
+        row,
+        rows.find((item) => item.id === dependency),
+      ),
+  );
+  if (unfinished.length) {
+    const missingImplementations = unfinished.filter((dependency) => {
+      const prerequisite = rows.find((item) => item.id === dependency);
+      return prerequisite?.tier === "heavy" && prerequisite.receipt === undefined;
+    });
+    const implementationNote = missingImplementations.length
+      ? `; implementation must be recorded first for: ${missingImplementations.join(", ")}`
+      : "";
+    throw new Error(`${id} depends on unfinished rows: ${unfinished.join(", ")}${implementationNote}`);
+  }
   const resolved = resolveAgent(row.agent, availableAgents).dispatchAgent;
   if (chosenAgent !== undefined && chosenAgent !== row.dispatchAgent) {
     if (resolved !== undefined) {
