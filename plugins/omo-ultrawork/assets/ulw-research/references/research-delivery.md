@@ -8,7 +8,7 @@
 Settle with executed code, not judgment, whenever sources disagree, a behavior is undocumented, a claim is performance- or compatibility-shaped, or the honest answer is "it should work". Spawn one verification worker per claim:
 
 ```
-task({tasks: [{agent: "deep-low", name: "VerifyClaim", task: "TASK: verify <claim> by execution. SOURCE/CONTRADICTION: <paths>. VERIFY: run a minimal self-contained script under the named pinned versions; capture exact code, full stdout/stderr, environment, and CONFIRMED/REFUTED/PARTIAL verdict. Write only the assigned proof output.", solutionSpace: "The observable claim is unsettled", effort: "med"}]})
+task({context: "GOAL: <research question>. SHARED: <scope, pinned versions and exclusions every child must respect>.", tasks: [{agent: "deep-low", name: "VerifyClaim", task: "TASK: verify <claim> by execution. SOURCE/CONTRADICTION: <paths>. VERIFY: run a minimal self-contained script under the named pinned versions; capture exact code, full stdout/stderr, environment, and CONFIRMED/REFUTED/PARTIAL verdict. Write only the assigned proof output.", solutionSpace: "The observable claim is unsettled", effort: "med"}]})
 ```
 
 Journal each verdict to `verify-<slug>.md`.

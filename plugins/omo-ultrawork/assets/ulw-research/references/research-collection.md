@@ -136,7 +136,7 @@ Role protocols — embed the relevant one in each spawn message; every worker ge
 Example spawn (codebase axis; web and repo-dive follow the same contract with their own protocol):
 
 ```
-task({tasks: [{agent: "scout", name: "CodeAxis", task: "TASK: research one codebase axis. SCOPE: <angle and completeness>. Use native find/search/AST/LSP and relevant history. Return absolute paths, exact file:line observations, provenance, and the EXPAND tail. No shared journal writes or nested swarm.", solutionSpace: "Evidence locations and conclusions are open", effort: "med"}]})
+task({context: "GOAL: <research question>. SHARED: <scope, pinned versions and exclusions every child must respect>.", tasks: [{agent: "scout", name: "CodeAxis", task: "TASK: research one codebase axis. SCOPE: <angle and completeness>. Use native find/search/AST/LSP and relevant history. Return absolute paths, exact file:line observations, provenance, and the EXPAND tail. No shared journal writes or nested swarm.", solutionSpace: "Evidence locations and conclusions are open", effort: "med"}]})
 ```
 
 ## Phase 2 — Expand until convergence
@@ -148,7 +148,7 @@ This loop is what makes the mode research rather than search. Collect returns as
 3. Spawn an expansion worker immediately for each new unchecked lead:
 
 ```
-task({tasks: [{agent: "deep-low", name: "Expansion", task: "TASK: investigate <lead>. PARENT: <observation>. Follow the native protocol for its territory; browser-required claims begin with read xd://eval/browser and return real capture files. Return the EXPAND tail; do not edit the lead journal.", solutionSpace: "The lead may confirm, refute, or remain unresolved", effort: "med"}]})
+task({context: "GOAL: <research question>. SHARED: <scope, pinned versions and exclusions every child must respect>.", tasks: [{agent: "deep-low", name: "Expansion", task: "TASK: investigate <lead>. PARENT: <observation>. Follow the native protocol for its territory; browser-required claims begin with read xd://eval/browser and return real capture files. Return the EXPAND tail; do not edit the lead journal.", solutionSpace: "The lead may confirm, refute, or remain unresolved", effort: "med"}]})
 ```
 
 ### Excursions — dive deep on a new find, then surface back out
