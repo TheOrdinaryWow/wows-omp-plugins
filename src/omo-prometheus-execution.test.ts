@@ -1889,7 +1889,13 @@ async function scenario(name: string, root: string): Promise<void> {
     ok(await call({ action: "await", id: "T3", evidence: "Start Docker so the database tests can run" }));
     assert.equal(await asked(), undefined, "a row whose live child waits on the user no longer holds ask back");
     assert.match(await continuation(), /T3 \(child live, waiting\): Start Docker so the database tests can run/);
-    await hook("tool_execution_end", { toolName: "ask", toolCallId: "ask-answered", result: {}, isError: false });
+    const answer = { name: "docker", question: "Is Docker running now?", answer: "Yes" };
+    const askEnded = (details: Record<string, unknown>) =>
+      hook("tool_execution_end", { toolName: "ask", toolCallId: `ask-${sequence++}`, result: { content: [], details }, isError: false });
+    await askEnded({ answers: [] });
+    await askEnded({ answers: [answer], timedOut: true });
+    assert.equal(await asked(), undefined, "a form nobody answered keeps the mark");
+    await askEnded({ answers: [answer] });
     assert.match((await asked()) ?? "", /T3 \(in progress\)/, "the user's answer ends the mark");
     return;
   }

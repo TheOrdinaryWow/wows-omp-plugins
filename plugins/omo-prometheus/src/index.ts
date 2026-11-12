@@ -3463,7 +3463,12 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   // Observation-only: archive native reviewer outcomes without adding a result-rewriting hook.
   pi.on("tool_execution_end", async (event, ctx) => {
-    if (event.toolName === "ask" && !event.isError) awaitingUser.delete(ctx.sessionManager.getSessionId());
+    if (event.toolName === "ask" && !event.isError) {
+      // A form the timeout submitted, or one without named controls, returns without an answer from the user.
+      const details = (event.result as { details?: { answers?: unknown; timedOut?: unknown } } | undefined)?.details;
+      if (Array.isArray(details?.answers) && details.answers.length > 0 && details.timedOut !== true)
+        awaitingUser.delete(ctx.sessionManager.getSessionId());
+    }
     if (event.toolName === "task" && provenanceBlockReason("task") === undefined) {
       await planReviews.observeResult(ctx.sessionManager.getSessionId(), event.toolCallId, event.result);
       observeFinalJobs(ctx);
