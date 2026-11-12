@@ -37,8 +37,8 @@ export interface RoutingCandidate {
 export interface ParsedTaskRoute {
   /** `null` identifies the flat task shape; a number identifies a batch item. */
   index: number | null;
-  /** File-backed assignments are loaded only by the host, never by the judge. */
-  assignment?: string;
+  /** The item's `task`, or its ordered `steps` as one numbered list; read only by the judge. */
+  assignment: string;
   context?: string;
   /** The caller's own description of how open the problem is. */
   solutionSpace?: string;
@@ -110,7 +110,6 @@ export interface JudgedRoute {
 /** Why a route kept its requested agent without a usable judgment. */
 export type KeptReason =
   | "workflow-owned or unknown agent"
-  | "file-backed task"
   | "native model"
   | "no alternatives"
   | "judge unavailable"
@@ -237,23 +236,32 @@ function optionalNonEmptyString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+/** The host treats a blank string or an empty list as no per-call model. */
+function substantiveModel(model: unknown): boolean {
+  if (model === undefined) return false;
+  if (typeof model === "string") return model.trim() !== "";
+  return !Array.isArray(model) || model.length > 0;
+}
+
 function parseTaskItem(item: Record<string, unknown>): Omit<ParsedTaskRoute, "index" | "context"> | undefined {
-  const hasTask = item.task !== undefined;
-  const hasTaskFile = item.taskFile !== undefined;
-  if (hasTask === hasTaskFile) return undefined;
-  const assignment = optionalNonEmptyString(item.task);
-  if (hasTask && !assignment) return undefined;
-  if (hasTaskFile && !optionalNonEmptyString(item.taskFile)) return undefined;
+  if ((item.task !== undefined) === (item.steps !== undefined)) return undefined;
+  let assignment = optionalNonEmptyString(item.task);
+  if (item.steps !== undefined) {
+    const steps = Array.isArray(item.steps) ? item.steps.map(optionalNonEmptyString) : [];
+    if (steps.length === 0 || steps.includes(undefined)) return undefined;
+    assignment = steps.map((step, index) => `${index + 1}. ${step}`).join("\n");
+  }
+  if (!assignment) return undefined;
   if (Object.hasOwn(item, "agent") && typeof item.agent !== "string") return undefined;
   const solutionSpace = optionalNonEmptyString(item.solutionSpace);
   const name = optionalNonEmptyString(item.name);
   const requestedAgent = optionalNonEmptyString(item.agent);
   return {
-    ...(assignment ? { assignment } : {}),
+    assignment,
     ...(requestedAgent ? { requestedAgent } : {}),
     ...(solutionSpace ? { solutionSpace } : {}),
     ...(item.effort !== undefined ? { explicitEffort: true } : {}),
-    ...(item.model !== undefined ? { nativeModel: true } : {}),
+    ...(substantiveModel(item.model) ? { nativeModel: true } : {}),
     ...(name ? { name } : {}),
   };
 }
@@ -265,7 +273,7 @@ export function parseTaskInput(input: unknown): ParsedTaskRoute[] | undefined {
 
   if (Object.hasOwn(record, "tasks")) {
     if (!Array.isArray(record.tasks) || record.tasks.length === 0) return undefined;
-    if (Object.hasOwn(record, "task") || Object.hasOwn(record, "taskFile")) return undefined;
+    if (Object.hasOwn(record, "task") || Object.hasOwn(record, "steps")) return undefined;
     const context = optionalNonEmptyString(record.context);
     if (!context) return undefined;
 

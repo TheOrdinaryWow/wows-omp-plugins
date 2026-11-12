@@ -92,29 +92,46 @@ describe("task input routing", () => {
     expect(input.tasks[2]).not.toHaveProperty("name");
   });
 
-  test("parses file-backed identity without loading assignments or changing taskFile", () => {
-    const file = { name: "FromFile", agent: "task", taskFile: "local://missing-assignment.md" };
+  test("judges a steps item by its ordered stages and leaves the steps untouched", () => {
+    const staged = { name: "Staged", agent: "task", steps: ["Read the module", " Change it "] };
     const inline = { agent: "task", task: "Review the inline assignment" };
-    const input = { context: "shared", tasks: [file, inline] };
+    const input = { context: "shared", tasks: [staged, inline] };
     const routes = parseTaskInput(input);
     if (!routes) throw new Error("expected valid mixed task input");
     expect(routes).toEqual([
-      { index: 0, context: "shared", requestedAgent: "task", name: "FromFile" },
+      { index: 0, context: "shared", requestedAgent: "task", name: "Staged", assignment: "1. Read the module\n2. Change it" },
       { index: 1, context: "shared", requestedAgent: "task", assignment: inline.task },
     ]);
-    expect(parseTaskInput(file)).toEqual([{ index: null, requestedAgent: "task", name: "FromFile" }]);
-    expect(rewriteTaskRoutes(input, routes, [undefined, { agent: "scout" }])).toEqual({
+    expect(parseTaskInput(staged)).toEqual([
+      { index: null, requestedAgent: "task", name: "Staged", assignment: "1. Read the module\n2. Change it" },
+    ]);
+    expect(rewriteTaskRoutes(input, routes, [{ agent: "scout" }, undefined])).toEqual({
       ...input,
-      tasks: [file, { ...inline, agent: "scout" }],
+      tasks: [{ ...staged, agent: "scout" }, inline],
     });
   });
 
   test("requires exactly one non-empty task source per flat or batch item", () => {
-    for (const source of [{}, { task: "inline", taskFile: "/tmp/task.md" }, { taskFile: " " }, { taskFile: 42 }, { task: " " }]) {
+    for (const source of [
+      {},
+      { task: "inline", steps: ["staged"] },
+      { steps: [] },
+      { steps: ["first", " "] },
+      { steps: "first" },
+      { task: " " },
+    ]) {
       expect(parseTaskInput({ agent: "task", ...source })).toBeUndefined();
       expect(parseTaskInput({ context: "shared", tasks: [{ agent: "task", ...source }] })).toBeUndefined();
     }
-    expect(parseTaskInput({ context: "shared", taskFile: "/tmp/outer.md", tasks: [{ task: "inline" }] })).toBeUndefined();
+    expect(parseTaskInput({ context: "shared", steps: ["outer"], tasks: [{ task: "inline" }] })).toBeUndefined();
+  });
+
+  test("routes an item whose model field is blank, as the host ignores it", () => {
+    for (const model of ["", "  ", []]) {
+      expect(parseTaskInput({ task: "Review the boundary", agent: "task", model })).toEqual([
+        { index: null, requestedAgent: "task", assignment: "Review the boundary" },
+      ]);
+    }
   });
 
   test("marks native models without normalizing their selector or effort", () => {

@@ -216,7 +216,6 @@ async function judgeRoute(
   beforeJudge: () => void,
 ): Promise<RouteOutcome | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
-  if (route.assignment === undefined) return "file-backed task";
   const spawnAgent = route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
   const candidates = config.routeAgent ? routable : routable.filter((candidate) => candidate.name === spawnAgent);
   if (candidates.length === 0) return "no alternatives";
@@ -329,7 +328,6 @@ async function routeOutcome(
   signal: AbortSignal,
 ): Promise<RouteOutcome> {
   if (route.nativeModel) return "native model";
-  if (route.assignment === undefined) return "file-backed task";
   const routable = routableCandidates(route.requestedAgent, candidates);
   if (!routable) return "workflow-owned or unknown agent";
   const escalation = route.name ? session.escalations.peek(route.name) : undefined;
@@ -581,7 +579,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
       if (prometheusExecuting(ctx)) return undefined;
       const routing = routingFor(ctx);
       for (const route of routes ?? []) {
-        if (route.name && (route.nativeModel || route.assignment === undefined)) routing.pending.add(route.name, null);
+        if (route.name && route.nativeModel) routing.pending.add(route.name, null);
       }
       const rawSettings = await getPluginSettings(PACKAGE_NAME, ctx.cwd);
       warnUnknownSettings(ctx, rawSettings);
@@ -604,8 +602,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
       // The host reports each child by item position; unrouted items must not feed difficulty escalation.
       const names: (string | undefined)[] = [];
       for (const route of judged) {
-        const unrouted = route.nativeModel || route.assignment === undefined;
-        names[route.index ?? 0] = unrouted ? undefined : route.name;
+        names[route.index ?? 0] = route.nativeModel ? undefined : route.name;
       }
       routing.dispatched.set(event.toolCallId, { at: Date.now(), names });
       for (const oldest of routing.dispatched.keys()) {

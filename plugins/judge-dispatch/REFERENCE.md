@@ -49,11 +49,13 @@ OMP's `before_subagent_spawn` event carries no assignment, so the plugin links a
 
 A rewrite changes `agent` only when `routeAgent` is on, and `name` only when a tier or a thinking step needs one.
 
-## Native per-item models and file-backed tasks
+## Native per-item models and staged tasks
 
 With OMP's `task.perCallModel` setting on, a task item can carry its own `model`. The plugin leaves such an item's agent, selector and effort exactly as written: no agent judgment, no difficulty question, tier, thinking step or retry raise, and a same-named pending spawn decision from another dispatch cannot apply to it.
 
-With `task.file` on, an item may give its assignment as `taskFile` instead of `task`. Each item must have exactly one of the two. A file-backed item keeps its agent (the plugin never reads the file, so there is nothing to judge) and its `taskFile` is passed through untouched; inline siblings in the same batch are routed normally.
+A `model` that is blank or an empty list counts as no model, as it does for OMP, so that item is routed normally.
+
+With `task.steps` on, an item may give its assignment as `steps`, an ordered list of stages, instead of `task`. Each item must have exactly one of the two. The judge reads the stages together as one numbered list, and the `steps` array is passed through untouched.
 
 Routing judgments resolve the current local session and pass its cost gate to `resolveJudge`, so they count toward `session.maxCost` and are refused once the cap is reached; usage is still journaled. Without a local session the plugin judges as before.
 

@@ -436,11 +436,12 @@ async function registerTests(): Promise<void> {
       });
     });
 
-    test("a taskFile batch item keeps its agent while inline siblings are routed", async () => {
-      const file = { name: "FromFile", agent: "task", taskFile: "local://missing-assignment.md", effort: "lo" };
-      const plain = { name: "PlainFile", agent: "task", taskFile: "/missing/assignment.md" };
+    test("a steps batch item is routed beside its inline sibling", async () => {
+      const staged = { name: "Staged", agent: "task", steps: ["Read the module", "Change it"] };
       const inline = reviewTask("Inline", "task");
-      const input = { context: "shared", tasks: [file, inline, plain] };
+      const input = { context: "shared", tasks: [staged, inline] };
+      const scoutSpawn = { agent: "scout", patterns: ["openai/gpt-5"] };
+      const raised = { model: ["openai/gpt-5:high"], note: "judge-dispatch demanding task: thinking medium → high" };
       await withProjects([{ judgeEffort: true }], async ([project]) => {
         const report = await runIsolatedScenario({
           sessions: [
@@ -449,9 +450,8 @@ async function registerTests(): Promise<void> {
               calls: 0,
               steps: [
                 { call: input, id: "mixed" },
-                { spawn: taskSpawn, from: "mixed", item: 0 },
-                { spawn: { agent: "scout", patterns: ["openai/gpt-5"] }, from: "mixed", item: 1 },
-                { spawn: taskSpawn, from: "mixed", item: 2 },
+                { spawn: scoutSpawn, from: "mixed", item: 0 },
+                { spawn: scoutSpawn, from: "mixed", item: 1 },
               ],
             },
           ],
@@ -460,13 +460,22 @@ async function registerTests(): Promise<void> {
           agentModels: { task: ["openai/gpt-5"], scout: ["openai/gpt-5"] },
         });
         expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
-          { input: { ...input, tasks: [file, { ...inline, agent: "scout" }, plain] } },
-          { spawnKey: "FromFile", result: null },
-          { spawnKey: "Inline", result: { model: ["openai/gpt-5:high"], note: "judge-dispatch demanding task: thinking medium → high" } },
-          { spawnKey: "PlainFile", result: null },
+          {
+            input: {
+              ...input,
+              tasks: [
+                { ...staged, agent: "scout" },
+                { ...inline, agent: "scout" },
+              ],
+            },
+          },
+          { spawnKey: "Staged", result: raised },
+          { spawnKey: "Inline", result: raised },
         ]);
-        expect(report.requests).toHaveLength(1);
-        expect(JSON.parse(report.requests[0]?.body ?? "{}").state.assignment).toBe(inline.task);
+        expect(report.requests.map((request) => JSON.parse(request.body ?? "{}").state.assignment)).toEqual([
+          "1. Read the module\n2. Change it",
+          inline.task,
+        ]);
       });
     });
 
