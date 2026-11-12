@@ -26,7 +26,7 @@ The version-5 proposal marker embeds this diagnostic history so native "Approve 
 
 ## Plan grammar
 
-- `## Tasks`: rows `- [ ] T<n>. <title>` numbered from `T1`, each with indented `Agent:`, `Depends on:`, `Acceptance:`, optional `Tier: LIGHT | HEAVY` (case-insensitive), at most one optional `Tier basis: <text>`, and optional `Time limit: <N>h`. A missing tier means LIGHT. `Tier basis: owner — <reason>` (text starting with the word `owner`) records a tier the user decided; any other text is the planner's reason for the tier it chose. The limit is an integer from 1 to 72 hours (default `4h`); its key is case-insensitive, and invalid or duplicate limits are parse errors. Other invalid or repeated parsed fields are also errors. The other body lines the planning skill requires (`Closes:`, `References:`, `Mechanisms:`, `QA happy:`, `QA failure:`, `Commit:`) are read by children and reviewers only; the parser ignores them.
+- `## Tasks`: rows `- [ ] T<n>. <title>` numbered from `T1`, each with indented `Agent:`, `Depends on:`, `Acceptance:`, optional `Tier: LIGHT | HEAVY` (case-insensitive), at most one optional `Tier basis: <text>`, and optional `Time limit: <N>h`. A missing tier means LIGHT. `Tier basis: owner — <reason>` (text starting with the word `owner`) records a tier the user decided; any other text is the planner's reason for the tier it chose, and appears only when the planner decides a tier without a judge. The limit is an integer from 1 to 72 hours (default `4h`); its key is case-insensitive, and invalid or duplicate limits are parse errors. Other invalid or repeated parsed fields are also errors. The other body lines the planning skill requires (`Closes:`, `References:`, `Mechanisms:`, `QA happy:`, `QA failure:`, `Commit:`) are read by children and reviewers only; the parser ignores them.
 - `## Final gates`: exactly F1–F4 with their fixed titles. Each gate may have an indented `Time limit: <N>h` with the same grammar; other gate-body fields remain ignored. Plan approval binds each T/F limit to every retry window and, for HEAVY rows, to independent verification. D/X rows start at the `4h` default.
 - `Delivery: direct | pr | ship`: one plain line at column 0, outside code fences, lists, `## Tasks` and `## Final gates`. A duplicate, an unknown value, or a `Delivery:` line inside those sections is a parse error. No line means `direct`.
 
@@ -34,7 +34,7 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 
 ## Tier judge
 
-**Questions.** Each task gets one `judge` call with two choice questions. `tier` asks whether an uncaught defect in the task would need a second, independent check (HEAVY) or not (LIGHT), applying the written criteria: HEAVY for production code or stored data whose defect would plausibly cause unauthorized access, a bypassed permission or policy check, a silently stopped protection, exposed secrets, lost or corrupted stored data, a destructive or irreversible migration or format cutover, money charged or credited wrongly, breaking an existing caller of a published or cross-component contract, or a concurrency defect on a production path; also HEAVY for shared behavior that several modules must change together and for a very large new production subsystem. LIGHT otherwise. `kind` asks for the main deliverable: `production`, `tests`, `docs`, `ui` or `tooling`. The decision below uses the smaller of the two probabilities, so a HEAVY answer alone is not enough, and tests, docs and tooling stay LIGHT even when they touch a sensitive area. The planner applies the same written criteria when it decides a tier itself, and reviewers apply them to rows that carry a basis.
+**Questions.** Each task gets one `judge` call with two choice questions. `tier` asks whether an uncaught defect in the task would need a second, independent check (HEAVY) or not (LIGHT), applying the written criteria: HEAVY for production code or stored data whose defect would plausibly cause unauthorized access, a bypassed permission or policy check, protection that silently stops in a system whose own purpose is to enforce security, exposed secrets, lost or corrupted stored data, a destructive or irreversible migration or format cutover, money charged or credited wrongly, breaking an existing caller of a published or cross-component contract, or a concurrency defect on a production path; also HEAVY for shared behavior that several modules must change together and for a very large new production subsystem. LIGHT otherwise. `kind` asks for the main deliverable: `production`, `tests`, `docs`, `ui` or `tooling`. The decision below uses the smaller of the two probabilities, so a HEAVY answer alone is not enough, and tests, docs and tooling stay LIGHT even when they touch a sensitive area. The planner applies the same written criteria when it decides a tier itself. Reviewers apply them too: as a blocker to a row with a planner basis, and as a note only to any other row. Producing, converting or reporting settings for a system that enforces security does not count by itself.
 
 **Input.** The judge sees `Task: <title>`, a newline, then every non-blank line of the task body in plan order with its indentation, except the `Tier:` and `Tier basis:` lines. Whole words `HEAVY` and `LIGHT` are removed from the body, and the text is cut to 7000 characters.
 
@@ -42,7 +42,7 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 
 **Native judge only.** The judge is used only when the first usable candidate of OMP's `judge` role is native, meaning it has a judgment API and a calibrated confidence. A chat-model fallback is never called.
 
-**Basis invariant.** A row carries a `Tier basis:` line exactly when the planner or the owner decided its tier, never when the judge did.
+**Basis invariant.** With the judge on, a row carries a `Tier basis:` line exactly when the user decided its tier (`owner — <reason>`). A planner basis exists only when planning without a judge.
 
 **Gate.** It runs on every Momus or Oracle plan-review dispatch, before the review-round counter moves (so a refusal costs no round), and on every proposal, after the grammar check has passed. Per task:
 
@@ -50,10 +50,11 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 |---|---|
 | owner basis | accepted as written |
 | judge decided, tier differs | refused, naming the row, the judge's tier and confidence; the planner changes the tier, or asks the user and records `Tier basis: owner — <reason>` |
-| judge decided, tier matches, non-owner basis present | refused: the judge settled this tier, so remove the basis line |
+| judge decided, tier matches, planner basis present | refused: remove the basis line |
 | judge decided, tier matches, no basis | accepted |
-| judge undecided, no basis | refused, naming the row and its HEAVY probability; the planner decides by the written criteria and adds `Tier basis:` |
-| judge undecided, basis present | accepted |
+| judge undecided, tier LIGHT, no basis | accepted (the default) |
+| judge undecided, tier LIGHT, planner basis present | refused: remove the basis line |
+| judge undecided, tier HEAVY without an owner basis | refused, naming the row and its HEAVY probability; the planner changes it to LIGHT, or puts all such rows to the user in one dialog and records confirmed rows with an owner basis |
 
 One refusal lists every offending row at once.
 
@@ -61,7 +62,7 @@ One refusal lists every offending row at once.
 
 **Caching.** A settled judgment is kept for the rest of the session and not asked again, so an unchanged task is judged once. A failed call is never cached.
 
-**Measured figures.** Judge `typesafe/jev-1.14.0`, threshold 0.6, 468 tasks from 47 approved plans: the judge settles 84% of tasks (37% HEAVY, 46% LIGHT) and leaves 16% to the planner; planners had marked 76% HEAVY. Each task also got a reference tier, assigned by reading it against the written criteria without seeing the judge's answer. On 13 plans held out from tuning, the judge agreed with that reference on 93% of the tasks whose reference tier was clear-cut and made no confident LIGHT call on a task whose reference was HEAVY. The judge reads only the task text.
+**Measured figures.** Judge `typesafe/jev-1.14.0`, threshold 0.6, 468 tasks from 47 approved plans, measured with the current question text in the same two-question call the plugin sends. The judge settles 85% of tasks (38% HEAVY, 47% LIGHT) and is undecided on 15%; planners had marked 76% HEAVY. Each task also got a reference tier, assigned by reading it against the written criteria without seeing the judge's answer. On 13 plans held out from tuning, the judge agreed with that reference on 93% of the tasks whose reference tier was clear-cut and made no confident LIGHT call on a task whose reference was HEAVY. Among the undecided tasks with a clear-cut reference, 27 were LIGHT and 10 HEAVY, which is why undecided tasks default to LIGHT. A second tuning round tried ten other wordings, worked examples in the criteria and a plan summary in the input; none made the judge settle more tasks. The judge reads only the task text.
 
 ## Atlas tool guard
 

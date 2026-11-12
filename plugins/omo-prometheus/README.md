@@ -83,16 +83,16 @@ Every task is either `LIGHT` or `HEAVY`. A `LIGHT` task is done on its own proof
 
 The tier depends on what an uncaught defect would cost, not on which part of the code the task touches. A task is `HEAVY` when a defect its own checks could miss would plausibly lead to:
 
-- unauthorized access, a bypassed permission or policy check, a security feature that silently stops working, or exposed secrets;
+- unauthorized access, a bypassed permission or policy check, protection that silently stops working in a system whose own purpose is to enforce security, or exposed secrets;
 - loss or corruption of data kept in storage;
 - a destructive or irreversible migration, or a storage format change that cannot be undone;
 - money or paid quota charged, settled or credited wrongly;
 - breaking existing callers of a published interface or one shared across components;
 - a concurrency bug on a production path.
 
-A task is also `HEAVY` when it changes shared behavior that several modules must change together, or when it is by itself a very large new production subsystem. Everything else is `LIGHT`. That includes tests and benchmarks, documentation, scripts and CI, front-end pages that call existing APIs, and changes inside one module whose failures show up in the task's own checks, such as logging, renames, configuration parsing and additive features.
+A task is also `HEAVY` when it changes shared behavior that several modules must change together, or when it is by itself a very large new production subsystem. Everything else is `LIGHT`. That includes tests and benchmarks, documentation, scripts and CI, front-end pages that call existing APIs, and changes inside one module whose failures show up in the task's own checks, such as logging, renames, configuration parsing and additive features. Changing settings for a security system does not count by itself: producing, converting or reporting settings for a system that enforces security is not that system's protection failing.
 
-While it plans, Prometheus asks OMP's `judge` role to settle each task's tier from the task text. That role is OMP's judge model, the one it uses to classify tasks. Only a judgment model counts, such as TypeSafe's Jev or an OpenRouter decision model; an ordinary chat model is never asked. When the judge is sure, its tier stands. When it is not sure, when no such judge is configured, or when `tierJudge` is off, Prometheus picks the tier by the rules above and writes a `Tier basis:` line with its reason. You can also settle a tier yourself: tell Prometheus before you approve, and the plan records `Tier basis: owner — <reason>`. The [reference](REFERENCE.md#tier-judge) has the exact rules.
+While it plans, Prometheus asks OMP's `judge` role to settle each task's tier from the task text. That role is OMP's judge model, such as TypeSafe's Jev or an OpenRouter decision model; an ordinary chat model is never asked. When the judge is sure, its tier stands. When it is not sure, the task is `LIGHT` by default. If Prometheus thinks some of those tasks need `HEAVY`, it asks you once, in one dialog that lists each such task with its reason and the judge's `HEAVY` probability. The tasks you confirm become `HEAVY` and record `Tier basis: owner — <reason>`; the rest stay `LIGHT`. Reviewers can point out a task they think should be `HEAVY`; Prometheus then asks you about it, unless you already decided that task's tier. You can also tell Prometheus before you approve which tasks to make `HEAVY` or `LIGHT`, and keep a tier against a sure judgment through the same dialog. Without a judgment model, or with `tierJudge` off, Prometheus picks each tier by the rules above and writes a `Tier basis:` line with its reason. The [reference](REFERENCE.md#tier-judge) has the exact rules.
 
 ### How Atlas carries out a plan
 
@@ -217,7 +217,7 @@ Settings are read when a session starts, so restart the session after changing t
 | `reviewLevel` | `ask` | How plans are reviewed before you see them (see below). |
 | `reviewRoundLimit` | `5` | The most review rounds per plan. `0` or empty means no limit. At the limit you choose whether to allow more rounds or have Prometheus propose the plan as it stands, with the open problems listed. |
 | `tierJudge` | `true` | Lets OMP's judge role settle each task's tier during planning. When off, Prometheus decides every tier itself and writes a reason for each one. |
-| `tierJudgeConfidence` | `0.6` | How sure the judge must be before its tier is final, from 0 to 1. Below this value Prometheus decides the tier and writes the reason. A lower value lets the judge decide more tasks, a higher one leaves more to Prometheus. |
+| `tierJudgeConfidence` | `0.6` | How sure the judge must be before its tier is final, from 0 to 1. Below this value the task defaults to `LIGHT` unless you raise it to `HEAVY`. A lower value lets the judge settle more tasks, a higher one leaves more at the `LIGHT` default. |
 | `delivery` | `ask` | How finished work leaves the repository: `ask`, `direct`, `pr` or `ship` (see [Deliver the result](#deliver-the-result)). |
 | `atlasWidget` | `true` | Show the progress widget above the editor while Atlas runs. |
 | `progressReports` | `false` | Have Atlas post a short chat update before each batch of tasks and after each task: progress, result, how it was checked, any problem and the next step. |
@@ -272,7 +272,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus atlasRelease approve
 - Planning with Prometheus needs Plan Mode's interactive approval, so it does not run in headless or SDK sessions.
 - Plans from versions before the shared ledger cannot be resumed. Have them approved again.
 - In Tern, the plan list and plan view keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
-- The tier judge reads only each task's text. A task whose risk does not show in its description can be judged `LIGHT`, so check the tiers of risky tasks before you approve and ask Prometheus to change any that are wrong. Your change is recorded as an owner decision.
+- The tier judge reads only each task's text. A task whose risk does not show in its description can come out `LIGHT`, either judged so or left at the `LIGHT` default, so check the tiers of risky tasks before you approve and ask Prometheus to change any that are wrong. Your change is recorded as an owner decision.
 
 ## More details
 
