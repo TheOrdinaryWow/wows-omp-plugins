@@ -970,6 +970,274 @@ async function scenario(name: string, root: string): Promise<void> {
     await finish("F3");
     await finish("F4");
   };
+  if (name === "native-inflight-bound" || name === "native-inflight-research") {
+    const researching = name === "native-inflight-research";
+    const first = researching ? undefined : await prepare("T1");
+    const toolCallId = first?.toolCallId ?? `research-${sequence++}`;
+    const input = first?.input ?? { agent: "scout", task: "Read the module", solutionSpace: "Read-only diagnosis" };
+    if (researching) assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
+    const childAgentId = "InFlightNative";
+    const job = nativeJob(childAgentId, "running");
+    nativeJobs.push(job);
+    const second = await prepare("T3");
+    await publish(second, "ParallelWriter");
+    ok(await done("T3", "ParallelWriter"));
+    bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+      id: childAgentId,
+      agent: researching ? "scout" : "task",
+      index: 0,
+      status: "started",
+      sessionFile: join(artifacts, `${childAgentId}.jsonl`),
+      parentToolCallId: toolCallId,
+    });
+    await hook("tool_result", {
+      toolName: "task",
+      toolCallId,
+      input,
+      isError: false,
+      details: { async: { state: "running", type: "task", jobId: job.id }, results: [], progress: [{ id: childAgentId, index: 0 }] },
+      content: [],
+    });
+    assert.equal(await hook("tool_call", { toolName: "atlas_release", input: { reason: "No unbound hold" } }), undefined);
+    ok(await call({ action: "reopen", id: "T3" }));
+    const later = await prepare("T3");
+    await publish(later, "LaterParallelWriter");
+    ok(await done("T3", "LaterParallelWriter"));
+    assert.equal(job.status, "running");
+    job.status = "completed";
+    await job.promise;
+    if (first) {
+      await publish(first, childAgentId);
+      ok(await done("T1", childAgentId));
+    }
+    return;
+  }
+  if (name.includes("unbound-native")) {
+    if (name === "unbound-native-task") {
+      const previous = await prepare("T1");
+      await publish(previous, "PreviousProcess", { status: "running", nativeStatus: "started", asyncStatus: "running" });
+      const oldJob = nativeJobs.find((job) => job.agentId === "PreviousProcess");
+      assert(oldJob);
+      oldJob.status = "failed";
+      await oldJob.promise;
+      await hook("context", { messages: [] });
+      await reload();
+      nativeJobs.length = 0;
+      assert.equal((await row("T1")).status, "open");
+    }
+    const verifier = name === "heavy-unbound-native-verifier";
+    let started: Result;
+    if (verifier) {
+      const implementation = await prepare("T1");
+      await publish(implementation, "VerifiedImplementation");
+      ok(await done("T1", "VerifiedImplementation"));
+      started = await call({ action: "verify", id: "T1" });
+    } else {
+      started = await call({ action: "start", id: "T1" });
+    }
+    ok(started);
+    const current = await ledger();
+    const item = await row("T1");
+    const binding = `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, [verifier ? "verify" : "rows"]: { T1: "previous-attempt" } })}`;
+    const candidate = {
+      agent: verifier ? item.verification?.dispatchAgent : item.dispatchAgent,
+      task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, [verifier ? "verify" : "rows"]: { T1: verifier ? item.verification?.attempt : item.attempt } })}\nPerform the current assignment`,
+      ...(started.details?.outputSchema ? { outputSchema: started.details.outputSchema, schemaMode: "strict" } : {}),
+      solutionSpace: "Known scoped assignment",
+    };
+    const childAgentId = "UnboundNative";
+    const sessionFile = join(artifacts, `${childAgentId}.jsonl`);
+    // Host modules load only inside the scenario child, after HOME and host state are isolated.
+    const { renderSubagentUserPrompt } = await import("@oh-my-pi/pi-coding-agent/task/structured-subagent");
+    const { renderStepPrompts } = await import("@oh-my-pi/pi-coding-agent/task/steps");
+    let task = renderSubagentUserPrompt(`${binding}\nPerform the original assignment`);
+    let context = "";
+    if (name === "unbound-native-context") {
+      task = renderSubagentUserPrompt("Perform the original assignment");
+      context = `Shared constraints\n\n\n  ${binding}  \n\nUse this binding.`;
+    } else if (name === "unbound-native-steps") {
+      const prompts = renderStepPrompts([`${binding}\nImplement the first step`, "Report the checks"], true);
+      task = renderSubagentUserPrompt(prompts[0] ?? "");
+    } else if (name === "unbound-native-no-binding") {
+      task = renderSubagentUserPrompt("Inspect the module without making edits");
+    } else if (name === "unbound-native-other-plan") {
+      task = renderSubagentUserPrompt(`atlas_assignment: ${JSON.stringify({ planSha256: "f".repeat(64), rows: { T1: "another-plan" } })}`);
+    } else if (name === "unbound-native-conflicting") {
+      context = `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { T3: "another-attempt" } })}`;
+    }
+    const systemTemplate = await readFile(
+      join(dirname(fileURLToPath(import.meta.resolve("@oh-my-pi/pi-coding-agent"))), "prompts/system/subagent-system-prompt.md"),
+      "utf8",
+    );
+    const init = {
+      type: "session_init",
+      id: "child-init",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      task,
+      systemPrompt: [hostPrompt.render(systemTemplate, { agent: "Worker", context, structured: true })],
+      tools: ["read", "write", "yield"],
+      agent: "task",
+    };
+    if (name === "unbound-native-unreadable") {
+      await mkdir(sessionFile);
+    } else if (!["unbound-native-missing", "unbound-native-research", "unbound-native-retry-init"].includes(name)) {
+      await writeFile(
+        sessionFile,
+        `${[
+          JSON.stringify({ type: "session", version: 3, id: "unbound-session", timestamp: new Date().toISOString(), cwd: root }),
+          JSON.stringify(name === "unbound-native-malformed" ? { ...init, systemPrompt: 42 } : init),
+        ].join("\n")}\n`,
+      );
+    }
+    if (name === "unbound-native-torn-tail") await writeFile(sessionFile, `${await readFile(sessionFile, "utf8")}{"type":`);
+    await writeFile(join(artifacts, `${childAgentId}.md`), "Claimed completion without an authenticated dispatch");
+    AgentRegistry.global().register({
+      id: childAgentId,
+      kind: "sub",
+      displayName: childAgentId,
+      parentId: "Main",
+      session: null,
+      sessionFile,
+      status: "running",
+      history: { outputPath: join(artifacts, `${childAgentId}.md`) },
+    });
+    const researchCall = `research-${sequence++}`;
+    const researchInput = { agent: "scout", task: "Inspect the module without editing", solutionSpace: "Read-only diagnosis" };
+    if (name === "unbound-native-research")
+      assert.equal(await hook("tool_call", { toolName: "task", toolCallId: researchCall, input: researchInput }), undefined);
+    const job = nativeJob(childAgentId, "running");
+    const settleJob = settleNativeJob;
+    assert(settleJob);
+    const rejected = Promise.withResolvers<void>();
+    if (name === "unbound-native-rejected") job.promise = rejected.promise;
+    nativeJobs.push(job);
+    if (name === "unbound-native-research") {
+      await hook("tool_result", {
+        toolName: "task",
+        toolCallId: researchCall,
+        input: researchInput,
+        isError: false,
+        details: { async: { state: "running", type: "task", jobId: job.id }, results: [], progress: [{ id: childAgentId, index: 0 }] },
+        content: [],
+      });
+    }
+    const admitted = () => dispatchTask(candidate);
+    const noHold = ["unbound-native-no-binding", "unbound-native-other-plan", "unbound-native-research"].includes(name);
+    const first = await admitted();
+    if (noHold) {
+      assert.equal(first, undefined);
+      const release = await hook("tool_call", { toolName: "atlas_release", input: { reason: "Inspect release guard" } });
+      assert.equal(release, undefined);
+      job.status = "completed";
+      AgentRegistry.global().setStatus(childAgentId, "idle");
+      refused(await done("T1", childAgentId));
+      return;
+    }
+    assert.equal(first?.block, true);
+    assert.match(first?.reason ?? "", /unbound native job guard.*UnboundNative.*job-UnboundNative/);
+    const wide = [
+      "unbound-native-missing",
+      "unbound-native-unreadable",
+      "unbound-native-malformed",
+      "unbound-native-conflicting",
+      "unbound-native-retry-init",
+      "unbound-native-torn-tail",
+    ].includes(name);
+    assert.match(first?.reason ?? "", wide ? /All bound dispatch is paused/ : /Rows T1 are paused/);
+    assert.match(first?.reason ?? "", /job settles.*result is not evidence/);
+    assert.match(
+      (
+        await dispatchTask({
+          ...candidate,
+          task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, verify: { T1: "pending-verifier" } })}`,
+        })
+      )?.reason ?? "",
+      /unbound native job guard/,
+    );
+    assert.equal(await hook("tool_call", { toolName: "wait", input: {} }), undefined);
+    assert.equal(await dispatchTask(researchInput), undefined);
+    const release = (await hook("tool_call", { toolName: "atlas_release", input: { reason: "Inspect release guard" } })) as {
+      reason?: string;
+    };
+    assert.match(release.reason ?? "", /unbound native job guard/);
+    assert.match(release.reason ?? "", /Release is paused/);
+    const repaired = ["unbound-native-retry-init", "unbound-native-torn-tail"].includes(name);
+    if (repaired) {
+      await writeFile(
+        sessionFile,
+        `${JSON.stringify({ type: "session", version: 3, id: "unbound-session", timestamp: new Date().toISOString(), cwd: root })}\n${JSON.stringify(init)}\n`,
+      );
+      assert.match((await admitted())?.reason ?? "", /Rows T1 are paused/);
+    }
+    ok(await call({ action: "start", id: "T3" }));
+    const other = await row("T3");
+    const otherInput = {
+      agent: other.dispatchAgent,
+      task: `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { T3: other.attempt } })}\nImplement independent behavior`,
+      solutionSpace: "Independent work",
+    };
+    const otherCall = `independent-${sequence++}`;
+    const otherAdmission = (await hook("tool_call", { toolName: "task", toolCallId: otherCall, input: otherInput })) as
+      | { reason?: string }
+      | undefined;
+    if (wide && !repaired) assert.match(otherAdmission?.reason ?? "", /All bound dispatch is paused/);
+    else {
+      assert.equal(otherAdmission, undefined);
+      await publish({ item: other, current, toolCallId: otherCall, input: otherInput }, "IndependentWriter");
+      ok(await done("T3", "IndependentWriter"));
+    }
+    assert.equal(job.status, "running");
+    if (["unbound-native-exit", "unbound-native-switch", "unbound-native-shutdown"].includes(name)) {
+      // AtlasStore imports host state, so it must load after the scenario's isolated HOME is active.
+      const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+      const rival = new AtlasStore(sessionManager.getSessionDir());
+      const shared = await rival.find("integrity");
+      if (name === "unbound-native-switch") await switchTo("another-session", [], "new");
+      else if (name === "unbound-native-shutdown") await hook("session_shutdown");
+      else await commands.get("atlas")?.("exit", ctx);
+      await assert.rejects(rival.acquire(shared.id, "rival"), /live execution owner/);
+      job.status = "completed";
+      await job.promise;
+      await hook("tool_result", { toolName: "task", toolCallId: "observe-settlement", isError: false, details: {}, content: [] });
+      await rival.acquire(shared.id, "rival");
+      return;
+    }
+    if (name === "unbound-native-cancel") {
+      job.status = "cancelled";
+      assert.match((await admitted())?.reason ?? "", /unbound native job guard/);
+      nativeJobs.length = 0;
+      assert.match((await admitted())?.reason ?? "", /unbound native job guard/);
+      settleJob();
+    } else if (name === "unbound-native-rejected") {
+      rejected.reject(new Error("Native run rejected"));
+    } else job.status = "completed";
+    await job.promise.catch(() => undefined);
+    AgentRegistry.global().setStatus(childAgentId, "idle");
+    refused(await done("T1", childAgentId));
+    const freshCall = `fresh-${sequence++}`;
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: freshCall, input: candidate }), undefined);
+    await publish(
+      { item: await row("T1"), current, toolCallId: freshCall, input: candidate },
+      "FreshBoundWriter",
+      verifier
+        ? {
+            content: JSON.stringify({
+              rowId: "T1",
+              planSha256: current.planSha256,
+              attempt: item.verification?.attempt,
+              verdict: "PASS",
+              summary: "Fresh verification passed",
+              evidence: ["Acceptance exercised"],
+            }),
+            createdAt: item.verification?.startedAt,
+          }
+        : {},
+    );
+    ok(await done("T1", "FreshBoundWriter"));
+    assert.equal((await row("T1")).status, "done");
+    return;
+  }
   if (name === "retry-fail" || name === "retry-grant-changed" || name === "retry-auto-grant") {
     const fail = (childAgentId: string) =>
       call({
@@ -3493,6 +3761,26 @@ if (process.env[CHILD_ENV]) {
       "heavy-harness-retry",
       "heavy-cancel-verify",
       "research-children",
+      "unbound-native-task",
+      "unbound-native-context",
+      "unbound-native-steps",
+      "native-inflight-bound",
+      "native-inflight-research",
+      "unbound-native-retry-init",
+      "unbound-native-torn-tail",
+      "unbound-native-missing",
+      "unbound-native-unreadable",
+      "unbound-native-malformed",
+      "unbound-native-conflicting",
+      "unbound-native-no-binding",
+      "unbound-native-other-plan",
+      "unbound-native-cancel",
+      "unbound-native-rejected",
+      "unbound-native-exit",
+      "unbound-native-switch",
+      "unbound-native-shutdown",
+      "unbound-native-research",
+      "heavy-unbound-native-verifier",
       "duplicate-bindings",
       "structured-results",
       "isolation-required",

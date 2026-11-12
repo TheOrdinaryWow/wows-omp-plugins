@@ -242,6 +242,7 @@ interface Ownership {
   live: AgentSession;
   parentAgentId: string;
   ledgerId: string;
+  artifactsDir: string | null;
   detached: boolean;
   operations: number;
   releasing?: Promise<void>;
@@ -831,6 +832,23 @@ export default function prometheus(pi: ExtensionAPI): void {
         void settleDetached();
       },
     });
+    for (const ownership of ownerships) {
+      if (ownership.sessionId !== sessionId) continue;
+      childEvidence.unboundJobs.observe({
+        sessionId,
+        ledgerId: ownership.ledgerId,
+        planSha256: ownership.plan.planSha256,
+        artifactsDir: ownership.artifactsDir,
+        ownerId: parentAgentId,
+        jobs: native.jobs,
+        registry: AgentRegistry.global(),
+        bound: (job) => childEvidence.knowsNativeJob(sessionId, job),
+        inFlight: (job) => childEvidence.hasInFlightDispatch(sessionId, job.startTime),
+        onSettled: () => {
+          void settleDetached();
+        },
+      });
+    }
   };
 
   const settleDetached = async (): Promise<void> => {
@@ -991,7 +1009,17 @@ export default function prometheus(pi: ExtensionAPI): void {
         .list()
         .find((candidate) => candidate.kind === "main" && candidate.session === live);
       if (!parent) throw new Error("registered native parent identity is unavailable");
-      ownership ??= { store, plan, sessionId, live, parentAgentId: parent.id, ledgerId, detached: false, operations: 0 };
+      ownership ??= {
+        store,
+        plan,
+        sessionId,
+        live,
+        parentAgentId: parent.id,
+        ledgerId,
+        artifactsDir: ctx.sessionManager.getArtifactsDir(),
+        detached: false,
+        operations: 0,
+      };
       ownerships.add(ownership);
       if (newlyOwned) ownership.operations += 1;
       record.ownership = ownership;
@@ -3244,6 +3272,14 @@ export default function prometheus(pi: ExtensionAPI): void {
     // Progress guard: the HUD only redraws on a model-made todo call, and a finished child must be recorded before Atlas moves on.
     if (!detail && (event.toolName === "task" || event.toolName === "wait" || event.toolName === RELEASE_TOOL)) {
       const sessionId = ctx.sessionManager.getSessionId();
+      if (record.ownership && (event.toolName === RELEASE_TOOL || (event.toolName === "task" && carriesAtlasAssignment(event.input)))) {
+        const unbound = await childEvidence.unboundJobs.blockReason(
+          sessionId,
+          record.ownership.ledgerId,
+          event.toolName === RELEASE_TOOL ? undefined : assignedRowIds(event.input),
+        );
+        if (unbound) return { block: true, reason: unbound };
+      }
       const refresh = pendingTodoRefreshes.get(sessionId);
       if (refresh && pi.getActiveTools().includes("todo")) {
         return {
@@ -3292,6 +3328,9 @@ export default function prometheus(pi: ExtensionAPI): void {
         const { agents } = await discoverAgents(ctx.cwd, undefined, live.effectiveExtensionRoots);
         const research = researchSpawnBlockReason(event.input, availableAgents(), [...agents, ...live.getSessionAgents()]);
         if (research) throw new Error(research);
+        const artifactsDir = ctx.sessionManager.getArtifactsDir();
+        if (artifactsDir)
+          childEvidence.unboundJobs.rememberResearch(ctx.sessionManager.getSessionId(), event.toolCallId, event.input, artifactsDir);
       } catch (error) {
         return { block: true, reason: `Task dispatch refused: ${errorMessage(error)}. /atlas exit is the user exit.` };
       }

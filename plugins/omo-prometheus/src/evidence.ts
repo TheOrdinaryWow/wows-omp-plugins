@@ -17,6 +17,7 @@ import {
   retryWindow,
   verificationStatus,
 } from "./ledger.ts";
+import { NativeJobHolds } from "./native-job-holds.ts";
 import { taskBody } from "./workflow.ts";
 
 export type ChildVerdict = "PASS" | "FAIL" | "INCONCLUSIVE";
@@ -264,6 +265,36 @@ export class ChildEvidence {
   readonly #dispatches = new Map<string, Assignment[]>();
   readonly #children = new Map<string, ObservedChild>();
   readonly #reactivations = new Set<ObservedChild>();
+  readonly unboundJobs = new NativeJobHolds();
+
+  knowsNativeJob(sessionId: string, job: { id: string; agentId: string; startTime: number }): boolean {
+    for (const assignments of this.#dispatches.values())
+      for (const assignment of assignments) {
+        if (assignment.sessionId !== sessionId || job.startTime < assignment.dispatchedAt) continue;
+        if (assignment.nativeJobId === job.id && assignment.nativeJobStart === job.startTime) return true;
+        if (assignment.nativeChildId === job.agentId && (assignment.returnedAt === undefined || job.startTime <= assignment.returnedAt))
+          return true;
+        if (
+          assignment.returnedAt === undefined &&
+          [...this.#children.values()].some((child) => child.assignment === assignment && child.childAgentId === job.agentId)
+        )
+          return true;
+      }
+    return [...this.#reactivations].some(
+      (child) =>
+        child.assignment.sessionId === sessionId &&
+        child.reactivation?.nativeJobId === job.id &&
+        child.reactivation.nativeJobStart === job.startTime,
+    );
+  }
+
+  hasInFlightDispatch(sessionId: string, startTime: number): boolean {
+    return [...this.#dispatches.values()].some((assignments) =>
+      assignments.some(
+        (assignment) => assignment.sessionId === sessionId && assignment.returnedAt === undefined && startTime >= assignment.dispatchedAt,
+      ),
+    );
+  }
 
   /**
    * Bind every task in one native call to started ledger attempts. `rows` binds implementation, gate, and delivery
@@ -440,6 +471,7 @@ export class ChildEvidence {
   }
 
   observe(payload: unknown): void {
+    this.unboundJobs.observeResearch(payload);
     if (
       !object(payload) ||
       typeof payload.parentToolCallId !== "string" ||
@@ -477,6 +509,7 @@ export class ChildEvidence {
   }
 
   observeTaskResult(sessionId: string, toolCallId: string, details: unknown, isError = false, nativeError?: string): void {
+    this.unboundJobs.observeResearchResult(sessionId, toolCallId, details);
     // Only known native preflight returns prove rejection before execution. Tool arguments, a missing registry entry,
     // or an empty result array alone never establish dispatch origin.
     const assignments = this.#dispatches.get(`${sessionId}:${toolCallId}`);
@@ -699,6 +732,7 @@ export class ChildEvidence {
    */
   hasPending(sessionId: string, ledgerId: string): boolean {
     return (
+      this.unboundJobs.hasPending(sessionId, ledgerId) ||
       [...this.#dispatches.values()].some((assignments) =>
         assignments.some(
           (assignment) =>
