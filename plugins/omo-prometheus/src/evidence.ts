@@ -17,6 +17,7 @@ import {
   retryWindow,
   verificationStatus,
 } from "./ledger.ts";
+import { taskBody } from "./workflow.ts";
 
 export type ChildVerdict = "PASS" | "FAIL" | "INCONCLUSIVE";
 
@@ -90,12 +91,16 @@ function suppliesObjectSchema(value: unknown): boolean {
 }
 /** These native task validation returns happen before the host derives or schedules any spawns. */
 const DISPATCH_REJECTIONS = [
-  /^(?:The call|Task \d+(?: \(`[^`]+`\))?) must provide exactly one of `task` or `taskFile`\.$/,
+  /^(?:The call|Task \d+(?: \(`[^`]+`\))?) takes `task` or `steps`, not both\.$/,
+  /^(?:The call|Task \d+(?: \(`[^`]+`\))?) has invalid `steps`: provide a non-empty list of non-empty instructions, one per stage\.$/,
+  /^Missing `(?:task|steps)`\. Provide (?:complete, self-contained instructions for the agent|the agent's ordered stages, one instruction each)\.$/,
+  /^Task \d+(?: \(`[^`]+`\))? is missing `(?:task|steps)`\. Every task needs (?:complete, self-contained instructions|its ordered stages, one instruction each)\.$/,
+  /^(?:The call|Task \d+(?: \(`[^`]+`\))?) has an invalid `effort` value .+\. Use "lo", "med", or "hi"\.$/,
   /^Missing `context`\. Provide the shared background for this batch — goal, constraints, and any contract the tasks share\.$/,
-  /^Missing `tasks`\. Provide (?:at least one task item with `task` or `taskFile`|a `tasks` array \(one subagent per item\) with a shared `context`)\.$/,
-  /^Top-level `(?:task` or `taskFile|agent)` is not part of the batch shape\. (?:Put the work in `tasks\[\]` items|Set `tasks\[\]\.agent` instead)\.$/,
+  /^Missing `tasks`\. Provide (?:at least one task item with `(?:task|steps)`|a `tasks` array \(one subagent per item\) with a shared `context`)\.$/,
+  /^Top-level `(?:task` or `steps|agent)` is not part of the batch shape\. (?:Put the work in `tasks\[\]` items|Set `tasks\[\]\.agent` instead)\.$/,
   /^Duplicate task name `[^`]+`(?: \/ `[^`]+`)?\. Provided names must be unique within a call \(case-insensitive\)\.$/,
-  /^task\.file is disabled, so the task tool does not accept `taskFile`\.$/,
+  /^task\.batch is disabled, so the task tool does not accept `(?:tasks|context)`(?: or `context`)?\. Spawn one agent per call with `task`, or enable the task\.batch setting\.$/,
   /^The task tool uses `outputSchema`; rename the stale `schema` field\.$/,
 ];
 
@@ -281,10 +286,11 @@ export class ChildEvidence {
     const bound = new Set<string>();
     const dispatchedAt = Date.now();
     const assignments = tasks.map((task, index): Assignment => {
-      if (!object(task) || typeof task.task !== "string") throw new Error("Every task needs an assignment body");
+      const body = object(task) ? taskBody(task) : undefined;
+      if (!object(task) || body === undefined) throw new Error("Every task needs an assignment body");
       const contextMarkers =
         typeof input.context === "string" ? [...input.context.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)] : [];
-      const taskMarkers = [...task.task.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)];
+      const taskMarkers = [...body.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)];
       const markers = [...contextMarkers, ...taskMarkers];
       if (markers.length > 1) {
         const locations = [
@@ -292,7 +298,7 @@ export class ChildEvidence {
           ...(taskMarkers.length ? [`task body (${taskMarkers.length})`] : []),
         ];
         throw new Error(
-          `Task item ${index + 1} has ${markers.length} atlas_assignment JSON lines in ${locations.join(" and ")}; include exactly one, in the item's task body or the shared context, never both`,
+          `Task item ${index + 1} has ${markers.length} atlas_assignment JSON lines in ${locations.join(" and ")}; include exactly one, in the item's task body (its first step when it has steps) or the shared context, never both`,
         );
       }
       if (markers.length !== 1) {

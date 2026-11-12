@@ -347,15 +347,12 @@ async function scenario(name: string, root: string): Promise<void> {
     (await hook("tool_call", { toolName: "task", toolCallId: `task-${sequence++}`, input })) as
       | { block?: boolean; reason?: string }
       | undefined;
-  const refuseTaskFile = async (input: Record<string, unknown>) => {
-    const result = await dispatchTask(input);
-    assert.equal(result?.block, true);
-    assert.match(result?.reason ?? "", /taskFile.*inline in task/);
-  };
-  if (name === "task-file-governance") {
-    assert.equal(await dispatchTask({ agent: "scout", taskFile: "research.md" }), undefined);
-    await refuseTaskFile({ agent: "metis", taskFile: "planning.md" });
-    await refuseTaskFile({ agent: "momus", taskFile: "review.md" });
+  if (name === "steps-governance") {
+    assert.equal(await dispatchTask({ agent: "scout", steps: ["Read the module", "Summarize it"] }), undefined);
+    assert.match(
+      (await dispatchTask({ agent: "momus", steps: ["Review the plan", "Report"] }))?.reason ?? "",
+      /spawnable only during Prometheus planning/,
+    );
   }
   if (name === "plan-mode-disabled") {
     // With plan.enabled off the host refuses /plan, so Prometheus must refuse instead of claiming it started.
@@ -461,13 +458,14 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.match(prepared.systemPrompt.join("\n"), heading);
   };
   if (name === "context-row-shape") await assertContextRowShape(/Prometheus planning workflow \(active\)/, /<available-agents/);
-  if (name === "task-file-governance") {
-    await refuseTaskFile({ agent: "metis", taskFile: "planning.md" });
-    await refuseTaskFile({ agent: "momus", taskFile: "review.md" });
-    for (let index = 0; index < 6; index++)
-      await refuseTaskFile({ context: "review_kind: high_accuracy", tasks: [{ agent: "reviewer", taskFile: "review.md" }] });
-    assert.equal(await dispatchTask({ agent: "reviewer", task: "review_kind: routine\nReview the current plan" }), undefined);
-    assert.equal(selections.length, 0);
+  if (name === "steps-governance") {
+    const binding = () => `absolute_plan_path: ${sourcePlanFile}\nreview_round: r${sequence++}\nreview_kind: routine`;
+    assert.match((await dispatchTask({ agent: "momus", steps: ["Read the plan", binding()] }))?.reason ?? "", /first entry of `steps`/);
+    const review = () => dispatchTask({ agent: "momus", steps: [`${binding()}\nReview the bound file.`, "Report the verdict"] });
+    for (let index = 0; index < 5; index++) assert.equal(await review(), undefined);
+    pickOption = (options) => options[1];
+    assert.match((await review())?.reason ?? "", /stopped plan review at its limit of 5 rounds/);
+    pickOption = (options) => options[0];
   }
   if (name === "review-round-limit") {
     await mkdir(join(root, ".omp"), { recursive: true });
@@ -679,23 +677,6 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "context-row-shape") {
     await assertContextRowShape(/Atlas execution \(active\)/, /<execution-ledger/);
-    return;
-  }
-  if (name === "task-file-governance") {
-    const input = { agent: "scout", taskFile: "research.md" };
-    await refuseTaskFile(input);
-    await refuseTaskFile({ context: "Inspect independent evidence", tasks: [input] });
-    assert.equal(
-      await hook("tool_call", {
-        toolName: "write",
-        toolCallId: "file-task-device",
-        input: { path: "xd://task", content: JSON.stringify(input) },
-      }),
-      undefined,
-    );
-    await refuseTaskFile(input);
-    await commands.get("atlas")?.("exit", ctx);
-    assert.equal(await dispatchTask(input), undefined);
     return;
   }
   if (name === "url-boundaries") {
@@ -963,6 +944,21 @@ async function scenario(name: string, root: string): Promise<void> {
     ok(await done(id, child));
     return child;
   };
+  if (name === "steps-governance") {
+    ok(await call({ action: "start", id: "T1" }));
+    const item = await row("T1");
+    const current = await ledger();
+    const binding = `atlas_assignment: ${JSON.stringify({ planSha256: current.planSha256, rows: { T1: item.attempt } })}`;
+    const stepped = (steps: string[]) => ({ agent: item.dispatchAgent, steps, solutionSpace: "Known scoped assignment" });
+    assert.match((await dispatchTask(stepped([`Perform ${item.title}`, binding])))?.reason ?? "", /first entry of `steps`/);
+    const input = stepped([`${binding}\nPerform ${item.title}`, "Report the evidence"]);
+    const toolCallId = `stepped-${sequence++}`;
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
+    await publish({ item, current, toolCallId, input }, "SteppedWorker");
+    ok(await done("T1", "SteppedWorker"));
+    assert.equal((await row("T1")).status, "done");
+    return;
+  }
   const tasksDone = async () => {
     await finish("T1");
     await finish("T2");
@@ -1104,13 +1100,10 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "retry-pre-spawn" || name === "retry-context-validation") {
     const prepared = await prepare("T1");
-    const historicalInput = { ...prepared.input, taskFile: "" };
-    // The current guard rejects this input. Replay the older native outcome against its retained dispatch binding.
-    await refuseTaskFile(historicalInput);
     const error =
       name === "retry-context-validation"
         ? "Missing `context`. Provide the shared background for this batch — goal, constraints, and any contract the tasks share."
-        : "The call must provide exactly one of `task` or `taskFile`.";
+        : "Missing `task`. Provide complete, self-contained instructions for the agent.";
     const fail = () =>
       call({
         action: "fail",
@@ -1127,7 +1120,7 @@ async function scenario(name: string, root: string): Promise<void> {
       await hook("tool_result", {
         toolName: "task",
         toolCallId,
-        input: historicalInput,
+        input: prepared.input,
         isError: true,
         details: { results: [] },
         content: [{ type: "text", text: error }],
@@ -1156,9 +1149,8 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal((await row("T1")).attempt, prepared.item.attempt);
       assert.equal(await hook("tool_call", { toolName: "wait", toolCallId: `cleared-${sequence++}`, input: {} }), undefined);
     }
-    const { taskFile: _taskFile, ...corrected } = prepared.input;
-    const next = { ...prepared, input: corrected, toolCallId: `corrected-${sequence++}` };
-    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: next.toolCallId, input: corrected }), undefined);
+    const next = { ...prepared, toolCallId: `corrected-${sequence++}` };
+    assert.equal(await hook("tool_call", { toolName: "task", toolCallId: next.toolCallId, input: next.input }), undefined);
     await publish(next, "CorrectedWorker");
     ok(await done("T1", "CorrectedWorker"));
     assert.equal((await row("T1")).status, "done");
@@ -1182,13 +1174,13 @@ async function scenario(name: string, root: string): Promise<void> {
     };
     const toolCallId = `batch-${sequence++}`;
     assert.equal(await hook("tool_call", { toolName: "task", toolCallId, input }), undefined);
-    const error = "Task 2 must provide exactly one of `task` or `taskFile`.";
+    const error = "Task 2 is missing `task`. Every task needs complete, self-contained instructions.";
     const first = { item: items[0] as LedgerItem, current, input, toolCallId };
     if (name === "retry-batch-after-spawn") await publish(first, "BatchSucceeded", { finalResult: false });
     await hook("tool_result", {
       toolName: "task",
       toolCallId,
-      input: { ...input, tasks: input.tasks.map((task, index) => (index === 1 ? { ...task, taskFile: "" } : task)) },
+      input,
       isError: true,
       details: { results: name === "retry-batch-after-spawn" ? [{ id: "BatchSucceeded", index: 0, exitCode: 0 }] : [] },
       content: [{ type: "text", text: error }],
@@ -1237,7 +1229,7 @@ async function scenario(name: string, root: string): Promise<void> {
   if (name === "retry-post-spawn" || name === "retry-ambiguous-spawn") {
     for (let index = 0; index < 2; index += 1) {
       const prepared = await prepare("T1");
-      const error = "The call must provide exactly one of `task` or `taskFile`.";
+      const error = "Missing `task`. Provide complete, self-contained instructions for the agent.";
       const childAgentId = `Executed${index}`;
       if (name === "retry-post-spawn") await publish(prepared, childAgentId, { finalError: error });
       else
@@ -2793,12 +2785,11 @@ async function scenario(name: string, root: string): Promise<void> {
     };
     const first = await verify();
     if (name === "heavy-pre-spawn") {
-      await refuseTaskFile({ ...first.input, taskFile: "" });
-      const error = "The call must provide exactly one of `task` or `taskFile`.";
+      const error = "Missing `task`. Provide complete, self-contained instructions for the agent.";
       await hook("tool_result", {
         toolName: "task",
         toolCallId: first.toolCallId,
-        input: { ...first.input, taskFile: "" },
+        input: first.input,
         isError: true,
         details: { results: [] },
         content: [{ type: "text", text: error }],
@@ -3487,7 +3478,7 @@ if (process.env[CHILD_ENV]) {
       "tier-judge-fallback",
       "review-round-limit",
       "review-artifacts",
-      "task-file-governance",
+      "steps-governance",
       "heavy-verify",
       "heavy-wake-after-failure",
       "heavy-wake-spends-budget",

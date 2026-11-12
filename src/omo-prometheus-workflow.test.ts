@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  assignedRowIds,
+  carriesAtlasAssignment,
   executionBlockReason,
   executionToolSourceBlockReason,
   isApprovedPlanHandoff,
+  isPlanReviewDispatch,
   nestedXdevToolCall,
   parseAtlasCommand,
   parsePrometheusCommand,
@@ -153,46 +156,28 @@ describe("plan-gated reviewer spawns", () => {
     ).toContain("reviewer");
   });
 
-  test("refuses taskFile for gated agents before parsing their assignments", () => {
-    for (const phase of [undefined, "idle", "planning", "executing"] as const) {
-      for (const agent of ["metis", "momus"]) {
-        expect(taskSpawnBlockReason(phase, { agent, taskFile: "review.md" })).toContain("inline in task");
-      }
-    }
+  test("gates a stepped reviewer by its first step", () => {
+    expect(taskSpawnBlockReason("idle", { agent: "momus", steps: ["Review the plan", "Report"] })).toContain("reviewer");
+    expect(taskSpawnBlockReason("executing", { agent: "momus", steps: ["F1 review_kind: compliance", "Report"] })).toBeUndefined();
+    expect(taskSpawnBlockReason("executing", { agent: "momus", steps: ["Read the plan", "Report the verdict"] })).toContain("reviewer");
   });
 
-  test("refuses every file-backed member of a governed batch", () => {
-    const fileTask = { agent: "scout", taskFile: "research.md" };
-    expect(
-      taskSpawnBlockReason("planning", {
-        context: "Inspect planning assumptions.",
-        tasks: [{ agent: "metis", task: "Find planning gaps" }, fileTask],
-      }),
-    ).toContain("inline in task");
-    expect(
-      taskSpawnBlockReason("planning", {
-        context: "review_kind: high_accuracy",
-        tasks: [fileTask],
-      }),
-    ).toContain("inline in task");
-    expect(
-      taskSpawnBlockReason("planning", {
-        context: "Independent reviews",
-        tasks: [{ agent: "reviewer", task: "review_kind: routine" }, fileTask],
-      }),
-    ).toContain("inline in task");
+  test("refuses a binding line outside the first step while planning or executing", () => {
+    const review = "absolute_plan_path: /plans/current.md\nreview_round: r1\nreview_kind: routine";
+    const batch = { context: "Independent reviews", tasks: [{ agent: "reviewer", steps: ["Read the plan", review] }] };
+    expect(taskSpawnBlockReason("planning", batch)).toContain("first entry of `steps`");
+    const row = { agent: "task", steps: ["Do the work", 'atlas_assignment: {"rows":{"T1":"a1"}}'] };
+    expect(taskSpawnBlockReason("executing", row)).toContain("first entry of `steps`");
+    expect(taskSpawnBlockReason("idle", row)).toBeUndefined();
   });
 
-  test("refuses file-backed Atlas research even with a decoy inline task", () => {
-    expect(taskSpawnBlockReason("executing", { agent: "scout", taskFile: "research.md" })).toContain("inline in task");
-    expect(taskSpawnBlockReason("executing", { agent: "scout", taskFile: "research.md", task: "Inspect read-only evidence" })).toContain(
-      "inline in task",
-    );
-  });
-
-  test("leaves ordinary taskFile calls outside workflow governance untouched", () => {
-    for (const phase of [undefined, "idle", "planning"] as const) {
-      expect(taskSpawnBlockReason(phase, { agent: "scout", taskFile: "research.md" })).toBeUndefined();
-    }
+  test("reads row and review bindings from a stepped item's first step", () => {
+    const binding = 'atlas_assignment: {"planSha256":"x","rows":{"T1":"a1"}}';
+    const input = { context: "shared", tasks: [{ agent: "task", steps: [`${binding}\nBuild it`, "Report"] }] };
+    expect(carriesAtlasAssignment(input)).toBe(true);
+    expect(assignedRowIds(input)).toEqual(["T1"]);
+    expect(carriesAtlasAssignment({ agent: "scout", steps: ["Read the module", "Summarize it"] })).toBe(false);
+    const review = "absolute_plan_path: /plans/current.md\nreview_round: r1\nreview_kind: routine";
+    expect(isPlanReviewDispatch({ agent: "momus", steps: [review, "Report the verdict"] })).toBe(true);
   });
 });

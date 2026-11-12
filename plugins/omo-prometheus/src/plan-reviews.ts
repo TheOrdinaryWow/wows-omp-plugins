@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import { planDigest } from "#src/ledger.ts";
 import { withLedgerLock } from "#src/ledger-store.ts";
+import { taskBody } from "#src/workflow.ts";
 
 type ReviewKind = "routine" | "high_accuracy";
 type ReviewVerdict = "okay" | "reject" | "inconclusive";
@@ -50,9 +51,10 @@ export function planReviewBindings(input: unknown): ReviewBinding[] {
   const tasks = Array.isArray(args.tasks) ? args.tasks : [args];
   return tasks.flatMap((raw, index) => {
     const task = object(raw);
-    if (typeof task?.task !== "string" || task.taskFile !== undefined) return [];
+    const body = taskBody(task);
+    if (!task || body === undefined) return [];
     const fields = new Map<string, string>();
-    for (const line of task.task.split("\n")) {
+    for (const line of body.split("\n")) {
       const separator = line.indexOf(":");
       if (separator < 0) continue;
       const key = line.slice(0, separator).trim();

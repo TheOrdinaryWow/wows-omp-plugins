@@ -61,7 +61,9 @@ describe("Prometheus pre-approval review diagnostics", () => {
       "absolute_plan_path: /plans/first.md\nabsolute_plan_path: /plans/second.md\nreview_kind: routine\nreview_round: r1",
     ])
       expect(planReviewBindings({ agent: "momus", task })).toEqual([]);
-    expect(planReviewBindings({ ...reviewTask("/plans/current.md"), taskFile: "review.md" })).toEqual([]);
+    const stepped = reviewTask("/plans/current.md");
+    expect(planReviewBindings({ agent: stepped.agent, steps: [stepped.task, "Summarize the verdict"] })).toHaveLength(1);
+    expect(planReviewBindings({ agent: stepped.agent, steps: ["Read the plan", stepped.task] })).toEqual([]);
   });
 
   test("archives both review lanes against dispatch-time bytes, with exclusive numbering and durable session deduplication", async () => {

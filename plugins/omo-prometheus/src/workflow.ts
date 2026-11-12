@@ -167,24 +167,40 @@ function nonEmptyString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+/**
+ * The text of a task item that carries its bindings: its `task`, or the first of its `steps`. The host gives a stepped
+ * child that step first and each later one only once the previous is finished, so a binding elsewhere arrives too late.
+ */
+export function taskBody(item: Record<string, unknown> | undefined): string | undefined {
+  if (typeof item?.task === "string") return item.task;
+  const first = Array.isArray(item?.steps) ? item.steps[0] : undefined;
+  return typeof first === "string" ? first : undefined;
+}
+
 /** Parse the ordinary single and batch task-tool shapes without importing another plugin. */
 function parseTaskSpawns(input: unknown): ParsedTaskSpawn[] | undefined {
   const args = record(input);
   if (!args) return undefined;
   if (Object.hasOwn(args, "tasks")) {
-    if (!Array.isArray(args.tasks) || args.tasks.length === 0 || Object.hasOwn(args, "task") || !nonEmptyString(args.context)) {
+    if (
+      !Array.isArray(args.tasks) ||
+      args.tasks.length === 0 ||
+      Object.hasOwn(args, "task") ||
+      Object.hasOwn(args, "steps") ||
+      !nonEmptyString(args.context)
+    ) {
       return undefined;
     }
     const routes: ParsedTaskSpawn[] = [];
     for (const rawItem of args.tasks) {
       const item = record(rawItem);
-      const assignment = nonEmptyString(item?.task);
+      const assignment = nonEmptyString(taskBody(item));
       if (!item || !assignment || (Object.hasOwn(item, "agent") && typeof item.agent !== "string")) return undefined;
       routes.push({ assignment, requestedAgent: nonEmptyString(item.agent) });
     }
     return routes;
   }
-  const assignment = nonEmptyString(args.task);
+  const assignment = nonEmptyString(taskBody(args));
   if (!assignment || (Object.hasOwn(args, "agent") && typeof args.agent !== "string")) return undefined;
   return [{ assignment, requestedAgent: nonEmptyString(args.agent) }];
 }
@@ -193,23 +209,27 @@ const PLAN_GATED_AGENTS: Record<string, true> = { metis: true, momus: true };
 const PLAN_GATED_SPAWN_REASON =
   "`metis` and `momus` are spawnable only during Prometheus planning; during Atlas execution only `momus` with `review_kind: compliance` is allowed for F1. Use `reviewer` outside planning.";
 const REVIEW_BINDING_LINE = /^\s*(?:absolute_plan_path|review_round|review_kind|compliance_bundle_path)\s*:/m;
+const ATLAS_ASSIGNMENT_LINE = /^\s*atlas_assignment:/m;
 const REVIEW_BINDING_CONTEXT_REASON =
-  "Review binding lines (`absolute_plan_path`, `review_round`, `review_kind`, `compliance_bundle_path`) go in each reviewer's own `task` text, never in the shared `context`: reviewers look for the binding only in their assignment and return [INCONCLUSIVE] without reviewing when it is not there. Move the lines into every reviewer's task and dispatch again.";
+  "Review binding lines (`absolute_plan_path`, `review_round`, `review_kind`, `compliance_bundle_path`) go in each reviewer's own `task` text, never in the shared `context`: reviewers look for the binding only in their assignment and return [INCONCLUSIVE] without reviewing when it is not there. Move the lines into every reviewer's task (the first of its `steps` when it has steps) and dispatch again.";
+const LATE_STEP_BINDING_REASON =
+  "Binding lines (`absolute_plan_path`, `review_round`, `review_kind`, `compliance_bundle_path`, `atlas_assignment`) go in the first entry of `steps`: a stepped child starts with that step alone, and bindings are read only there. Move them into the first step and dispatch again.";
 
 /** Return a block reason for plan-gated reviewer spawns, or undefined for an allowed/ordinary task call. */
 export function taskSpawnBlockReason(phase: PrometheusPhase | undefined, input: unknown): string | undefined {
   const args = record(input);
   const items = Array.isArray(args?.tasks) ? args.tasks.map(record) : [args];
-  if (items.some((item) => item && Object.hasOwn(item, "taskFile"))) {
-    const gated = items.some((item) => typeof item?.agent === "string" && PLAN_GATED_AGENTS[item.agent] === true);
-    const review = [args?.context, ...items.map((item) => item?.task)].some(
-      (text) => typeof text === "string" && PLAN_REVIEW_KIND.test(text),
+  if (phase === "planning" || phase === "executing") {
+    if (typeof args?.context === "string" && REVIEW_BINDING_LINE.test(args.context)) return REVIEW_BINDING_CONTEXT_REASON;
+    const late = items.some(
+      (item) =>
+        Array.isArray(item?.steps) &&
+        item.steps
+          .slice(1)
+          .some((step) => typeof step === "string" && (REVIEW_BINDING_LINE.test(step) || ATLAS_ASSIGNMENT_LINE.test(step))),
     );
-    if (phase === "executing" || gated || review)
-      return "Prometheus/Atlas-governed task calls do not accept taskFile; put every assignment inline in task so review and row bindings can be checked.";
+    if (late) return LATE_STEP_BINDING_REASON;
   }
-  if ((phase === "planning" || phase === "executing") && typeof args?.context === "string" && REVIEW_BINDING_LINE.test(args.context))
-    return REVIEW_BINDING_CONTEXT_REASON;
   const routes = parseTaskSpawns(input);
   if (!routes) return undefined;
   const gated = routes.filter((route) => route.requestedAgent && PLAN_GATED_AGENTS[route.requestedAgent] === true);
@@ -242,20 +262,23 @@ export function parseReviewRoundLimit(value: unknown): number {
   throw new Error(`invalid reviewRoundLimit ${JSON.stringify(value)}`);
 }
 
+/** The texts of a native task call that may carry a binding: the batch context and each item's body. */
+function bindingTexts(args: Record<string, unknown>): unknown[] {
+  return [args.context, taskBody(args), ...(Array.isArray(args.tasks) ? args.tasks.map((item) => taskBody(record(item))) : [])];
+}
+
 /** Whether any task in a native call carries an `atlas_assignment` binding line (in its body or the batch context). */
 export function carriesAtlasAssignment(input: unknown): boolean {
   const args = record(input);
   if (!args) return false;
-  const texts = [args.context, args.task, ...(Array.isArray(args.tasks) ? args.tasks.map((item) => record(item)?.task) : [])];
-  return texts.some((text) => typeof text === "string" && /^\s*atlas_assignment:/m.test(text));
+  return bindingTexts(args).some((text) => typeof text === "string" && ATLAS_ASSIGNMENT_LINE.test(text));
 }
 
 /** Row ids named by the parseable `atlas_assignment` bindings of a native task call, verifier bindings included. */
 export function assignedRowIds(input: unknown): string[] {
   const args = record(input);
   if (!args) return [];
-  const texts = [args.context, args.task, ...(Array.isArray(args.tasks) ? args.tasks.map((item) => record(item)?.task) : [])];
-  return texts.flatMap((text) =>
+  return bindingTexts(args).flatMap((text) =>
     typeof text !== "string"
       ? []
       : [...text.matchAll(/^\s*atlas_assignment:\s*(\{[^\n]+\})\s*$/gm)].flatMap(([, json]) => {
