@@ -1,6 +1,6 @@
 {
   "name": "snippets",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Reusable global and workspace text snippets with send-time shortcuts",
   "author": {
     "name": "TheOrdinaryWow"

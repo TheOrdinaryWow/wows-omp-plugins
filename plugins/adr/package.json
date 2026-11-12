@@ -1,6 +1,6 @@
 {
   "name": "wows-omp-plugin-adr",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "private": true,
   "description": "Tool-managed MADR architecture decision records",

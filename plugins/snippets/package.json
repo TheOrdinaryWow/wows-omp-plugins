@@ -1,6 +1,6 @@
 {
   "name": "wows-omp-plugin-snippets",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "private": true,
   "description": "Reusable global and workspace text snippets with send-time shortcuts",
