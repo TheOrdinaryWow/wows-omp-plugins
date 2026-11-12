@@ -16,7 +16,7 @@ const QUESTIONS = {
       "The state describes one task of an approved software implementation plan. One agent will implement the task and show that its acceptance checks pass; the whole change is reviewed again at the end. Decide whether this task additionally needs a second, independent agent to re-verify it right after it is implemented (HEAVY), or not (LIGHT). Judge only from the task description.",
     criteria: {
       HEAVY:
-        "The task changes production code or stored data, and a defect its own acceptance checks miss would plausibly cause one of: unauthorized access, a bypassed permission or policy check, a security or protection function that silently stops enforcing, or exposed secrets; loss or corruption of durably stored data; a destructive or irreversible migration or format cutover; money or paid quota charged, settled or credited wrongly; breaking existing callers of a published or cross-component contract; a concurrency defect on a production path. Or the task changes shared behavior that several other modules must change with. Or the task is by itself a very large new production subsystem.",
+        "The task changes production code or stored data, and a defect its own acceptance checks miss would plausibly cause one of: unauthorized access, a bypassed permission or policy check, protection that silently stops in a system whose own purpose is to enforce security, or exposed secrets; loss or corruption of durably stored data; a destructive or irreversible migration or format cutover; money or paid quota charged, settled or credited wrongly; breaking existing callers of a published or cross-component contract; a concurrency defect on a production path. Or the task changes shared behavior that several other modules must change with. Or the task is by itself a very large new production subsystem.",
       LIGHT:
         "Any other task. In particular: tests, test harnesses, conformance, interop or scale suites, benchmarks, QA or evidence runs; documentation and reports; front-end presentation that calls existing server APIs; scripts, CI, build and local tooling; and production changes confined to one module whose failures show up in the task's own acceptance run, such as logging, metrics, renames, configuration parsing and additive features.",
     },
@@ -122,12 +122,16 @@ export function evaluateTierRow(task: Pick<PlanTask, "id" | "tier" | "tierBasis"
     if (decision.tier !== (task.tier ?? "light")) {
       return `${task.id}: the judge decided ${judgment}. Change Tier: to ${decision.tier.toUpperCase()} and remove any planner basis; or ask the user to decide the tier, then record Tier basis: owner — <reason>.`;
     }
-    if (basis) return `${task.id}: the judge settled ${judgment}. Remove the Tier basis: line; it is only for a planner or owner decision.`;
+    if (basis)
+      return `${task.id}: the judge settled ${judgment}. Remove the Tier basis: line; it is only for an owner decision or for planning without a judge.`;
     return undefined;
   }
+  if (task.tier === "heavy") {
+    return `${task.id}: the judge is undecided (HEAVY probability ${decision.heavyProbability.toFixed(3)}), so the row defaults to LIGHT. Change Tier: to LIGHT and remove any planner basis; or, when a HEAVY criterion applies, put every such row to the user in one ask, each with its consequence and this probability, then record a confirmed row as Tier basis: owner — <reason>.`;
+  }
   return basis
-    ? undefined
-    : `${task.id}: the judge is undecided (HEAVY probability ${decision.heavyProbability.toFixed(3)}). Decide the tier by the written criteria and add Tier basis: explaining the consequence of an uncaught defect, or why none applies. For an owner-decided tier, ask the user first, then record Tier basis: owner — <reason>.`;
+    ? `${task.id}: the judge is undecided, so the row keeps the LIGHT default. Remove the Tier basis: line; it is only for an owner decision or for planning without a judge.`
+    : undefined;
 }
 
 export function resolveTierJudge(ctx: ExtensionContext): ChainJudge {
