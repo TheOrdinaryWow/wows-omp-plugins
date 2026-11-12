@@ -4,7 +4,7 @@
 
 ## 规划交接
 
-只有规划者通过 `ask` 提出的、标题为 `Prometheus` 且第二个选项指名 Prometheus 的那个问题，才算同意把普通 `/plan` 会话切换到 Prometheus。
+在普通 `/plan` 会话里，规划者判断需求复杂时会调用 `prometheus_activate`。这个工具不带参数，由它自己弹出二选一对话框（标准规划、Prometheus）；只有用户在这里选了 Prometheus，会话才会切换。保留标准规划或关掉对话框后，这一轮 plan 模式不会再问。没有对话框可用时工具拒绝执行。
 
 Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execute”会开启一个新会话；为了让交接在切换后仍然有效，插件会在提出计划时把一个标记写入 `local://prometheus/<slug>.proposal.json`，OMP 会把它和计划一起复制到新会话。普通 Plan Mode 批准的计划没有这个标记，插件不会处理它们。
 

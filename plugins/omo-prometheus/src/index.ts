@@ -138,14 +138,10 @@ import {
   inlinesApprovedPlan,
   isApprovedPlanHandoff,
   isPlanReviewDispatch,
-  isPrometheusOptInConsent,
-  isPrometheusOptInQuestion,
   nestedXdevToolCall,
   OPT_IN_ADDENDUM,
   PLANNING_PREAMBLE,
   PLUGIN_OWNED_TOOLS,
-  PROMETHEUS_DEEP_OPTION_INDEX,
-  PROMETHEUS_OPT_IN_QUESTION_ID,
   parseAtlasCommand,
   parseAtlasSubcommand,
   parsePrometheusCommand,
@@ -164,6 +160,8 @@ const ACTIVATE_TOOL = "prometheus_activate";
 const RELEASE_TOOL = "atlas_release";
 const LEDGER_TOOL = "atlas_ledger";
 const GIT_TOOL = "atlas_git";
+const STANDARD_PLANNING_CHOICE = "Standard planning: stay in OMP's plan mode";
+const PROMETHEUS_PLANNING_CHOICE = "Prometheus: interview, gap analysis and plan review, then Atlas executes the approved plan";
 const STATE_ENTRY = "wows-omp-omo-prometheus.state";
 const COMMAND_STATUS_TYPE = "wows-omp-omo-prometheus.command-status";
 const ATLAS_START_TYPE = "wows-omp-omo-prometheus.atlas-start";
@@ -263,7 +261,6 @@ interface SessionRecord {
   planningModeEntryId?: string;
   offeredForModeEntryId?: string;
   suppressedForModeEntryId?: string;
-  pendingConsent?: { askToolCallId: string; modeEntryId: string };
   proposalAwaitingApproval?: boolean;
   approvalCompactionPending?: boolean;
   /** In-memory, single-use proof that this native compact approval may reset the host reference. */
@@ -303,7 +300,6 @@ function errorMessage(error: unknown): string {
 
 export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
-  const authorizedActivationCalls = new Map<string, string>();
   const reviewLevels = new Map<string, ReviewLevel>();
   const reviewRoundLimits = new Map<string, number>();
   const tierJudgeSettings = new Map<string, TierJudgeSettings>();
@@ -1095,7 +1091,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     const ownership = record.ownership;
     const episodeId = planModeEpisodeId(ctx);
-    authorizedActivationCalls.clear();
     // Invalidate in-flight publication synchronously, before any file or UI operation.
     record.phase = "idle";
     pendingTodoRefreshes.delete(ctx.sessionManager.getSessionId());
@@ -1113,7 +1108,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.proposedByToolCallId = undefined;
     record.offeredForModeEntryId = episodeId;
     record.suppressedForModeEntryId = episodeId;
-    record.pendingConsent = undefined;
     record.proposalAwaitingApproval = false;
     record.approvalCompactionPending = false;
     record.compactHandoffPending = false;
@@ -1675,7 +1669,6 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.proposedByToolCallId = undefined;
       record.offeredForModeEntryId = undefined;
       record.suppressedForModeEntryId = undefined;
-      record.pendingConsent = undefined;
       record.proposalAwaitingApproval = false;
       record.approvalCompactionPending = false;
       record.compactHandoffPending = false;
@@ -1830,7 +1823,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.phase = "executing";
     const activation = {};
     record.activation = activation;
-    record.pendingConsent = undefined;
     record.proposalAwaitingApproval = false;
     record.approvalCompactionPending = false;
     record.offeredForModeEntryId = undefined;
@@ -1930,7 +1922,6 @@ export default function prometheus(pi: ExtensionAPI): void {
           record.roadmapStage = undefined;
           record.proposedByToolCallId = undefined;
           record.planningModeEntryId = undefined;
-          record.pendingConsent = undefined;
           record.proposalAwaitingApproval = false;
           record.approvalCompactionPending = false;
           record.offerPendingForModeEntryId = undefined;
@@ -2009,10 +2000,7 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   const z = pi.zod;
-  const activateParameters = z.object({
-    questionId: z.literal(PROMETHEUS_OPT_IN_QUESTION_ID),
-    selectedOptionIndex: z.literal(PROMETHEUS_DEEP_OPTION_INDEX),
-  });
+  const activateParameters = z.object({});
   const releaseParameters = z.object({
     reason: z.string().describe("Concise summary of completed child-produced evidence shown to the user before release"),
   });
@@ -2125,48 +2113,50 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Prometheus Activate",
     description:
-      "Activate Prometheus only after the immediately preceding native ask result records explicit option-index consent for the fixed Prometheus question.",
+      "Offer the user Prometheus deep planning for a complex request in native plan mode. Takes no arguments: the plugin shows the choice itself and activates Prometheus only when the user picks it.",
     parameters: activateParameters,
     ...activateCard,
     defaultInactive: true,
     loadMode: "essential",
     approval: "read",
-    execute: async (
-      toolCallId,
-      _params: { questionId: typeof PROMETHEUS_OPT_IN_QUESTION_ID; selectedOptionIndex: typeof PROMETHEUS_DEEP_OPTION_INDEX },
-      _signal,
-      _onUpdate,
-      ctx,
-    ) => {
-      const consentAskToolCallId = authorizedActivationCalls.get(toolCallId);
-      authorizedActivationCalls.delete(toolCallId);
-      if (!consentAskToolCallId) {
-        return {
-          content: [{ type: "text" as const, text: "Prometheus activation has no correlated explicit native ask consent." }],
-          isError: true,
-          details: {},
-        };
-      }
+    execute: async (_toolCallId, _params: typeof activateParameters.infer, signal, _onUpdate, ctx) => {
+      const refuse = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
       const live = mainSession(ctx);
-      if (!live || !ctx.hasUI || live.getPlanModeState()?.enabled !== true) {
+      const sessionId = ctx.sessionManager.getSessionId();
+      const record = records.get(sessionId) ?? rehydrate(ctx) ?? recordFor(sessionId);
+      const episodeId = planModeEpisodeId(ctx);
+      const offerable = () =>
+        live?.getPlanModeState()?.enabled === true &&
+        record.phase === "idle" &&
+        episodeId !== undefined &&
+        planModeEpisodeId(ctx) === episodeId;
+      if (!ctx.hasUI || !offerable()) {
+        return refuse("Prometheus can be offered only in the interactive main session, in native plan mode, before planning has started.");
+      }
+      if (record.suppressedForModeEntryId === episodeId) {
+        return refuse("The user already kept standard planning for this plan-mode episode. Continue native planning.");
+      }
+      const choice = await ctx.ui.select(
+        "This request looks complex. Plan it with Prometheus?",
+        [STANDARD_PLANNING_CHOICE, PROMETHEUS_PLANNING_CHOICE],
+        signal ? { initialIndex: 1, signal } : { initialIndex: 1 },
+      );
+      if (!offerable()) return refuse("Plan mode changed while the choice was open; nothing was activated.");
+      if (choice !== PROMETHEUS_PLANNING_CHOICE) {
+        record.suppressedForModeEntryId = episodeId;
+        persist(ctx, record);
+        await syncTools(ctx, false, false, false);
         return {
           content: [
             {
               type: "text" as const,
-              text: "Prometheus activation requires the interactive main session with active native plan mode.",
+              text: "The user kept standard planning. Continue ordinary native plan mode; Prometheus is not offered again in this plan-mode episode.",
             },
           ],
-          isError: true,
-          details: {},
+          details: { activated: false },
         };
       }
-      if (!(await activate(ctx))) {
-        return {
-          content: [{ type: "text" as const, text: "Prometheus prompt assets are unavailable; activation was refused." }],
-          isError: true,
-          details: {},
-        };
-      }
+      if (!(await activate(ctx))) return refuse("Prometheus prompt assets are unavailable; activation was refused.");
       await syncTools(ctx, false, false, false);
       return {
         content: [
@@ -2175,11 +2165,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             text: "Prometheus activated. The complete workflow is injected for the next model step and subsequent planning turns.",
           },
         ],
-        details: {
-          questionId: PROMETHEUS_OPT_IN_QUESTION_ID,
-          selectedOptionIndex: PROMETHEUS_DEEP_OPTION_INDEX,
-          consentAskToolCallId,
-        },
+        details: { activated: true },
       };
     },
   });
@@ -3086,7 +3072,6 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.roadmapStage = undefined;
         record.proposedByToolCallId = undefined;
         record.planningModeEntryId = undefined;
-        record.pendingConsent = undefined;
         record.proposalAwaitingApproval = false;
         record.approvalCompactionPending = false;
         record.offerPendingForModeEntryId = undefined;
@@ -3122,7 +3107,6 @@ export default function prometheus(pi: ExtensionAPI): void {
         record.roadmapStage = undefined;
         record.proposedByToolCallId = undefined;
         record.planningModeEntryId = undefined;
-        record.pendingConsent = undefined;
         record.proposalAwaitingApproval = false;
         record.approvalCompactionPending = false;
         record.offerPendingForModeEntryId = undefined;
@@ -3223,30 +3207,10 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (provenance?.source !== "extension" || provenance.path !== RUNTIME_SOURCE_PATH) {
         return { block: true, reason: "Prometheus activation tool provenance is not trusted." };
       }
-      const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
-      const params = event.input as { questionId?: unknown; selectedOptionIndex?: unknown };
-      const episodeId = planModeEpisodeId(ctx);
-      const consent = record?.pendingConsent;
-      const authorized =
-        record?.phase === "idle" &&
-        live.getPlanModeState()?.enabled === true &&
-        typeof episodeId === "string" &&
-        consent?.modeEntryId === episodeId &&
-        params.questionId === PROMETHEUS_OPT_IN_QUESTION_ID &&
-        params.selectedOptionIndex === PROMETHEUS_DEEP_OPTION_INDEX;
-      if (!authorized || !record || !consent) {
-        return {
-          block: true,
-          reason: "Prometheus activation was denied: no matching non-timeout native ask selection for this plan-mode episode.",
-        };
-      }
-      record.pendingConsent = undefined;
-      authorizedActivationCalls.set(event.toolCallId, consent.askToolCallId);
       return undefined;
     }
     if (!live) return undefined;
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
-    if (event.toolName === "ask" && record) record.pendingConsent = undefined;
     if (event.toolName === "write" && record?.phase === "planning" && live.getPlanModeState()?.enabled === true) {
       const proposalDetail = await proposalGrammarBlockReason(ctx, event.input);
       if (proposalDetail) return { block: true, reason: proposalDetail };
@@ -3419,22 +3383,6 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     observeFinalJobs(ctx);
 
-    if (event.toolName === "ask") {
-      record.pendingConsent = undefined;
-      const episodeId = planModeEpisodeId(ctx);
-      const fixedQuestion = provenanceBlockReason("ask") === undefined && isPrometheusOptInQuestion(event.input);
-      if (record.phase === "idle" && live.getPlanModeState()?.enabled === true && episodeId && fixedQuestion) {
-        if (isPrometheusOptInConsent(event.input, event.details, event.isError, ctx.hasUI)) {
-          record.pendingConsent = { askToolCallId: event.toolCallId, modeEntryId: episodeId };
-        } else {
-          record.suppressedForModeEntryId = episodeId;
-          persist(ctx, record);
-          await syncTools(ctx, false, false, false);
-        }
-      }
-      return undefined;
-    }
-
     const proposedPath = proposedPlanPathFromToolResult(event.toolName, event.isError, event.details);
     if (!proposedPath || provenanceBlockReason("write") !== undefined || record.phase !== "planning") return undefined;
     record.planFilePath = proposedPath;
@@ -3567,7 +3515,6 @@ export default function prometheus(pi: ExtensionAPI): void {
       }
       clearObservation(ctx, sessionId);
     }
-    authorizedActivationCalls.clear();
     const sessionId = ctx.sessionManager.getSessionId();
     const live = mainSession(ctx);
     const knownBinding = live ? hostBindings.get(live) : undefined;
@@ -3670,6 +3617,5 @@ export default function prometheus(pi: ExtensionAPI): void {
     herdrDag.forget(sessionId);
     roadmap.forget(sessionId);
     adr.forget(sessionId);
-    authorizedActivationCalls.clear();
   });
 }

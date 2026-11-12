@@ -470,11 +470,12 @@ export const activateCard = {
     return { tool: head(ACTIVATE_TITLE) };
   },
   describeResult(result: CardResult, _options: RenderResultOptions): NativeToolView {
-    return memoized(result, [], () =>
-      result.isError
-        ? textView(ACTIVATE_TITLE, "refused", result, "Activation refused.")
-        : { ...textView(ACTIVATE_TITLE, "activated", result, "Prometheus activated."), tone: "success" },
-    );
+    return memoized(result, [], () => {
+      if (result.isError) return textView(ACTIVATE_TITLE, "refused", result, "Activation refused.");
+      if ((result.details as { activated?: unknown } | undefined)?.activated === false)
+        return textView(ACTIVATE_TITLE, "standard planning", result, "Standard planning kept.");
+      return { ...textView(ACTIVATE_TITLE, "activated", result, "Prometheus activated."), tone: "success" };
+    });
   },
   mergeCallAndResult: true,
 };

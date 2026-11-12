@@ -4,27 +4,12 @@ import {
   executionBlockReason,
   executionToolSourceBlockReason,
   isApprovedPlanHandoff,
-  isPrometheusOptInConsent,
-  isPrometheusOptInQuestion,
   nestedXdevToolCall,
-  PROMETHEUS_OPT_IN_QUESTION_ID,
   parseAtlasCommand,
   parsePrometheusCommand,
   proposedPlanPathFromToolResult,
   taskSpawnBlockReason,
 } from "../plugins/omo-prometheus/src/workflow.ts";
-
-const optInInput = {
-  questions: [
-    {
-      id: PROMETHEUS_OPT_IN_QUESTION_ID,
-      header: "Prometheus",
-      question: "Choose planning depth",
-      multi: false,
-      options: [{ label: "Standard" }, { label: "Prometheus" }],
-    },
-  ],
-};
 
 const approvedPrompt = (path: string) =>
   `Plan approved.\nFull plan inlined below; durable copy at \`${path}\`\n<plan path="${path}">\n# Plan\n</plan>`;
@@ -43,38 +28,6 @@ describe("Prometheus command parsing", () => {
     expect(parseAtlasCommand("/atlasx")).toBeUndefined();
     expect(parseAtlasCommand("/Atlas")).toBeUndefined();
     expect(parsePrometheusCommand("/atlas integrity")).toBeUndefined();
-  });
-});
-
-describe("native plan opt-in consent", () => {
-  test("accepts only the fixed deep-planning choice from an interactive ask result", () => {
-    expect(isPrometheusOptInQuestion(optInInput)).toBe(true);
-    expect(
-      isPrometheusOptInConsent(optInInput, { options: ["Standard", "Prometheus"], selectedOptions: ["Prometheus"] }, false, true),
-    ).toBe(true);
-
-    expect(
-      isPrometheusOptInConsent(
-        optInInput,
-        { options: ["Standard", "Prometheus"], selectedOptions: ["Prometheus"], timedOut: true },
-        false,
-        true,
-      ),
-    ).toBe(false);
-    expect(isPrometheusOptInConsent(optInInput, { options: ["Standard", "Prometheus"], selectedOptions: ["Standard"] }, false, true)).toBe(
-      false,
-    );
-    expect(
-      isPrometheusOptInConsent(optInInput, { options: ["Standard", "Prometheus"], selectedOptions: ["Prometheus"] }, false, false),
-    ).toBe(false);
-  });
-
-  test("rejects a matching id whose header or deep-choice label lacks Prometheus provenance", () => {
-    const original = optInInput.questions[0];
-    expect(isPrometheusOptInQuestion({ questions: [{ ...original, header: "Other" }] })).toBe(false);
-    expect(isPrometheusOptInQuestion({ questions: [{ ...original, options: [{ label: "Standard" }, { label: "Advanced" }] }] })).toBe(
-      false,
-    );
   });
 });
 

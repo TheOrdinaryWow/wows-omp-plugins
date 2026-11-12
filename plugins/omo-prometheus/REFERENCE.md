@@ -4,7 +4,7 @@ English | [简体中文](REFERENCE.zh.md)
 
 ## Planning handoff
 
-Only the planner's `ask` question with the header `Prometheus`, whose second option names Prometheus, counts as consent to switch an ordinary `/plan` session to Prometheus.
+In an ordinary `/plan` session the planner calls `prometheus_activate` for a request it judges complex. The tool takes no arguments and shows a two-option dialog itself (standard planning, Prometheus); only the user picking Prometheus there switches the session. Keeping standard planning, or dismissing the dialog, ends the offer for that plan-mode episode. Without a dialog the tool refuses.
 
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session, so the plugin writes a marker to `local://prometheus/<slug>.proposal.json` at proposal time and OMP copies it into the new session with the plan. Plans approved in ordinary Plan Mode have no marker and are left alone.
 

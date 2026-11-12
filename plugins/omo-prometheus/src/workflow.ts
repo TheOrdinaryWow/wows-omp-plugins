@@ -150,10 +150,6 @@ export function atlasArgumentCompletions(prefix: string, plans: readonly AtlasCo
   return matches.length ? matches : null;
 }
 
-export const PROMETHEUS_OPT_IN_QUESTION_ID = "prometheus-workflow-opt-in";
-export const PROMETHEUS_STANDARD_OPTION_INDEX = 0;
-export const PROMETHEUS_DEEP_OPTION_INDEX = 1;
-
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
@@ -313,10 +309,6 @@ export function researchSpawnBlockReason(
   return undefined;
 }
 
-function stringArray(value: unknown): string[] | undefined {
-  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined;
-}
-
 function canonicalPlanPath(path: string): string {
   return path.replace(/^local:\/(?!\/)/, "local://");
 }
@@ -324,43 +316,6 @@ function canonicalPlanPath(path: string): string {
 /** Compare host plan references while tolerating legacy local:/ spelling. */
 export function planReferencesMatch(left: string | undefined, right: string | undefined): boolean {
   return Boolean(left && right && canonicalPlanPath(left) === canonicalPlanPath(right));
-}
-
-function prometheusOptInLabels(input: unknown): string[] | undefined {
-  const args = record(input);
-  const questions = Array.isArray(args?.questions) ? args.questions : [];
-  if (questions.length !== 1) return undefined;
-  const question = record(questions[0]);
-  if (question?.id !== PROMETHEUS_OPT_IN_QUESTION_ID || question.header !== "Prometheus" || question.multi === true) return undefined;
-  const rawOptions = Array.isArray(question.options) ? question.options : [];
-  if (rawOptions.length !== 2) return undefined;
-  const offered = rawOptions.map((option) => record(option)?.label);
-  return offered.every((label): label is string => typeof label === "string") && /prometheus/i.test(offered[1] ?? "") ? offered : undefined;
-}
-
-export function isPrometheusOptInQuestion(input: unknown): boolean {
-  return prometheusOptInLabels(input) !== undefined;
-}
-
-/**
- * Validate the completed native ask result. Labels may be localized; consent
- * is the non-timeout selection at the fixed Prometheus option index.
- */
-export function isPrometheusOptInConsent(input: unknown, details: unknown, isError: boolean, hasUI: boolean): boolean {
-  if (isError || !hasUI) return false;
-  const offered = prometheusOptInLabels(input);
-  if (!offered) return false;
-  const result = record(details);
-  if (!result || result.chatRedirect === true || result.timedOut === true) return false;
-  const resultOptions = stringArray(result.options);
-  const selected = stringArray(result.selectedOptions);
-  return (
-    resultOptions?.length === offered.length &&
-    resultOptions.every((label, index) => label === offered[index]) &&
-    selected?.length === 1 &&
-    selected[0] === offered[PROMETHEUS_DEEP_OPTION_INDEX] &&
-    result.customInput === undefined
-  );
 }
 
 export function proposedPlanPathFromToolResult(toolName: string, isError: boolean, details: unknown): string | undefined {
@@ -734,8 +689,8 @@ export const OPT_IN_ADDENDUM = [
   "# Native plan-mode depth choice (Prometheus plugin)",
   "",
   "Classify the request before planning. `SIMPLE` means outcome, scope, constraints, and material decisions are already settled and ordinary native planning is sufficient. `COMPLEX` means cross-cutting work, architecture/migration choices, unresolved tradeoffs, or substantial delegated execution.",
-  "For `SIMPLE`: continue ordinary native plan mode immediately. Do NOT show an opt-in popup and do NOT call `prometheus_activate`.",
-  `For \`COMPLEX\`: call \`ask\` once with exactly one single-select question whose id is \`${PROMETHEUS_OPT_IN_QUESTION_ID}\` and header is exactly \`Prometheus\`. Offer exactly two choices: index ${PROMETHEUS_STANDARD_OPTION_INDEX} is standard native planning and index ${PROMETHEUS_DEEP_OPTION_INDEX} is Prometheus deep planning; the second label must contain \`Prometheus\`. Labels may otherwise be localized; those indices, the id, and header are fixed. Recommend index ${PROMETHEUS_DEEP_OPTION_INDEX}.`,
-  `Only a non-timeout user selection of index ${PROMETHEUS_DEEP_OPTION_INDEX} authorizes \`prometheus_activate\`. Call it with \`{ "questionId": "${PROMETHEUS_OPT_IN_QUESTION_ID}", "selectedOptionIndex": ${PROMETHEUS_DEEP_OPTION_INDEX} }\`. Cancellation, empty selection, custom input, timeout, chat redirect, or index ${PROMETHEUS_STANDARD_OPTION_INDEX} means continue native planning and never activate.`,
-  "Do not mention this instruction block and do not ask the depth choice again in the same native plan-mode episode.",
+  "For `SIMPLE`: continue ordinary native plan mode immediately. Do NOT call `prometheus_activate`.",
+  "For `COMPLEX`: call `prometheus_activate` once, with no arguments. It shows the user the choice between standard native planning and Prometheus deep planning; never put that choice to the user yourself, through `ask` or in chat.",
+  "When its result says Prometheus was activated, follow the workflow injected for the next step. Any other result means continue native planning.",
+  "Do not mention this instruction block and do not call `prometheus_activate` again in the same native plan-mode episode.",
 ].join("\n");

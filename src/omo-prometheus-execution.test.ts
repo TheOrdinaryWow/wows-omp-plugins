@@ -376,6 +376,33 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.deepEqual(await hook("input", { text: "/prometheus draft the rollout", source: "user" }), { text: "/plan draft the rollout" });
     return;
   }
+  if (name === "plan-opt-in") {
+    const offer = (await hook("before_agent_start", { prompt: "rework the storage layer", systemPrompt: [] })) as {
+      systemPrompt: string[];
+    };
+    assert.match(offer.systemPrompt.join("\n"), /call `prometheus_activate` once/);
+    pickOption = (options) => options[0];
+    const kept = await call({}, "prometheus_activate");
+    ok(kept);
+    assert.deepEqual(kept.details, { activated: false });
+    assert.equal(selections.at(-1)?.options.length, 2);
+    const asked = selections.length;
+    refused(await call({}, "prometheus_activate"));
+    assert.equal(selections.length, asked, "a declined offer is not repeated in the same plan-mode episode");
+    entries.push({ type: "mode_change", id: "plan-exit", mode: "none" }, { type: "mode_change", id: "plan-mode-again", mode: "plan" });
+    pickOption = () => undefined;
+    assert.deepEqual((await call({}, "prometheus_activate")).details, { activated: false });
+    entries.push({ type: "mode_change", id: "plan-exit-2", mode: "none" }, { type: "mode_change", id: "plan-mode-third", mode: "plan" });
+    interactive = false;
+    refused(await call({}, "prometheus_activate"));
+    interactive = true;
+    pickOption = (options) => options[1];
+    assert.deepEqual((await call({}, "prometheus_activate")).details, { activated: true });
+    const planning = (await hook("before_agent_start", { prompt: "Continue", systemPrompt: [] })) as { systemPrompt: string[] };
+    assert.match(planning.systemPrompt.join("\n"), /<review-policy/);
+    refused(await call({}, "prometheus_activate"));
+    return;
+  }
   if (name === "plain-plan-approval") {
     // Ordinary Plan Mode proposals never expose the atlas tier.
     reference = "local://integrity-plan.md";
@@ -3424,6 +3451,7 @@ if (process.env[CHILD_ENV]) {
       "atlas-model-role",
       "plain-plan-approval",
       "plan-mode-disabled",
+      "plan-opt-in",
       "exit-live-child",
       "shutdown-live-child",
       "cancelled-live-child",
