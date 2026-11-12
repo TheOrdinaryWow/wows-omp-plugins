@@ -58,6 +58,8 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 
 One refusal lists every offending row at once.
 
+**Asking the user.** The question goes through OMP's own `ask` tool, called by the planner; the plugin adds no dialog of its own. The planner sends one question with one tickable choice per row and none preselected. Submitting with nothing ticked is an answer: every row keeps the judge's tier or the LIGHT default. The host decides how the question is drawn: the terminal UI shows it whole, and a host that only has simple dialogs walks through it one prompt at a time. A host without dialogs offers no `ask`, so the planner leaves the rows as they are and lists them in the proposal summary. Planning runs in plan mode, where `ask` has no timeout, so nothing is chosen on the user's behalf.
+
 **Fallback.** When `tierJudge` is off or no native judge is configured, every task needs a `Tier basis:` line and nothing else is enforced. When a judge call fails or times out, tiers the judge settled earlier in the session stay binding and every other task needs a `Tier basis:` line for that check. A missing native judge is reported once per session. A failed check is reported each time with its error.
 
 **Caching.** A settled judgment is kept for the rest of the session and not asked again, so an unchanged task is judged once. A failed call is never cached.
