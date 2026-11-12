@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.3...audit-goal@0.4.4) (2026-11-12)
+
+
+### Bug Fixes
+
+* support OMP 18.19.0 and make it the minimum version ([4a28fae](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/4a28faeaf11f675a9f1a3bf7b53cb0b8f30a1939))
+
 ## [0.4.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.2...audit-goal@0.4.3) (2026-11-08)
 
 

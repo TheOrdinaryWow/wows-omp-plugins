@@ -24,6 +24,21 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.32.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.32.1...omo-prometheus@0.32.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** default undecided task tiers to LIGHT and narrow the protection criterion ([2aabcb2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/2aabcb2fee3bf36b3880bb4897863b4dc8355ec4))
+* **omo-prometheus:** keep await marks when an ask form times out or has no answer ([9fa96d2](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/9fa96d2785eaa6292fb25ffd3ad7e8a24b2238f6))
+* **omo-prometheus:** keep the tier question usable on hosts without an ask dialog ([3e93e72](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/3e93e72977c586732f4145b2674ab3eb7936bbb5))
+* **omo-prometheus:** offer Prometheus in plan mode through its own dialog ([a9c4827](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/a9c4827e650640dddcd6bb7616cc8d12e4867785))
+* **omo-prometheus:** pause a row while a subagent revived after a restart is still running ([277dd78](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/277dd78e65fea76abdaf7c2521f63c4de8fa8d31))
+* **omo-prometheus:** read row and review bindings from the first step of a stepped task ([14709be](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/14709be9bba0fa82c5a1ef64ddf303835a9c6318))
+* **omo-prometheus:** require review bindings in each reviewer's task text ([d565101](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/d565101ee985541839f5631c6f1c04d9023bf962))
+* **omo-prometheus:** update prompts and reference for stepped tasks and the form-based ask ([2808dec](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/2808dec340f8a5ce6adcf63211d5cb1b7c253381))
+* support OMP 18.19.0 and make it the minimum version ([4a28fae](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/4a28faeaf11f675a9f1a3bf7b53cb0b8f30a1939))
+
 ## [0.32.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.32.0...omo-prometheus@0.32.1) (2026-11-11)
 
 
