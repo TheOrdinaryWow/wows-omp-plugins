@@ -17,7 +17,7 @@
 omp plugin install omo-ultrawork@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本。`/ulw-research` 还需要 `PATH` 中有 Node 20 或更高版本，或者 Bun；浏览器、文档转换工具、字体和图表工具只在报告用得到时才会使用。安装后重启会话。
+需要 OMP 18.19.0 或更高版本。`/ulw-research` 还需要 `PATH` 中有 Node 20 或更高版本，或者 Bun；浏览器、文档转换工具、字体和图表工具只在报告用得到时才会使用。安装后重启会话。
 
 ## 快速上手
 

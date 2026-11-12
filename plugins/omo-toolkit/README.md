@@ -17,7 +17,7 @@ This plugin brings the agents and skills of [oh-my-openagent](https://github.com
 omp plugin install omo-toolkit@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer. Restart the session after installing.
+You need OMP 18.19.0 or newer. Restart the session after installing.
 
 ## Quick start
 

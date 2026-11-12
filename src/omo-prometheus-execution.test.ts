@@ -1907,7 +1907,9 @@ async function scenario(name: string, root: string): Promise<void> {
     ]);
     // This host import must follow isolated HOME setup, like the other host modules above.
     const { applyOpsToPhases } = await import("@oh-my-pi/pi-coding-agent/tools/todo");
-    const normalized = applyOpsToPhases(todoPhases, [{ op: "unblock", task: "X1. Stabilize retention test" }]);
+    const finished = todoPhases.find((phase) => phase.name === "Atlas tasks")?.tasks[0]?.content;
+    assert(finished);
+    const normalized = applyOpsToPhases(todoPhases, [{ op: "done", task: finished }]);
     assert.deepEqual(normalized.errors, []);
     // The host keeps one running item, which rewrites some parallel Atlas row the ledger still holds elsewhere.
     assert.notDeepEqual(normalized.phases, todoPhases);
@@ -1918,7 +1920,7 @@ async function scenario(name: string, root: string): Promise<void> {
       toolCallId: "todo-refresh",
       isError: false,
       content: [],
-      details: { op: "unblock", phases: normalized.phases, storage: "session" },
+      details: { op: "done", phases: normalized.phases, storage: "session" },
     });
     assert(correctedResult && typeof correctedResult === "object" && "details" in correctedResult);
     const correctedDetails = correctedResult.details;

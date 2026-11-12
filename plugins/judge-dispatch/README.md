@@ -17,7 +17,7 @@ When the agent hands a task to a subagent, it picks which agent type does the wo
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below).
+You need OMP 18.19.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below).
 
 ## Quick start
 
@@ -57,7 +57,7 @@ Some tasks are always left exactly as they are, model and thinking level include
 - tasks that already name their own model (OMP's per-task `model` field);
 - every task while an omo-prometheus plan is being carried out, because the approved plan already decided who does what.
 
-Tasks whose instructions are in a file (OMP's `taskFile`) keep their agent, since the judge cannot read them. Subagents started from `eval` scripts are not routed at all.
+Subagents started from `eval` scripts are not routed at all.
 
 ### How hard is a task
 
@@ -103,7 +103,7 @@ The old `agent@role` form is gone. OMP now rejects a name such as `deep-low@abli
 
 ### What you see
 
-While the judge works, the status reads `judge-dispatch: routing N tasks…`. Then each routed call shows a status line like the one above: the agent, `thinking <from> → <to>`, `model <agent's model> → <tier>` or why the model stays, with the judge's confidence for each decision. A task kept without a usable answer says why: `judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no confident choice`, `file-backed task`, `native model`, or `workflow-owned or unknown agent`. A call that could not be judged at all shows a line starting with `kept the requested agent:`.
+While the judge works, the status reads `judge-dispatch: routing N tasks…`. Then each routed call shows a status line like the one above: the agent, `thinking <from> → <to>`, `model <agent's model> → <tier>` or why the model stays, with the judge's confidence for each decision. A task kept without a usable answer says why: `judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no confident choice`, `native model`, or `workflow-owned or unknown agent`. A call that could not be judged at all shows a line starting with `kept the requested agent:`.
 
 The status line is only for you. It is not sent to the model and not saved, so it does not come back after `/resume`. Set `indicator` to `false` to hide it.
 

@@ -20,7 +20,7 @@ For a large or unclear change, starting to code right away usually goes wrong. T
 omp plugin install omo-prometheus@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer with Plan Mode enabled (`plan.enabled`, on by default). Restart OMP after installing.
+You need OMP 18.19.0 or newer with Plan Mode enabled (`plan.enabled`, on by default). Restart OMP after installing.
 
 If you used the older `prometheus` plugin, uninstall it first with `omp plugin uninstall prometheus@wows-omp-plugins`. Its plans do not carry over, so start a new one.
 

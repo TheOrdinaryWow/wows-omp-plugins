@@ -97,7 +97,7 @@ export interface Snapshot {
 
 export interface TodoPhase {
   name: string;
-  tasks: Array<{ content: string; status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked" }>;
+  tasks: Array<{ content: string; status: "pending" | "in_progress" | "completed" | "abandoned" }>;
 }
 export interface TodoDependency {
   task: string;
@@ -208,7 +208,7 @@ export function todoRun(options: TodoRunOptions): Run {
   const id = `todo:${sessionId}:${generation}`;
   const prior = previous?.id === id ? previous : undefined;
   const oldNodes = new Map(prior?.nodes.map((node) => [node.id, node]));
-  const states = { pending: "pending", in_progress: "running", completed: "done", abandoned: "abandoned", blocked: "blocked" } as const;
+  const states = { pending: "pending", in_progress: "running", completed: "done", abandoned: "abandoned" } as const;
   const nodes = phases.flatMap((phase, band) =>
     phase.tasks.map((task): DagNode => {
       const nodeId = `todo:${generation}:${band}:${createHash("sha1").update(task.content).digest("hex").slice(0, 10)}`;

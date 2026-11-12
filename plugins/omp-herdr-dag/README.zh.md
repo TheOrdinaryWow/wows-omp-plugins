@@ -19,7 +19,7 @@ omp plugin install omp-herdr-dag@wows-omp-plugins
 
 需要：
 
-- OMP 18.17.0 或更高版本，并在 Herdr 的窗格中以交互方式启动；
+- OMP 18.19.0 或更高版本，并在 Herdr 的窗格中以交互方式启动；
 - `PATH` 中有 `herdr` 命令；
 - Bun：`PATH` 中有 `bun`，或者在 `viewerRuntime` 中指定。
 

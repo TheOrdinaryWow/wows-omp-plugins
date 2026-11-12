@@ -17,7 +17,7 @@ OMP's built-in `find` tool searches code by behavior ("where are versions bumped
 omp plugin install find-console@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer and a judgment model behind OMP's `judge` role, such as TypeSafe's Jev. Scores come from that model, so `/find` does not run with an ordinary chat model. Start a new session after installing.
+You need OMP 18.19.0 or newer and a judgment model behind OMP's `judge` role, such as TypeSafe's Jev. Scores come from that model, so `/find` does not run with an ordinary chat model. Start a new session after installing.
 
 ## Quick start
 

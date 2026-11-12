@@ -42,6 +42,18 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
+/** A list saved before the host removed its `blocked` status restores with those tasks pending, as the host reads it. */
+function withoutBlocked(phases: unknown[]): unknown[] {
+  return phases.map((phase) => {
+    const tasks = record(phase)?.tasks;
+    if (!Array.isArray(tasks)) return phase;
+    return {
+      ...record(phase),
+      tasks: tasks.map((task) => (record(task)?.status === "blocked" ? { content: record(task)?.content, status: "pending" } : task)),
+    };
+  });
+}
+
 /** Follow the host's canonical writers, including edits made without a tool call. */
 function snapshotEntry(raw: unknown): { phases: TodoPhase[]; op?: string; at?: number } | undefined {
   const entry = record(raw);
@@ -57,9 +69,10 @@ function snapshotEntry(raw: unknown): { phases: TodoPhase[]; op?: string; at?: n
     op = details?.op;
     if (op === "view") return undefined;
   } else return undefined;
-  if (!Array.isArray(phases) || !phases.every(isTodoPhase)) return undefined;
+  const restored = Array.isArray(phases) ? withoutBlocked(phases) : undefined;
+  if (!restored?.every(isTodoPhase)) return undefined;
   const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : undefined;
-  return { phases, op: typeof op === "string" ? op : undefined, at: at !== undefined && Number.isFinite(at) ? at : undefined };
+  return { phases: restored, op: typeof op === "string" ? op : undefined, at: at !== undefined && Number.isFinite(at) ? at : undefined };
 }
 
 /** Native init results are the durable generation boundary; an external first list starts generation one. */

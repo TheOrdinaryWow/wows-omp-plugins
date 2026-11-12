@@ -256,11 +256,18 @@ if (process.env[CHILD_ENV]) {
       leaf = "edit";
       entries = [
         ...entries,
-        customEntry("user_todo_edit", { phases: [{ name: "Edited", tasks: [{ content: "New", status: "blocked" }] }] }),
+        customEntry("user_todo_edit", { phases: [{ name: "Edited", tasks: [{ content: "New", status: "abandoned" }] }] }),
       ];
       expect(source.poll(manager)).toBe(true);
-      expect(source.current?.nodes.map((node) => [node.label, node.state])).toEqual([["New", "blocked"]]);
+      expect(source.current?.nodes.map((node) => [node.label, node.state])).toEqual([["New", "abandoned"]]);
       expect(reads).toBe(2);
+    });
+
+    test("a list saved with the removed blocked status restores as pending", () => {
+      const source = new TodoSource({ sessionId: "session", now: () => 1_000 });
+      source.replay([customEntry("user_todo_edit", { phases: [{ name: "Saved", tasks: [{ content: "Old", status: "blocked" }] }] })]);
+      expect(source.generation).toBe(1);
+      expect(source.current?.nodes.map((node) => [node.label, node.state])).toEqual([["Old", "pending"]]);
     });
 
     test("new canonical lists after the poll baseline claim approval, historical replay never does", () => {

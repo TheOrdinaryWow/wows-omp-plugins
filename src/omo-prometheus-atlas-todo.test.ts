@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
-import { atlasTodoPhases, mergeAtlasTodos, syncAtlasTodos } from "../plugins/omo-prometheus/src/atlas-todo.ts";
+import { atlasTodoPhases, atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "../plugins/omo-prometheus/src/atlas-todo.ts";
 import { addDiscoveredRow, addFixRow, createLedger, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
 
 const plan = `# Plan
@@ -28,20 +28,26 @@ function ledger() {
 
 test("Atlas phases map task, correction, and gate state without erasing parallel progress", () => {
   const state = ledger();
-  startRow(state, "T1");
   const blocked = state.items.find((item) => item.id === "T2");
   if (!blocked) throw new Error("Missing T2 row");
   blocked.status = "blocked";
-  blocked.evidence = `Awaiting  data\n${"x".repeat(300)}`;
+  blocked.evidence = "Awaiting data";
+  expect(atlasTodoRefreshCall(state)).toContain('todo({"op":"start","task":"T1. First deliverable"})');
+  startRow(state, "T1");
   addFixRow(state, "F1", { title: "Correct defect", acceptance: "verified", agent: "task", reason: "Gate rejected" }, ["task"]);
   const phases = atlasTodoPhases(state);
   expect(phases.map((phase) => phase.name)).toEqual(["Atlas tasks", "Atlas fixes", "Atlas final gates"]);
   expect(phases[0]?.tasks).toEqual([
     { content: "T1. First deliverable", status: "in_progress" },
-    { content: "T2. Second deliverable", status: "blocked", blocker: `Awaiting data ${"x".repeat(226)}` },
+    { content: "T2. Second deliverable", status: "pending" },
   ]);
   expect(phases[1]?.tasks).toEqual([{ content: "X1. Correct defect", status: "pending" }]);
   expect(phases[2]?.tasks[0]).toEqual({ content: "F1. Plan compliance review", status: "pending" });
+  expect(atlasTodoRefreshCall(state)).toContain('todo({"op":"start","task":"T1. First deliverable"})');
+  const running = state.items.find((item) => item.id === "T1");
+  if (!running) throw new Error("Missing T1 row");
+  running.status = "done";
+  expect(atlasTodoRefreshCall(state)).toContain('todo({"op":"done","task":"T1. First deliverable"})');
 });
 
 test("sync replaces only Atlas phases, retains other phase positions, and skips identical snapshots", () => {

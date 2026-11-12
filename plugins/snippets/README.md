@@ -17,7 +17,7 @@ Keep text you send often, such as a review checklist, a bug report template or p
 omp plugin install snippets@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer. Start a new session after installing.
+You need OMP 18.19.0 or newer. Start a new session after installing.
 
 ## Quick start
 

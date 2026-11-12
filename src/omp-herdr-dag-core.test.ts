@@ -42,7 +42,7 @@ function phases(): TodoPhase[] {
     {
       name: "Check",
       tasks: [
-        { content: "C", status: "blocked" },
+        { content: "C", status: "pending" },
         { content: "D", status: "completed" },
         { content: "E", status: "abandoned" },
       ],
@@ -81,7 +81,7 @@ describe("DAG model", () => {
     const first = todoRun({ sessionId: "session", generation: 1, phases: phases(), now: 100, edges: [{ task: "B", after: ["A"] }] });
     expect(first.id).toBe("todo:session:1");
     expect(first.nodes[0]?.id).toBe("todo:1:0:6dcd4ce23d");
-    expect(first.nodes.map((node) => node.state)).toEqual(["running", "pending", "blocked", "done", "abandoned"]);
+    expect(first.nodes.map((node) => node.state)).toEqual(["running", "pending", "pending", "done", "abandoned"]);
     expect(first.nodes.map((node) => node.band)).toEqual([0, 0, 1, 1, 1]);
     const rm = phases();
     rm[0]?.tasks.shift();

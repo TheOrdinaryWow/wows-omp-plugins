@@ -30,7 +30,7 @@ Each plugin installs on its own, except that roadmap needs the adr plugin.
 
 ## Install
 
-You need OMP 18.17.0 or newer. Add the marketplace once, then install plugins by name:
+You need OMP 18.19.0 or newer. Add the marketplace once, then install plugins by name:
 
 ```bash
 omp plugin marketplace add TheOrdinaryWow/wows-omp-plugins

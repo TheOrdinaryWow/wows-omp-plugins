@@ -17,7 +17,7 @@ OMP 内置的 `find` 工具按行为搜索代码（比如“版本号在哪里�
 omp plugin install find-console@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本，并且 OMP 的 `judge` 角色要配置一个判定模型（judgment model），比如 TypeSafe 的 Jev。分数来自这个模型，所以普通聊天模型跑不了 `/find`。安装后开一个新会话。
+需要 OMP 18.19.0 或更高版本，并且 OMP 的 `judge` 角色要配置一个判定模型（judgment model），比如 TypeSafe 的 Jev。分数来自这个模型，所以普通聊天模型跑不了 `/find`。安装后开一个新会话。
 
 ## 快速上手
 

@@ -238,6 +238,7 @@ async function createHarness(
   extensionsResult.runtime.sendUserMessage = (content) => {
     assert.equal(typeof content, "string");
     if (typeof content === "string") kickoffs.push(content);
+    return Promise.resolve();
   };
   extensionsResult.runtime.sendMessage = (message) => {
     const content = typeof message === "string" ? message : message.content;

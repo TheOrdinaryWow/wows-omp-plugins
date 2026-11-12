@@ -17,7 +17,7 @@
 omp plugin install snippets@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本。安装后开一个新会话。
+需要 OMP 18.19.0 或更高版本。安装后开一个新会话。
 
 ## 快速上手
 

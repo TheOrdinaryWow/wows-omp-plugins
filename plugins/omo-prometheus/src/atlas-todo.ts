@@ -10,15 +10,11 @@ const GATES = "Atlas final gates";
 const DELIVERY = "Atlas delivery";
 const ATLAS_PHASES: Record<string, true> = { [TASKS]: true, [DISCOVERED]: true, [FIXES]: true, [GATES]: true, [DELIVERY]: true };
 
+/** The host todo list has no blocked state, so a blocked row reads as pending. */
 function todoItem(row: LedgerItem): TodoItem {
-  const content = `${row.id}. ${row.title}`;
-  if (row.status === "blocked") {
-    const blocker = row.evidence?.replace(/\s+/g, " ").trim().slice(0, 240);
-    return { content, status: "blocked", ...(blocker ? { blocker } : {}) };
-  }
   return {
-    content,
-    status: row.status === "open" ? "pending" : row.status === "done" ? "completed" : "in_progress",
+    content: `${row.id}. ${row.title}`,
+    status: row.status === "done" ? "completed" : row.status === "in_progress" ? "in_progress" : "pending",
   };
 }
 
@@ -75,13 +71,13 @@ export function syncAtlasTodos(
   return true;
 }
 
-/** Non-view host todo operations succeed when repeated against the already-synced target; the row's state picks the op. */
-export function atlasTodoRefreshCall(row: LedgerItem): string {
-  const op = row.status === "in_progress" ? "start" : row.status === "done" ? "done" : row.status === "blocked" ? "block" : "unblock";
-  const call = {
-    op,
-    task: `${row.id}. ${row.title}`,
-    ...(op === "block" && row.evidence ? { reason: row.evidence.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
-  };
+/**
+ * Any non-view host todo call redraws the HUD. Naming a row by the state it already has changes nothing; with no
+ * running or finished row, the host would mark the first pending item running anyway.
+ */
+export function atlasTodoRefreshCall(ledger: ExecutionLedger): string {
+  const tasks = atlasTodoPhases(ledger).flatMap((phase) => phase.tasks);
+  const task = tasks.find((item) => item.status === "in_progress") ?? tasks.find((item) => item.status === "completed") ?? tasks[0];
+  const call = { op: task?.status === "completed" ? "done" : "start", task: task?.content };
   return `Refresh the todo HUD now with the already-synced item: todo(${JSON.stringify(call)}). Until a todo call has succeeded, task dispatch, wait and atlas_release are refused, even in the same response as the todo call, because the guard checks before either runs: pair the todo call only with independent read-only calls, and send task, wait or atlas_release in the next response. One call covers every ledger change before it. Do not edit Atlas phases manually.`;
 }

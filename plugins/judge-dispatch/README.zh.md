@@ -17,7 +17,7 @@
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）。
+需要 OMP 18.19.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）。
 
 ## 快速上手
 
@@ -57,7 +57,7 @@ judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · thinking med
 - 已经指定了自己模型的任务（OMP 的逐任务 `model` 字段）；
 - omo-prometheus 执行计划期间的所有任务，因为批准的计划已经定好了谁做什么。
 
-任务内容写在文件里的任务（OMP 的 `taskFile`）会保留原代理，因为判定模型读不到内容。从 `eval` 脚本启动的子代理完全不参与路由。
+从 `eval` 脚本启动的子代理完全不参与路由。
 
 ### 任务有多难
 
@@ -103,7 +103,7 @@ judge-dispatch 会原样保留带有 `model` 的任务，不判断代理，不�
 
 ### 你会看到什么
 
-判定进行时，状态显示 `judge-dispatch: routing N tasks…`。之后每个经过路由的调用会显示一行类似上面的状态：代理、`thinking <from> → <to>`、`model <代理的模型> → <档位>` 或保留模型的原因，每项决定都带有判定模型的置信度。没得到可用答案而保留原样的任务会注明原因：`judge unavailable`、`judge failed`、`timed out`、`no alternatives`、`no confident choice`、`file-backed task`、`native model` 或 `workflow-owned or unknown agent`。整个调用都没能判定时，会显示一行以 `kept the requested agent:` 开头的说明。
+判定进行时，状态显示 `judge-dispatch: routing N tasks…`。之后每个经过路由的调用会显示一行类似上面的状态：代理、`thinking <from> → <to>`、`model <代理的模型> → <档位>` 或保留模型的原因，每项决定都带有判定模型的置信度。没得到可用答案而保留原样的任务会注明原因：`judge unavailable`、`judge failed`、`timed out`、`no alternatives`、`no confident choice`、`native model` 或 `workflow-owned or unknown agent`。整个调用都没能判定时，会显示一行以 `kept the requested agent:` 开头的说明。
 
 状态行只给你看。它不会发给模型，也不会保存，所以 `/resume` 之后不会再出现。把 `indicator` 设为 `false` 可以隐藏它。
 

@@ -20,7 +20,7 @@ omp plugin install adr@wows-omp-plugins
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本、一个 Git 仓库（本地 `git init` 就够了，不需要远程仓库），以及 roadmap 依赖的 [adr 插件](../adr/README.zh.md)。安装后开一个新会话。没有安装 adr 插件时，`/roadmap` 和 `/init-project` 会拒绝运行并提示你安装。
+需要 OMP 18.19.0 或更高版本、一个 Git 仓库（本地 `git init` 就够了，不需要远程仓库），以及 roadmap 依赖的 [adr 插件](../adr/README.zh.md)。安装后开一个新会话。没有安装 adr 插件时，`/roadmap` 和 `/init-project` 会拒绝运行并提示你安装。
 
 ## 快速上手
 

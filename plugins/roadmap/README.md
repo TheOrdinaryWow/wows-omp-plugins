@@ -20,7 +20,7 @@ omp plugin install adr@wows-omp-plugins
 omp plugin install roadmap@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer, a Git repository (a local `git init` is enough; no remote needed) and the [adr plugin](../adr/README.md), which roadmap requires. Start a new session after installing. Without the adr plugin, `/roadmap` and `/init-project` refuse and tell you to install it.
+You need OMP 18.19.0 or newer, a Git repository (a local `git init` is enough; no remote needed) and the [adr plugin](../adr/README.md), which roadmap requires. Start a new session after installing. Without the adr plugin, `/roadmap` and `/init-project` refuse and tell you to install it.
 
 ## Quick start
 

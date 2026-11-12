@@ -30,7 +30,7 @@
 
 ## 安装
 
-需要 OMP 18.17.0 或更高版本。先添加一次插件市场，之后按名字安装插件：
+需要 OMP 18.19.0 或更高版本。先添加一次插件市场，之后按名字安装插件：
 
 ```bash
 omp plugin marketplace add TheOrdinaryWow/wows-omp-plugins

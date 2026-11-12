@@ -69,6 +69,7 @@ async function sdkHarness(cwd: string, inMemory = false, audit = false): Promise
   extensionsResult.runtime.sendUserMessage = (content) => {
     assert.equal(typeof content, "string");
     if (typeof content === "string") requests.push(content);
+    return Promise.resolve();
   };
   extensionsResult.runtime.sendMessage = (message) => {
     const text = typeof message === "string" ? message : message.content;

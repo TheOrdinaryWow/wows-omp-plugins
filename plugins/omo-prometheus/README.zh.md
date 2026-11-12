@@ -20,7 +20,7 @@
 omp plugin install omo-prometheus@wows-omp-plugins
 ```
 
-需要 OMP 18.17.0 或更高版本，并启用 Plan Mode（`plan.enabled`，默认开启）。安装后重启 OMP。
+需要 OMP 18.19.0 或更高版本，并启用 Plan Mode（`plan.enabled`，默认开启）。安装后重启 OMP。
 
 如果你用过旧的 `prometheus` 插件，请先用 `omp plugin uninstall prometheus@wows-omp-plugins` 卸载它。它的计划不会迁移过来，请重新开始规划。
 

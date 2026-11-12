@@ -17,7 +17,7 @@ Run `/audit` with something you want checked, such as a branch, a plan or a feat
 omp plugin install audit-goal@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer with goal mode turned on (`goal.enabled`, on by default). Restart the session after installing.
+You need OMP 18.19.0 or newer with goal mode turned on (`goal.enabled`, on by default). Restart the session after installing.
 
 ## Quick start
 

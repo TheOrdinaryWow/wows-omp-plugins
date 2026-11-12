@@ -17,7 +17,7 @@ This plugin brings the ultrawork workflow of [oh-my-openagent](https://github.co
 omp plugin install omo-ultrawork@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer. `/ulw-research` also needs Node 20 or newer, or Bun, on your `PATH`; browsers, document converters, fonts and chart tools are used only when a report needs them. Restart the session after installing.
+You need OMP 18.19.0 or newer. `/ulw-research` also needs Node 20 or newer, or Bun, on your `PATH`; browsers, document converters, fonts and chart tools are used only when a report needs them. Restart the session after installing.
 
 ## Quick start
 

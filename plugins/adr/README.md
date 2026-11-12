@@ -17,7 +17,7 @@ An architecture decision record (ADR) is a short document explaining one design 
 omp plugin install adr@wows-omp-plugins
 ```
 
-You need OMP 18.17.0 or newer and a Git repository (a local `git init` is enough; no remote needed). Outside a Git repository the commands refuse to run. Start a new session after installing.
+You need OMP 18.19.0 or newer and a Git repository (a local `git init` is enough; no remote needed). Outside a Git repository the commands refuse to run. Start a new session after installing.
 
 ## Quick start
 

@@ -17,12 +17,11 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
   if (options.enabled === false) return;
   const { Type } = pi.typebox;
   const parameters = Type.Object({
-    op: Type.Union(["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"].map((op) => Type.Literal(op))),
+    op: Type.Union(["init", "start", "done", "rm", "drop", "append", "view"].map((op) => Type.Literal(op))),
     list: Type.Optional(Type.Array(Type.Object({ phase: Type.String(), items: Type.Array(Type.String(), { minItems: 1 }) }))),
     task: Type.Optional(Type.String()),
     phase: Type.Optional(Type.String()),
     items: Type.Optional(Type.Array(Type.String())),
-    reason: Type.Optional(Type.String()),
     edges: Type.Optional(Type.Array(Type.Object({ task: Type.String(), after: Type.Array(Type.String()) }))),
   });
   const renderer = toolRenderers.todo;

@@ -2438,7 +2438,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         if (childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, row.id).length)
           throw new Error("Native work became live while awaiting confirmation");
         grantRetry(ledger, row, note as string, settled.decidedBy, Date.now(), settled.decidedBy === "user" ? timeLimit : undefined);
-        const refresh = atlasTodoRefreshCall(row);
+        const refresh = atlasTodoRefreshCall(ledger);
         if (pi.getActiveTools().includes("todo")) pendingTodoRefreshes.set(ctx.sessionManager.getSessionId(), refresh);
         return {
           content: [
@@ -2473,7 +2473,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const ownership = record.ownership;
       if (params.action === "amend") return await recordRuling(ctx, record, params);
       if (params.action === "retry") return await recordRetryGrant(ctx, record, params);
-      let changedRow: LedgerItem | undefined;
+      let todoRefresh: string | undefined;
       let completion: Omit<AtlasCompleted, "v" | "at"> | undefined;
       let completedPlan: AtlasPlan | undefined;
       let compliance:
@@ -2591,7 +2591,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               },
               availableAgents(),
             );
-            changedRow = found;
+            todoRefresh = atlasTodoRefreshCall(ledger);
             return {
               content: [
                 {
@@ -2621,7 +2621,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               },
               availableAgents(),
             );
-            changedRow = fix;
+            todoRefresh = atlasTodoRefreshCall(ledger);
             return {
               content: [
                 {
@@ -2851,7 +2851,7 @@ export default function prometheus(pi: ExtensionAPI): void {
             if (answered)
               note = `\nIf an owner answer changed how ${item.id}'s acceptance is met and no ruling records that change yet, record it with atlas_ledger amend before start: until a ruling replaces it, the acceptance status shows stays in force for the child, the verifier, F1 and F4.`;
           }
-          changedRow = item;
+          todoRefresh = atlasTodoRefreshCall(ledger);
           const schemaLabel = params.action === "verify" ? "Verifier task outputSchema" : "Gate task outputSchema";
           return {
             content: [
@@ -2902,8 +2902,8 @@ export default function prometheus(pi: ExtensionAPI): void {
                 ].join("\n"),
               )
             : undefined;
-        if (changedRow) {
-          const refresh = atlasTodoRefreshCall(changedRow);
+        if (todoRefresh) {
+          const refresh = todoRefresh;
           if (pi.getActiveTools().includes("todo")) pendingTodoRefreshes.set(ctx.sessionManager.getSessionId(), refresh);
           const report = progressReports.get(ctx.sessionManager.getSessionId()) ? PROGRESS_REPORT_REMINDERS[params.action] : undefined;
           return {
