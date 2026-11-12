@@ -377,15 +377,18 @@ with `TMPDIR=$(realpath "$TMPDIR") bun run test`.
 
 ## Host prompt text is not a byte channel
 
-The host renders every `task` assignment and batch `context`, and the native
-plan-approval handoff, through `prompt.render` → `prompt.format`
-(`@oh-my-pi/pi-utils` `src/prompt.ts`). Before a model sees the text, it trims
-trailing whitespace, deletes runs of two or more blank lines, compacts Markdown
-table rows (`| A | B |` → `|A|B|`), and trims the whole text. Lines starting
-with ```` ``` ```` or `~~~` toggle a protected region without matching fence
-length or character, so wrapping a document that has its own code blocks in a
-longer fence still exposes the inner blocks. Indentation survives. Tool-call
-arguments that plugin hooks receive (`tool_call` input) are raw.
+The host renders a batch `context` and the native plan-approval handoff through
+`prompt.render` → `prompt.format` (`@oh-my-pi/pi-utils` `src/prompt.ts`). Before
+a model sees that text, it trims trailing whitespace, deletes runs of two or
+more blank lines, compacts Markdown table rows (`| A | B |` → `|A|B|`), and
+trims the whole text. Lines starting with ```` ``` ```` or `~~~` toggle a
+protected region without matching fence length or character, so wrapping a
+document that has its own code blocks in a longer fence still exposes the inner
+blocks. Indentation survives. A `task` assignment and each of its `steps` are
+inserted after that formatting (`renderSubagentUserPrompt` in the host's
+`task/structured-subagent.ts`): their interior text arrives as written, but the
+whole text is trimmed and CRLF becomes LF. Tool-call arguments that plugin
+hooks receive (`tool_call` input) are raw.
 
 So no prompt or code may require content to arrive byte-identical through
 those channels, and no prompt may ask a model to compare inline text with a
