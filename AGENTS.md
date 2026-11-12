@@ -282,14 +282,28 @@ an independent verifier plus its repair rounds. Decided by the maintainer:
   planning skill; reviewers and Atlas restate them briefly.
 - During planning the plugin asks OMP's native judge two questions per task
   (tier, kind of deliverable) and takes the smaller probability as the chance of
-  HEAVY (`src/tier-judge.ts`). A confident answer is binding, an undecided one
-  leaves the tier to the planner with a `Tier basis:` line, and the user may
-  decide any row (`Tier basis: owner — …`). No judge runs during execution.
+  HEAVY (`src/tier-judge.ts`). A confident answer is binding. A task the judge
+  is undecided on defaults to LIGHT, and only the user raises it: the planner
+  collects the rows it would raise into one `ask` and records the confirmed
+  ones as `Tier basis: owner — …`. The first version left undecided rows to
+  the planner; on a plan whose six production tasks were all undecided, the
+  planner and a reviewer made all six HEAVY, while labelled undecided tasks are
+  about three LIGHT to one HEAVY. Reviewers may note that a row deserves HEAVY
+  but never block on a tier the planner did not decide. No judge runs during
+  execution.
 - The question texts and the formula were tuned against labelled tasks from
   real plans, with plans held out for the final check. A weighted
-  per-consequence formula and a severity score both did worse. Do not reword a
-  question or change the formula without measuring again on labelled tasks;
-  the figures are in the plugin's REFERENCE.
+  per-consequence formula and a severity score both did worse. A second round
+  tried ten more wordings, worked examples and a plan summary in the input:
+  none made the judge decide more tasks, and two added confident wrong LIGHT
+  answers. Do not reword a question or change the formula without measuring
+  again on labelled tasks; the figures are in the plugin's REFERENCE.
+- The judge questions and the written criteria stay product-neutral: no
+  product names and no examples lifted from one plan. "Protection silently
+  stops" counts only in a system whose own purpose is to enforce security.
+- The judge's answer to one question shifts by up to 0.1 when other questions
+  ride in the same call. Measure a candidate in the exact call the plugin
+  sends, tier and kind together.
 - Like judge-dispatch, it never calls a chat-model judge. Without a native
   judge the planner decides every tier and writes its reason.
 
