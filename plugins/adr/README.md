@@ -58,7 +58,7 @@ All commands run in the main session and complete subcommands and ADR IDs.
 | Command | What it does |
 | --- | --- |
 | `/adr` | Open the ADR console (see below). |
-| `/adr visualize` | Open a live map of your decisions in the browser. |
+| `/adr visualize [--port <port>] [--host <host>]` | Open a live map of your decisions in the browser. |
 | `/adr list [status]` | List ADRs, optionally only one status. |
 | `/adr show <id>` | Show one ADR and the decisions it replaced or was replaced by. |
 | `/adr accept\|reject\|deprecate <id>` | Record your decision. |
@@ -118,6 +118,8 @@ Click a card or a timeline entry to see its details: metadata, the decisions it 
 
 The page updates by itself while the session runs. A new decision, a status change, a note, an edit to a file in `docs/adr/` or a new commit refreshes it, and your selection and view stay where they were. Running `/adr visualize` again in the same session gives you the same address.
 
+By default the page is served only on this machine, at `127.0.0.1`, on a port the system picks. Choose them yourself with `--port <port>` and `--host <host>`. For example, `/adr visualize --port 8765` keeps the address stable for SSH port forwarding (`ssh -L 8765:127.0.0.1:8765 <host>`), and `/adr visualize --host 0.0.0.0 --port 8765` lets other machines on your network open it at `http://<this machine>:8765/<path>/`. The conversation then shows the local address and what the server listens on. The random part of the address is the only thing that keeps others out, so share it only with people who may read your decisions. Running the command again with a different port or host restarts the page at the new address.
+
 ## Settings
 
 Change a setting for your user:
@@ -152,8 +154,7 @@ Changes apply the next time you run an `/adr` command.
 - A change that touches several files is not all-or-nothing. If one is interrupted, `/adr check --fix` repairs the decision table.
 - Separate clones of a repository number ADRs independently, so their IDs can collide. Worktrees of the same clone share the numbering.
 - In Tern, the console and preview keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
-- The `/adr visualize` page is served only on this machine, at `127.0.0.1`. On a remote or SSH machine, forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, then open the address from the conversation.
-- The page stops when the OMP session ends. The next `/adr visualize` prints a new address, because each start picks a new port and a new random path.
+- The page stops when the OMP session ends. The next `/adr visualize` prints a new address, because each start picks a new random path, and a new port unless you pass `--port`.
 - The page's history comes from commits reachable from the current HEAD, plus the uncommitted changes in your working tree. Other branches appear only after they are merged. A repository with no commits yet shows only the uncommitted changes.
 - The `/adr` console has no entry for the decision map; run `/adr visualize` instead.
 

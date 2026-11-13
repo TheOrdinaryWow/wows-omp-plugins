@@ -175,7 +175,7 @@ ID 来自 `<git common dir>/adr/counters.json`，即 `{"v":1,"adr":N}`，同一�
 
 `/adr visualize` 运行一个只读的决策图服务。服务代码在 `src/visualize-server.ts`，图数据在 `src/visualize-data.ts` 和 `src/visualize-history.ts`，页面在 `assets/visualize/`（纯 HTML、CSS 和 JavaScript，没有构建步骤）。
 
-- **监听地址**：`Bun.serve` 监听 `127.0.0.1`，端口为 `0`，由操作系统分配。每次启动服务都会生成新的随机令牌（24 字节的十六进制字符串），作为路径前缀：`http://127.0.0.1:<端口>/<令牌>/`。没有该前缀的路径，以及非 GET 的请求，都返回 404。
+- **监听地址**：默认 `Bun.serve` 监听 `127.0.0.1`，端口为 `0`，由操作系统分配；命令可用 `--host <host>` 和 `--port <port>`（0 到 65535 的整数，每个参数最多出现一次，其他写法会被拒绝并显示用法）覆盖。每次启动服务都会生成新的随机令牌（24 字节的十六进制字符串），作为路径前缀：`http://<host>:<端口>/<令牌>/`，IPv6 地址加方括号。通配地址（`0.0.0.0`、`::`）的 URL 使用对应的回环地址（`127.0.0.1`、`::1`），消息末尾附上 `(listening on <host>:<port>)`。没有该前缀的路径，以及非 GET 的请求，都返回 404；绑定到非回环地址时，令牌是唯一的访问控制。
 - **端点**：页面使用前缀下的相对 URL。
 
 | 路径 | 响应 |
@@ -187,8 +187,8 @@ ID 来自 `<git common dir>/adr/counters.json`，即 `{"v":1,"adr":N}`，同一�
 
 资源目录中只有 `index.html`、`app.js` 和 `app.css` 可以访问，其他文件名返回 404。
 
-- **生命周期**：`AdrVisualizer` 只保留一个服务，由会话 ID 和仓库根目录（`discoverRepo(cwd)`）标识。两者都匹配时 `open` 复用它，否则启动新的服务。会话关闭（`session_shutdown`）时立即停止。如果会话 ID 或仓库根目录已经不匹配，下一次 `open` 或变更通知会先停掉旧服务。停止时会关闭 SSE 连接、两个文件监听器、保活计时器和 HTTP 服务。
-- **打开浏览器**：`open` 总是返回地址，只有 `ctx.hasUI` 为 true 时才调用 `openPath`。命令随后发送一条显示的消息 `ADR visualization: <url>`。
+- **生命周期**：`AdrVisualizer` 只保留一个服务，由会话 ID 和仓库根目录（`discoverRepo(cwd)`）标识。两者都匹配、且没有给出与当前服务不同的 `--host`/`--port` 时，`open` 复用它；否则先停掉旧服务再启动新的。不带参数的 `/adr visualize` 总是复用正在运行的服务。会话关闭（`session_shutdown`）时立即停止。如果会话 ID 或仓库根目录已经不匹配，下一次 `open` 或变更通知会先停掉旧服务。停止时会关闭 SSE 连接、两个文件监听器、保活计时器和 HTTP 服务。端口已被占用时，命令会报告绑定错误。
+- **打开浏览器**：`open` 总是返回服务，只有 `ctx.hasUI` 为 true 时才用它的 URL 调用 `openPath`。命令随后发送一条显示的消息 `ADR visualization: <url>`；URL 中的主机与监听地址不同时，后面再附上 `(listening on <host>:<port>)`。
 - **修订触发**：最后一次触发后 200 毫秒（防抖），服务把修订号加一并广播。触发来源有三类：
   - `docs/adr/` 目录的变化。监听该目录；目录不存在时监听它最近的已存在上级目录，目录出现后再切换过去；
   - git 公共目录下路径匹配 `HEAD`、`refs` 或 `packed-refs` 的变化（递归监听），涵盖提交、分支移动和标签；

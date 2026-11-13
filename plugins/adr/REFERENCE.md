@@ -175,7 +175,7 @@ In the terminal console, cancelling the topic dialog of a new decision or a supe
 
 `/adr visualize` runs a read-only decision map server. The server is in `src/visualize-server.ts`, the graph data in `src/visualize-data.ts` and `src/visualize-history.ts`, and the page in `assets/visualize/` (plain HTML, CSS and JavaScript with no build step).
 
-- **Binding.** `Bun.serve` listens on `127.0.0.1` with port `0`, so the OS picks the port. Each server start gets a new random token (24 bytes, hex) that serves as the path prefix: `http://127.0.0.1:<port>/<token>/`. Paths without the prefix and methods other than GET get 404.
+- **Binding.** `Bun.serve` listens on `127.0.0.1` with port `0` (the OS picks the port) unless the command passes `--host <host>` and/or `--port <port>` (an integer from 0 to 65535; each flag at most once, anything else is refused with the usage). Each server start gets a new random token (24 bytes, hex) that serves as the path prefix: `http://<host>:<port>/<token>/`; IPv6 hosts are bracketed. For a wildcard host (`0.0.0.0`, `::`) the URL uses the matching loopback address (`127.0.0.1`, `::1`) and the message appends `(listening on <host>:<port>)`. Paths without the prefix and methods other than GET get 404; the token is the only access control on a non-loopback bind.
 - **Endpoints.** The page uses relative URLs under the prefix.
 
 | Path | Response |
@@ -187,8 +187,8 @@ In the terminal console, cancelling the topic dialog of a new decision or a supe
 
 Only `index.html`, `app.js` and `app.css` are served from the asset directory; any other name returns 404.
 
-- **Lifecycle.** `AdrVisualizer` keeps one server, identified by session ID and repository root (`discoverRepo(cwd)`). `open` reuses it while both still match and starts a new one otherwise. Session shutdown (`session_shutdown`) stops it at once. If the session ID or repository root no longer matches, the next `open` or change notice stops the old server first. Stopping closes the SSE streams, both file watchers, the keep-alive timer and the HTTP server.
-- **Opening.** `open` always returns the URL, and calls `openPath` only when `ctx.hasUI` is true. The command then posts `ADR visualization: <url>` as a displayed message.
+- **Lifecycle.** `AdrVisualizer` keeps one server, identified by session ID and repository root (`discoverRepo(cwd)`). `open` reuses it while both still match and no `--host`/`--port` differing from the running server's requested values is given; otherwise it stops the old server and starts a new one. A bare `/adr visualize` reuses whatever is running. Session shutdown (`session_shutdown`) stops it at once. If the session ID or repository root no longer matches, the next `open` or change notice stops the old server first. Stopping closes the SSE streams, both file watchers, the keep-alive timer and the HTTP server. A port already in use makes the command report the bind error.
+- **Opening.** `open` always returns the server, and calls `openPath` with its URL only when `ctx.hasUI` is true. The command then posts `ADR visualization: <url>` as a displayed message, followed by `(listening on <host>:<port>)` when the URL host differs from the bind host.
 - **Revisions.** The server increments the revision 200 ms after the last trigger (a debounce) and broadcasts it. Triggers:
   - a change in `docs/adr/`. The directory is watched, or its nearest existing parent while it is absent, and the watch moves once the directory appears;
   - a change under the git common directory whose path matches `HEAD`, `refs` or `packed-refs` (recursive watch), which covers commits, branch moves and tags;
