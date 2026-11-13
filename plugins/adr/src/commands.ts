@@ -7,13 +7,14 @@ import { initialize, note, setStatus } from "#src/operations.ts";
 import type { AdrSession, UiFactory } from "#src/ses.ts";
 import { checkReceipt, detailText, failure, type Receipt, requireInitialized, statusReceipt, toolResult, written } from "#src/tools.ts";
 import type { AdrUi, MenuAction, MenuChoice, MenuOptions } from "#src/ui.ts";
+import type { AdrVisualizer } from "#src/visualize-server.ts";
 
 export interface AdrCommands {
   refresh(ctx: ExtensionContext): Promise<void>;
 }
 
 const USAGE =
-  "Usage: /adr [list [status] | show <id> | accept|reject|deprecate <id> | note <id> <text> | new [topic] | supersede <id> [topic] | check [--fix] | init | confirm <token>]";
+  "Usage: /adr [list [status] | show <id> | visualize | accept|reject|deprecate <id> | note <id> <text> | new [topic] | supersede <id> [topic] | check [--fix] | init | confirm <token>]";
 
 /** `label` is what the menu shows; actions that take arguments name them so they stay distinguishable from the bare action. */
 interface Completion {
@@ -26,6 +27,7 @@ const ACTIONS: readonly Completion[] = [
   { value: "list", description: "List ADRs" },
   { value: "list ", label: "list <status>", description: "List ADRs with one status" },
   { value: "show ", label: "show <id>", description: "Show an ADR's full text and supersession chain" },
+  { value: "visualize", description: "Open the live ADR decision map in a browser" },
   { value: "accept ", label: "accept <id>", description: "Accept an ADR" },
   { value: "reject ", label: "reject <id>", description: "Reject an ADR" },
   { value: "deprecate ", label: "deprecate <id>", description: "Deprecate an ADR" },
@@ -75,6 +77,7 @@ export function registerCommands(
   ses: AdrSession,
   uiFor: UiFactory,
   changed: (ctx: ExtensionContext) => void,
+  visualizer: AdrVisualizer,
 ): AdrCommands {
   let adrs: Array<Pick<AdrDoc, "id" | "title" | "status">> = [];
 
@@ -255,6 +258,10 @@ export function registerCommands(
         if (remainder || (first && !STATUSES.includes(first as (typeof STATUSES)[number])))
           throw new Error(`Usage: /adr list [${STATUSES.join("|")}]`);
         show("wows-omp-adr.list", await statusReceipt(await requireInitialized(ctx.cwd, "user"), { status: first || undefined }));
+      } else if (action === "visualize") {
+        if (rest) throw new Error("Usage: /adr visualize");
+        const url = await visualizer.open(ctx);
+        pi.sendMessage({ customType: "wows-omp-adr.visualize", content: `ADR visualization: ${url}`, display: true });
       } else if (action === "show") {
         if (!first || remainder) throw new Error("Usage: /adr show <id>");
         show("wows-omp-adr.show", await statusReceipt(await requireInitialized(ctx.cwd, "user"), { id: first }));
@@ -276,7 +283,7 @@ export function registerCommands(
   }
 
   pi.registerCommand("adr", {
-    description: "Browse ADRs, accept, reject or deprecate them, append notes, start new or superseding decisions, check, or initialize",
+    description: "Browse or visualize ADRs, accept, reject or deprecate them, append notes, start decisions, check, or initialize",
     getArgumentCompletions(prefix) {
       const prefixed = (word: string, options: readonly Completion[]) =>
         options.map(({ value, description }) => ({ value: `${word} ${value}`, description }));

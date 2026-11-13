@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Decision records</title>
+    <link rel="stylesheet" href="app.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand-text">
+          <h1 id="repo-name">Decision records</h1>
+          <p id="repo-ref" class="repo-ref"></p>
+        </div>
+      </div>
+      <ul id="counts" class="counts" aria-label="ADRs by status"></ul>
+      <div class="controls">
+        <fieldset class="segmented" aria-label="View">
+          <button type="button" data-view="map" aria-pressed="true">Map</button>
+          <button type="button" data-view="timeline" aria-pressed="false">Timeline</button>
+        </fieldset>
+        <button type="button" class="toggle" id="toggle-lanes" aria-pressed="false">
+          <span class="toggle-track" aria-hidden="true"></span>Stage lanes
+        </button>
+        <button type="button" class="toggle" id="toggle-mentions" aria-pressed="false">
+          <span class="toggle-track" aria-hidden="true"></span>Mentions
+        </button>
+        <span id="conn" class="conn" role="status" data-state="connecting">
+          <span class="conn-dot" aria-hidden="true"></span><span id="conn-label">Connecting</span>
+        </span>
+      </div>
+    </header>
+    <div id="notices" class="notices"></div>
+    <main class="workspace">
+      <section id="map-view" class="map-view" aria-label="Decision map. Drag to pan; arrow keys pan, plus and minus zoom, 0 fits.">
+        <div id="viewport" class="viewport">
+          <div id="world" class="world">
+            <div id="bands" class="bands"></div>
+            <svg id="edges" class="edges" aria-hidden="true"></svg>
+            <div id="cards" class="cards"></div>
+          </div>
+        </div>
+        <fieldset class="zoom" aria-label="Zoom">
+          <button type="button" id="zoom-out" aria-label="Zoom out">&minus;</button>
+          <output id="zoom-level" aria-live="off">100%</output>
+          <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+          <button type="button" id="zoom-fit" class="zoom-fit">Fit</button>
+        </fieldset>
+        <div class="legend" aria-hidden="true">
+          <span>
+            <svg width="28" height="8" viewBox="0 0 28 8" aria-hidden="true">
+              <path class="legend-supersede" d="M0 4H22" />
+              <path class="legend-head" d="M22 0L28 4L22 8Z" /></svg
+            >supersedes
+          </span>
+          <span id="legend-mention" hidden>
+            <svg width="28" height="8" viewBox="0 0 28 8" aria-hidden="true">
+              <path class="legend-mention" d="M0 4H22" />
+              <path class="legend-head-mention" d="M22 0L28 4L22 8Z" /></svg
+            >mentions
+          </span>
+        </div>
+      </section>
+      <section id="timeline-view" class="timeline-view" aria-label="Timeline" hidden></section>
+      <div id="empty" class="empty" hidden></div>
+      <aside id="panel" class="panel" aria-labelledby="panel-title" hidden></aside>
+    </main>
+  </body>
+</html>

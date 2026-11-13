@@ -1,0 +1,493 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-12T09:30:00.000Z",
+  "repo": { "name": "ledgerly", "root": "/home/mara/src/ledgerly", "branch": "main", "head": "4f2c9a1" },
+  "state": "managed",
+  "adrs": [
+    {
+      "id": "ADR-0001",
+      "title": "Record architecture decisions",
+      "status": "accepted",
+      "date": "2026-02-03",
+      "supersedes": [],
+      "decisionMakers": ["Mara Okafor"],
+      "consulted": ["Platform guild"],
+      "informed": ["Engineering"],
+      "path": "docs/adr/0001-record-architecture-decisions.md",
+      "body": "# Record architecture decisions\n\n## Context and Problem Statement\n\nLedgerly's design choices live in chat threads and pull-request comments. New contributors cannot tell which choices still hold, and old debates restart every quarter. How do we keep a durable, reviewable record of decisions?\n\n## Considered Options\n\n* Markdown ADRs in the repository (MADR 4)\n* A wiki page per decision\n* No formal record\n\n## Decision Outcome\n\nChosen option: \"Markdown ADRs in the repository\", because records are reviewed in the same pull requests as the code they shape and travel with every clone.\n\n### Consequences\n\n* Good, because decisions are versioned with the code.\n* Bad, because someone has to keep statuses current when decisions change.\n\n## More Information\n\nRecords live in `docs/adr/` and are managed with the `adr` plugin. See [MADR](https://adr.github.io/madr/) for the template.\n",
+      "notes": [],
+      "mentions": [],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0002",
+      "title": "Use PostgreSQL as the primary datastore",
+      "status": "superseded",
+      "date": "2026-02-12",
+      "stage": "S01",
+      "supersedes": [],
+      "supersededBy": "ADR-0005",
+      "decisionMakers": ["Mara Okafor", "Jonas Lindqvist"],
+      "consulted": ["Priya Raman"],
+      "informed": ["Engineering"],
+      "path": "docs/adr/0002-use-postgresql.md",
+      "body": "# Use PostgreSQL as the primary datastore\n\n## Context and Problem Statement\n\nThe ledger needs transactional writes, foreign keys and reporting queries over a few million rows per tenant. Which database do we build on?\n\n## Decision Drivers\n\n* Strong consistency for double-entry postings\n* Mature migration tooling\n* Operations cost for a two-person team\n\n## Considered Options\n\n* PostgreSQL 16 on a managed host\n* MySQL 8\n* SQLite\n\n## Decision Outcome\n\nChosen option: \"PostgreSQL 16 on a managed host\", because it gives us serializable transactions and the richest SQL for reports.\n\n### Consequences\n\n* Good, because `CHECK` constraints enforce balanced postings in the database.\n* Bad, because every preview environment needs its own database instance.\n\n## More Information\n\nRecorded under the process in ADR-0001.\n",
+      "notes": [],
+      "mentions": ["ADR-0001"],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0003",
+      "title": "Expose a REST API with JSON envelopes",
+      "status": "accepted",
+      "date": "2026-02-19",
+      "stage": "S01",
+      "supersedes": [],
+      "decisionMakers": ["Jonas Lindqvist"],
+      "consulted": ["Mara Okafor", "Mobile team"],
+      "informed": ["Support"],
+      "path": "docs/adr/0003-rest-api-json-envelopes.md",
+      "body": "# Expose a REST API with JSON envelopes\n\n## Context and Problem Statement\n\nThe web app, the mobile app and two partner integrations read the same ledger data. They need one stable contract with predictable errors and pagination.\n\n## Considered Options\n\n* REST with JSON envelopes\n* gRPC with a REST gateway\n* GraphQL\n\n| Option | Client effort | Caching | Tooling |\n| --- | --- | --- | --- |\n| REST + envelopes | Low | HTTP caches work | OpenAPI |\n| gRPC + gateway | Medium | Gateway only | Protobuf |\n| GraphQL | Medium | Custom | Codegen |\n\n## Decision Outcome\n\nChosen option: \"REST with JSON envelopes\", because every client already speaks HTTP and the envelope keeps errors uniform.\n\n```json\n{ \"data\": [{ \"id\": \"pst_91\" }], \"next\": \"c2VxOjEwMjQ=\", \"error\": null }\n```\n\n### Consequences\n\n* Good, because partners can use plain `curl` to explore.\n* Neutral, because pagination cursors are opaque keys from the primary store (ADR-0002).\n* Bad, because over-fetching on the dashboard needs dedicated endpoints.\n\n## More Information\n\nThe OpenAPI document is generated from route handlers on every build.\n",
+      "notes": [],
+      "mentions": ["ADR-0002"],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0004",
+      "title": "Authenticate with server-side session cookies",
+      "status": "superseded",
+      "date": "2026-03-02",
+      "stage": "S01",
+      "supersedes": [],
+      "supersededBy": "ADR-0006",
+      "decisionMakers": ["Jonas Lindqvist"],
+      "consulted": [],
+      "informed": ["Engineering"],
+      "path": "docs/adr/0004-session-cookies.md",
+      "body": "# Authenticate with server-side session cookies\n\n## Context and Problem Statement\n\nThe first release has a single web client on the same origin as the API. How should users sign in?\n\n## Considered Options\n\n* Server-side sessions in an `HttpOnly` cookie\n* Self-issued JWTs in local storage\n\n## Decision Outcome\n\nChosen option: \"Server-side sessions\", because they are revocable and immune to token theft through XSS.\n\n### Consequences\n\n* Good, because logout is immediate.\n* Bad, because the mobile app and partners cannot use cookies cleanly.\n",
+      "notes": [],
+      "mentions": [],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0005",
+      "title": "Run on SQLite with Litestream replication",
+      "status": "superseded",
+      "date": "2026-03-24",
+      "stage": "S02",
+      "supersedes": ["ADR-0002"],
+      "supersededBy": "ADR-0009",
+      "decisionMakers": ["Mara Okafor"],
+      "consulted": ["Jonas Lindqvist", "Priya Raman"],
+      "informed": ["Engineering", "Finance"],
+      "path": "docs/adr/0005-sqlite-with-litestream.md",
+      "body": "# Run on SQLite with Litestream replication\n\n## Context and Problem Statement\n\nManaged PostgreSQL costs more than the rest of our hosting combined, and per-preview databases slow every pull request. Most tenants are small. Can a single-node store carry us through the beta?\n\n## Decision Drivers\n\n* Hosting cost during the beta\n* Preview environments in seconds\n* Point-in-time recovery\n\n## Considered Options\n\n* SQLite in WAL mode with Litestream to object storage\n* Keep managed PostgreSQL\n* PostgreSQL in a container per node\n\n## Decision Outcome\n\nChosen option: \"SQLite with Litestream\", because it removes the database bill and makes previews instant while keeping continuous backups.\n\n### Consequences\n\n* Good, because a preview is a file copy.\n* Bad, because we are limited to **one writer node**.\n* Bad, because reporting queries compete with postings for the same file.\n\n### Confirmation\n\nA weekly restore drill must finish inside the 15-minute RTO.\n\n## More Information\n\n### 2026-05-30\n\nRestore drill from Litestream took 4 minutes for 2.1 GB; within the RTO. Write latency p99 rose to 38 ms under the month-end batch.\n",
+      "notes": [
+        {
+          "date": "2026-05-30",
+          "text": "Restore drill from Litestream took 4 minutes for 2.1 GB; within the RTO. Write latency p99 rose to 38 ms under the month-end batch."
+        }
+      ],
+      "mentions": [],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0006",
+      "title": "Use OIDC with short-lived access tokens",
+      "status": "accepted",
+      "date": "2026-04-22",
+      "stage": "S02",
+      "supersedes": ["ADR-0004"],
+      "decisionMakers": ["Jonas Lindqvist", "Priya Raman"],
+      "consulted": ["Security review"],
+      "informed": ["Mobile team", "Partners"],
+      "path": "docs/adr/0006-oidc-short-lived-tokens.md",
+      "body": "# Use OIDC with short-lived access tokens\n\n## Context and Problem Statement\n\nThe mobile app and partner integrations cannot rely on same-origin cookies. We need one sign-in flow for every client of the API described in ADR-0003.\n\n## Considered Options\n\n* OIDC with a hosted identity provider, 10-minute access tokens and rotating refresh tokens\n* Long-lived API keys per client\n* Keep cookies and add a token bridge\n\n## Decision Outcome\n\nChosen option: \"OIDC with a hosted identity provider\", because it serves browsers, mobile and machine clients with one standard.\n\n### Consequences\n\n* Good, because revocation is bounded by the 10-minute token lifetime.\n* Bad, because the identity provider becomes a hard dependency for sign-in.\n\n## More Information\n\n### 2026-06-11\n\nRefresh-token rotation shipped in mobile 2.4. Partner keys are migrated; the cookie session endpoint returns `410 Gone`.\n",
+      "notes": [
+        {
+          "date": "2026-06-11",
+          "text": "Refresh-token rotation shipped in mobile 2.4. Partner keys are migrated; the cookie session endpoint returns `410 Gone`."
+        }
+      ],
+      "mentions": ["ADR-0003"],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0007",
+      "title": "Introduce a GraphQL gateway",
+      "status": "rejected",
+      "date": "2026-04-29",
+      "stage": "S02",
+      "supersedes": [],
+      "decisionMakers": ["Jonas Lindqvist"],
+      "consulted": ["Mobile team"],
+      "informed": ["Engineering"],
+      "path": "docs/adr/0007-graphql-gateway.md",
+      "body": "# Introduce a GraphQL gateway\n\n## Context and Problem Statement\n\nThe dashboard makes nine REST calls on load. The mobile team asked for a GraphQL gateway in front of the REST API (ADR-0003).\n\n## Considered Options\n\n* GraphQL gateway over the REST endpoints\n* Two aggregate REST endpoints for the dashboard\n\n## Decision Outcome\n\nRejected. Two aggregate endpoints remove eight of the nine calls without a second API surface to secure, version and monitor.\n\n### Consequences\n\n* Good, because there is still one contract to document.\n* Bad, because new screens may need new aggregate endpoints.\n",
+      "notes": [],
+      "mentions": ["ADR-0003"],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0008",
+      "title": "Generate exports with a nightly cron job",
+      "status": "deprecated",
+      "date": "2026-09-15",
+      "stage": "S03",
+      "supersedes": [],
+      "decisionMakers": ["Priya Raman"],
+      "consulted": ["Finance"],
+      "informed": ["Support"],
+      "path": "docs/adr/0008-nightly-export-cron.md",
+      "body": "# Generate exports with a nightly cron job\n\n## Context and Problem Statement\n\nAccountants download CSV and DATEV exports. Building them on request blocked the single writer for minutes.\n\n## Considered Options\n\n* Nightly cron that writes exports to object storage\n* On-demand exports in a background worker\n\n## Decision Outcome\n\nChosen option: \"Nightly cron\", because it runs while traffic is lowest and needs no queue.\n\n### Consequences\n\n* Good, because postings are never blocked during the day.\n* Bad, because exports are up to 24 hours old.\n\n## More Information\n\n### 2026-09-15\n\nDeprecated. Exports now stream on demand from the read replica introduced in ADR-0009; the cron job is switched off.\n",
+      "notes": [
+        {
+          "date": "2026-09-15",
+          "text": "Deprecated. Exports now stream on demand from the read replica introduced in ADR-0009; the cron job is switched off."
+        }
+      ],
+      "mentions": ["ADR-0009"],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0009",
+      "title": "Move back to managed PostgreSQL with read replicas",
+      "status": "accepted",
+      "date": "2026-07-21",
+      "stage": "S03",
+      "supersedes": ["ADR-0005"],
+      "decisionMakers": ["Mara Okafor", "Priya Raman"],
+      "consulted": ["Jonas Lindqvist", "Finance"],
+      "informed": ["Engineering", "Support"],
+      "path": "docs/adr/0009-managed-postgresql-read-replicas.md",
+      "body": "# Move back to managed PostgreSQL with read replicas\n\n## Context and Problem Statement\n\nThree enterprise tenants joined after the beta. The single SQLite writer now saturates at month end, and reports slow down postings. The cost argument from ADR-0005 no longer holds at this volume.\n\n## Decision Drivers\n\n* Write throughput at month end\n* Isolating reports from postings\n* Recovery time under 15 minutes\n\n## Considered Options\n\n* Managed PostgreSQL 17 with one read replica\n* Shard SQLite per tenant\n* Stay on SQLite and queue writes\n\n## Decision Outcome\n\nChosen option: \"Managed PostgreSQL 17 with one read replica\", because it scales writes vertically and moves every report to the replica. It returns to the store chosen in ADR-0002 with a different topology.\n\n### Consequences\n\n* Good, because reports and exports no longer touch the primary.\n* Good, because the schema from the PostgreSQL era still applies with two migrations.\n* Bad, because previews need a database again; we use template databases to keep them under a minute.\n\n### Confirmation\n\n1. Month-end batch completes with p99 write latency below 20 ms.\n2. Restore drill passes from the provider's point-in-time recovery.\n\n## More Information\n\nMigration runbook: `ops/runbooks/sqlite-to-postgres.md`.\n\n### 2026-08-02\n\nCut-over finished in 11 minutes of read-only mode. Month-end p99 write latency is 9 ms.\n",
+      "notes": [
+        { "date": "2026-08-02", "text": "Cut-over finished in 11 minutes of read-only mode. Month-end p99 write latency is 9 ms." }
+      ],
+      "mentions": ["ADR-0002"],
+      "workingTree": "clean"
+    },
+    {
+      "id": "ADR-0010",
+      "title": "Keep an append-only audit log of postings",
+      "status": "proposed",
+      "date": "2026-09-01",
+      "supersedes": [],
+      "decisionMakers": ["Priya Raman"],
+      "consulted": ["Security review", "Finance"],
+      "informed": [],
+      "path": "docs/adr/0010-append-only-audit-log.md",
+      "body": "# Keep an append-only audit log of postings\n\n## Context and Problem Statement\n\nAuditors ask who changed a posting and when. Updates overwrite rows, so the answer depends on application logs that expire after 30 days.\n\n## Decision Drivers\n\n* Seven-year retention required by GoBD\n* Tamper evidence\n* No extra load on the primary (see ADR-0009)\n\n## Considered Options\n\n* Append-only `posting_events` table with hash chaining\n* Logical replication into a separate audit store\n* Trigger-based history tables\n\n## Decision Outcome\n\nProposed option: \"Append-only `posting_events` table with hash chaining\", because it keeps the audit trail in the same transaction as the posting. The actor comes from the OIDC subject (ADR-0006).\n\n### Consequences\n\n* Good, because every change is attributable.\n* Bad, because storage grows by roughly 40% per year.\n\n## More Information\n\nOpen question: do we need to *redact* personal data inside events for erasure requests?\n",
+      "notes": [],
+      "mentions": ["ADR-0006", "ADR-0009"],
+      "workingTree": "modified"
+    },
+    {
+      "id": "ADR-0011",
+      "title": "Adopt OpenTelemetry for request tracing",
+      "status": "proposed",
+      "date": "2026-11-10",
+      "supersedes": [],
+      "decisionMakers": ["Jonas Lindqvist"],
+      "consulted": [],
+      "informed": [],
+      "path": "docs/adr/0011-opentelemetry-tracing.md",
+      "body": "# Adopt OpenTelemetry for request tracing\n\n## Context and Problem Statement\n\nSlow requests are hard to explain because API, worker and database logs share no request id.\n\n## Considered Options\n\n* OpenTelemetry SDK with an OTLP collector\n* Vendor agent from our log provider\n\n## Decision Outcome\n\nDraft. Leaning towards OpenTelemetry to avoid lock-in.\n",
+      "notes": [],
+      "mentions": [],
+      "workingTree": "untracked"
+    }
+  ],
+  "stages": [
+    { "id": "S01", "title": "Core ledger model", "round": "R01", "status": "done" },
+    { "id": "S02", "title": "Auth and API surface", "round": "R01", "status": "done" },
+    { "id": "S03", "title": "Scale-out and reporting", "round": "R02", "status": "active" }
+  ],
+  "history": {
+    "available": true,
+    "events": [
+      {
+        "adr": "ADR-0001",
+        "kind": "created",
+        "commit": "a1b2c3d",
+        "date": "2026-02-03T10:12:44+01:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): record architecture decisions",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0002",
+        "kind": "created",
+        "commit": "b7e41f0",
+        "date": "2026-02-10T16:40:02+01:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): propose PostgreSQL",
+        "to": "proposed"
+      },
+      {
+        "adr": "ADR-0002",
+        "kind": "status",
+        "commit": "c03d9a2",
+        "date": "2026-02-12T09:05:31+01:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): accept PostgreSQL",
+        "from": "proposed",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0003",
+        "kind": "created",
+        "commit": "d58e0b1",
+        "date": "2026-02-17T14:22:10+01:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): propose REST API envelopes",
+        "to": "proposed"
+      },
+      {
+        "adr": "ADR-0003",
+        "kind": "status",
+        "commit": "e2a7c44",
+        "date": "2026-02-19T11:48:57+01:00",
+        "author": "Mara Okafor",
+        "subject": "chore(adr): accept API decision and link S01",
+        "from": "proposed",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0003",
+        "kind": "stage",
+        "commit": "e2a7c44",
+        "date": "2026-02-19T11:48:57+01:00",
+        "author": "Mara Okafor",
+        "subject": "chore(adr): accept API decision and link S01",
+        "to": "S01"
+      },
+      {
+        "adr": "ADR-0002",
+        "kind": "stage",
+        "commit": "e2a7c44",
+        "date": "2026-02-19T11:48:57+01:00",
+        "author": "Mara Okafor",
+        "subject": "chore(adr): accept API decision and link S01",
+        "to": "S01"
+      },
+      {
+        "adr": "ADR-0004",
+        "kind": "created",
+        "commit": "f19b3e8",
+        "date": "2026-03-02T17:31:20+01:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): session cookies for the web client",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0005",
+        "kind": "created",
+        "commit": "0a6c2d5",
+        "date": "2026-03-20T08:55:12+01:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): propose SQLite with Litestream",
+        "to": "proposed"
+      },
+      {
+        "adr": "ADR-0005",
+        "kind": "status",
+        "commit": "1d4e8f7",
+        "date": "2026-03-24T15:10:03+01:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): switch to SQLite for the beta",
+        "from": "proposed",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0002",
+        "kind": "superseded",
+        "commit": "1d4e8f7",
+        "date": "2026-03-24T15:10:03+01:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): switch to SQLite for the beta",
+        "from": "accepted",
+        "to": "ADR-0005"
+      },
+      {
+        "adr": "ADR-0006",
+        "kind": "created",
+        "commit": "2b9f0c3",
+        "date": "2026-04-08T10:02:47+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): propose OIDC sign-in",
+        "to": "proposed"
+      },
+      {
+        "adr": "ADR-0007",
+        "kind": "created",
+        "commit": "3c7a1e9",
+        "date": "2026-04-15T13:37:09+02:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): propose GraphQL gateway",
+        "to": "proposed"
+      },
+      {
+        "adr": "ADR-0006",
+        "kind": "status",
+        "commit": "4e0d5b2",
+        "date": "2026-04-22T09:15:30+02:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): accept OIDC, retire session cookies",
+        "from": "proposed",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0004",
+        "kind": "superseded",
+        "commit": "4e0d5b2",
+        "date": "2026-04-22T09:15:30+02:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): accept OIDC, retire session cookies",
+        "from": "accepted",
+        "to": "ADR-0006"
+      },
+      {
+        "adr": "ADR-0007",
+        "kind": "status",
+        "commit": "5f8c3a6",
+        "date": "2026-04-29T16:44:51+02:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): reject GraphQL gateway",
+        "from": "proposed",
+        "to": "rejected"
+      },
+      {
+        "adr": "ADR-0008",
+        "kind": "created",
+        "commit": "6a1b7d0",
+        "date": "2026-05-06T11:20:14+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): nightly export job",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0005",
+        "kind": "note",
+        "commit": "7c2e9f4",
+        "date": "2026-05-30T18:03:26+02:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): note Litestream restore drill",
+        "to": "2026-05-30"
+      },
+      {
+        "adr": "ADR-0006",
+        "kind": "note",
+        "commit": "8d3f0a5",
+        "date": "2026-06-11T12:30:00+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): note refresh-token rollout",
+        "to": "2026-06-11"
+      },
+      {
+        "adr": "ADR-0003",
+        "kind": "edited",
+        "commit": "9e4a1b6",
+        "date": "2026-06-20T10:11:45+02:00",
+        "author": "Jonas Lindqvist",
+        "subject": "docs(adr): clarify pagination cursors"
+      },
+      {
+        "adr": "ADR-0009",
+        "kind": "created",
+        "commit": "a05b2c7",
+        "date": "2026-07-14T09:48:03+02:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): propose managed PostgreSQL with replicas",
+        "to": "proposed"
+      },
+      {
+        "adr": "ADR-0009",
+        "kind": "status",
+        "commit": "b16c3d8",
+        "date": "2026-07-21T14:26:39+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): accept PostgreSQL migration",
+        "from": "proposed",
+        "to": "accepted"
+      },
+      {
+        "adr": "ADR-0005",
+        "kind": "superseded",
+        "commit": "b16c3d8",
+        "date": "2026-07-21T14:26:39+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): accept PostgreSQL migration",
+        "from": "accepted",
+        "to": "ADR-0009"
+      },
+      {
+        "adr": "ADR-0008",
+        "kind": "stage",
+        "commit": "c27d4e9",
+        "date": "2026-07-28T10:00:18+02:00",
+        "author": "Priya Raman",
+        "subject": "chore(roadmap): move export work to S03",
+        "from": "S02",
+        "to": "S03"
+      },
+      {
+        "adr": "ADR-0009",
+        "kind": "note",
+        "commit": "d38e5fa",
+        "date": "2026-08-02T21:14:55+02:00",
+        "author": "Mara Okafor",
+        "subject": "docs(adr): record cut-over results",
+        "to": "2026-08-02"
+      },
+      {
+        "adr": "ADR-0010",
+        "kind": "created",
+        "commit": "e49f60b",
+        "date": "2026-09-01T15:33:08+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): propose append-only audit log",
+        "to": "proposed"
+      },
+      {
+        "adr": "ADR-0008",
+        "kind": "status",
+        "commit": "f5a071c",
+        "date": "2026-09-15T09:21:40+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): deprecate nightly exports",
+        "from": "accepted",
+        "to": "deprecated"
+      },
+      {
+        "adr": "ADR-0008",
+        "kind": "note",
+        "commit": "f5a071c",
+        "date": "2026-09-15T09:21:40+02:00",
+        "author": "Priya Raman",
+        "subject": "docs(adr): deprecate nightly exports",
+        "to": "2026-09-15"
+      },
+      {
+        "adr": "ADR-0010",
+        "kind": "edited",
+        "commit": "",
+        "date": "2026-11-12T09:30:00.000Z",
+        "author": "",
+        "subject": "Uncommitted changes",
+        "uncommitted": true
+      },
+      {
+        "adr": "ADR-0011",
+        "kind": "created",
+        "commit": "",
+        "date": "2026-11-12T09:30:00.000Z",
+        "author": "",
+        "subject": "Uncommitted changes",
+        "to": "proposed",
+        "uncommitted": true
+      }
+    ]
+  },
+  "parseErrors": []
+}

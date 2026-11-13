@@ -12,6 +12,7 @@ import { readUiMenu } from "#src/settings.ts";
 import { adrStatus, renderInjection } from "#src/state.ts";
 import { registerTools } from "#src/tools.ts";
 import { createTuiUi } from "#src/ui.ts";
+import { AdrVisualizer } from "#src/visualize-server.ts";
 
 let testUiFactory: UiFactory | undefined;
 
@@ -22,6 +23,7 @@ export function __setUiFactory(factory?: UiFactory): void {
 
 export default function adr(pi: ExtensionAPI): void {
   const ses = new AdrSession();
+  const visualizer = new AdrVisualizer();
   const uiFor: UiFactory = async (ctx) => {
     if (testUiFactory) return testUiFactory(ctx);
     // Only the terminal UI can show the fullscreen console, so other clients never read the setting.
@@ -39,6 +41,7 @@ export default function adr(pi: ExtensionAPI): void {
   /** Re-derives the sidecar from the files on disk; serialized so a slower read never overwrites a newer state. */
   const changed = (ctx: ExtensionContext): void => {
     if (ctx.agent.kind !== "main") return;
+    visualizer.notify(ctx);
     const sessionId = ctx.sessionManager.getSessionId();
     const cwd = ctx.cwd;
     publishing = publishing.then(async () => {
@@ -53,7 +56,7 @@ export default function adr(pi: ExtensionAPI): void {
   const service = registerService(pi, changed);
   registerTools(pi, changed, service.resolver);
   registerMessageTitles(pi);
-  const commands = registerCommands(pi, ses, uiFor, changed);
+  const commands = registerCommands(pi, ses, uiFor, changed, visualizer);
 
   async function rebuild(_event: unknown, ctx: ExtensionContext): Promise<void> {
     ses.rebuild(ctx);
@@ -69,6 +72,7 @@ export default function adr(pi: ExtensionAPI): void {
   pi.on("session_branch", rebuild);
   pi.on("session_tree", rebuild);
   pi.on("session_shutdown", async () => {
+    visualizer.stop();
     await publishing;
     await publisher.flush();
   });

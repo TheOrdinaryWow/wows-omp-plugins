@@ -448,7 +448,7 @@ export async function note(
   );
 }
 
-function datedNotes(body: string): Array<{ start: number; end: number; heading: string; key: string }> {
+export function datedNotes(body: string): Array<{ start: number; end: number; heading: string; key: string }> {
   const headings = markdownHeadings(body, /^#{1,3} .+$/gm);
   let information = false;
   const notes: Array<{ start: number; end: number; heading: string; key: string }> = [];
