@@ -11,11 +11,23 @@ import { buildAdrGraph } from "#src/visualize-data.ts";
 
 export interface VisualizeServer {
   url: string;
+  listen: string;
   notify(): void;
   stop(): void;
 }
 
-export function startVisualizeServer(path: string): VisualizeServer {
+export interface ListenOptions {
+  host?: string;
+  port?: number;
+}
+
+const WILDCARD_HOSTS: Readonly<Record<string, string>> = { "0.0.0.0": "127.0.0.1", "::": "::1" };
+
+function urlHost(host: string): string {
+  return host.includes(":") ? `[${host}]` : host;
+}
+
+export function startVisualizeServer(path: string, { host = "127.0.0.1", port = 0 }: ListenOptions = {}): VisualizeServer {
   const repo = adrRepo(path);
   const token = randomBytes(24).toString("hex");
   const prefix = `/${token}/`;
@@ -48,8 +60,8 @@ export function startVisualizeServer(path: string): VisualizeServer {
     "app.css": ["app.css", "text/css; charset=utf-8"],
   };
   const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
+    hostname: host,
+    port,
     idleTimeout: 0,
     async fetch(request) {
       const pathname = new URL(request.url).pathname;
@@ -124,7 +136,9 @@ export function startVisualizeServer(path: string): VisualizeServer {
   const keepAlive = setInterval(() => broadcast(encoder.encode(": keep-alive\n\n")), 15_000);
   keepAlive.unref();
   return {
-    url: `http://127.0.0.1:${server.port}${prefix}`,
+    // A wildcard bind cannot be browsed directly; link the matching loopback address instead.
+    url: `http://${urlHost(WILDCARD_HOSTS[host] ?? host)}:${server.port}${prefix}`,
+    listen: `${urlHost(host)}:${server.port}`,
     notify,
     stop() {
       if (stopped) return;
@@ -141,20 +155,33 @@ export function startVisualizeServer(path: string): VisualizeServer {
 }
 
 export class AdrVisualizer {
-  #active?: { session: string; root: string; server: VisualizeServer };
+  #active?: { session: string; root: string; options: ListenOptions; server: VisualizeServer };
 
   sync(ctx: ExtensionContext): void {
     if (!this.#active) return;
     if (this.#active.session !== ctx.sessionManager.getSessionId() || this.#active.root !== discoverRepo(ctx.cwd)?.repoRoot) this.stop();
   }
 
-  async open(ctx: ExtensionContext): Promise<string> {
+  /** Reuses the running server unless `--host`/`--port` ask for a different address. */
+  async open(ctx: ExtensionContext, options: ListenOptions = {}): Promise<VisualizeServer> {
     this.sync(ctx);
+    const active = this.#active;
+    if (
+      active &&
+      ((options.host !== undefined && options.host !== active.options.host) ||
+        (options.port !== undefined && options.port !== active.options.port))
+    )
+      this.stop();
     const repo = adrRepo(ctx.cwd);
-    this.#active ??= { session: ctx.sessionManager.getSessionId(), root: repo.repoRoot, server: startVisualizeServer(repo.repoRoot) };
-    const url = this.#active.server.url;
-    if (ctx.hasUI) openPath(url);
-    return url;
+    this.#active ??= {
+      session: ctx.sessionManager.getSessionId(),
+      root: repo.repoRoot,
+      options,
+      server: startVisualizeServer(repo.repoRoot, options),
+    };
+    const { server } = this.#active;
+    if (ctx.hasUI) openPath(server.url);
+    return server;
   }
 
   notify(ctx: ExtensionContext): void {

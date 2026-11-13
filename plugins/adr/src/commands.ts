@@ -7,14 +7,32 @@ import { initialize, note, setStatus } from "#src/operations.ts";
 import type { AdrSession, UiFactory } from "#src/ses.ts";
 import { checkReceipt, detailText, failure, type Receipt, requireInitialized, statusReceipt, toolResult, written } from "#src/tools.ts";
 import type { AdrUi, MenuAction, MenuChoice, MenuOptions } from "#src/ui.ts";
-import type { AdrVisualizer } from "#src/visualize-server.ts";
+import type { AdrVisualizer, ListenOptions } from "#src/visualize-server.ts";
 
 export interface AdrCommands {
   refresh(ctx: ExtensionContext): Promise<void>;
 }
 
 const USAGE =
-  "Usage: /adr [list [status] | show <id> | visualize | accept|reject|deprecate <id> | note <id> <text> | new [topic] | supersede <id> [topic] | check [--fix] | init | confirm <token>]";
+  "Usage: /adr [list [status] | show <id> | visualize [--port <port>] [--host <host>] | accept|reject|deprecate <id> | note <id> <text> | new [topic] | supersede <id> [topic] | check [--fix] | init | confirm <token>]";
+
+const VISUALIZE_USAGE = "Usage: /adr visualize [--port <port>] [--host <host>]";
+
+function visualizeOptions(args: string): ListenOptions {
+  const words = args.split(/\s+/).filter(Boolean);
+  const options: ListenOptions = {};
+  for (let index = 0; index < words.length; index += 2) {
+    const [flag, value] = [words[index], words[index + 1]];
+    if (value === undefined) throw new Error(VISUALIZE_USAGE);
+    if (flag === "--host" && options.host === undefined) options.host = value;
+    else if (flag === "--port" && options.port === undefined) {
+      const port = Number(value);
+      if (!/^\d+$/.test(value) || port > 65535) throw new Error(`--port must be an integer from 0 to 65535; got ${value}.`);
+      options.port = port;
+    } else throw new Error(VISUALIZE_USAGE);
+  }
+  return options;
+}
 
 /** `label` is what the menu shows; actions that take arguments name them so they stay distinguishable from the bare action. */
 interface Completion {
@@ -28,6 +46,11 @@ const ACTIONS: readonly Completion[] = [
   { value: "list ", label: "list <status>", description: "List ADRs with one status" },
   { value: "show ", label: "show <id>", description: "Show an ADR's full text and supersession chain" },
   { value: "visualize", description: "Open the live ADR decision map in a browser" },
+  {
+    value: "visualize ",
+    label: "visualize [--port <port>] [--host <host>]",
+    description: "Open the decision map on a chosen port or listen address",
+  },
   { value: "accept ", label: "accept <id>", description: "Accept an ADR" },
   { value: "reject ", label: "reject <id>", description: "Reject an ADR" },
   { value: "deprecate ", label: "deprecate <id>", description: "Deprecate an ADR" },
@@ -259,9 +282,9 @@ export function registerCommands(
           throw new Error(`Usage: /adr list [${STATUSES.join("|")}]`);
         show("wows-omp-adr.list", await statusReceipt(await requireInitialized(ctx.cwd, "user"), { status: first || undefined }));
       } else if (action === "visualize") {
-        if (rest) throw new Error("Usage: /adr visualize");
-        const url = await visualizer.open(ctx);
-        pi.sendMessage({ customType: "wows-omp-adr.visualize", content: `ADR visualization: ${url}`, display: true });
+        const server = await visualizer.open(ctx, visualizeOptions(rest));
+        const listening = server.url.includes(server.listen) ? "" : ` (listening on ${server.listen})`;
+        pi.sendMessage({ customType: "wows-omp-adr.visualize", content: `ADR visualization: ${server.url}${listening}`, display: true });
       } else if (action === "show") {
         if (!first || remainder) throw new Error("Usage: /adr show <id>");
         show("wows-omp-adr.show", await statusReceipt(await requireInitialized(ctx.cwd, "user"), { id: first }));
