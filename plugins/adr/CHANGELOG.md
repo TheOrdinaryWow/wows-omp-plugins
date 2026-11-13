@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.4.3...adr@0.5.0) (2026-11-13)
+
+
+### Features
+
+* **adr:** add /adr visualize live decision map with git history ([19d795a](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/19d795a84b2ce0258bc31ef7062e740c50356144))
+* **adr:** let /adr visualize choose its port and listen address ([5ab9f86](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/5ab9f86f1653dd6ddfe0d2a0c502a1a904bceb0b))
+
 ## [0.4.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.4.2...adr@0.4.3) (2026-11-12)
 
 

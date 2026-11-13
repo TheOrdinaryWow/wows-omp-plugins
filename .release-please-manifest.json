@@ -1,5 +1,5 @@
 {
-  "plugins/adr": "0.4.3",
+  "plugins/adr": "0.5.0",
   "plugins/audit-goal": "0.4.4",
   "plugins/find-console": "0.2.3",
   "plugins/judge-dispatch": "0.9.1",
