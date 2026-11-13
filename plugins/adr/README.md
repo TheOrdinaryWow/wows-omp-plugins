@@ -58,6 +58,7 @@ All commands run in the main session and complete subcommands and ADR IDs.
 | Command | What it does |
 | --- | --- |
 | `/adr` | Open the ADR console (see below). |
+| `/adr visualize` | Open a live map of your decisions in the browser. |
 | `/adr list [status]` | List ADRs, optionally only one status. |
 | `/adr show <id>` | Show one ADR and the decisions it replaced or was replaced by. |
 | `/adr accept\|reject\|deprecate <id>` | Record your decision. |
@@ -102,6 +103,21 @@ ADRs written by the roadmap plugin 0.4.0 or earlier are read as they are, so the
 
 The conversion is one-way: the roadmap plugin 0.4.0 and earlier cannot read converted files. If other clones of the repository still run one of those versions, upgrade the roadmap plugin there and install this plugin before the first change.
 
+### See how your decisions evolved
+
+Run `/adr visualize` to open a page in your browser that draws the decisions in this repository as a map of how they changed. The address also appears in the conversation, so you can open it yourself when no browser window opens, for example over RPC or on a machine without a desktop.
+
+The page has these parts:
+
+- **Decision map.** Each ADR is a card coloured by its status, with arrows from a decision to the one that replaced it. Superseded, rejected and deprecated decisions are faded so the current ones stand out.
+- **Timeline.** ADR dates, dated notes and changes from the git history, in date order. Changes that are not committed yet are marked as uncommitted.
+- **Stage lanes.** Groups the cards into bands by roadmap stage. Turn them on or off with the "Stage lanes" toggle.
+- **Mention links.** Dashed lines between decisions whose text refers to another ADR. Turn them on or off with the "Mentions" toggle.
+
+Click a card or a timeline entry to see its details: metadata, the decisions it replaced or was replaced by, its own history and the full record. Clicking a linked decision in the panel moves to it.
+
+The page updates by itself while the session runs. A new decision, a status change, a note, an edit to a file in `docs/adr/` or a new commit refreshes it, and your selection and view stay where they were. Running `/adr visualize` again in the same session gives you the same address.
+
 ## Settings
 
 Change a setting for your user:
@@ -136,10 +152,14 @@ Changes apply the next time you run an `/adr` command.
 - A change that touches several files is not all-or-nothing. If one is interrupted, `/adr check --fix` repairs the decision table.
 - Separate clones of a repository number ADRs independently, so their IDs can collide. Worktrees of the same clone share the numbering.
 - In Tern, the console and preview keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
+- The `/adr visualize` page is served only on this machine, at `127.0.0.1`. On a remote or SSH machine, forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, then open the address from the conversation.
+- The page stops when the OMP session ends. The next `/adr visualize` prints a new address, because each start picks a new port and a new random path.
+- The page's history comes from commits reachable from the current HEAD, plus the uncommitted changes in your working tree. Other branches appear only after they are merged. A repository with no commits yet shows only the uncommitted changes.
+- The `/adr` console has no entry for the decision map; run `/adr visualize` instead.
 
 ## More details
 
-[REFERENCE.md](REFERENCE.md) covers the tool inputs, the file formats including the roadmap plugin's older files, which Markdown the tools accept, how edit protection works, recovery and worktrees, how `/adr` behaves in RPC, ACP editors and headless runs, the state snapshot, and the interface other plugins use.
+[REFERENCE.md](REFERENCE.md) covers the tool inputs, the file formats including the roadmap plugin's older files, which Markdown the tools accept, how edit protection works, recovery and worktrees, how `/adr` behaves in RPC, ACP editors and headless runs, the state snapshot, the decision map server and its data format, and the interface other plugins use.
 
 ## License
 

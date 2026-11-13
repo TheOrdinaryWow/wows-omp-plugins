@@ -165,10 +165,62 @@ ID 来自 `<git common dir>/adr/counters.json`，即 `{"v":1,"adr":N}`，同一�
 | RPC（`--mode rpc`、`rpc-ui`）和 ACP | 无论 `uiMenu` 怎么设，都使用内联菜单和对话框，以 `select`、`input` 和 `editor` 请求发送。ACP 客户端可能只把通知写进日志。 |
 | 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。不带参数的 `/adr` 输出列表和用法，请使用子命令。通知和错误显示为会话消息。 |
 | Tern | 控制台和 `/adr init` 预览以原生面板打开：点击状态标签筛选，点击 ADR 或文件选中（双击执行），按钮提供与按键相同的操作，按键仍然可用。`adr_*` 工具调用显示为原生卡片（带彩色状态的 ADR 表格、单个 ADR 的元数据和可折叠的正文、改动的文件、检查诊断），`/adr` 消息带有可读的标题，比如 “ADR check”。 |
+| 任何宿主 | `/adr visualize` 把地址作为显示的消息发送。只有宿主有 UI 时才会打开浏览器。 |
 
 没有 UI 时，`/adr init` 返回渲染后的预览和 `/adr confirm <token>` 命令，不写入任何内容。令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被新的 `/adr init` 预览替换之前有效；确认时会重新检查初始化是否仍生成相同的文件。这个待确认的预览只保存在内存里，进程退出后就会丢失。
 
 在终端控制台中，取消新决策或替代决策的主题对话框会回到控制台。插件附带 `adr` 技能和固定版本的 MADR 4.0 模板（`assets/madr/`）。
+
+## 可视化服务
+
+`/adr visualize` 运行一个只读的决策图服务。服务代码在 `src/visualize-server.ts`，图数据在 `src/visualize-data.ts` 和 `src/visualize-history.ts`，页面在 `assets/visualize/`（纯 HTML、CSS 和 JavaScript，没有构建步骤）。
+
+- **监听地址**：`Bun.serve` 监听 `127.0.0.1`，端口为 `0`，由操作系统分配。每次启动服务都会生成新的随机令牌（24 字节的十六进制字符串），作为路径前缀：`http://127.0.0.1:<端口>/<令牌>/`。没有该前缀的路径，以及非 GET 的请求，都返回 404。
+- **端点**：页面使用前缀下的相对 URL。
+
+| 路径 | 响应 |
+| --- | --- |
+| `/<令牌>/` | `index.html` |
+| `/<令牌>/app.js`、`/<令牌>/app.css` | 资源文件，每次请求时从磁盘读取，附带对应的内容类型 |
+| `/<令牌>/api/graph` | 每次请求都重新构建的 `AdrGraph`，`Cache-Control: no-store`。构建失败时返回状态码 500 和 `{"error": ...}`。 |
+| `/<令牌>/api/events` | `text/event-stream`。连接时以及每次修订时发送 `{"revision":N}`，并每 15 秒发送一次 `: keep-alive` 注释。 |
+
+资源目录中只有 `index.html`、`app.js` 和 `app.css` 可以访问，其他文件名返回 404。
+
+- **生命周期**：`AdrVisualizer` 只保留一个服务，由会话 ID 和仓库根目录（`discoverRepo(cwd)`）标识。两者都匹配时 `open` 复用它，否则启动新的服务。会话关闭（`session_shutdown`）时立即停止。如果会话 ID 或仓库根目录已经不匹配，下一次 `open` 或变更通知会先停掉旧服务。停止时会关闭 SSE 连接、两个文件监听器、保活计时器和 HTTP 服务。
+- **打开浏览器**：`open` 总是返回地址，只有 `ctx.hasUI` 为 true 时才调用 `openPath`。命令随后发送一条显示的消息 `ADR visualization: <url>`。
+- **修订触发**：最后一次触发后 200 毫秒（防抖），服务把修订号加一并广播。触发来源有三类：
+  - `docs/adr/` 目录的变化。监听该目录；目录不存在时监听它最近的已存在上级目录，目录出现后再切换过去；
+  - git 公共目录下路径匹配 `HEAD`、`refs` 或 `packed-refs` 的变化（递归监听），涵盖提交、分支移动和标签；
+  - ADR 工具调用、`/adr` 命令和服务写入，它们走同一个通知入口。
+  `docs/adr/` 和 git 目录之外的文件修改不会触发修订。
+- **图数据**：只有状态为 `managed` 或 `unmanaged` 时，`buildAdrGraph` 才会读取 ADR；`absent` 和 `empty` 状态下返回空列表，页面会显示说明。阶段标题取自 `docs/roadmap/**/S*.md` 文件的前置元数据（`id`、`title`、`round`、`status`），没有时取第一个 `#` 标题，并且只读取被 ADR 引用的阶段。`mentions` 是正文中匹配 `ADR-\d{4,}` 且指向已存在 ADR 的 ID，排除自身和取代关系中的 ID，按 ID 排序。`notes` 是 `## More Information` 下的 `### YYYY-MM-DD` 标题，内容取到下一个标题为止。`workingTree` 与 HEAD 比较：HEAD 中没有该 ID 的文件时为 `untracked`，路径和字节都相同时为 `clean`，其余为 `modified`。
+
+`AdrGraph`（版本 1）：
+
+| 字段 | 内容 |
+| --- | --- |
+| `version` | 固定为 `1`。 |
+| `generatedAt` | 构建时的 ISO 时间。工作区事件使用它作为日期。 |
+| `repo` | `name`（目录名）、`root`、`branch`（HEAD 游离或无法读取时省略）和 `head`（7 位短 SHA，没有提交时省略）。 |
+| `state` | `AdrDirState`：`absent`、`empty`、`managed` 或 `unmanaged`。 |
+| `adrs` | 按 ID 排序的 `AdrNode`。 |
+| `stages` | ADR 引用的每个阶段对应一个 `StageInfo`（`id`，可选的 `title`、`round`、`status`）。 |
+| `history` | `available`、可选的 `reason`，以及 `events`：按时间从早到晚排列，工作区事件排在最后。 |
+| `parseErrors` | 加载失败的文件，包含仓库相对路径 `path` 和 `message`。 |
+
+`AdrNode` 包含 `id`、`title`、`status`、`date`（`YYYY-MM-DD`）、可选的 `stage`、`supersedes`、可选的 `supersededBy`、`decisionMakers`、`consulted`、`informed`、`path`、`body`（不含前置元数据）、`notes`、`mentions` 和 `workingTree`。
+
+`HistoryEvent`：`adr`、`kind`（`created`、`status`、`superseded`、`stage`、`note`、`edited` 或 `deleted`）、`commit`（7 位短 SHA；工作区事件为空字符串）、`date`（提交的作者时间，ISO 格式）、`author`、`subject`、可选的 `from` 和 `to`，工作区事件带 `uncommitted: true`。工作区事件的 `subject` 为 “Uncommitted changes”。
+
+历史通过只读的 git 命令读取（带 `--no-optional-locks` 和 `--literal-pathspecs`）：
+
+- 日志命令是 `git log --reverse --topo-order --full-history --diff-merges=off --raw --find-renames --root HEAD -- docs/adr/`。只统计从 HEAD 可达的提交。合并提交不产生事件，每个侧分支提交单独读取，因此同一变更不会被计算两次。合并提交内部做的冲突解决不会显示。
+- 只统计 `docs/adr/*.md` 文件。`docs/adr/README.md` 不计入日志，也不计入 HEAD 快照。
+- 版本按每个文件内部的 ADR ID 比较，所以保留 ID 的重命名算作一次变更，改变 ID 的重命名则拆成一次 `deleted` 加一次 `created`。解析失败的版本视为不存在。
+- 一次提交中改动的每条 ADR 可能产生多个事件。文件出现时产生 `created`（`to` 为状态），文件消失时产生 `deleted`（`from` 为最后的状态）。状态变化产生 `status`（`from`、`to`）；新状态为 `superseded` 时改为产生 `superseded`，`from` 为旧状态，`to` 为取代它的 ID。阶段变化产生 `stage`。每个新的 `### YYYY-MM-DD` 备注标题产生一个 `note`，`to` 为该日期。以上都没有触发时产生 `edited`，因此正文变化、标题、日期或决策者的变化，以及它们的任意组合，都一定会产生事件。
+- 工作区与 HEAD 快照按同样的方式比较。这些事件的 `commit` 为空字符串，`date` 等于 `generatedAt`，带 `uncommitted: true`，排在提交事件之后。
+- HEAD 不存在（没有任何提交）时，`history.available` 为 `false` 并给出原因，事件只包含工作区中的 `created` 事件。之后的 git 命令失败时，`history.available` 同样为 `false`，`events` 为空，`reason` 为 git 的错误信息。
 
 ## 状态快照
 

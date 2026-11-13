@@ -165,10 +165,62 @@ IDs come from `<git common dir>/adr/counters.json`, `{"v":1,"adr":N}`, shared by
 | RPC (`--mode rpc`, `rpc-ui`) and ACP | The inline menu and dialogs whatever `uiMenu` says, sent as `select`, `input` and `editor` requests. ACP clients may show notices only in their log. |
 | No UI (`--no-ui`, print, JSON, SDK) | No dialogs. Bare `/adr` prints the list and usage; use the subcommands. Notices and errors become displayed session messages. |
 | Tern | The console and the `/adr init` preview open as native sheets: click a status tab to filter, click an ADR or file to select it (double-click to choose it), and use the buttons for the same actions as the keys. The keys keep working. `adr_*` tool calls show as native cards (an ADR table with colored statuses, one ADR's metadata over a foldable record, changed files, check diagnostics), and `/adr` messages carry readable titles such as "ADR check". |
+| Any host | `/adr visualize` sends its address as a displayed message. The browser opens only when the host has a UI. |
 
 Without a UI, `/adr init` returns the rendered preview and a `/adr confirm <token>` command without writing. The token covers exactly the shown files and lasts until the session is rebuilt (start, switch, branch, tree) or a newer `/adr init` preview replaces it; confirming rechecks that initialization still produces the same files. The held preview lives only in memory and is lost when the process exits.
 
 In the terminal console, cancelling the topic dialog of a new decision or a supersession returns to the console. The plugin ships the `adr` skill and a pinned MADR 4.0 template in `assets/madr/`.
+
+## Visualization server
+
+`/adr visualize` runs a read-only decision map server. The server is in `src/visualize-server.ts`, the graph data in `src/visualize-data.ts` and `src/visualize-history.ts`, and the page in `assets/visualize/` (plain HTML, CSS and JavaScript with no build step).
+
+- **Binding.** `Bun.serve` listens on `127.0.0.1` with port `0`, so the OS picks the port. Each server start gets a new random token (24 bytes, hex) that serves as the path prefix: `http://127.0.0.1:<port>/<token>/`. Paths without the prefix and methods other than GET get 404.
+- **Endpoints.** The page uses relative URLs under the prefix.
+
+| Path | Response |
+| --- | --- |
+| `/<token>/` | `index.html` |
+| `/<token>/app.js`, `/<token>/app.css` | The asset, read from disk on each request, with its content type |
+| `/<token>/api/graph` | `AdrGraph` built on each request, `Cache-Control: no-store`. A build failure returns status 500 with `{"error": ...}`. |
+| `/<token>/api/events` | `text/event-stream`. Sends `{"revision":N}` on connect and on each revision, plus `: keep-alive` comments every 15 seconds. |
+
+Only `index.html`, `app.js` and `app.css` are served from the asset directory; any other name returns 404.
+
+- **Lifecycle.** `AdrVisualizer` keeps one server, identified by session ID and repository root (`discoverRepo(cwd)`). `open` reuses it while both still match and starts a new one otherwise. Session shutdown (`session_shutdown`) stops it at once. If the session ID or repository root no longer matches, the next `open` or change notice stops the old server first. Stopping closes the SSE streams, both file watchers, the keep-alive timer and the HTTP server.
+- **Opening.** `open` always returns the URL, and calls `openPath` only when `ctx.hasUI` is true. The command then posts `ADR visualization: <url>` as a displayed message.
+- **Revisions.** The server increments the revision 200 ms after the last trigger (a debounce) and broadcasts it. Triggers:
+  - a change in `docs/adr/`. The directory is watched, or its nearest existing parent while it is absent, and the watch moves once the directory appears;
+  - a change under the git common directory whose path matches `HEAD`, `refs` or `packed-refs` (recursive watch), which covers commits, branch moves and tags;
+  - an ADR tool call, a `/adr` command or a service write, which goes through the same notify call.
+  Edits outside `docs/adr/` and the git directory do not trigger a revision.
+- **Graph data.** `buildAdrGraph` reads ADRs only when the state is `managed` or `unmanaged`. For `absent` and `empty` it returns no ADRs. Stage titles come from the front matter of `docs/roadmap/**/S*.md` files (`id`, `title`, `round`, `status`), falling back to the first `#` heading, and only stages an ADR references are read. `mentions` are `ADR-\d{4,}` matches in the body that name an existing ADR, excluding the ADR itself and its supersession links, in ID order. `notes` are the `### YYYY-MM-DD` headings under `## More Information`, with text running to the next heading. `workingTree` compares the file with HEAD: `untracked` when HEAD has no file with that ID, `clean` when path and bytes match, otherwise `modified`.
+
+`AdrGraph` (version 1):
+
+| Field | Content |
+| --- | --- |
+| `version` | Always `1`. |
+| `generatedAt` | ISO time of the build. Working-tree events use it as their date. |
+| `repo` | `name` (directory basename), `root`, `branch` (omitted when HEAD is detached or unreadable) and `head` (7-character SHA, omitted without commits). |
+| `state` | `AdrDirState`: `absent`, `empty`, `managed` or `unmanaged`. |
+| `adrs` | `AdrNode` values in ID order. |
+| `stages` | `StageInfo` (`id`, optional `title`, `round`, `status`) for each stage an ADR references. |
+| `history` | `available`, optional `reason`, and `events`, oldest first with working-tree events last. |
+| `parseErrors` | `path` (repository-relative) and `message` for each file that failed to load. |
+
+`AdrNode` carries `id`, `title`, `status`, `date` (`YYYY-MM-DD`), optional `stage`, `supersedes`, optional `supersededBy`, `decisionMakers`, `consulted`, `informed`, `path`, `body` (without front matter), `notes`, `mentions` and `workingTree`.
+
+`HistoryEvent`: `adr`, `kind` (`created`, `status`, `superseded`, `stage`, `note`, `edited` or `deleted`), `commit` (7-character SHA; empty for working-tree events), `date` (commit author date, ISO), `author`, `subject`, optional `from` and `to`, and `uncommitted: true` for working-tree events. Working-tree events have `subject` "Uncommitted changes".
+
+History is read with read-only git commands (`--no-optional-locks`, `--literal-pathspecs`):
+
+- The log is `git log --reverse --topo-order --full-history --diff-merges=off --raw --find-renames --root HEAD -- docs/adr/`. Only commits reachable from HEAD count. Merge commits contribute no events, and each side-branch commit is read on its own, so a change is not counted twice. A conflict resolution made inside a merge commit is not shown.
+- Only `docs/adr/*.md` files count. `docs/adr/README.md` is excluded from the log and from the HEAD snapshot.
+- Versions are compared by the ADR ID inside each file, so a rename that keeps the ID is a change, while a rename that changes the ID is a `deleted` plus a `created`. A version that fails to parse counts as absent.
+- Each ADR changed in a commit can produce several events. `created` (`to` is the status) when the file appears, and `deleted` (`from` is the last status) when it disappears. A status change emits `status` (`from`, `to`); when the new status is `superseded`, it emits `superseded` instead, with `from` as the old status and `to` as the successor. A stage change emits `stage`. Each new `### YYYY-MM-DD` note heading emits `note` with `to` as the date. When none of these fired, the change emits `edited`, so a body change, a title, date or decision-maker change, or any mix of them always produces an event.
+- The working tree is compared with the HEAD snapshot in the same way. These events get `commit` "", `date` equal to `generatedAt`, `uncommitted: true`, and come after the commit events.
+- With an unborn HEAD (no commits), `history.available` is `false` with a reason. The events hold only the working-tree `created` events. If a later git command fails, `history.available` is also `false`, `events` is empty and `reason` holds git's error.
 
 ## State snapshot
 
