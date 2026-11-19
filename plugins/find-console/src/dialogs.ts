@@ -7,8 +7,9 @@ import { type ConsoleAction, FindResultsController } from "#src/controller.ts";
 import { type HistoryEntry, historyCommand } from "#src/history.ts";
 import type { PreviewReader } from "#src/preview.ts";
 import type { ConsoleReport } from "#src/report.ts";
-import { bestRanges, countLabel, reference } from "#src/results.ts";
+import { bestRanges, countLabel, reference, resultFiles } from "#src/results.ts";
 import { mountResultsConsole } from "#src/ui.ts";
+import { UNRANKED } from "#src/view.ts";
 
 async function previewDialog(ctx: ExtensionContext, controller: FindResultsController): Promise<void> {
   const hit = controller.selectedHit;
@@ -37,10 +38,15 @@ export async function resultDialogAction(
   ctx: ExtensionContext,
   controller: FindResultsController,
 ): Promise<ConsoleAction | "back" | "send-selected"> {
-  const labels = controller.hits.map((hit, index) => ({
-    label: `${index + 1}. ${hit.rel} · ${hit.contentScore.toFixed(2)}`,
-    description: `${reference(hit)}${hit.scope === "whole-file" ? " · whole-file" : ""}${hit.truncated ? " · partial file" : ""} · ${hit.refineFailed ?? bestRanges(hit)[0]?.snippet.trim() ?? ""}`,
-  }));
+  const labels = controller.entries.map((hit, index) =>
+    hit.literal
+      ? { label: `${index + 1}. ${reference(hit)} · unranked`, description: `${UNRANKED} · ${hit.refined[0]?.snippet ?? ""}` }
+      : {
+          label: `${index + 1}. ${hit.rel} · ${hit.contentScore.toFixed(2)}`,
+          description: `${reference(hit)}${hit.scope === "whole-file" ? " · whole-file" : ""}${hit.truncated ? " · partial file" : ""} · ${hit.refineFailed ?? bestRanges(hit)[0]?.snippet.trim() ?? ""}`,
+        },
+  );
+  const files = countLabel(resultFiles(controller.report).length, "file");
   const summary = [
     `Find: ${controller.queryLabel}`,
     controller.report.originalQuery ? `searched as: ${controller.report.query}` : undefined,
@@ -61,7 +67,7 @@ export async function resultDialogAction(
       ...labels,
       {
         label: "Search within results",
-        description: `Ask a new question in only ${countLabel(controller.hits.length, "file")}; keep the current flags.`,
+        description: `Ask a new question in only ${files}; keep the current flags.`,
       },
       { label: "Recent searches", description: "Rerun a saved query with its original flags." },
     ],
@@ -96,12 +102,15 @@ export async function resultDialogAction(
         label: "Open externally",
         description: controller.actionReason("open") ?? "$VISUAL / $EDITOR at the selected line, or the OS opener.",
       },
-      { label: "Search within results", description: `Ask a new question in only ${countLabel(controller.hits.length, "file")}.` },
+      { label: "Search within results", description: `Ask a new question in only ${files}.` },
       { label: "Recent searches", description: "Rerun a saved query with its original flags." },
       { label: "Back to results" },
       { label: "Close" },
     ];
-    const choice = await ctx.ui.select(`${controller.selectedReference} · ${hit.contentScore.toFixed(2)}`, options);
+    const choice = await ctx.ui.select(
+      `${controller.selectedReference} · ${hit.literal ? UNRANKED : hit.contentScore.toFixed(2)}`,
+      options,
+    );
     if (choice === undefined || choice === "Back to results") return "back";
     if (choice === "Close") return "close";
     if (choice === "Search within results") return "refine";
@@ -161,7 +170,7 @@ export async function showResults(
     if (action === "send" || action === "send-selected") {
       const hits =
         action === "send" && controller.state.marked.length
-          ? controller.hits.filter((_hit, index) => controller.state.marked.includes(index))
+          ? controller.entries.filter((_hit, index) => controller.state.marked.includes(index))
           : [hit];
       sendHits(pi, ctx, report, hits, { hit, range: controller.state.range });
       return;

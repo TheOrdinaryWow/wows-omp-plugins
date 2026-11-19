@@ -2,7 +2,17 @@ import type { FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 
 import { externalOpenReason, type PreviewReader, type PreviewSource } from "#src/preview.ts";
 import type { ConsoleHit, ConsoleReport } from "#src/report.ts";
-import { cacheLabel, coverageWarning, formatCost, previewWindow, reference, reportStats, runStats, selectedRange } from "#src/results.ts";
+import {
+  cacheLabel,
+  consoleEntries,
+  coverageWarning,
+  formatCost,
+  previewWindow,
+  reference,
+  reportStats,
+  runStats,
+  selectedRange,
+} from "#src/results.ts";
 
 export interface ConsoleState {
   selected: number;
@@ -18,6 +28,7 @@ export interface ConsoleResult {
 
 export class FindResultsController {
   readonly state: ConsoleState = { selected: 0, range: 0, marked: [] };
+  readonly entries: readonly ConsoleHit[];
   preview: PreviewSource | undefined;
   message: string | undefined;
   onChange: (() => void) | undefined;
@@ -39,15 +50,12 @@ export class FindResultsController {
     readonly reader: PreviewReader,
     readonly supportsEditor: boolean,
   ) {
+    this.entries = consoleEntries(report);
     this.loadPreview();
   }
 
-  get hits(): readonly ConsoleHit[] {
-    return this.report.hits;
-  }
-
   get selectedHit(): ConsoleHit | undefined {
-    return this.hits[this.state.selected];
+    return this.entries[this.state.selected];
   }
 
   get activeRange(): FindRange | undefined {
@@ -99,7 +107,7 @@ export class FindResultsController {
   }
 
   select(index: number): void {
-    const selected = Math.max(0, Math.min(this.hits.length - 1, index));
+    const selected = Math.max(0, Math.min(this.entries.length - 1, index));
     if (selected === this.state.selected) return;
     this.state.selected = selected;
     this.state.range = 0;

@@ -1,4 +1,4 @@
-import type { FindHit, FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindHit, FindLexicalMatch, FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 
 import type { CacheState, ConsoleHit, ConsoleReport } from "#src/report.ts";
@@ -32,9 +32,37 @@ export function scoreGauge(score: number): string {
   return "━".repeat(filled) + "─".repeat(6 - filled);
 }
 
+export function literalHit(match: FindLexicalMatch): ConsoleHit {
+  const range = { start: match.line, end: match.line, p: 0, snippet: match.snippet };
+  return {
+    rel: match.rel,
+    contentScore: 0,
+    linesSeen: 0,
+    truncated: false,
+    ranges: [range],
+    scope: "ranges",
+    refined: [range],
+    literal: true,
+  };
+}
+
+export function consoleEntries(report: ConsoleReport): ConsoleHit[] {
+  return [...report.hits, ...report.lexicalFallback.map(literalHit)];
+}
+
+export function resultFiles(report: ConsoleReport): string[] {
+  return [...new Set(consoleEntries(report).map((hit) => hit.rel))];
+}
+
+export const LITERAL_GROUP = "Literal matches (unranked)";
+
 export function coverageWarning(report: FindToolDetails | ConsoleReport): string | undefined {
   if (report.coverage === "unavailable")
-    return `Find unavailable: nothing was judged (${report.stats.failed} of ${countLabel(report.stats.requests, "judge request")} failed). This is not evidence of absence; try grep.`;
+    return `Find unavailable: nothing was judged (${report.stats.failed} of ${countLabel(report.stats.requests, "judge request")} failed). ${
+      report.lexicalFallback?.length
+        ? "The literal matches shown are unranked and are not ranked evidence; this is not evidence of absence."
+        : "This is not evidence of absence; try grep."
+    }`;
   if (report.coverage === "partial" && !report.stats.failed && "cache" in report && report.hits.some((hit) => hit.refineFailed))
     return "Partial refinement: some passages retain verified window ranges. See the reported refinement failures; this is not negative evidence.";
   if (report.coverage === "partial")
@@ -54,8 +82,8 @@ export function cacheLabel(cache: CacheState): string {
   if (!cache.cached) return "fresh";
   return `${cache.cached === cache.total ? "all cached" : "partly cached"} · answers ${cache.cached}/${cache.total}`;
 }
-export function countLabel(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+export function countLabel(count: number, noun: string, plural = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : plural}`;
 }
 
 export function reportStats(report: FindToolDetails | ConsoleReport): string {
@@ -77,6 +105,10 @@ export function rankedDigest(report: FindToolDetails | ConsoleReport): string {
       .slice(0, 3)
       .map((range) => `   ${hit.rel}:${range.start}-${range.end} · ${range.p.toFixed(2)} · ${range.snippet.trim()}`),
   ]);
+  const literal = report.lexicalFallback ?? [];
+  const literalBody = literal.length
+    ? [`${LITERAL_GROUP}, not semantically judged:`, ...literal.map((match) => `   ${match.rel}:${match.line} · ${match.snippet}`)]
+    : [];
   return [
     heading,
     original ? `searched as: ${report.query}` : undefined,
@@ -87,6 +119,7 @@ export function rankedDigest(report: FindToolDetails | ConsoleReport): string {
     warning,
     ...body,
     !report.hits.length && report.coverage !== "unavailable" ? "No hits." : undefined,
+    ...literalBody,
     reportStats(report),
     ...report.stats.failures,
   ]
@@ -115,7 +148,7 @@ export function hitMessage(
     "originalQuery" in report && report.originalQuery ? `searched as: ${report.query}` : undefined,
     "within" in report && report.within ? `within ${countLabel(report.within.files, "file")} of: ${report.within.query}` : undefined,
     ...hits.flatMap((hit) => [
-      `\n${reference(hit, current?.hit === hit ? current.range : 0)} (score ${hit.contentScore.toFixed(2)})`,
+      `\n${reference(hit, current?.hit === hit ? current.range : 0)} (${"literal" in hit && hit.literal ? "literal keyword match, unranked" : `score ${hit.contentScore.toFixed(2)}`})`,
       ...bestRanges(hit)
         .slice(0, 3)
         .map((range) => `${hit.rel}:${range.start}-${range.end}  ${range.snippet.trim()}`),

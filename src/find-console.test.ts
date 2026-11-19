@@ -49,6 +49,7 @@ function report(extra: Partial<ConsoleReport> = {}): ConsoleReport {
     threshold: 0.2,
     coverage: "complete",
     hits: [{ ...hit, scope: "ranges", refined: hit.ranges } satisfies ConsoleHit],
+    lexicalFallback: [],
     cache: { mode: "on", cached: 0, total: 0 },
     previewMode: "snippet",
     elapsedMs: 2000,

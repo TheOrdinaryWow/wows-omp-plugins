@@ -88,7 +88,7 @@ The footer reports what the search covered and what it cost:
 
 - **Complete** means no judge request failed. It does not mean every line of every file was read; the search narrows candidates first.
 - **Partial coverage** is shown above the results when some requests failed or went unanswered. A file marked partial has parts the judge did not see.
-- **Unavailable** means nothing could be judged. You get an error saying so, and no results console. That is not evidence that the code you asked about does not exist.
+- **Unavailable** means nothing could be judged. That is not evidence that the code you asked about does not exist. If the search still found lines that contain your keywords, the console opens and lists them in a separate `Literal matches (unranked)` group below the empty hit list. They have no score and only match the text, but you can preview, insert, send and open them like hits. If there are no such lines, you get an error and no console.
 - **No hits** shows a notice instead of an empty console. With partial coverage, the notice warns that unjudged files might still match.
 
 The footer also shows whether answers came from the cache (`all cached`, `partly cached`, `fresh`, `cache off` or `cache unavailable`) and the cost. Answers from the cache cost nothing.

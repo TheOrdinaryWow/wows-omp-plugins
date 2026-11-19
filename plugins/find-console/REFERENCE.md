@@ -80,6 +80,12 @@ The action closes the current console, asks a new question through host input, a
 
 The `r` and `h` actions close the console before opening the host input or select dialog. Cancelling either dialog sends nothing to the agent.
 
+## Literal matches when judging is unavailable
+
+When every judge request fails, the host cascade returns `lexicalFallback`: at most 20 literal keyword lines from files its lexical pass already read, dealt round-robin across files, each snippet clipped to 160 characters. The plugin rewrites their paths relative to the session directory, as it does for hits, and keeps them out of `hits`, scores, `--min-score` and `--limit`. The coverage warning then says the literal matches are unranked and not ranked evidence, instead of suggesting grep.
+
+The terminal console, the Tern sheet and the RPC/ACP selector list them after the ranked hits under `Literal matches (unranked)`, with no score gauge. Each is a single-line `path:line-line` reference with the same preview, insert, mark, send and open actions as a hit; a sent message labels it `literal keyword match, unranked`. Headless reports list them as `path:line · snippet` after the coverage warning. Search within results covers the files of both ranked hits and literal matches.
+
 ## Search scope and limits
 
 - `--path` defaults to the session's current directory, not the process working directory. There is no positional path: a path is always introduced by `--path`. Hidden and ignored files follow the host cascade's default search policy.
@@ -93,6 +99,6 @@ The `r` and `h` actions close the console before opening the host input or selec
 | --- | --- |
 | RPC (`--mode rpc`, `rpc-ui`) and ACP with UI | Search progress appears through status updates with a cancel dialog. Results use a hit selector (file, score and range description), an action selector and a read-only preview editor. Preview edits are discarded. Marking, multi-hit sending, Search within results and Recent searches remain available. |
 | Host without a composer editor | Insertion is unavailable with a reason; use the send-to-agent action. RPC composers that advertise editor support can accept insertion; ACP normally cannot. |
-| No UI (print, JSON, SDK) | No dialogs or interactive actions. Supply the query in the command; ranked results, references, coverage, failures and accounting are reported through a displayed message. |
+| No UI (print, JSON, SDK) | No dialogs or interactive actions. Supply the query in the command; ranked results, literal matches when judging failed, references, coverage, failures and accounting are reported through a displayed message. |
 
 If a UI host cannot mount custom components, the command uses the same selector/editor flow. Closing a dialog does not send results to the agent. `uiMenu` applies only to the terminal TUI; Tern keeps its native sheet and RPC/ACP keep the selector/editor flow. An RPC or ACP client on another machine gets no local editor integration from `o`.

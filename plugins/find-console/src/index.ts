@@ -20,7 +20,7 @@ import { PreviewReader } from "#src/preview.ts";
 import { searchWithProgress } from "#src/progress.ts";
 import { refineHits } from "#src/refinement.ts";
 import type { ConsoleReport } from "#src/report.ts";
-import { countLabel, disabledReason, rankedDigest } from "#src/results.ts";
+import { countLabel, disabledReason, rankedDigest, resultFiles } from "#src/results.ts";
 import { readSearchSettings } from "#src/settings.ts";
 import { translateQuery } from "#src/translation.ts";
 import { trackJudgmentUsage } from "#src/usage.ts";
@@ -223,6 +223,10 @@ export default function findConsole(pi: ExtensionAPI): void {
               cwd: ctx.cwd,
               scopePath: formatPathRelativeToCwd(root.path, ctx.cwd),
               hits: filterHits(hits, args),
+              lexicalFallback: raw.lexicalFallback.map((match) => ({
+                ...match,
+                rel: formatPathRelativeToCwd(resolveSearchResultPath(root.path, match.rel), ctx.cwd),
+              })),
               coverage: raw.coverage === "complete" && hits.some((hit) => hit.refineFailed) ? "partial" : raw.coverage,
               cache: accounting.state,
               previewMode: pluginSettings.previewMode,
@@ -240,7 +244,7 @@ export default function findConsole(pi: ExtensionAPI): void {
           } catch (error) {
             commandNotice(pi, ctx, `Find history could not be saved: ${error instanceof Error ? error.message : String(error)}`, "warning");
           }
-          if (!ctx.hasUI || report.coverage === "unavailable" || !report.hits.length) {
+          if (!ctx.hasUI || (!report.hits.length && !report.lexicalFallback.length)) {
             commandNotice(
               pi,
               ctx,
@@ -251,11 +255,12 @@ export default function findConsole(pi: ExtensionAPI): void {
           }
           const action = await showResults(pi, ctx, report, reader);
           if (action === "refine") {
+            const files = resultFiles(report);
             const query = (
-              await ctx.ui.input(`Search within ${countLabel(report.hits.length, "result file")}`, "Ask a more specific question")
+              await ctx.ui.input(`Search within ${countLabel(files.length, "result file")}`, "Ask a more specific question")
             )?.trim();
             if (!query) return;
-            within = { query: args.query, files: report.hits.map((hit) => resolveSearchResultPath(ctx.cwd, hit.rel)) };
+            within = { query: args.query, files: files.map((rel) => resolveSearchResultPath(ctx.cwd, rel)) };
             args = { ...args, query, history: false };
           } else if (action === "history") {
             args = { ...args, history: true };

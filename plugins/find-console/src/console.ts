@@ -27,7 +27,7 @@ import { actionBar, actionButton, escCloseButton, hintsRow, itemIndex, selectLis
 
 import type { ConsoleAction, FindResultsController } from "#src/controller.ts";
 import type { PreviewSource } from "#src/preview.ts";
-import { bestRanges, scoreGauge } from "#src/results.ts";
+import { bestRanges, countLabel, LITERAL_GROUP, scoreGauge } from "#src/results.ts";
 import {
   anchorTop,
   cacheTone,
@@ -45,6 +45,7 @@ import {
   splitPath,
   spread,
   strength,
+  UNRANKED,
   WHOLE_FILE,
   WINDOW_RANGES,
   wholeFileBadge,
@@ -170,7 +171,7 @@ export class FindConsole implements Component {
     else if (matchesKey(key, "up")) this.controller.select(state.selected - 1);
     else if (matchesKey(key, "down")) this.controller.select(state.selected + 1);
     else if (matchesKey(key, "home")) this.controller.select(0);
-    else if (matchesKey(key, "end")) this.controller.select(this.controller.hits.length - 1);
+    else if (matchesKey(key, "end")) this.controller.select(this.controller.entries.length - 1);
     else if (matchesKey(key, "shift+tab") || matchesKey(key, "left")) actions.previousRange();
     else if (matchesKey(key, "tab") || matchesKey(key, "right")) actions.nextRange();
     else if (matchesKey(key, "pageUp")) this.#page(-1);
@@ -233,7 +234,8 @@ export class FindConsole implements Component {
     const bodyRows = Math.max(minimum, height - chrome());
 
     const marked = c.state.marked.length;
-    const title = `Find · ${c.hits.length} ${c.hits.length === 1 ? "hit" : "hits"}${marked ? ` · ${marked} marked` : ""}`;
+    const literal = c.report.lexicalFallback.length;
+    const title = `Find · ${countLabel(c.report.hits.length, "hit")}${literal ? ` · ${countLabel(literal, "literal match", "literal matches")}` : ""}${marked ? ` · ${marked} marked` : ""}`;
     const lines = [topBorder(width, title), ...header.map((line) => row(line, width)), ...warning.map((line) => row(line, width))];
     const bodyTop = lines.length + 1;
     if (split) {
@@ -256,7 +258,7 @@ export class FindConsole implements Component {
         dividerSplit(width, sidebarWidth),
       );
     } else {
-      const compact = hitList(t, c.hits, c.state, inner, true).rows.length;
+      const compact = hitList(t, c.entries, c.state, inner, true).rows.length;
       let listRows = Math.min(compact, Math.max(2, Math.floor(bodyRows * 0.4)));
       if (bodyRows >= STACKED_PREVIEW_MIN_ROWS + 3) listRows = Math.min(listRows, bodyRows - STACKED_PREVIEW_MIN_ROWS - 1);
       let previewRows = bodyRows - listRows - 1;
@@ -320,7 +322,7 @@ export class FindConsole implements Component {
   }
 
   #listRows(width: number, rows: number, compact: boolean, region: Region): string[] {
-    const list = hitList(this.theme, this.controller.hits, this.controller.state, width, compact);
+    const list = hitList(this.theme, this.controller.entries, this.controller.state, width, compact);
     this.#listTop = listTop(this.#listTop, list.rows.length, rows, list.selected);
     const shown = list.rows.slice(this.#listTop, this.#listTop + rows);
     this.#list = { region, rows: shown };
@@ -338,16 +340,21 @@ export class FindConsole implements Component {
     const { name, dir } = splitPath(hit.rel);
     const whole = hit.scope === "whole-file";
     const count = bestRanges(hit).length;
-    const where = t.fg("dim", `hit ${c.state.selected + 1}/${c.hits.length}`);
-    const position = whole
-      ? where
-      : `${t.fg("muted", "range ")}${t.fg("accent", `${count ? c.state.range + 1 : 0}/${count}`)}${t.fg("dim", " · ")}${where}`;
+    const ranked = c.report.hits.length;
+    const where = t.fg(
+      "dim",
+      hit.literal ? `literal ${c.state.selected - ranked + 1}/${c.entries.length - ranked}` : `hit ${c.state.selected + 1}/${ranked}`,
+    );
+    const position =
+      whole || hit.literal
+        ? where
+        : `${t.fg("muted", "range ")}${t.fg("accent", `${count ? c.state.range + 1 : 0}/${count}`)}${t.fg("dim", " · ")}${where}`;
     const label = whole ? ` ${wholeFileBadge(t)}` : active ? t.fg("muted", rangeLabel(active)) : "";
     const head = spread(`${t.bold(t.fg("accent", name))}${label}`, position, width);
     const score = active?.p ?? hit.contentScore;
     const facts = [
-      `${gauge(t, score)} ${t.fg(strength(score), score.toFixed(2))}`,
-      t.fg("dim", `${hit.linesSeen} lines judged`),
+      hit.literal ? t.fg("warning", UNRANKED) : `${gauge(t, score)} ${t.fg(strength(score), score.toFixed(2))}`,
+      hit.literal ? "" : t.fg("dim", `${hit.linesSeen} lines judged`),
       hit.refineFailed ? t.fg("warning", WINDOW_RANGES) : "",
       hit.truncated ? t.fg("warning", "partial file") : "",
       source?.truncated ? t.fg("warning", "first 4 MiB") : "",
@@ -363,7 +370,7 @@ export class FindConsole implements Component {
       body = wrapTextWithAnsi(t.fg("warning", `${t.status.warning} The judged range is no longer present in this file.`), width);
     else {
       const window = c.previewLines;
-      const anchor = `${hit.rel}\n${c.state.range}`;
+      const anchor = `${c.state.selected}\n${hit.rel}\n${c.state.range}`;
       if (this.#anchor !== anchor) {
         this.#anchor = anchor;
         this.#top = anchorTop(active, codeRows, window);
@@ -424,7 +431,10 @@ export class FindConsole implements Component {
           [
             text(
               [
-                span(`${c.hits.length} ${c.hits.length === 1 ? "hit" : "hits"}`, "strong"),
+                span(countLabel(report.hits.length, "hit"), "strong"),
+                ...(report.lexicalFallback.length
+                  ? [span(` · ${countLabel(report.lexicalFallback.length, "literal match", "literal matches")}`, "warning")]
+                  : []),
                 span(" in ", "muted"),
                 span(report.scopePath ?? ".", "path"),
                 ...(c.state.marked.length ? [span(` · ${c.state.marked.length} marked`, "accent")] : []),
@@ -493,51 +503,90 @@ export class FindConsole implements Component {
     return described;
   }
 
-  /** The hits (marked ones carry a pin, whole-file ones a badge), then the selected hit's refined ranges. */
+  /** The hits (marked ones carry a pin, whole-file ones a badge), the unranked literal matches, then the selected hit's refined ranges. */
   #describeLists(): NativeNode[] {
     const c = this.controller;
-    const hits = selectList(
-      "hits",
-      c.hits.map((hit, index) => {
-        const { name, dir } = splitPath(hit.rel);
-        const marked = c.state.marked.includes(index);
-        const score = hit.contentScore.toFixed(2);
-        const ranges = bestRanges(hit);
-        const whole = hit.scope === "whole-file";
-        return item(`hit-${index}`, {
-          label: name,
-          detail: dir ? `${score} · ${dir}` : score,
-          value: [
-            ...(whole ? [span(WHOLE_FILE, "mark accent")] : []),
-            ...(hit.refineFailed ? [span("windows", "warning")] : []),
-            span(scoreGauge(hit.contentScore), strength(hit.contentScore)),
-          ],
-          icon: marked ? "pin" : "file",
-          tone: strength(hit.contentScore),
-          title: [
-            `${hit.rel} · score ${score}`,
-            `${hit.linesSeen} lines judged${hit.truncated ? ", partial file" : ""}`,
-            ...(whole ? ["Whole file: the file as a whole answers the query"] : []),
-            ...ranges.slice(0, 3).map((range) => `${rangeLabel(range)} ${range.p.toFixed(2)}  ${range.snippet.trim()}`),
-            ...(ranges.length > 3 ? [`+${ranges.length - 3} more ranges`] : []),
-            ...(hit.refineFailed ? [`Includes window ranges: ${hit.refineFailed}`] : []),
-            ...(marked ? ["Marked for sending"] : []),
-          ].join("\n"),
-        });
-      }),
-      { selected: `hit-${c.state.selected}`, role: "omp.find-console.hits" },
-    );
+    const ranked = c.report.hits.length;
+    const lists: NativeNode[] = [
+      ranked
+        ? selectList(
+            "hits",
+            c.report.hits.map((hit, index) => {
+              const { name, dir } = splitPath(hit.rel);
+              const marked = c.state.marked.includes(index);
+              const score = hit.contentScore.toFixed(2);
+              const ranges = bestRanges(hit);
+              const whole = hit.scope === "whole-file";
+              return item(`hit-${index}`, {
+                label: name,
+                detail: dir ? `${score} · ${dir}` : score,
+                value: [
+                  ...(whole ? [span(WHOLE_FILE, "mark accent")] : []),
+                  ...(hit.refineFailed ? [span("windows", "warning")] : []),
+                  span(scoreGauge(hit.contentScore), strength(hit.contentScore)),
+                ],
+                icon: marked ? "pin" : "file",
+                tone: strength(hit.contentScore),
+                title: [
+                  `${hit.rel} · score ${score}`,
+                  `${hit.linesSeen} lines judged${hit.truncated ? ", partial file" : ""}`,
+                  ...(whole ? ["Whole file: the file as a whole answers the query"] : []),
+                  ...ranges.slice(0, 3).map((range) => `${rangeLabel(range)} ${range.p.toFixed(2)}  ${range.snippet.trim()}`),
+                  ...(ranges.length > 3 ? [`+${ranges.length - 3} more ranges`] : []),
+                  ...(hit.refineFailed ? [`Includes window ranges: ${hit.refineFailed}`] : []),
+                  ...(marked ? ["Marked for sending"] : []),
+                ].join("\n"),
+              });
+            }),
+            { ...(c.state.selected < ranked ? { selected: `hit-${c.state.selected}` } : {}), role: "omp.find-console.hits" },
+          )
+        : keyed(text("No ranked hits.", { tone: "muted" }), "no-hits"),
+    ];
+    if (c.report.lexicalFallback.length)
+      lists.push(
+        keyed(
+          text([span(LITERAL_GROUP, "warning strong"), span(" · not semantically judged", "dim")], {
+            wrap: "word",
+            role: "omp.find-console.literal-head",
+          }),
+          "literal-head",
+        ),
+        selectList(
+          "literal",
+          c.report.lexicalFallback.map((match, index) => {
+            const { name, dir } = splitPath(match.rel);
+            const marked = c.state.marked.includes(ranked + index);
+            return item(`literal-${index}`, {
+              label: `${name}:${match.line}`,
+              detail: match.snippet,
+              icon: marked ? "pin" : "file",
+              tone: "muted",
+              title: [
+                `${match.rel}:${match.line} · ${UNRANKED}`,
+                "Not semantically judged; not ranked evidence",
+                match.snippet,
+                ...(dir ? [`in ${dir}/`] : []),
+                ...(marked ? ["Marked for sending"] : []),
+              ].join("\n"),
+            });
+          }),
+          {
+            ...(c.state.selected >= ranked ? { selected: `literal-${c.state.selected - ranked}` } : {}),
+            role: "omp.find-console.literal",
+          },
+        ),
+      );
     const hit = c.selectedHit;
-    if (!hit) return [hits];
+    if (!hit || hit.literal) return lists;
     const { name } = splitPath(hit.rel);
     if (hit.scope === "whole-file")
       return [
-        hits,
+        ...lists,
         text([span("Whole file", "accent strong"), span(` · ${name} answers as a whole; no line ranges`, "dim")], { wrap: "word" }),
       ];
     const ranges = bestRanges(hit);
     return [
-      hits,
+      ...lists,
       text([span("Ranges", "muted"), span(` · ${ranges.length} in ${name}`, "dim")], { truncate: "end", lines: 1 }),
       selectList(
         "ranges",
@@ -564,7 +613,7 @@ export class FindConsole implements Component {
     const { name, dir } = splitPath(hit.rel);
     const whole = hit.scope === "whole-file";
     const count = bestRanges(hit).length;
-    const where = `${hit.rel}\n${c.state.range}`;
+    const where = `${c.state.selected}\n${hit.rel}\n${c.state.range}`;
     if (this.#nativeAnchor !== where) {
       this.#nativeAnchor = where;
       this.#focus++;
@@ -572,14 +621,20 @@ export class FindConsole implements Component {
     const children: NativeNode[] = [
       {
         ...nativeRow(
-          whole
+          whole || hit.literal
             ? [
-                text([span(name, "strong accent")], { grow: 1, truncate: "end", lines: 1 }),
-                node("badge", {
-                  text: WHOLE_FILE,
-                  tone: "accent",
-                  title: "The file as a whole answers the query; its reference is the bare path",
+                text([span(name, "strong accent"), span(hit.literal && active ? rangeLabel(active) : "", "muted")], {
+                  grow: 1,
+                  truncate: "end",
+                  lines: 1,
                 }),
+                whole
+                  ? node("badge", {
+                      text: WHOLE_FILE,
+                      tone: "accent",
+                      title: "The file as a whole answers the query; its reference is the bare path",
+                    })
+                  : node("badge", { text: UNRANKED, tone: "warning", title: "A literal keyword line; not semantically judged" }),
               ]
             : [
                 text([span(name, "strong accent"), span(active ? rangeLabel(active) : "", "muted")], {
@@ -600,24 +655,32 @@ export class FindConsole implements Component {
     children.push(
       keyed(
         nativeRow(
-          [
-            node("progress", {
-              value: score,
-              tone: strength(score),
-              title: `${active ? "range" : "file"} score ${score.toFixed(2)}`,
-              max: { w: "10ch" },
-            }),
-            text(
-              [
-                span(score.toFixed(2), strength(score)),
-                span(` · ${hit.linesSeen} lines judged`, "muted"),
-                ...(hit.truncated ? [span(" · partial file", "warning")] : []),
-                ...(dir ? [span(` · ${dir}/`, "dim")] : []),
+          hit.literal
+            ? [
+                text([span("Not semantically judged; not ranked evidence", "muted"), ...(dir ? [span(` · ${dir}/`, "dim")] : [])], {
+                  grow: 1,
+                  truncate: "end",
+                  lines: 1,
+                }),
+              ]
+            : [
+                node("progress", {
+                  value: score,
+                  tone: strength(score),
+                  title: `${active ? "range" : "file"} score ${score.toFixed(2)}`,
+                  max: { w: "10ch" },
+                }),
+                text(
+                  [
+                    span(score.toFixed(2), strength(score)),
+                    span(` · ${hit.linesSeen} lines judged`, "muted"),
+                    ...(hit.truncated ? [span(" · partial file", "warning")] : []),
+                    ...(dir ? [span(` · ${dir}/`, "dim")] : []),
+                  ],
+                  { grow: 1, truncate: "end", lines: 1 },
+                ),
+                ...(hit.refineFailed ? [node("badge", { text: WINDOW_RANGES, tone: "warning", title: hit.refineFailed })] : []),
               ],
-              { grow: 1, truncate: "end", lines: 1 },
-            ),
-            ...(hit.refineFailed ? [node("badge", { text: WINDOW_RANGES, tone: "warning", title: hit.refineFailed })] : []),
-          ],
           { gap: "sm", align: "center" },
         ),
         "facts",
@@ -757,6 +820,10 @@ export class FindConsole implements Component {
       const index = itemIndex(event.item, "hit-");
       if (index < 0) return;
       this.controller.select(index);
+    } else if (leaf === "literal") {
+      const index = itemIndex(event.item, "literal-");
+      if (index < 0) return;
+      this.controller.select(this.controller.report.hits.length + index);
     } else if (leaf === "ranges") {
       const index = itemIndex(event.item, "range-");
       if (index < 0) return;

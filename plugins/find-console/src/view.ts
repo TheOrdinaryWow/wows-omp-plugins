@@ -14,7 +14,7 @@ import type { FindRange } from "@oh-my-pi/pi-tui/tools/find";
 
 import type { ConsoleState } from "#src/controller.ts";
 import type { CacheState, ConsoleHit } from "#src/report.ts";
-import { bestRanges } from "#src/results.ts";
+import { bestRanges, LITERAL_GROUP } from "#src/results.ts";
 
 /** Score bands of the host's find renderer: strong (0.7+), plausible (0.4+), weak. */
 export type Strength = "success" | "warning" | "muted";
@@ -34,6 +34,8 @@ export function cacheTone(cache: CacheState): "success" | "accent" | "muted" | "
 export const WHOLE_FILE = "whole file";
 /** Label of a hit whose refinement fell back, wholly or partly, to the cascade's verified windows. */
 export const WINDOW_RANGES = "includes window ranges";
+/** Label of a literal keyword line: not semantically judged, so it carries no score. */
+export const UNRANKED = "unranked literal match";
 
 /** File name first, then its directory (`""` at the search root). */
 export function splitPath(rel: string): { name: string; dir: string } {
@@ -105,7 +107,7 @@ const COLLAPSED_RANGES = 3;
  * The hit list: per hit its file name (marked state in the checkbox, the cursor and a selection band on
  * the selected one), score gauge, scope and directory, then its refined ranges with probability and
  * snippet. A whole-file hit carries a badge instead of ranges. `compact` folds the gauge onto the name
- * line and lists ranges only under the selected hit.
+ * line and lists ranges only under the selected hit. Literal entries follow under their own unscored group.
  */
 export function hitList(theme: Theme, hits: readonly ConsoleHit[], state: ConsoleState, width: number, compact: boolean): HitList {
   const t = theme;
@@ -114,8 +116,13 @@ export function hitList(theme: Theme, hits: readonly ConsoleHit[], state: Consol
   const indent = padding(cursorWidth + boxWidth + 2);
   const rows: ListRow[] = [];
   let selected: [number, number] = [0, 0];
+  const firstLiteral = hits.findIndex((hit) => hit.literal);
   hits.forEach((hit, index) => {
-    if (index > 0 && !compact) rows.push({ text: "" });
+    if (index === firstLiteral) {
+      if (index === 0) rows.push({ text: t.fg("dim", "No ranked hits.") });
+      else if (!compact) rows.push({ text: "" });
+      rows.push({ text: truncateToWidth(t.fg("warning", LITERAL_GROUP), width) });
+    } else if (index > 0 && !compact && !hit.literal) rows.push({ text: "" });
     const first = rows.length;
     const chosen = index === state.selected;
     const marked = state.marked.includes(index);
@@ -123,13 +130,29 @@ export function hitList(theme: Theme, hits: readonly ConsoleHit[], state: Consol
     const cursor = chosen ? t.fg("accent", t.nav.cursor) : padding(cursorWidth);
     const box = marked ? t.fg("accent", t.checkbox.checked) : t.fg("dim", t.checkbox.unchecked);
     const label = chosen ? t.bold(t.fg("accent", name)) : t.fg("text", name);
-    const score = `${gauge(t, hit.contentScore)} ${t.fg(strength(hit.contentScore), hit.contentScore.toFixed(2))}`;
+    const head = `${cursor} ${box}${padding(boxWidth - visibleWidth(marked ? t.checkbox.checked : t.checkbox.unchecked))} ${label}`;
+    if (hit.literal) {
+      const [range] = hit.refined;
+      const line = `${head}${t.fg("muted", range ? rangeLabel(range) : "")}`;
+      const snippet = t.fg("toolOutput", replaceTabs(range?.snippet ?? ""));
+      if (compact) {
+        const shown = `${line}  ${snippet}`;
+        rows.push({ text: chosen ? band(t, shown, width) : truncateToWidth(shown, width), hit: index });
+      } else {
+        const room = width - visibleWidth(line) - 2;
+        const where = `${line}${dir && room > 4 ? `  ${t.fg("dim", tail(`${dir}/`, room))}` : ""}`;
+        rows.push({ text: chosen ? band(t, where, width) : truncateToWidth(where, width), hit: index });
+        rows.push({ text: truncateToWidth(`${indent}${snippet}`, width), hit: index });
+      }
+      if (chosen) selected = [first, rows.length - 1];
+      return;
+    }
     const tags = [
       hit.scope === "whole-file" ? ` ${wholeFileBadge(t)}` : "",
       hit.refineFailed ? t.fg("warning", ` ${WINDOW_RANGES}`) : "",
       hit.truncated ? t.fg("warning", " partial") : "",
     ].join("");
-    const head = `${cursor} ${box}${padding(boxWidth - visibleWidth(marked ? t.checkbox.checked : t.checkbox.unchecked))} ${label}`;
+    const score = `${gauge(t, hit.contentScore)} ${t.fg(strength(hit.contentScore), hit.contentScore.toFixed(2))}`;
     if (compact) {
       const facts = `  ${score}${tags}`;
       const room = width - visibleWidth(head) - visibleWidth(facts) - 2;
