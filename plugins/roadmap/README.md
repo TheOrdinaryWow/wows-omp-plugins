@@ -52,6 +52,10 @@ Asking the agent to start a stage binds the session to it and gives the agent th
 
 In Plan Mode, starting a stage only gives the agent the handoff for planning; the stage itself starts once the plan is approved and implementation begins.
 
+Before a stage starts, the plugin checks whether its size suits the way you are about to work on it. Planning a stage that looks small enough to do directly, in Plan Mode or with `/prometheus`, brings up a dialog suggesting you skip the plan. Starting a large-looking stage without a plan stops with a dialog suggesting you plan it first with `/prometheus` or Plan Mode. You can take the suggestion, carry on as you were, or cancel. Carrying on is remembered for that stage for the rest of the session. Taking the suggestion starts nothing: leave or enter planning yourself, then ask the agent to start the stage again.
+
+The judge model in OMP's `judge` role sizes the stage from its document. If it is unsure, or no suitable judge is set up, the stage starts without asking, and a missing judge gets one mention per session. Stages with an Atlas plan, stages you join, and stages this session already took up while planning are not checked.
+
 If the scope or the criteria of an active stage need to change, the agent records an amendment with a reason. Work found along the way goes into TODOs, and decisions into ADRs. Until you commit, the agent can still correct or remove its latest amendment.
 
 Before a stage starts, you can ask the agent to move it to another active or planned round. Its ID and linked ADRs stay the same. The plugin refuses moves that put a stage before a dependency or predecessor, and moves any TODOs that would otherwise be left in the wrong round. Active stages cannot move, and closed or dropped rounds cannot send or receive stages.
@@ -109,6 +113,7 @@ All commands run in the main session and complete subcommands, stage IDs and rou
 | `/roadmap retarget <round-or-stage> <YYYY-MM-DD\|none>` | Set or clear a target date. |
 | `/roadmap close-round [outcome=<assessment>:<summary>] [<todo>=<disposition>[:<reference>] …]` | Close the active round. The arguments answer its questions in advance, for example `outcome=partial:"checkout shipped, refunds moved" T001=resolved:abc1234 T002=wontfix:"out of scope" T003=carried`. |
 | `/roadmap overlap <stage> roadmap\|free\|unrelated [intent]` | Answer the "is this part of the roadmap?" question by command. |
+| `/roadmap proceed <stage>` | Answer the planning check by command and let the stage start the way you are working now. |
 | `/roadmap confirm <token>` | Confirm a preview when no dialog was available. |
 
 ### The `/roadmap` console
@@ -144,6 +149,7 @@ Change a setting for your user:
 ```bash
 omp plugin config set wows-omp-plugin-roadmap uiMenu inline
 omp plugin config set wows-omp-plugin-roadmap stageOrder id
+omp plugin config set wows-omp-plugin-roadmap planningGate false
 omp plugin config list wows-omp-plugin-roadmap
 ```
 
@@ -159,6 +165,8 @@ Changes apply the next time you use `/roadmap` or the agent reads the roadmap.
 | --- | --- | --- |
 | `uiMenu` | `fullscreen` | `fullscreen` opens the console and previews described above. `inline` uses small select menus instead. Only affects the terminal; an unknown value counts as `fullscreen`. |
 | `stageOrder` | `dependency` | `dependency` lists stages in the order they will run: a stage comes after the stages it depends on, so one added later in between shows up where it belongs. `id` lists them by number. This affects the console, command completion and the status the agent sees. The tables written into the roadmap files always stay in ID order. |
+| `planningGate` | `true` | `true` runs the planning check from [Work on a stage](#work-on-a-stage) each time a stage starts. `false` turns it off. |
+| `planningGateConfidence` | `0.6` | How confident the judge must be, from `0` to `1`, before the planning check asks. A higher value means fewer questions, each one more certain; `0` asks whenever the judge leans either way. |
 
 ## Working with other plugins
 
@@ -170,6 +178,7 @@ Changes apply the next time you use `/roadmap` or the agent reads the roadmap.
 - Setup needs a fresh `docs/roadmap/`. An existing roadmap, or a `docs/adr/` with files the adr plugin does not manage, cannot be taken over.
 - Planned rounds cannot be skipped or renumbered, and IDs of dropped rounds are not reused.
 - The agent asks about overlapping work only when it notices the overlap.
+- The planning check sizes a stage from its document alone, so it can be wrong. It needs a judge model with calibrated confidence in OMP's `judge` role. A `judge` role that points to an ordinary chat model is not used.
 - The protection against direct edits is best effort, especially for shell commands. It is not a sandbox.
 - Joining an active stage warns about other sessions but does not reserve the stage.
 - `/roadmap check` checks the documents, not whether the code matches them.

@@ -37,7 +37,7 @@
 | `amend` | 向活动阶段追加一条带日期的变更，必须写明 `reason`，并返回从零开始的修订索引。`amendments` 可以新增、修改或删除标准，以及增删范围内/范围外条目；`target` 记录日期变化。新日志会保留旧验证方法和条目位置，供撤销使用。 |
 | `revise_amendment`、`delete_amendment` | 接受阶段 `id` 和从零开始的修订 `index`。只有最新且影响可明确撤销的未提交修订可以修改；修改会先撤销原修订，再应用替换的 `reason`、`amendments` 和可选 `target`。删除会撤销其影响，没有其他改动时恢复追加前规范格式的阶段字节。缺少撤销信息的旧条目以及与后续编辑冲突的条目会被拒绝。 |
 | `revise_free_work`、`delete_free_work` | 接受未关闭阶段的 `id` 和从零开始的自由工作 `index`。修改接受与 `roadmap_overlap` 相同形状的替换 `intent`，保留原日期和会话。追加操作会返回索引。 |
-| `start` | 要求阶段属于活动轮次、依赖已关闭且没有检查错误；激活并绑定阶段，返回规划交接内容。对已处于活动状态的阶段，则加入而不修改文档。 |
+| `start` | 要求阶段属于活动轮次、依赖已关闭且没有检查错误；激活并绑定阶段，返回规划交接内容。对已处于活动状态的阶段，则加入而不修改文档。先运行[规划检查](#规划检查)，它可能拒绝一次全新的开始。 |
 | `close` | 接受 `id`、`delivered` 摘要、可选的 `deviations`，以及下文所述的 `evidence` 和 `todos`。与该阶段关联的 ADR 仍处于提议状态时拒绝。记录 Outcome（在 `### ADRs` 下包含关联 ADR 的状态）和关闭哈希，并冻结阶段。关联的 Atlas 计划尚未完成时不会阻止关闭：回执会给出警告，并在 Outcome 的 Deviations 文本后追加一行，列出这些计划（名称、计划 ID、声明的标准）。 |
 | `drop` | 放弃计划中或活动的阶段，必须写明 `reason`；需先解决或移走所有指向它的未关闭 TODO。 |
 | `move` | 用 `id` 和目标 `round` 移动一个计划阶段，可在活动、计划轮次之间双向移动。同轮移动、活动或终态阶段、已关闭或已放弃的轮次均拒绝。保留 ID、文件名和 ADR 关联，迁移阶段文件，重建两个轮次的阶段表和根状态块。若自身依赖，或其他未放弃阶段的 `depends_on`、`follows` 因移动而指向较晚轮次，则拒绝并列出冲突 ID；应先移动后续阶段或修改依赖。只有留在计划轮次文档中会变得无效的未关闭 TODO 才迁移：旧条目标记为 `moved` 并引用目标文档中的新 ID，新条目保留目标，以 `carried_from` 记录旧 ID 和轮次。成功后清除调用会话对该阶段的绑定。 |
@@ -52,6 +52,16 @@
 - ADR：关闭时通过 adr 插件读取与该阶段关联的 ADR。只要其中有 `proposed` 的，关闭就会拒绝并列出它们；需先由主会话用 `adr_manage` 接受或拒绝，子代理无法做这些决定。ADR 文件无法解析时关闭也会拒绝，因为其中可能藏有提议中的关联。
 
 交接内容包括本轮章程（完整的目标、约束、非目标），该阶段的目标、范围和完成标准，omo-prometheus 有回复时该阶段的 Atlas 计划，设计约束、风险、修订记录，直接前置阶段（`depends_on` 和 `follows`：ID、标题、状态和阶段文档；对已关闭的前置阶段，附上其 Outcome 中 Delivered 和 Deviations 的文本，各截断到约 800 个字符），指向该阶段的 TODO、引用的 ADR、自由工作日志和关闭指引。
+
+### 规划检查
+
+`roadmap_stage start`，以及 `roadmap_overlap` 回答为 `roadmap`（对话框或 `/roadmap overlap`）时，会在写入或绑定任何东西之前运行规划检查。它只在主会话中生效，只针对活动轮次中依赖都已关闭的已规划阶段，且本会话尚未绑定该阶段、omo-prometheus 也没有报告它有 Atlas 计划。`planningGate: false` 关闭检查。
+
+- **模式。** 分支上最近一条 `mode_change` 记录为 `plan` 时是 `planning`（原生 Plan Mode，Prometheus 规划也用它），否则是 `direct`。
+- **判断。** 通过 OMP 的 `judge` 角色（`resolveJudge`，purpose 为 `roadmap-planning-gate`）问一个原生选择题，`plan` 或 `direct`，输入为阶段的 ID、标题、目标、范围、完成标准、设计约束和风险。只调用排在首位的原生候选，从不退回聊天模型。设 `p` 为 `plan` 的概率，只有 `|2p − 1|` 不低于 `planningGateConfidence` 时答案才算数；`p ≥ 0.5` 表示规模大。答案按阶段文本在进程生命周期内缓存，单次调用 30 秒超时。
+- **不相称。** `planning` 遇到小阶段，或 `direct` 遇到大阶段。规模相称、答案拿不准、判断模型不可用或调用失败时，开始照常进行；后两种情况每个会话发一次警告提示。
+- **对话框。** 选项分别是采纳建议（`switch`）、保持当前模式（`proceed`）和取消。`switch` 和取消会拒绝这次调用，不写入也不绑定；拒绝信息告诉代理用户想怎么做，并让用户自己退出或进入规划（`/prometheus` 切换 Prometheus 规划）。`proceed` 追加一条 `wows-omp-roadmap.gate` 会话记录 `{ repoRoot, stage, mode }`，重建时恢复，因此本会话里同一阶段、同一模式不再检查。
+- **没有对话框。** 拒绝信息会给出 `/roadmap proceed <stage>`，它按会话当前的模式记录同样的记录；然后由代理重新开始该阶段。
 
 ### 一个阶段的多个计划
 
@@ -141,7 +151,7 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 | 宿主 | 行为 |
 | --- | --- |
 | RPC（`--mode rpc`、`rpc-ui`）和 ACP | 无论 `uiMenu` 怎么设，都使用内联选择菜单和对话框，以 `select`、`input` 和 `editor` 请求发送。ACP 客户端可能只把通知写进日志。 |
-| 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。不带参数的 `/roadmap` 输出状态和用法。预览只返回令牌，不写入任何内容；用 `/roadmap confirm <token>` 确认。重叠问题用 `/roadmap overlap` 回答，关闭轮次用 `/roadmap close-round` 的参数回答，包括目标结果。 |
+| 无 UI（`--no-ui`、print、JSON、SDK） | 没有对话框。不带参数的 `/roadmap` 输出状态和用法。预览只返回令牌，不写入任何内容；用 `/roadmap confirm <token>` 确认。重叠问题用 `/roadmap overlap` 回答，规划检查用 `/roadmap proceed` 回答，关闭轮次用 `/roadmap close-round` 的参数回答，包括目标结果。 |
 | Tern | 控制台和写入预览以原生面板打开。点击标签切换分区，点击一行选中，双击执行与 Enter 相同的操作。面板下方的按钮执行与按键相同的操作（Shift+O 对应 Order 按钮），按键仍然可用。roadmap 工具调用显示为原生卡片：状态以表格显示，检查诊断按严重度分组，阶段只显示要点（轮次、日程、完成标准、未关闭的 TODO 和引用的 ADR，给出数量和编号），不再展示整份规划交接。展开卡片后，模型收到的原文放在默认折叠、已格式化的 “Model text” 区块里。命令消息只显示结果摘要，完整文本仍通过隐藏消息发给模型。roadmap 消息带有可读的标题，比如 “Roadmap check”。 |
 
 暂存预览的令牌只覆盖所显示的文件，在会话重建（启动、切换、分支、树导航）或被同类新预览替换之前有效；其他任何回复都视为拒绝。暂存的预览只保存在内存里，进程退出后就会丢失。`roadmap_overlap` 会报告没有回答，并提示使用 `/roadmap overlap`。不带参数的 `/roadmap close-round` 会列出仍需处理的未关闭 TODO，在格式 2 中还要求提供 `outcome=<assessment>:<summary>`。自动升级格式 2 在无 UI 时也会运行；`roadmap_upgrade` 需要对话框，否则会提示 `/roadmap upgrade`。通知和错误会显示为会话消息。

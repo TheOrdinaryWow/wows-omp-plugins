@@ -52,6 +52,10 @@ omp plugin install roadmap@wows-omp-plugins
 
 在 Plan Mode 中开始一个阶段，只是把交接说明交给代理用于规划；计划批准、开始实现时，阶段才真正开始。
 
+阶段开始前，插件会先判断它的规模是否与你准备的工作方式相符。一个看起来小到可以直接动手的阶段，如果你在 Plan Mode 或 `/prometheus` 里规划它，会弹出对话框，建议跳过计划。一个看起来很大的阶段，如果没有计划就要开始，插件会停下来弹框，建议先用 `/prometheus` 或 Plan Mode 做计划。你可以采纳建议、照常继续，或者取消。选择继续后，本会话里该阶段不再询问。采纳建议不会启动任何东西：你先自己退出或进入规划，再让代理重新开始这个阶段。
+
+规模由 OMP `judge` 角色中的判断模型根据阶段文档判定。判断模型拿不准，或者没有配置合适的判断模型时，阶段直接开始，不再询问；缺少判断模型会在每个会话里提示一次。已有 Atlas 计划的阶段、你加入的阶段，以及本会话在规划期间已经接手的阶段，不做这项检查。
+
 如果活跃阶段的范围或完成标准需要调整，代理会记录一条带理由的修订。途中发现的其他工作记成 TODO，决策记成 ADR。在你提交之前，代理还可以更正或删除它最近的一条修订。
 
 阶段尚未开始时，可以让代理把它移到另一个活跃或已规划的轮次，ID 和关联的 ADR 都不变。任何阶段都不能因这次移动而排到它的依赖或前置阶段之前，否则插件会拒绝。不能继续留在原轮次的 TODO 会一起迁移。活跃阶段不能移动，已关闭或已放弃的轮次也不能移入或移出阶段。
@@ -109,6 +113,7 @@ omp plugin install roadmap@wows-omp-plugins
 | `/roadmap retarget <round-or-stage> <YYYY-MM-DD\|none>` | 设置或清除目标日期。 |
 | `/roadmap close-round [outcome=<assessment>:<summary>] [<todo>=<disposition>[:<reference>] …]` | 关闭当前轮次。参数可以提前回答它要问的问题，例如 `outcome=partial:"checkout shipped, refunds moved" T001=resolved:abc1234 T002=wontfix:"out of scope" T003=carried`。 |
 | `/roadmap overlap <stage> roadmap\|free\|unrelated [intent]` | 用命令回答“这是否属于路线图”的问题。 |
+| `/roadmap proceed <stage>` | 用命令回答规划检查，按你当前的工作方式开始这个阶段。 |
 | `/roadmap confirm <token>` | 没有对话框可用时，用它确认预览。 |
 
 ### `/roadmap` 控制台
@@ -144,6 +149,7 @@ omp plugin install roadmap@wows-omp-plugins
 ```bash
 omp plugin config set wows-omp-plugin-roadmap uiMenu inline
 omp plugin config set wows-omp-plugin-roadmap stageOrder id
+omp plugin config set wows-omp-plugin-roadmap planningGate false
 omp plugin config list wows-omp-plugin-roadmap
 ```
 
@@ -159,6 +165,8 @@ omp plugin config list wows-omp-plugin-roadmap
 | --- | --- | --- |
 | `uiMenu` | `fullscreen` | `fullscreen` 打开上文介绍的控制台和预览；`inline` 改用小的选择菜单。只影响终端；无法识别的值按 `fullscreen` 处理。 |
 | `stageOrder` | `dependency` | `dependency` 按执行顺序列出阶段：一个阶段排在它依赖的阶段之后，所以后来插在中间的阶段会出现在它该在的位置。`id` 按编号排列。这会影响控制台、命令补全和代理看到的状态。写进路线图文件的表格始终按 ID 顺序。 |
+| `planningGate` | `true` | `true` 时，每次开始阶段都会运行 [做一个阶段](#做一个阶段) 中介绍的规划检查；`false` 则关闭它。 |
+| `planningGateConfidence` | `0.6` | 判断模型需要多有把握（`0` 到 `1`），规划检查才会询问。数值越高，问得越少，但每次都更有把握；设为 `0` 时，只要判断模型稍有倾向就会询问。 |
 
 ## 与其他插件配合
 
@@ -170,6 +178,7 @@ omp plugin config list wows-omp-plugin-roadmap
 - 初始化需要一个全新的 `docs/roadmap/`。已有的路线图，或者有文件但不由 adr 插件管理的 `docs/adr/`，都无法接管。
 - 已规划的轮次不能跳过或重新编号，放弃的轮次 ID 也不会再用。
 - 只有代理注意到重叠时，才会询问你重叠的工作怎么处理。
+- 规划检查只依据阶段文档判断规模，因此可能判错。它需要 OMP `judge` 角色中给出校准置信度的判断模型；如果 `judge` 角色指向的是普通聊天模型，则不会使用。
 - 防止直接修改的保护只能尽力而为，对 shell 命令尤其如此，它不是沙箱。
 - 加入一个活跃阶段时会提醒有其他会话，但不会占用这个阶段。
 - `/roadmap check` 只检查文档，不检查代码是否与文档一致。
