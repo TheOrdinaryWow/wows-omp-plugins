@@ -28,6 +28,8 @@ export interface RoutingCandidate {
   description: string;
   source: string;
   readOnly: boolean;
+  hasSpawnGrant: boolean;
+  taggedModel?: boolean;
   /** Expanded model selectors the agent spawns with, in attempt order. */
   patterns: readonly string[];
   /** The agent definition's own thinking level, which applies when its model selector carries none. */
@@ -110,6 +112,8 @@ export interface JudgedRoute {
 /** Why a route kept its requested agent without a usable judgment. */
 export type KeptReason =
   | "workflow-owned or unknown agent"
+  | "user-tagged model agent"
+  | "unknown default agent"
   | "native model"
   | "no alternatives"
   | "judge unavailable"
@@ -200,6 +204,13 @@ export function thinkingStep(
 const AVAILABLE_AGENTS_HEADING = "# Available Agents";
 const AGENT_HEADING_PATTERN = /^###\s+([A-Za-z0-9_-]+)(?:\s|$)/;
 const AGENT_BULLET_PATTERN = /^-\s+`([A-Za-z0-9_-]+)`(?:\s|:|$)/;
+const DEFAULT_AGENT_PATTERN = /^[\t ]+- Omit only for the default \(`([A-Za-z0-9_-]+)`\); NEVER name it\.[\t ]*\r?$/m;
+
+export function parseDefaultAgent(taskDescription: string): string | undefined {
+  const rosterStart = taskDescription.indexOf(AVAILABLE_AGENTS_HEADING);
+  const header = rosterStart < 0 ? taskDescription : taskDescription.slice(0, rosterStart);
+  return DEFAULT_AGENT_PATTERN.exec(header)?.[1];
+}
 
 /**
  * Read the spawnable agent names out of the live `task` tool description. The
@@ -252,10 +263,10 @@ function parseTaskItem(item: Record<string, unknown>): Omit<ParsedTaskRoute, "in
     assignment = steps.map((step, index) => `${index + 1}. ${step}`).join("\n");
   }
   if (!assignment) return undefined;
-  if (Object.hasOwn(item, "agent") && typeof item.agent !== "string") return undefined;
+  const requestedAgent = optionalNonEmptyString(item.agent);
+  if (Object.hasOwn(item, "agent") && requestedAgent === undefined) return undefined;
   const solutionSpace = optionalNonEmptyString(item.solutionSpace);
   const name = optionalNonEmptyString(item.name);
-  const requestedAgent = optionalNonEmptyString(item.agent);
   return {
     assignment,
     ...(requestedAgent ? { requestedAgent } : {}),
@@ -293,8 +304,8 @@ export function parseTaskInput(input: unknown): ParsedTaskRoute[] | undefined {
   return [{ index: null, ...(context ? { context } : {}), ...item }];
 }
 
-function rewriteTaskItem(item: Record<string, unknown>, choice: RouteChoice | undefined): Record<string, unknown> {
-  const agentChanged = choice?.agent !== undefined && choice.agent !== item.agent;
+function rewriteTaskItem(item: Record<string, unknown>, route: ParsedTaskRoute, choice: RouteChoice | undefined): Record<string, unknown> {
+  const agentChanged = choice?.agent !== undefined && choice.agent !== route.requestedAgent && choice.agent !== item.agent;
   const nameAdded = choice?.name !== undefined && optionalNonEmptyString(item.name) === undefined;
   if (!agentChanged && !nameAdded) return item;
   return {
@@ -312,7 +323,7 @@ export function rewriteTaskRoutes(
   if (routes.length !== choices.length) return input;
 
   const flatRoute = routes.length === 1 && routes[0]?.index === null ? routes[0] : undefined;
-  if (flatRoute) return rewriteTaskItem(input, choices[0]);
+  if (flatRoute) return rewriteTaskItem(input, flatRoute, choices[0]);
 
   if (!Array.isArray(input.tasks)) return input;
   let changed = false;
@@ -321,7 +332,7 @@ export function rewriteTaskRoutes(
     if (route.index === null) continue;
     const item = tasks[route.index];
     if (!item || typeof item !== "object" || Array.isArray(item)) return input;
-    const rewritten = rewriteTaskItem(item as Record<string, unknown>, choices[routeIndex]);
+    const rewritten = rewriteTaskItem(item as Record<string, unknown>, route, choices[routeIndex]);
     if (rewritten === item) continue;
     tasks[route.index] = rewritten;
     changed = true;
@@ -348,14 +359,19 @@ export function isWorkflowOwnedAgent(name: string): boolean {
 }
 
 /** Candidates consistent with the requested authority, or undefined when access is unresolved. */
-export function routableCandidates<T extends { name: string; readOnly: boolean }>(
+export function routableCandidates<T extends Pick<RoutingCandidate, "name" | "readOnly" | "hasSpawnGrant" | "taggedModel">>(
   requestedAgent: string | undefined,
   candidates: readonly T[],
 ): T[] | undefined {
-  if (requestedAgent && isWorkflowOwnedAgent(requestedAgent)) return undefined;
-  const requested = requestedAgent ? candidates.find((candidate) => candidate.name === requestedAgent) : undefined;
-  if (requestedAgent && !requested) return undefined;
-  return candidates.filter((candidate) => !isWorkflowOwnedAgent(candidate.name) && (!requested?.readOnly || candidate.readOnly));
+  if (!requestedAgent || isWorkflowOwnedAgent(requestedAgent)) return undefined;
+  const requested = candidates.find((candidate) => candidate.name === requestedAgent);
+  if (!requested || requested.taggedModel) return undefined;
+  return candidates.filter(
+    (candidate) =>
+      !candidate.taggedModel &&
+      !isWorkflowOwnedAgent(candidate.name) &&
+      (candidate === requested || !requested.readOnly || (candidate.readOnly && !candidate.hasSpawnGrant)),
+  );
 }
 
 /** Accept only a legal, sufficiently confident answer from a native judgment transport. */
@@ -369,6 +385,17 @@ export function acceptRoutingDecision<T extends string>(
   return legalChoices.find((choice) => choice === decision.choice);
 }
 
+export interface DispatchedTaskItem {
+  name?: string;
+  observesOutcome?: boolean;
+  route?: PendingSpawnRoute;
+  ambiguousSpawn?: boolean;
+  allocatedId?: string;
+  spawnKey?: string;
+  lowered?: boolean;
+  background?: boolean;
+}
+
 /** A spawn-time change decided at `tool_call`, for the spawn of `agent` only. */
 interface PendingSpawnBase {
   agent: string;
@@ -379,55 +406,36 @@ interface PendingSpawnBase {
 }
 
 export type PendingSpawnRoute =
-  /** Replace the agent's selectors with a tier's. */
   | (PendingSpawnBase & { kind: "tier"; patterns: string[] })
   /** Give the primary selector this thinking level, recomputed at spawn from the agent's own `thinkingLevel`. */
   | (PendingSpawnBase & { kind: "thinking"; to: Effort; thinkingLevel?: ConfiguredThinkingLevel });
 
-const PENDING_SPAWN_LIMIT = 256;
-const SPAWN_SUFFIX_PATTERN = /-\d+$/;
+const SPAWN_SUFFIX_PATTERN = /-(?:[2-9]|[1-9]\d+)$/;
 
-/**
- * Spawn decisions made at `tool_call` time, waiting for the matching
- * `before_subagent_spawn`. That event carries no assignment, only a spawn key the
- * host derives from the task item's `name` (`<parent>.<name>`, `-N` on collision),
- * so decisions are keyed by name. A name claimed twice is dropped for both spawns.
- */
-export class PendingSpawnRoutes {
-  #routes = new Map<string, PendingSpawnRoute | null>();
-
-  add(name: string, route: PendingSpawnRoute | null): void {
-    if (this.#routes.has(name)) {
-      this.#routes.set(name, null);
-      return;
-    }
-    this.#routes.set(name, route);
-    while (this.#routes.size > PENDING_SPAWN_LIMIT) {
-      const oldest = this.#routes.keys().next().value;
-      if (oldest === undefined) break;
-      this.#routes.delete(oldest);
-    }
-  }
-
-  /** Consume the decision for a spawn of `agent`, if one is unambiguously pending under this key. */
-  take(spawnKey: string, agent: string): PendingSpawnRoute | undefined {
-    const leaf = taskSpawnName(spawnKey);
-    for (const name of [leaf, leaf.replace(SPAWN_SUFFIX_PATTERN, "")]) {
-      if (!this.#routes.has(name)) continue;
-      const route = this.#routes.get(name);
-      this.#routes.delete(name);
-      if (!route || route.agent !== agent) return undefined;
-      return route;
-    }
-    return undefined;
-  }
+function matchesSpawnName(key: string, name: string): boolean {
+  const base = key.replace(SPAWN_SUFFIX_PATTERN, "");
+  return [name, ...(/^\d+$/.test(name) ? [`Agent${name}`] : [])].some(
+    (candidate) => key === candidate || base === candidate || key.endsWith(`.${candidate}`) || base.endsWith(`.${candidate}`),
+  );
 }
 
-/**
- * The task name a spawn key stands for: the host nests ids under parents
- * (`<parent>.<name>`), trims a name before allocating it, and labels
- * unallocated synchronous spawns with the raw name.
- */
-export function taskSpawnName(key: string): string {
-  return key.slice(key.lastIndexOf(".") + 1).trim();
+export function isPendingSpawn(item: DispatchedTaskItem | undefined): item is DispatchedTaskItem {
+  return item !== undefined && item.spawnKey === undefined;
+}
+
+/** The hook has no call id or item index. An exact spelling can also be another item's allocated suffix. */
+export function takeSpawnItem(items: readonly (DispatchedTaskItem | undefined)[], spawnKey: string): DispatchedTaskItem | undefined {
+  const matches = items.filter(
+    (item): item is DispatchedTaskItem =>
+      isPendingSpawn(item) &&
+      (item.allocatedId !== undefined ? item.allocatedId === spawnKey : !item.name || matchesSpawnName(spawnKey.trim(), item.name)),
+  );
+  if (matches.length !== 1) {
+    for (const item of matches) item.ambiguousSpawn = true;
+    return undefined;
+  }
+  const item = matches[0];
+  if (!item) return undefined;
+  item.spawnKey = spawnKey;
+  return item.ambiguousSpawn ? undefined : item;
 }

@@ -18,17 +18,21 @@ import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi
 import { MAX_THINKING_SUFFIX_OPTIONS, splitThinkingSuffix } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
+import { isRecord } from "@oh-my-pi/pi-utils";
 
 import { EscalationMemo, taskResultOutput } from "#src/escalation.ts";
 import { readHostSetting } from "#src/host-settings.ts";
 import { registerLegacyRouteRecords, setRoutingWorkingMessage, showRouteOutcomes, showRoutingStatus } from "#src/indicator.ts";
 import {
   acceptRoutingDecision,
+  type DispatchedTaskItem,
   hasTier,
+  isPendingSpawn,
   isWorkflowOwnedAgent,
   type JudgeDispatchSettings,
   type ParsedTaskRoute,
-  PendingSpawnRoutes,
+  type PendingSpawnRoute,
+  parseDefaultAgent,
   parseLegalAgentNames,
   parseModelTiers,
   parseTaskInput,
@@ -41,13 +45,12 @@ import {
   serializeCandidate,
   TASK_DIFFICULTIES,
   type TaskDifficulty,
+  takeSpawnItem,
   thinkingStep,
   tierFor,
 } from "#src/routing.ts";
 
 const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
-/** The host's `task` default agent when a call names none and the session spawn policy is unrestricted. */
-const DEFAULT_SPAWN_AGENT = "task";
 /** Every setting the manifest declares; anything else stored for the plugin is ignored with a warning. */
 const SETTING_KEYS: Record<string, true> = {
   routeAgent: true,
@@ -109,15 +112,6 @@ function scopedSettings(ctx: ExtensionContext): Settings {
   return settings;
 }
 
-function deduplicateAgents(agents: readonly AgentDefinition[]): AgentDefinition[] {
-  const seen = new Set<string>();
-  return agents.filter((agent) => {
-    if (seen.has(agent.name)) return false;
-    seen.add(agent.name);
-    return true;
-  });
-}
-
 /** The selector a spawn starts on and what it resolves to. */
 interface ResolvedPrimary {
   /** Index of the first selector that resolves; the host spawns with it. */
@@ -143,9 +137,8 @@ function resolvePrimary(patterns: readonly string[], settings: Settings, ctx: Ex
 
 /**
  * A `tool_call` hook sees no host spawn preflight, so the legal candidate set comes
- * from the host's own rendered `task` agent list (`legalNames`). Discovery here
- * only adds each listed agent's model selectors and thinking level; an agent the
- * host did not list is never described to a judge or selected.
+ * from the host's own rendered `task` agent list (`legalNames`). Discovery adds
+ * the listed agents' permissions and model configuration.
  */
 async function discoverCandidates(ctx: ExtensionContext, settings: Settings, legalNames: readonly string[]): Promise<RoutingCandidate[]> {
   if (legalNames.length === 0) return [];
@@ -153,8 +146,13 @@ async function discoverCandidates(ctx: ExtensionContext, settings: Settings, leg
     .list()
     .find((ref) => ref.session?.sessionManager === ctx.sessionManager)?.session;
   const discovery = await discoverAgents(ctx.cwd, undefined, currentSession?.effectiveExtensionRoots);
-  const agents = deduplicateAgents([...discovery.agents, ...(currentSession?.getSessionAgents() ?? [])]);
-  const byName = new Map(agents.map((agent) => [agent.name, agent]));
+  const byName = new Map(discovery.agents.map((agent) => [agent.name, agent]));
+  const taggedModels = new Set<string>();
+  for (const agent of currentSession?.getSessionAgents() ?? []) {
+    if (byName.has(agent.name)) continue;
+    byName.set(agent.name, agent);
+    taggedModels.add(agent.name);
+  }
   const blockedAgent = process.env.PI_BLOCKED_AGENT?.trim();
   const modelOverrides = readHostSetting(settings, "task.agentModelOverrides") as Record<string, string | string[] | undefined>;
   const activeModelPattern = ctx.model ? formatModelStringWithRouting(ctx.model) : undefined;
@@ -168,6 +166,8 @@ async function discoverCandidates(ctx: ExtensionContext, settings: Settings, leg
       description: agent.description,
       source: agent.source,
       readOnly: isReadOnlyAgent(agent),
+      hasSpawnGrant: (agent.spawns?.length ?? 0) > 0,
+      taggedModel: taggedModels.has(agent.name),
       patterns: resolveAgentModelSelection({
         settingsOverride: modelOverrides[agent.name],
         agentModel: agent.model,
@@ -210,6 +210,7 @@ const DIFFICULTY_QUESTION: ChoiceQuestion<TaskDifficulty> = {
 
 async function judgeRoute(
   route: ParsedTaskRoute,
+  spawnAgent: string,
   routable: readonly RoutingCandidate[],
   config: JudgeDispatchSettings,
   judge: ChainJudge,
@@ -217,9 +218,7 @@ async function judgeRoute(
   beforeJudge: () => void,
 ): Promise<RouteOutcome | typeof JUDGE_UNAVAILABLE> {
   signal.throwIfAborted();
-  const spawnAgent = route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
   const candidates = config.routeAgent ? routable : routable.filter((candidate) => candidate.name === spawnAgent);
-  if (candidates.length === 0) return "no alternatives";
   const routesAgent = config.routeAgent && candidates.length >= 2;
   const difficultyApplies = (agent: string): boolean => (config.judgeEffort && !route.explicitEffort) || hasTier(config.modelTiers, agent);
   // Ask both together only if every possible final agent can use the difficulty.
@@ -233,7 +232,7 @@ async function judgeRoute(
     assignment: route.assignment,
     ...(route.solutionSpace ? { solutionSpace: route.solutionSpace } : {}),
     ...(config.includeSharedContext && route.context ? { context: route.context } : {}),
-    requestedAgent: route.requestedAgent ?? null,
+    requestedAgent: spawnAgent,
     candidates: serialized.map((candidate) => ({ ...candidate })),
   };
   const questions: Record<string, ChoiceQuestion> = {};
@@ -301,10 +300,38 @@ async function judgeRoute(
  * `tool_execution_end` carry that session's context, so each finds its own.
  */
 interface SessionRouting {
-  pending: PendingSpawnRoutes;
   escalations: EscalationMemo;
-  /** Each routed task call until its result arrives: when it was dispatched, and the caller's name per item position. */
-  dispatched: Map<string, { at: number; names: (string | undefined)[] }>;
+  dispatched: Map<string, TaskDispatch>;
+  lostPendingSpawn: boolean;
+}
+
+interface TaskDispatch {
+  at: number;
+  items: (DispatchedTaskItem | undefined)[];
+  ended?: boolean;
+}
+
+function recordDispatch(routing: SessionRouting, toolCallId: string, input: Record<string, unknown>): TaskDispatch {
+  const items = (Array.isArray(input.tasks) ? input.tasks : [input]).map((item: unknown) => {
+    if (!isRecord(item)) return undefined;
+    const name = typeof item.name === "string" ? item.name.trim() : "";
+    return name ? { name } : {};
+  });
+  const dispatch: TaskDispatch = { at: Date.now(), items };
+  const previous = routing.dispatched.get(toolCallId);
+  if (previous) routing.lostPendingSpawn ||= previous.items.some(isPendingSpawn);
+  routing.dispatched.delete(toolCallId);
+  routing.dispatched.set(toolCallId, dispatch);
+  if (routing.dispatched.size > DISPATCH_RECORD_LIMIT) {
+    const oldest = routing.dispatched.entries().next();
+    if (!oldest.done) {
+      const [id, evicted] = oldest.value;
+      // A forgotten item can still spawn under a name reused later in this session.
+      routing.lostPendingSpawn ||= evicted.items.some(isPendingSpawn);
+      routing.dispatched.delete(id);
+    }
+  }
+  return dispatch;
 }
 
 interface RoutingSession {
@@ -329,12 +356,18 @@ async function routeOutcome(
   signal: AbortSignal,
 ): Promise<RouteOutcome> {
   if (route.nativeModel) return "native model";
-  const routable = routableCandidates(route.requestedAgent, candidates);
-  if (!routable) return "workflow-owned or unknown agent";
+  const requestedAgent = route.requestedAgent;
+  if (!requestedAgent) return "unknown default agent";
+  const routable = routableCandidates(requestedAgent, candidates);
+  if (!routable) {
+    return candidates.some((candidate) => candidate.name === requestedAgent && candidate.taggedModel)
+      ? "user-tagged model agent"
+      : "workflow-owned or unknown agent";
+  }
   const escalation = route.name ? session.escalations.peek(route.name) : undefined;
   if (escalation) return { difficulty: escalation.difficulty, escalation: escalation.reason };
   try {
-    const judged = await judgeRoute(route, routable, session.config, session.judge, signal, session.beforeJudge);
+    const judged = await judgeRoute(route, requestedAgent, routable, session.config, session.judge, signal, session.beforeJudge);
     if (judged !== JUDGE_UNAVAILABLE) return judged;
     session.notifyUnavailable(session.ctx);
     return "judge unavailable";
@@ -354,7 +387,7 @@ function planRoute(
   outcome: RouteOutcome,
   config: JudgeDispatchSettings,
   candidates: readonly RoutingCandidate[],
-  pending: PendingSpawnRoutes,
+  queueSpawn: (name: string, spawn: PendingSpawnRoute) => void,
   settings: Settings,
   ctx: ExtensionContext,
 ): RouteChoice | undefined {
@@ -366,9 +399,9 @@ function planRoute(
   };
   const difficulty = outcome.difficulty;
   if (!difficulty || difficulty === "standard") return choice;
-  const agent = outcome.agent ?? route.requestedAgent ?? DEFAULT_SPAWN_AGENT;
+  const agent = outcome.agent ?? route.requestedAgent;
   const candidate = candidates.find((entry) => entry.name === agent);
-  if (!candidate) return choice;
+  if (!agent || !candidate) return choice;
 
   const primary = resolvePrimary(candidate.patterns, settings, ctx);
   const name = route.name ?? `${agent}-${crypto.randomUUID().slice(0, 8)}`;
@@ -382,7 +415,7 @@ function planRoute(
         resolved?.explicitThinkingLevel ? resolved.thinkingLevel : candidate.thinkingLevel;
       // Only a tier that resolves to the agent's own model at its own level changes nothing; then the thinking step may still apply.
       if (tierPrimary?.key !== primary?.key || level(tierPrimary) !== level(primary)) {
-        pending.add(name, {
+        queueSpawn(name, {
           kind: "tier",
           agent,
           primary: primary?.key,
@@ -407,7 +440,7 @@ function planRoute(
     readHostSetting(settings, "task.maxEffort") as Effort,
   );
   if (!thinking) return choice;
-  pending.add(name, {
+  queueSpawn(name, {
     kind: "thinking",
     agent,
     primary: primary.key,
@@ -421,49 +454,87 @@ function planRoute(
   return choice;
 }
 
-/**
- * Feed a routed task call's final child outcomes into the escalation memo.
- * Synchronous items arrive in the result itself. Background items settle later:
- * their jobs are bound now, by child id and dispatch time, and remembered from
- * the job's terminal status and delivery text when its promise settles.
- */
-function observeTaskOutcomes(routing: SessionRouting, ctx: ExtensionContext, toolCallId: string, details: unknown): void {
-  const dispatch = routing.dispatched.get(toolCallId);
-  if (dispatch === undefined || !details || typeof details !== "object") return;
-  routing.dispatched.delete(toolCallId);
-  const { results, progress, async } = details as Partial<TaskToolDetails>;
-  const settled = new Set<string>();
-  for (const result of Array.isArray(results) ? results : []) {
-    settled.add(result.id);
-    const name = dispatch.names[result.index];
-    if (name === undefined || isWorkflowOwnedAgent(result.agent)) continue;
-    const failed = result.aborted === true || result.exitCode !== 0 || result.error !== undefined;
-    routing.escalations.settle(name, result.id, failed, result.output);
+function taskDetails(result: unknown): Partial<TaskToolDetails> | undefined {
+  return isRecord(result) && isRecord(result.details) ? (result.details as Partial<TaskToolDetails>) : undefined;
+}
+
+function forgetFinishedDispatch(routing: SessionRouting, toolCallId: string, dispatch: TaskDispatch): void {
+  if (dispatch.ended && !dispatch.items.some((item) => item?.background || isPendingSpawn(item))) {
+    routing.dispatched.delete(toolCallId);
   }
-  if (!async || !Array.isArray(progress)) return;
-  // Background child id → the name its item was dispatched under.
-  const background = new Map<string, string>();
-  for (const row of progress) {
-    const name = dispatch.names[row.index];
-    if (name !== undefined && !settled.has(row.id) && !isWorkflowOwnedAgent(row.agent)) background.set(row.id, name);
+}
+
+/** Native task progress carries item positions and allocated IDs as soon as background jobs are registered. */
+function bindBackgroundJobs(
+  routing: SessionRouting,
+  ctx: ExtensionContext,
+  toolCallId: string,
+  dispatch: TaskDispatch,
+  details: Partial<TaskToolDetails> | undefined,
+): void {
+  if (!details?.async || !Array.isArray(details.progress)) return;
+  const background = new Map<string, number>();
+  const synchronous = new Set(Array.isArray(details.results) ? details.results.map(({ index }) => index) : []);
+  for (const row of details.progress) {
+    const item = dispatch.items[row.index];
+    if (!item) continue;
+    item.allocatedId = row.id;
+    if (isWorkflowOwnedAgent(row.agent)) item.observesOutcome = false;
+    if (!item.background && !synchronous.has(row.index)) background.set(row.id, row.index);
   }
   if (background.size === 0) return;
   const parent = AgentRegistry.global()
     .list()
     .find((ref) => ref.session?.sessionManager === ctx.sessionManager);
-  const manager = parent?.session && isLocalAgentSession(parent.session) ? parent.session.asyncJobManager : undefined;
-  for (const job of manager?.getAllJobs({ ownerId: parent?.id }) ?? []) {
+  if (!parent?.session || !isLocalAgentSession(parent.session)) return;
+  const manager = parent.session.asyncJobManager;
+  for (const job of manager?.getAllJobs({ ownerId: parent.id }) ?? []) {
     const childId = job.agentId;
-    const name = childId === undefined ? undefined : background.get(childId);
-    if (job.type !== "task" || childId === undefined || name === undefined || job.startTime < dispatch.at) continue;
+    const index = childId === undefined ? undefined : background.get(childId);
+    const item = index === undefined ? undefined : dispatch.items[index];
+    if (job.type !== "task" || childId === undefined || index === undefined || !item || job.startTime < dispatch.at) continue;
     background.delete(childId);
-    // A worker-homed session's manager returns snapshots, so the terminal row is re-read after settling.
+    item.background = true;
     const settle = () => {
+      const current = routing.dispatched.get(toolCallId);
+      const currentItem = current?.items[index];
+      if (!current || currentItem?.allocatedId !== childId || !currentItem.background) return;
+      current.items[index] = undefined;
+      forgetFinishedDispatch(routing, toolCallId, current);
+      // Worker job managers return snapshots, so read the terminal row at settlement.
       const final = manager?.getJob(job.id) ?? job;
-      if (final.status === "running") return;
-      routing.escalations.settle(name, childId, final.status !== "completed", taskResultOutput(final.resultText ?? final.errorText ?? ""));
+      if (final.status === "running" || !currentItem.name || !currentItem.observesOutcome) return;
+      const lowered = currentItem.lowered === true && currentItem.spawnKey === childId;
+      routing.escalations.settle(
+        currentItem.name,
+        final.status !== "completed",
+        taskResultOutput(final.resultText ?? final.errorText ?? ""),
+        lowered,
+      );
     };
     void job.promise.then(settle, settle);
+  }
+}
+
+function observeTaskOutcomes(
+  routing: SessionRouting,
+  dispatch: TaskDispatch,
+  details: Partial<TaskToolDetails> | undefined,
+  isError: boolean,
+): void {
+  const results = Array.isArray(details?.results) ? details.results : [];
+  for (const result of results) {
+    const item = dispatch.items[result.index];
+    if (!item?.name || !item.observesOutcome || item.background || isWorkflowOwnedAgent(result.agent)) continue;
+    const failed = result.aborted === true || result.exitCode !== 0 || result.error !== undefined;
+    routing.escalations.settle(item.name, failed, result.output, item.lowered === true);
+  }
+  if (!isError) return;
+  const reported = new Set(results.map(({ index }) => index));
+  for (const [index, item] of dispatch.items.entries()) {
+    if (item?.name && item.observesOutcome && item.lowered && !item.background && !reported.has(index)) {
+      routing.escalations.settle(item.name, true, "", true);
+    }
   }
 }
 
@@ -552,36 +623,60 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
   const routingFor = (ctx: ExtensionContext): SessionRouting => {
     let routing = routingBySession.get(ctx.sessionManager);
     if (!routing) {
-      routing = { pending: new PendingSpawnRoutes(), escalations: new EscalationMemo(), dispatched: new Map() };
+      routing = { escalations: new EscalationMemo(), dispatched: new Map(), lostPendingSpawn: false };
       routingBySession.set(ctx.sessionManager, routing);
     }
     return routing;
   };
 
+  pi.on("tool_execution_update", (event, ctx) => {
+    if (event.toolName !== "task") return;
+    const routing = routingFor(ctx);
+    const dispatch = routing.dispatched.get(event.toolCallId);
+    if (!dispatch) return;
+    try {
+      bindBackgroundJobs(routing, ctx, event.toolCallId, dispatch, taskDetails(event.partialResult));
+    } catch (error) {
+      pi.logger.warn("judge-dispatch could not observe background jobs", { error: errorMessage(error) });
+    }
+  });
+
   pi.on("tool_execution_end", (event, ctx) => {
     if (event.toolName !== "task") return;
-    const result: unknown = event.result;
-    const details = result && typeof result === "object" && "details" in result ? result.details : undefined;
+    const routing = routingFor(ctx);
+    const dispatch = routing.dispatched.get(event.toolCallId);
+    if (!dispatch) return;
+    const details = taskDetails(event.result);
     try {
-      observeTaskOutcomes(routingFor(ctx), ctx, event.toolCallId, details);
+      bindBackgroundJobs(routing, ctx, event.toolCallId, dispatch, details);
+      observeTaskOutcomes(routing, dispatch, details, event.isError);
     } catch (error) {
       pi.logger.warn("judge-dispatch could not observe task outcomes", { error: errorMessage(error) });
+    } finally {
+      dispatch.ended = true;
+      const queuedIds = new Set(
+        details?.async && Array.isArray(details.progress)
+          ? details.progress.filter(({ status }) => status === "pending" || status === "running").map(({ id }) => id)
+          : [],
+      );
+      for (const [index, item] of dispatch.items.entries()) {
+        if (!item?.background && !(isPendingSpawn(item) && item.allocatedId && queuedIds.has(item.allocatedId))) {
+          dispatch.items[index] = undefined;
+        }
+      }
+      forgetFinishedDispatch(routing, event.toolCallId, dispatch);
     }
   });
 
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "task") return undefined;
+    const input = event.input;
+    const routing = routingFor(ctx);
+    const dispatch = recordDispatch(routing, event.toolCallId, input);
     let working = false;
     let indicator = false;
     try {
-      const input = event.input as Record<string, unknown>;
-      const routes = parseTaskInput(input);
-      // Prometheus owns agent, effort and model choices while executing its approved plan.
       if (prometheusExecuting(ctx)) return undefined;
-      const routing = routingFor(ctx);
-      for (const route of routes ?? []) {
-        if (route.name && route.nativeModel) routing.pending.add(route.name, null);
-      }
       const rawSettings = await getPluginSettings(PACKAGE_NAME, ctx.cwd);
       warnUnknownSettings(ctx, rawSettings);
       const config = parseSettings(rawSettings);
@@ -592,24 +687,28 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         if (indicator) showRoutingStatus(pi, ctx, "kept the requested agent: extensionHandlers.toolCallTimeoutMs leaves no time to judge");
         return undefined;
       }
-      const taskTool = pi.getAllTools().find((tool) => tool.name === "task");
-      const legalNames = taskTool ? parseLegalAgentNames(taskTool.description) : undefined;
-      if (!legalNames?.length) {
+      const tool = pi.getAllTools().find((tool) => tool.name === "task");
+      const legalNames = tool && parseLegalAgentNames(tool.description);
+      if (!tool || !legalNames?.length) {
         if (indicator) showRoutingStatus(pi, ctx, "kept the requested agent: the task tool lists no agents to route between");
         return undefined;
       }
+      const routes = parseTaskInput(input);
       if (!routes) return undefined;
-      const judged = routes;
-      // The host reports each child by item position; unrouted items must not feed difficulty escalation.
-      const names: (string | undefined)[] = [];
-      for (const route of judged) {
-        names[route.index ?? 0] = route.nativeModel ? undefined : route.name;
+      const missingAgent = routes.some((route) => route.requestedAgent === undefined);
+      const defaultAgent = missingAgent ? parseDefaultAgent(tool.description) : undefined;
+      if (missingAgent && defaultAgent === undefined) {
+        if (indicator)
+          showRouteOutcomes(
+            pi,
+            ctx,
+            routes,
+            routes.map(() => "unknown default agent"),
+            [],
+          );
+        return undefined;
       }
-      routing.dispatched.set(event.toolCallId, { at: Date.now(), names });
-      for (const oldest of routing.dispatched.keys()) {
-        if (routing.dispatched.size <= DISPATCH_RECORD_LIMIT) break;
-        routing.dispatched.delete(oldest);
-      }
+      const judged = routes.map((route) => ({ ...route, requestedAgent: route.requestedAgent ?? defaultAgent }));
       return await withRoutingDeadline(deadlineMs, async (signal) => {
         const candidates = await discoverCandidates(ctx, settings, legalNames);
         signal.throwIfAborted();
@@ -629,11 +728,35 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         };
         const outcomes = await Promise.all(judged.map((route) => routeOutcome(session, route, candidates, signal)));
         signal.throwIfAborted();
-        const choices = judged.map((route, index) =>
-          planRoute(route, outcomes[index] as RouteOutcome, config, candidates, routing.pending, settings, ctx),
-        );
+        const pending = new Map<DispatchedTaskItem, { name: string; route: PendingSpawnRoute }>();
+        const choices = judged.map((route, index) => {
+          const outcome = outcomes[index] as RouteOutcome;
+          const observesOutcome =
+            outcome !== "native model" &&
+            outcome !== "workflow-owned or unknown agent" &&
+            outcome !== "user-tagged model agent" &&
+            outcome !== "unknown default agent";
+          const position = route.index ?? 0;
+          const item = dispatch.items[position];
+          if (item) item.observesOutcome = observesOutcome;
+          const choice = planRoute(
+            route,
+            outcome,
+            config,
+            candidates,
+            (name, spawn) => {
+              if (item && !routing.lostPendingSpawn) pending.set(item, { name, route: spawn });
+            },
+            settings,
+            ctx,
+          );
+          if (!routing.lostPendingSpawn || !choice) return choice;
+          const { model: _model, thinking: _thinking, name: _name, ...agentOnly } = choice;
+          return agentOnly;
+        });
         const rewritten = rewriteTaskRoutes(input, judged, choices);
         if (indicator) showRouteOutcomes(pi, ctx, judged, outcomes, choices);
+        for (const [item, spawn] of pending) Object.assign(item, spawn);
         // Past the last abort check nothing can fail open any more, so the raised routes are the ones this call returns.
         for (const [index, route] of judged.entries()) {
           const outcome = outcomes[index];
@@ -657,8 +780,13 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
     if (event.invocationKind !== "task" || !event.spawnKey) return undefined;
     try {
       const routing = routingFor(ctx);
-      const route = routing.pending.take(event.spawnKey, event.agent);
-      if (!route) return undefined;
+      if (routing.lostPendingSpawn || routing.dispatched.size === 0 || prometheusExecuting(ctx)) return undefined;
+      const item = takeSpawnItem(
+        [...routing.dispatched.values()].flatMap((dispatch) => dispatch.items),
+        event.spawnKey,
+      );
+      const route = item?.route;
+      if (!item || !route || route.agent !== event.agent) return undefined;
       // The decision was made against the agent's selectors at `tool_call`; skip it if the host now starts elsewhere.
       const settings = scopedSettings(ctx);
       const primary = resolvePrimary(event.patterns, settings, ctx);
@@ -678,7 +806,7 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         model = event.patterns.with(primary.index, `${base}:${thinking.to}`);
       }
       if (!model) return undefined;
-      if (route.difficulty === "routine") routing.escalations.lowered(event.spawnKey, route.difficulty);
+      if (route.difficulty === "routine") item.lowered = true;
       return { model, note: route.note };
     } catch (error) {
       pi.logger.warn("judge-dispatch spawn routing failed open", { error: errorMessage(error) });

@@ -47,14 +47,15 @@ judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · thinking med
 
 ### 选对代理
 
-判定模型会结合任务内容和会话中可用的代理，在另一种代理明显更合适时更换代理类型。只读代理只会被换成另一个只读代理，所以只看代码的请求不会变成改代码的请求。用 `routeAgent: false` 可以关掉这项功能。
+判定模型会结合任务内容和会话中可用的代理，在另一种代理明显更合适时更换代理。如果请求的代理只使用只读工具，替换它的代理也必须只使用只读工具，而且没有派出子代理的权限。任务省略 `agent`、由 OMP 使用默认代理时，同样适用这条规则。将 `routeAgent` 设为 `false` 可以关闭代理切换。
 
-以下任务始终保持原样，模型和思考级别也不变：
+以下任务按原样派发，保留所请求的代理、模型和思考级别。
 
-- 其他插件的工作流代理：audit-goal 的 `audit-*` 代理，以及 omo-prometheus 的 `metis`、`momus` 和 `oracle`。其他任务也不会被派给它们；
-- 交给插件不认识的代理的任务；
-- 已经指定了自己模型的任务（OMP 的逐任务 `model` 字段）；
-- omo-prometheus 执行计划期间的所有任务，因为批准的计划已经定好了谁做什么。
+- 交给其他插件工作流代理的任务，包括 audit-goal 的 `audit-*`，以及 omo-prometheus 的 `metis`、`momus` 和 `oracle`。这些代理也不会参与自动路由。
+- 指定了会话内模型标签（例如 `m1`）的任务。这些标签也不会参与自动路由。
+- 插件无法识别所请求的代理或默认代理的任务。
+- 已通过 OMP 的逐任务 `model` 字段指定模型的任务。
+- omo-prometheus 执行计划期间的任务，派发安排由已批准的计划确定。
 
 从 `eval` 脚本启动的子代理完全不参与路由。
 
@@ -81,11 +82,11 @@ routine=@smol,demanding=@slow,ultrabrain.demanding=openai/gpt-6.1:xhigh
 
 每一项用逗号分隔，格式为 `[<agent>.]<routine|demanding>=<model>`，其中 model 可以是模型角色（如 `@smol`），也可以是具体模型（如 `provider/model[:level]`）。针对某个代理的项（`ultrabrain.demanding=…`）优先于针对所有代理的项。`standard` 任务始终使用代理自己的模型。
 
-第一个模型不可用时，档位会使用对应模型角色的回退模型。档位生效时，使用档位自己的思考级别，不再做上面的思考级别调整。档位用不了时（比如角色不存在，或模型没有凭据），任务保留代理自己的模型，状态行会说明原因。档位从不阻止任务运行。
+第一个模型不可用时，档位会使用对应模型角色的回退模型。应用档位时，插件会跳过思考级别调整。任务指定的 `effort` 优先于档位的 `:level`。如果角色不存在、模型缺少凭据，或档位因其他原因无法使用，任务会沿用代理原来的模型，状态行会说明原因。档位不会阻止任务运行。
 
 ### 重试或升级任务
 
-插件会告诉代理：要重试或升级任务，就用同一个名字再发一次。插件随后会把这一次尝试提一级：
+无论任务是在前台还是在后台运行，重试时都可以沿用原来的任务名。以下两种情况会提高下次尝试的难度。
 
 - 子代理的回答以 `ESCALATE: deep-high` 这一行开头时，下一次尝试按 `demanding` 处理。
 - 子代理在插件降低过难度的路线上（`routine` 档位或少思考一级）失败时，下一次尝试按 `standard` 处理，使用代理自己的模型和级别。
@@ -102,7 +103,7 @@ judge-dispatch 会原样保留带有 `model` 的任务，不判断代理，不�
 
 ### 你会看到什么
 
-判定进行时，状态显示 `judge-dispatch: routing N tasks…`。之后每个经过路由的调用会显示一行类似上面的状态：代理、`thinking <from> → <to>`、`model <代理的模型> → <档位>` 或保留模型的原因，每项决定都带有判定模型的置信度。没得到可用答案而保留原样的任务会注明原因：`judge unavailable`、`judge failed`、`timed out`、`no alternatives`、`no confident choice`、`native model` 或 `workflow-owned or unknown agent`。整个调用都没能判定时，会显示一行以 `kept the requested agent:` 开头的说明。
+判定期间会显示 `judge-dispatch: routing N tasks…`。之后，状态行会给出代理、思考级别或模型的变动，以及每项决定的置信度。任务保留原样时，状态行可能会显示原因，例如 `no confident choice`、`user-tagged model agent` 或 `unknown default agent`。
 
 状态行只给你看。它不会发给模型，也不会保存，所以 `/resume` 之后不会再出现。把 `indicator` 设为 `false` 可以隐藏它。
 
@@ -153,12 +154,14 @@ omp plugin config list wows-omp-plugin-judge-dispatch
 
 - 从 `eval` 脚本启动的子代理（`agent()`、`workpool()`）不参与路由。
 - 代理在一轮里发起多个 `task` 调用时，OMP 可能只显示最后一行状态。
+- 同名任务同时派发时，有时会跳过模型档位、思考级别调整或重试提级。
+- 如果你在任务路由期间修改代理，任务启动时可能会用上修改后的定义。
 - 重试和升级记录在 OMP 重启后丢失，而且只有同名的重试才能用上它们。
 - 思考级别调整需要 OMP 知道模型支持哪些思考级别。缺少这项信息的模型保持原级别。
 
 ## 更多细节
 
-[REFERENCE.zh.md](REFERENCE.zh.md) 介绍了档位如何展开成模型列表、思考级别调整的具体规则、重试与升级记录、判定结果如何作用到子代理，以及超时。
+[REFERENCE.zh.md](REFERENCE.zh.md) 介绍了档位如何展开成模型列表、思考级别调整的具体规则、重试与升级记录、判定结果如何作用到子代理、超时，以及 SDK 特有的限制。
 
 ## 许可证
 

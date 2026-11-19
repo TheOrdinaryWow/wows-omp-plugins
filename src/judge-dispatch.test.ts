@@ -8,7 +8,7 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { EscalationMemo, taskResultOutput } from "../plugins/judge-dispatch/src/escalation.ts";
 import {
   acceptRoutingDecision,
-  PendingSpawnRoutes,
+  parseDefaultAgent,
   parseLegalAgentNames,
   parseModelTiers,
   parseTaskInput,
@@ -17,6 +17,7 @@ import {
   routingDeadlineMs,
   serializeCandidate,
   type TaskDifficulty,
+  takeSpawnItem,
   thinkingStep,
   tierFor,
 } from "../plugins/judge-dispatch/src/routing.ts";
@@ -144,6 +145,7 @@ describe("task input routing", () => {
   test("leaves malformed task shapes unparsed", () => {
     expect(parseTaskInput({ context: "shared", tasks: [{ agent: "task" }] })).toBeUndefined();
     expect(parseTaskInput({ task: "valid", agent: 42 })).toBeUndefined();
+    expect(parseTaskInput({ task: "valid", agent: " " })).toBeUndefined();
   });
 });
 
@@ -153,6 +155,7 @@ test("candidate serialization exposes only compact agent metadata, never models"
     description: "Read-only   repository\nresearch",
     source: "bundled",
     readOnly: true,
+    hasSpawnGrant: false,
     patterns: ["openai/gpt-fast:low"],
     thinkingLevel: "medium" as ConfiguredThinkingLevel,
   });
@@ -219,19 +222,28 @@ describe("legal agent extraction", () => {
 
 describe("routing authority boundaries", () => {
   const candidates = [
-    { name: "task", readOnly: false },
-    { name: "audit-auditor", readOnly: true },
-    { name: "scout", readOnly: true },
-    { name: "audit-fixer", readOnly: false },
-    { name: "metis", readOnly: true },
-    { name: "momus", readOnly: true },
-    { name: "oracle", readOnly: true },
-    { name: "reviewer", readOnly: true },
+    { name: "task", readOnly: false, hasSpawnGrant: true },
+    { name: "audit-auditor", readOnly: true, hasSpawnGrant: false },
+    { name: "scout", readOnly: true, hasSpawnGrant: false },
+    { name: "audit-fixer", readOnly: false, hasSpawnGrant: false },
+    { name: "metis", readOnly: true, hasSpawnGrant: false },
+    { name: "momus", readOnly: true, hasSpawnGrant: false },
+    { name: "oracle", readOnly: true, hasSpawnGrant: false },
+    { name: "reviewer", readOnly: true, hasSpawnGrant: false },
   ];
 
   test("never offers workflow-owned agents as destinations", () => {
     expect(routableCandidates("task", candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout", "reviewer"]);
-    expect(routableCandidates(undefined, candidates)?.map((candidate) => candidate.name)).toEqual(["task", "scout", "reviewer"]);
+  });
+
+  test("keeps an omitted source untouched when the default cannot be determined", () => {
+    expect(routableCandidates(undefined, candidates)).toBeUndefined();
+  });
+
+  test("uses the exact default named by the host description", () => {
+    expect(parseDefaultAgent("  - Omit only for the default (`scout`); NEVER name it.\r\n")).toBe("scout");
+    expect(parseDefaultAgent("# Available Agents\n- `task`: General-purpose agent")).toBeUndefined();
+    expect(parseDefaultAgent("# Available Agents\n### task\n  - Omit only for the default (`task`); NEVER name it.")).toBeUndefined();
   });
 
   test("keeps workflow-owned and unknown explicit sources untouched, including effort", () => {
@@ -245,7 +257,7 @@ describe("routing authority boundaries", () => {
   });
 
   test("restricts librarian requests to read-only destinations", () => {
-    const withLibrarian = [...candidates, { name: "librarian", readOnly: true }];
+    const withLibrarian = [...candidates, { name: "librarian", readOnly: true, hasSpawnGrant: false }];
     expect(routableCandidates("librarian", withLibrarian)?.map((candidate) => candidate.name)).toEqual(["scout", "reviewer", "librarian"]);
   });
 });
@@ -336,37 +348,38 @@ describe("thinking steps", () => {
 });
 
 describe("pending spawn routes", () => {
-  const decision = {
-    kind: "tier" as const,
-    agent: "task",
-    primary: "openai/primary",
-    difficulty: "routine" as const,
-    patterns: ["openai/sibling"],
-    note: "note",
-  };
-
-  test("matches the host's prefixed and collision-suffixed spawn keys once", () => {
-    const pending = new PendingSpawnRoutes();
-    pending.add("Audit", decision);
-    expect(pending.take("parent.Audit-2", "task")).toEqual(decision);
-    expect(pending.take("Audit", "task")).toBeUndefined();
+  test("matches a prefixed and collision-suffixed host key once when its owner is unique", () => {
+    const item = { name: "Audit" };
+    expect(takeSpawnItem([item], "parent.Audit-2")).toBe(item);
+    expect(takeSpawnItem([item], "Audit")).toBeUndefined();
   });
 
-  test("an agent mismatch or a name claimed twice changes nothing", () => {
-    const pending = new PendingSpawnRoutes();
-    pending.add("Audit", decision);
-    expect(pending.take("Audit", "scout")).toBeUndefined();
-    pending.add("Plan", decision);
-    pending.add("Plan", decision);
-    expect(pending.take("Plan", "task")).toBeUndefined();
-    expect(pending.take("Plan-2", "task")).toBeUndefined();
+  test("ambiguous items stay unrouted until their spawns have passed", () => {
+    const items = [{ name: "Plan" }, { name: "Plan" }, { name: "Plan-2" }];
+    expect(takeSpawnItem(items, "Plan")).toBeUndefined();
+    expect(takeSpawnItem(items, "Plan-2")).toBeUndefined();
+    expect(takeSpawnItem(items, "Plan-2-2")).toBeUndefined();
+  });
+
+  test("an unallocated unnamed item prevents a name-only override", () => {
+    const unnamed = {};
+    const named = { name: "SwiftFalcon" };
+    expect(takeSpawnItem([unnamed, named], "SwiftFalcon")).toBeUndefined();
+    expect(takeSpawnItem([named], "SwiftFalcon-2")).toBeUndefined();
+  });
+
+  test("exact IDs from host progress can distinguish same-name background items", () => {
+    const first = { name: "Audit", allocatedId: "parent.Audit" };
+    const second = { name: "Audit", allocatedId: "parent.Audit-2" };
+    expect(takeSpawnItem([first, second], "parent.Audit-2")).toBe(second);
+    expect(takeSpawnItem([first, second], "parent.Audit")).toBe(first);
   });
 });
 
 describe("escalation memo", () => {
   test("an ESCALATE answer raises the next dispatch under that name to demanding until a routed dispatch consumes it", () => {
     const memo = new EscalationMemo();
-    memo.settle("Fix", "parent.Fix-2", false, "\n  ESCALATE: deep-high  \nThe cause is still open.");
+    memo.settle("Fix", false, "\n  ESCALATE: deep-high  \nThe cause is still open.");
     expect(memo.peek("Other")).toBeUndefined();
     expect(memo.peek("Fix")).toEqual({ reason: "escalate", difficulty: "demanding" });
     expect(memo.peek("Fix")).toEqual({ reason: "escalate", difficulty: "demanding" });
@@ -376,8 +389,7 @@ describe("escalation memo", () => {
 
   test("keeps the caller's names exact, including their own numeric suffixes", () => {
     const memo = new EscalationMemo();
-    // A retried `Lane-1` runs as host child `Lane-1-2`; its record belongs to `Lane-1` alone.
-    memo.settle("Lane-1", "parent.Lane-1-2", false, "ESCALATE: deep-high");
+    memo.settle("Lane-1", false, "ESCALATE: deep-high");
     expect(memo.peek("Lane-1")).toEqual({ reason: "escalate", difficulty: "demanding" });
     expect(memo.peek("Lane")).toBeUndefined();
     expect(memo.peek("Lane-2")).toBeUndefined();
@@ -385,31 +397,20 @@ describe("escalation memo", () => {
 
   test("a failure raises the next dispatch one difficulty only after judge-dispatch lowered that child", () => {
     const memo = new EscalationMemo();
-    memo.settle("Plain", "Plain", true, "Task failed");
+    memo.settle("Plain", true, "Task failed");
     expect(memo.peek("Plain")).toBeUndefined();
 
-    memo.lowered("parent.Cheap", "routine");
-    memo.settle("Cheap", "parent.Cheap", true, "Task failed");
+    memo.settle("Cheap", true, "Task failed", true);
     expect(memo.peek("Cheap")).toEqual({ reason: "failure", difficulty: "standard" });
 
-    memo.lowered("Fine", "routine");
-    memo.settle("Fine", "Fine", false, "Done.");
-    memo.settle("Fine", "Fine", true, "A later run that was not lowered failed.");
+    memo.settle("Fine", false, "Done.", true);
+    memo.settle("Fine", true, "A later run that was not lowered failed.");
     expect(memo.peek("Fine")).toBeUndefined();
-  });
-
-  test("a same-named concurrent child does not inherit another child's lowered route", () => {
-    const memo = new EscalationMemo();
-    memo.lowered("parent.Fix", "routine");
-    memo.settle("Fix", "parent.Fix-2", true, "This child was not lowered.");
-    expect(memo.peek("Fix")).toBeUndefined();
-    memo.settle("Fix", "parent.Fix", true, "The lowered child failed too.");
-    expect(memo.peek("Fix")).toEqual({ reason: "failure", difficulty: "standard" });
   });
 
   test("ignores an escalation line that is not the first", () => {
     const memo = new EscalationMemo();
-    memo.settle("Late", "Late", false, "Summary first.\nESCALATE: deep-high");
+    memo.settle("Late", false, "Summary first.\nESCALATE: deep-high");
     expect(memo.peek("Late")).toBeUndefined();
   });
 
@@ -435,7 +436,7 @@ describe("escalation memo", () => {
       );
     const outcome = (output: string) => {
       const memo = new EscalationMemo();
-      memo.settle("Fix", "Fix", false, taskResultOutput(output));
+      memo.settle("Fix", false, taskResultOutput(output));
       return memo.peek("Fix");
     };
     expect(outcome(envelope("ESCALATE: deep-high\nThe design is open."))).toEqual({ reason: "escalate", difficulty: "demanding" });

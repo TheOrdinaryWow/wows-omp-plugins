@@ -47,14 +47,15 @@ By default the plugin only switches agent types. To let the difficulty rating ch
 
 ### Picking the right agent
 
-The judge looks at the task and the agents available in your session, and switches the agent type when another one fits clearly better. A read-only agent is only ever replaced by another read-only agent, so a request to look at code never turns into one that changes it. Turn this off with `routeAgent: false`.
+The judge looks at the task and the agents available in your session. It switches agents when another one fits clearly better. If the requested agent uses only read-only tools, its replacement must also use only read-only tools and have no permission to start subagents. The same rule applies when a task omits `agent` and OMP uses the default. Set `routeAgent` to `false` to turn off agent switching.
 
-Some tasks are always left exactly as they are, model and thinking level included:
+The following tasks run with their requested agent, model and thinking level.
 
-- tasks for the workflow agents of other plugins: audit-goal's `audit-*` agents and omo-prometheus's `metis`, `momus` and `oracle`. Other tasks are never sent to them either;
-- tasks for an agent the plugin does not know;
-- tasks that already name their own model (OMP's per-task `model` field);
-- every task while an omo-prometheus plan is being carried out, because the approved plan already decided who does what.
+- Tasks for other plugins' workflow agents. This includes audit-goal's `audit-*` and omo-prometheus's `metis`, `momus` and `oracle`. These agents are also excluded from automatic routing.
+- Tasks that name a model you tagged in the session, such as `m1`. The plugin also keeps these tags out of automatic routing.
+- Tasks whose requested or default agent the plugin cannot identify.
+- Tasks that already name their own model in OMP's per-task `model` field.
+- Tasks during omo-prometheus plan execution, where the approved plan sets the routes.
 
 Subagents started from `eval` scripts are not routed at all.
 
@@ -81,11 +82,11 @@ routine=@smol,demanding=@slow,ultrabrain.demanding=openai/gpt-6.1:xhigh
 
 Each comma-separated entry is `[<agent>.]<routine|demanding>=<model>`, where the model is a model role such as `@smol` or one model such as `provider/model[:level]`. An entry for one agent (`ultrabrain.demanding=…`) wins over the entry for all agents. `standard` tasks always run on the agent's own model.
 
-A tier uses its model role's fallback models if the first one is unavailable. When a tier applies, its own thinking level is used and the thinking step above does not. If a tier cannot be used, for example because the role does not exist or the model has no credentials, the task keeps the agent's model and the status line says why. A tier never blocks a task.
+A tier uses its model role's fallback models if the first one is unavailable. When a tier applies, the plugin skips the thinking step. The task's `effort` takes priority over the tier's `:level`. If a tier cannot be used, for example because the role does not exist or the model has no credentials, the task keeps the agent's model and the status line says why. A tier never blocks a task.
 
 ### Retry or escalate a task
 
-The plugin tells the agent to retry or escalate a task by sending it again under the same name, and then raises that one attempt:
+Use the original name to retry a task, whether it ran in the foreground or in the background. The plugin raises the next attempt in two cases.
 
 - If a subagent's answer starts with the line `ESCALATE: deep-high`, the next attempt counts as `demanding`.
 - If a subagent fails on a route the plugin made easier (a `routine` tier or less thinking), the next attempt counts as `standard` and runs on the agent's own model and level.
@@ -102,7 +103,7 @@ The old `agent@role` form is gone. OMP now rejects a name such as `deep-low@abli
 
 ### What you see
 
-While the judge works, the status reads `judge-dispatch: routing N tasks…`. Then each routed call shows a status line like the one above: the agent, `thinking <from> → <to>`, `model <agent's model> → <tier>` or why the model stays, with the judge's confidence for each decision. A task kept without a usable answer says why: `judge unavailable`, `judge failed`, `timed out`, `no alternatives`, `no confident choice`, `native model`, or `workflow-owned or unknown agent`. A call that could not be judged at all shows a line starting with `kept the requested agent:`.
+While the judge works, the status reads `judge-dispatch: routing N tasks…`. Each routed call then shows the agent, any thinking or model change, and the judge's confidence for each decision. When the plugin keeps a task as requested, the status may show a reason such as `no confident choice`, `user-tagged model agent` or `unknown default agent`.
 
 The status line is only for you. It is not sent to the model and not saved, so it does not come back after `/resume`. Set `indicator` to `false` to hide it.
 
@@ -153,12 +154,14 @@ Settings are read on every task, so changes apply right away. If a value is inva
 
 - Subagents started from `eval` scripts (`agent()`, `workpool()`) are not routed.
 - When the agent makes several `task` calls in one turn, OMP may show only the last status line.
+- Overlapping tasks with the same name may miss a model tier, thinking adjustment, or retry raise.
+- If you edit an agent while judge-dispatch is routing a task, that task can start with the updated definition.
 - Retry and escalation records are lost when OMP restarts, and only a retry under the same name finds them.
 - The thinking step needs OMP to know which thinking levels a model supports. A model without that information keeps its level.
 
 ## More details
 
-[REFERENCE.md](REFERENCE.md) covers how tiers expand into model lists, the exact thinking-step rules, the retry and escalation records, how decisions reach the subagent, and timeouts.
+[REFERENCE.md](REFERENCE.md) covers how tiers expand into model lists, the exact thinking-step rules, retry and escalation records, how decisions reach the subagent, timeouts, and SDK-specific limitations.
 
 ## License
 

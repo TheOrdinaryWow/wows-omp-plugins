@@ -4,7 +4,11 @@ English | [简体中文](REFERENCE.zh.md)
 
 ## Agent discovery
 
-Candidates come from the agent list in the live `task` tool description. If that list is missing, unreadable or empty, the plugin does not judge. The `task` tool revalidates any agent name the plugin writes. Read-only status comes from OMP's agent tool metadata.
+Candidates come from the agent list in the live `task` tool description. If that list is missing, unreadable or empty, the plugin skips judgment. The `task` tool revalidates any agent name the plugin writes. OMP's classification of the requested agent's own tools determines whether the request is read-only. A read-only request can only switch to an agent with read-only tools and no `spawns` grant. Any grant rules out a replacement, even if it cannot be used in the current session. The requested agent remains an option, so one eligible replacement is enough for the judge to make a choice.
+
+The plugin uses the `agent` value OMP delivers to `tool_call` after validation, including when OMP fills in the default. A rewrite can carry that value forward. If the validated item still has no `agent`, the plugin looks for the default in the live tool description and leaves the call as received if it cannot identify one. The resolved default follows the same authority rule and supplies the starting configuration for tiers and thinking steps.
+
+Model agents you tag in a session, such as `m1`, are reserved for explicit use. The plugin skips judgments, tiers, thinking steps and retry records for these agents and excludes them from automatic routing. If an installed agent has the same name, OMP resolves that agent first and the ordinary routing rules apply.
 
 The judge rates difficulty, even when only one agent type is eligible, as long as the rating can change something: `judgeEffort` is on and the item sets no `effort`, or `modelTiers` has an entry for the final agent. When only some candidates have tiers, the plugin first chooses the agent and asks for difficulty only if that agent has a tier.
 
@@ -34,20 +38,38 @@ The ordering and the supported levels come from OMP's own thinking helpers and t
 
 ## Retry and escalation records
 
-The plugin tells the parent agent to retry or escalate a task by dispatching it again with the same `name`. It keeps one record per session for each task name exactly as the caller wrote it, so `Lane-1` and `Lane-2` stay separate. A child is matched to its name through its item position in the routed call, never by trimming the `-N` suffix OMP adds to a child id on a name collision:
+The parent agent retries a task by dispatching it again with the same `name`, including a name the plugin generated. The plugin records names as dispatched, so `Lane-1` and `Lane-2` stay separate. Two outcomes can raise the next dispatch.
 
 - Escalation: the first non-empty line of a child's final output is exactly `ESCALATE: deep-high`. The next dispatch counts as `demanding`.
-- Failure: a child ends aborted, with a nonzero exit, or with an error after its spawn applied a routine tier or a step down. The next dispatch counts one difficulty above the applied one.
+- A child ends aborted, with a nonzero exit, or with an error after it ran with a routine tier or a step down. The next dispatch counts as `standard`.
 
-Outcomes are read without a `tool_result` hook. A synchronous child's result arrives in the `task` call's `tool_execution_end` details. For a background child, that event binds the parent session's async job by child id and dispatch time; when the job settles, its status decides failure, and the child output is read from the `<output>` or `<preview>` block of the `<task-result>` text the job delivers. Only calls the plugin routed count, so nothing is recorded while an approved Prometheus plan executes. Workflow-owned agents are never recorded.
+The `task` call's `tool_execution_end` details identify synchronous results by item position. If the call ends in error, a synchronous item with no result row counts as failed if its spawn received a routine tier or a thinking step down. Sibling result rows describe their own items. For a background child, the plugin binds the parent session's job by child ID and dispatch time on the first `tool_execution_update` that identifies it, or at the end of the call if the first identifying frame is the result. At settlement it reads the job's terminal status and the `<output>` or `<preview>` block in its `<task-result>` text. Retry records cover tasks eligible for routing.
 
-The next routed task item with that name uses the record. It keeps the requested agent, skips the judge, and acts on the recorded difficulty through tiers and thinking steps as usual. The record is removed only when that raised route is returned; an item that keeps its route (a workflow-owned or unlisted agent) or a call whose routing times out or fails open leaves it for the next dispatch. Each kind of record is capped at 256 entries, oldest first out.
+The next eligible dispatch under that name keeps the requested agent, skips the judge and uses the recorded difficulty for tiers and thinking steps. Returning that raised route consumes the record. Calls that bypass routing, time out or fail open leave the record available for a later dispatch. Up to 256 retry records are kept, oldest first out.
 
 ## From decision to spawn
 
-OMP's `before_subagent_spawn` event carries no assignment, so the plugin links a tier or thinking step to the spawn through the task item's `name`. When the parent gave no name, the plugin writes one (`<agent>-<8 hex>`). If two pending calls share a name, the spawn keeps its configured model. At spawn, the first selector that resolves must still be the model the decision was made for, and a thinking step is recomputed and applies only if it lands on the same level; otherwise the spawn keeps its configuration. Any failure at that point keeps the configured model. OMP shows the routing note next to the child's resolved model.
+OMP's `before_subagent_spawn` event supplies a spawn key without a tool call ID or item index. The plugin looks for exactly one pending item, using its allocated child ID when known or its task name and possible allocation suffix. Both `Lane` and `Lane-2` can match the key `Lane-2`. The plugin discards the affected items' tiers and thinking changes when more than one item matches and records no lowering for those spawns. An item with neither a name nor an allocated ID counts as a possible match for any key.
+
+For an unnamed task that needs a tier or thinking step, the plugin writes `<agent>-<8 hex>`. The expected agent and starting model must still match at spawn, and a recalculated thinking step must still land on the same level. OMP shows the routing note next to the child's resolved model when the change applies.
 
 A rewrite changes `agent` only when `routeAgent` is on, and `name` only when a tier or a thinking step needs one.
+
+### Known limitations
+
+- Concurrent calls with the same name can lose their spawn adjustments. A call whose judge times out still counts as a possible match until the plugin can attribute a spawn to it or the host reports completion.
+- A direct SDK call stopped by another extension or rejected before execution may never emit `tool_execution_end`. Its pending name can suppress a later same-name adjustment. Direct calls that omit the end event can also miss a synchronous retry raise.
+- The plugin keeps at most 256 dispatch records per session and drops the oldest on overflow. If a discarded record still had a pending spawn, the plugin skips all further spawn adjustments in the session because that spawn may still arrive. Dropping a record can also lose the outcome needed to raise a retry.
+- An SDK session with a private agent registry and its own extension roots can resolve an agent name to a different definition than judge-dispatch sees. The plugin's read-only check can therefore disagree with the permissions of the agent OMP actually spawns.
+- If an agent definition changes while a judgment is in flight, OMP uses the updated definition when it spawns the agent.
+- Another extension can rename a task after judge-dispatch runs. If the new name matches a pending route for the same agent and starting model, the renamed task can receive that route's tier.
+- An SDK caller that reuses a tool call ID while its previous call is still live can overwrite the dispatch record and confuse the correlation of later events.
+- Two overlapping retries under the same name can both use one escalation if they read the record before either consumes it.
+- Background failures in SDK sessions with a private agent registry are not remembered for retry. The plugin looks up the parent session in the global registry to find its background jobs.
+
+When a spawn adjustment is skipped, the task uses OMP's model and thinking settings for the selected agent. The same agent-authority rules govern that selection.
+
+A host-provided tool call ID on `before_subagent_spawn` would remove the need to match by name across calls. An item index would identify individual tasks within a batch.
 
 ## Native per-item models and staged tasks
 

@@ -1,4 +1,4 @@
-import { type EscalationReason, TASK_DIFFICULTIES, type TaskDifficulty } from "#src/routing.ts";
+import type { EscalationReason, TaskDifficulty } from "#src/routing.ts";
 
 /** The first output line a child writes to ask its parent for a stronger re-dispatch. */
 export const ESCALATE_LINE = "ESCALATE: deep-high";
@@ -44,29 +44,17 @@ export function taskResultOutput(envelope: string): string {
  * record is keyed by the exact name its task item was dispatched under, never
  * with a suffix removed, so `Lane-1` and `Lane-2` stay apart. A child that
  * answers `ESCALATE: deep-high` raises its name to `demanding`; a child that
- * fails after judge-dispatch lowered its own spawn raises its name one
- * difficulty above the one applied. Each record serves one later dispatch;
- * both maps are bounded.
+ * fails after judge-dispatch applied a routine route raises its name to
+ * `standard`. Each record serves one later dispatch.
  */
 export class EscalationMemo {
-  /** Lowered difficulties by host child id, so same-named siblings never share one. */
-  #lowered = new Map<string, TaskDifficulty>();
   #raised = new Map<string, Escalation>();
 
-  /** Note that judge-dispatch lowered the spawn of the child with this host id. */
-  lowered(childId: string, difficulty: TaskDifficulty): void {
-    remember(this.#lowered, childId.trim(), difficulty);
-  }
-
-  /** Record the final outcome of the child `childId`, dispatched under the task name `name`. */
-  settle(name: string, childId: string, failed: boolean, output: string): void {
-    const lowered = this.#lowered.get(childId.trim());
-    this.#lowered.delete(childId.trim());
+  settle(name: string, failed: boolean, output: string, lowered = false): void {
     if (firstOutputLine(output) === ESCALATE_LINE) {
       remember(this.#raised, name, { reason: "escalate", difficulty: "demanding" });
-    } else if (failed && lowered !== undefined) {
-      const raised = TASK_DIFFICULTIES[Math.min(TASK_DIFFICULTIES.indexOf(lowered) + 1, TASK_DIFFICULTIES.length - 1)] ?? "demanding";
-      remember(this.#raised, name, { reason: "failure", difficulty: raised });
+    } else if (failed && lowered) {
+      remember(this.#raised, name, { reason: "failure", difficulty: "standard" });
     }
   }
 

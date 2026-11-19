@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { validateToolArguments } from "@oh-my-pi/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { TaskTool as NativeTaskTool } from "@oh-my-pi/pi-coding-agent/task";
 
 const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
 const CHILD_SCENARIO_ENV = "JUDGE_DISPATCH_HOST_JUDGE_SCENARIO";
@@ -14,8 +17,11 @@ const HOST_KEY = ["host", "typesafe", "key"].join("-");
 
 /** One hook-level action, replayed in order after a session's other fields; each pushes one entry to `steps`. */
 type HookStep =
-  | { call: Record<string, unknown>; id: string }
-  | { end: string; result: Record<string, unknown> }
+  | { call: Record<string, unknown>; id: string; validate?: boolean; direct?: boolean; nameFrom?: string; captureInput?: boolean }
+  | { executeDirect: Record<string, unknown>; id: string }
+  | { assistant: { id: string; args: Record<string, unknown> }[] }
+  | { end: string; result: Record<string, unknown>; isError?: boolean }
+  | { update: string; result: Record<string, unknown> }
   /**
    * The spawn key comes from `spawn.spawnKey`, or is allocated through a real session-scoped AgentOutputManager
    * as background task jobs do: for the literal `allocate` name, or for item `item` of call `from` as dispatched.
@@ -23,7 +29,7 @@ type HookStep =
   | { spawn: Record<string, unknown>; allocate?: string; from?: string; item?: number }
   /** Registers a real host job that stays running until a later `finish` step. */
   | { job: string; owner?: string }
-  | { finish: string; output: string; failed?: boolean }
+  | { finish: string; output: string; failed?: boolean; expire?: boolean }
   /** Appends entries to the active branch. */
   | { branch: unknown[] };
 
@@ -31,11 +37,17 @@ interface SessionSpec {
   project: string;
   calls: number;
   description?: string;
+  parentSpawns?: string;
+  disabledAgents?: string[];
+  maxDepth?: number;
+  batch?: boolean;
   inputs?: Record<string, unknown>[];
   branch?: unknown[];
   spawns?: Record<string, unknown>[];
   steps?: HookStep[];
   costGate?: { cap: number; spent: number };
+  jobRetention?: number;
+  toolCallTimeoutMs?: number;
 }
 
 interface ChildScenario {
@@ -51,6 +63,7 @@ interface ChildScenario {
   /** `task.agentModelOverrides` entries. */
   agentModels?: Record<string, string[]>;
   maxEffort?: string;
+  slowAssignment?: string;
 }
 
 interface RecordedRequest {
@@ -93,6 +106,7 @@ function startTypeSafeServer(scenario: ChildScenario, requests: RecordedRequest[
       const body = await request.text();
       requests.push({ authorization: request.headers.get("authorization"), body });
       if (scenario.response === "unauthorized") return new Response("invalid api key", { status: 401 });
+      if (scenario.slowAssignment && body.includes(scenario.slowAssignment)) return Promise.withResolvers<Response>().promise;
 
       // Controlled native answer; only offer the named choice when it is legal.
       const payload = JSON.parse(body) as { questions?: Record<string, { criteria?: Record<string, unknown> }> };
@@ -146,7 +160,19 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
     const { cfgRetryFallbackChains, cfgSessionMaxCost } = await import("@oh-my-pi/pi-coding-agent/session/settings");
     const { CostGate } = await import("@oh-my-pi/pi-coding-agent/session/cost-gate");
     const { AgentOutputManager } = await import("@oh-my-pi/pi-coding-agent/task/output-manager");
-    const { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } = await import("@oh-my-pi/pi-coding-agent/task/settings");
+    const { TaskTool } = await import("@oh-my-pi/pi-coding-agent/task");
+    const { ModelMentionRegistry } = await import("@oh-my-pi/pi-coding-agent/session/model-mentions");
+    const {
+      cfgTaskAgentModelOverrides,
+      cfgTaskBatch,
+      cfgTaskDisabledAgents,
+      cfgTaskMaxEffort,
+      cfgTaskMaxRecursionDepth,
+      cfgTaskPerCallModel,
+    } = await import("@oh-my-pi/pi-coding-agent/task/settings");
+    const { cfgToolsApprovalMode } = await import("@oh-my-pi/pi-coding-agent/tools/settings");
+    const { ExtensionToolWrapper } = await import("@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper");
+    const { cfgExtensionHandlersToolCallTimeoutMs } = await import("@oh-my-pi/pi-coding-agent/extensibility/settings");
     const { AsyncJobManager } = await import("@oh-my-pi/pi-coding-agent/async/job-manager");
     const { AgentRegistry } = await import("@oh-my-pi/pi-coding-agent/registry/agent-registry");
     // This runtime-selected absolute URL keeps the child fixture on the same plugin source as the parent checkout.
@@ -155,6 +181,10 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
     const sessionReports: SessionReport[] = [];
     for (const [sessionIndex, session] of scenario.sessions.entries()) {
       const settings = await Settings.loadIsolated({ cwd: session.project, agentDir });
+      if (session.batch !== undefined) cfgTaskBatch.override(settings, session.batch);
+      if (session.disabledAgents) cfgTaskDisabledAgents.override(settings, session.disabledAgents);
+      if (session.maxDepth !== undefined) cfgTaskMaxRecursionDepth.override(settings, session.maxDepth);
+      if (session.toolCallTimeoutMs !== undefined) cfgExtensionHandlersToolCallTimeoutMs.override(settings, session.toolCallTimeoutMs);
       if (scenario.explicitRole) {
         cfgModelRoles.override(settings, { abliterated: "openai/gpt-5-mini", task: "openai/gpt-5" });
         cfgRetryFallbackChains.override(settings, {
@@ -180,6 +210,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         steps: [],
       };
       let branch: unknown[] = [...(session.branch ?? [])];
+      let taskTool: NativeTaskTool | undefined;
 
       const api = {
         logger: {
@@ -190,7 +221,9 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         on(event: string, handler: TestHandler) {
           handlers.set(event, [...(handlers.get(event) ?? []), handler]);
         },
-        getAllTools: () => [{ name: "task", description: session.description ?? TASK_DESCRIPTION, parameters: {}, source: "builtin" }],
+        getAllTools: () => [
+          { name: "task", description: session.description ?? taskTool?.description ?? TASK_DESCRIPTION, parameters: taskTool?.parameters },
+        ],
         registerMessageRenderer() {},
       } as unknown as ExtensionAPI;
 
@@ -215,11 +248,29 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
         modelRegistry: registry,
       } as unknown as ExtensionContext;
 
-      const jobs = new AsyncJobManager({ onJobComplete() {} });
+      const modelMentions = new ModelMentionRegistry({
+        sessionManager: context.sessionManager as SessionManager,
+        modelRegistry: registry,
+        scopedModels: () => [],
+      });
+      modelMentions.syncFromBranch();
+      const getSessionAgents = () => modelMentions.sessionAgents();
+      if (session.parentSpawns !== undefined) {
+        taskTool = await TaskTool.create({
+          cwd: session.project,
+          hasUI: false,
+          getSessionFile: () => null,
+          settings,
+          getSessionSpawns: () => session.parentSpawns ?? "*",
+          getSessionAgents,
+          modelRegistry: registry,
+        });
+      }
+      const jobs = new AsyncJobManager({ onJobComplete() {}, retentionMs: session.jobRetention });
       const jobOutcomes = new Map<string, PromiseWithResolvers<string>>();
       const ownerId = `fixture-parent-${sessionIndex}`;
       jobs.registerDeliverySink(ownerId, () => {});
-      if (costGate || session.steps?.some((step) => "job" in step)) {
+      if (session.parentSpawns !== undefined || costGate || session.steps?.some((step) => "job" in step)) {
         AgentRegistry.global().register({
           id: ownerId,
           displayName: ownerId,
@@ -228,7 +279,7 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
             sessionManager: context.sessionManager,
             asyncJobManager: jobs,
             costGate,
-            getSessionAgents: () => [],
+            getSessionAgents,
           } as unknown as AgentSession,
         });
       }
@@ -241,19 +292,20 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
 
       registerJudgeDispatch(api);
 
+      const interceptCall = async (id: string, args: Record<string, unknown>, nativeTool?: NativeTaskTool, direct = false) => {
+        const call = { type: "toolCall" as const, id, name: "task", arguments: args };
+        if (!direct && handlers.has("assistant_message")) {
+          await onlyHandler("assistant_message")({ type: "assistant_message", message: { content: [structuredClone(call)] } }, context);
+        }
+        const input = nativeTool ? validateToolArguments(nativeTool, call) : args;
+        const result = await onlyHandler("tool_call")({ type: "tool_call", toolCallId: id, toolName: "task", input }, context);
+        return { input, result };
+      };
+
       for (let call = 0; call < session.calls; call += 1) {
         const input = session.inputs?.[call] ?? { task: "Implement the requested repository change", agent: "task" };
-        report.results.push(
-          await onlyHandler("tool_call")(
-            {
-              type: "tool_call",
-              toolCallId: `host-judge-tool-${sessionIndex}-${call}`,
-              toolName: "task",
-              input,
-            },
-            context,
-          ),
-        );
+        const { result } = await interceptCall(`host-judge-tool-${sessionIndex}-${call}`, input);
+        report.results.push(result);
       }
       for (const spawn of session.spawns ?? []) {
         report.spawnResults.push(
@@ -265,23 +317,64 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
       const dispatchedNames = new Map<string, unknown[]>();
       for (const step of session.steps ?? []) {
         if ("call" in step) {
-          const result = await onlyHandler("tool_call")(
-            { type: "tool_call", toolCallId: step.id, toolName: "task", input: step.call },
-            context,
-          );
+          const name = step.nameFrom === undefined ? undefined : dispatchedNames.get(step.nameFrom)?.[0];
+          if (step.nameFrom !== undefined && typeof name !== "string") throw new Error(`call ${step.nameFrom} dispatched no name`);
+          const args = typeof name === "string" ? { ...step.call, name } : step.call;
+          if (step.validate && !taskTool) throw new Error("validation requires a native task tool");
+          const { input, result } = await interceptCall(step.id, args, step.validate ? taskTool : undefined, step.direct);
           const sent =
             result && typeof result === "object" && "input" in result && result.input && typeof result.input === "object"
               ? result.input
-              : step.call;
+              : input;
           const items: unknown[] = "tasks" in sent && Array.isArray(sent.tasks) ? sent.tasks : [sent];
           dispatchedNames.set(
             step.id,
             items.map((item) => (item && typeof item === "object" && "name" in item ? item.name : undefined)),
           );
+          report.steps.push(step.captureInput ? sent : result);
+        } else if ("executeDirect" in step) {
+          if (!taskTool) throw new Error("direct execution requires a native task tool");
+          cfgTaskPerCallModel.override(settings, "off");
+          cfgToolsApprovalMode.override(settings, "yolo");
+          const runner = {
+            cwd: session.project,
+            sessionSettings: settings,
+            sessionId: context.sessionManager.getSessionId(),
+            consumeToolCallEmitted: () => false,
+            hasHandlers: (event: string) => handlers.has(event),
+            emitToolCall: (event: Record<string, unknown>) => onlyHandler("tool_call")(event, context),
+            runScoped: <T>(execute: () => T) => withActiveSettings(settings, execute),
+          } as unknown as ConstructorParameters<typeof ExtensionToolWrapper>[1];
+          const wrapper = new ExtensionToolWrapper(
+            {
+              name: taskTool.name,
+              label: taskTool.label,
+              description: taskTool.description,
+              parameters: taskTool.parameters,
+              execute: taskTool.execute.bind(taskTool),
+            },
+            runner,
+          );
+          const result = await wrapper.execute(step.id, step.executeDirect);
           report.steps.push(result);
+        } else if ("assistant" in step) {
+          if (handlers.has("assistant_message")) {
+            const content = step.assistant.map(({ id, args }) => ({ type: "toolCall", name: "task", id, arguments: args }));
+            await onlyHandler("assistant_message")({ type: "assistant_message", message: { content } }, context);
+          }
+          report.steps.push(null);
         } else if ("end" in step) {
-          const end = { type: "tool_execution_end", toolCallId: step.end, toolName: "task", result: step.result, isError: false };
+          const end = {
+            type: "tool_execution_end",
+            toolCallId: step.end,
+            toolName: "task",
+            result: step.result,
+            isError: step.isError ?? false,
+          };
           report.steps.push(await onlyHandler("tool_execution_end")(end, context));
+        } else if ("update" in step) {
+          const update = { type: "tool_execution_update", toolCallId: step.update, toolName: "task", partialResult: step.result };
+          report.steps.push(handlers.has(update.type) ? await onlyHandler(update.type)(update, context) : null);
         } else if ("spawn" in step) {
           const dispatched = step.from === undefined ? undefined : dispatchedNames.get(step.from)?.[step.item ?? 0];
           if (step.from !== undefined && typeof dispatched !== "string") throw new Error(`call ${step.from} dispatched no item name`);
@@ -307,6 +400,13 @@ async function executeChildScenario(scenario: ChildScenario): Promise<ChildRepor
           if (step.failed) outcome.reject(new Error(step.output));
           else outcome.resolve(step.output);
           await jobs.getJob(step.finish)?.promise;
+          if (step.expire && jobs.getJob(step.finish)) {
+            const expired = Promise.withResolvers<void>();
+            const unsubscribe = jobs.onJobsChanged(() => {
+              if (!jobs.getJob(step.finish)) expired.resolve();
+            });
+            await expired.promise.finally(unsubscribe);
+          }
           report.steps.push(null);
         } else {
           branch = [...branch, ...step.branch];
@@ -549,6 +649,202 @@ async function registerTests(): Promise<void> {
           { spawnKey: "Shared-2", result: null },
         ]);
         expect(report.requests).toHaveLength(1);
+      });
+    });
+
+    test("a call with an unresolved default still counts toward overlapping name ambiguity", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "demanding=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const input = reviewTask("Shared", "task");
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              steps: [
+                { call: { name: input.name, task: input.task }, id: "skipped", direct: true },
+                { call: input, id: "routed" },
+                { spawn: taskSpawn, from: "routed" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([null, null, { spawnKey: "Shared", result: null }]);
+        expect(report.requests).toHaveLength(1);
+      });
+    });
+
+    test("a direct SDK rejection without an execution-end event leaves the same name ambiguous", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "demanding=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const input = reviewTask("Shared", "task");
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              batch: true,
+              parentSpawns: "task,scout",
+              steps: [
+                {
+                  executeDirect: {
+                    context: "Independent tasks",
+                    tasks: [input, { ...reviewTask("Native", "scout"), model: "openai/gpt-5" }],
+                  },
+                  id: "rejected",
+                },
+                { call: input, id: "routed", direct: true },
+                { spawn: taskSpawn, from: "routed" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          expect.objectContaining({
+            isError: true,
+            content: [expect.objectContaining({ text: expect.stringContaining("Per-call model is disabled for task calls") })],
+            details: expect.objectContaining({ results: [] }),
+          }),
+          null,
+          { spawnKey: "Shared", result: null },
+        ]);
+        expect(report.requests).toHaveLength(2);
+      });
+    });
+
+    test("a dispatch that times out cannot borrow a pending same-name tier", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "demanding=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const input = reviewTask("Shared", "task");
+        const slowAssignment = "Wait for the slow judge";
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              toolCallTimeoutMs: 1_800,
+              steps: [
+                { call: input, id: "pending" },
+                { call: { ...input, task: slowAssignment }, id: "timed-out" },
+                { spawn: taskSpawn, from: "timed-out" },
+                { spawn: taskSpawn, from: "pending" },
+                { end: "timed-out", result: {} },
+                { end: "pending", result: {} },
+                { call: input, id: "clear" },
+                { spawn: taskSpawn, from: "clear" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"] },
+          slowAssignment,
+        });
+        const session = report.sessions[0];
+        expect(
+          session?.notifications.some(({ message }) => String(message).includes("routing timed out")),
+          diagnostics(report),
+        ).toBe(true);
+        expect(session?.steps.slice(2, 4), diagnostics(report)).toEqual([
+          { spawnKey: "Shared", result: null },
+          { spawnKey: "Shared-2", result: null },
+        ]);
+        expect(session?.steps.at(-1)).toEqual({
+          spawnKey: "Shared-3",
+          result: expect.objectContaining({ note: "judge-dispatch demanding tier @abliterated" }),
+        });
+      });
+    });
+
+    test("evicting a pending spawn disables overrides for that session", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "task.demanding=@abliterated", judgeEffort: true }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const input = reviewTask("Shared", "task");
+        const unnamed = {
+          context: "Independent reviews",
+          tasks: [
+            { task: "Review with a model tier", agent: "task" },
+            { task: "Review with a thinking step", agent: "scout" },
+          ],
+        };
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              steps: [
+                { call: input, id: "oldest" },
+                { call: reviewTask("Recent", "task"), id: "recent" },
+                ...Array.from({ length: 254 }, (_, index) => ({
+                  call: { ...reviewTask(`Filler${index}`, "scout"), model: "openai/gpt-5" },
+                  id: `filler-${index}`,
+                })),
+                { call: input, id: "routed" },
+                { spawn: taskSpawn, from: "oldest" },
+                { end: "oldest", result: {} },
+                { spawn: taskSpawn, from: "routed" },
+                { spawn: taskSpawn, from: "recent" },
+                { end: "routed", result: {} },
+                { call: input, id: "after-completion" },
+                { spawn: taskSpawn, from: "after-completion" },
+                { call: unnamed, id: "unnamed-after-eviction", captureInput: true },
+              ],
+            },
+            {
+              project,
+              calls: 0,
+              steps: [
+                { call: input, id: "fresh" },
+                { spawn: taskSpawn, from: "fresh" },
+                { call: unnamed, id: "unnamed-fresh" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"], scout: ["openai/gpt-5:medium"] },
+        });
+        const [evicted, fresh] = report.sessions;
+        expect(evicted?.steps.slice(-8, -1)).toEqual([
+          { spawnKey: "Shared", result: null },
+          null,
+          { spawnKey: "Shared-2", result: null },
+          { spawnKey: "Recent", result: null },
+          null,
+          null,
+          { spawnKey: "Shared-3", result: null },
+        ]);
+        expect(fresh?.steps.at(-2)).toEqual({
+          spawnKey: "Shared",
+          result: expect.objectContaining({ note: "judge-dispatch demanding tier @abliterated" }),
+        });
+        expect(fresh?.steps.at(-1)).toEqual({
+          input: {
+            context: unnamed.context,
+            tasks: [
+              { ...unnamed.tasks[0], name: expect.stringMatching(/^task-[0-9a-f]{8}$/) },
+              { ...unnamed.tasks[1], name: expect.stringMatching(/^scout-[0-9a-f]{8}$/) },
+            ],
+          },
+        });
+        expect(fresh?.notifications.at(-1)?.message).toBe(
+          "judge-dispatch  #1 task · model openai/gpt-5 → @abliterated (0.99) ; #2 scout · thinking medium → high (0.99)",
+        );
+        expect({ notice: evicted?.notifications.at(-1)?.message, input: evicted?.steps.at(-1) }).toEqual({
+          notice: "judge-dispatch  #1 task · difficulty demanding (0.99) ; #2 scout · difficulty demanding (0.99)",
+          input: unnamed,
+        });
+        expect(report.requests).toHaveLength(9);
       });
     });
 
@@ -873,6 +1169,311 @@ async function registerTests(): Promise<void> {
       });
     });
 
+    test("read-only routing excludes other agents with a spawn grant", async () => {
+      await withProjects([{}, {}], async ([project, overridden]) => {
+        if (!project || !overridden) throw new Error("missing projects");
+        const policies = { wild: '"*"', delegator: "sonic", tasker: "task", observer: "scout", relay: "delegator", missing: "unknown" };
+        for (const dir of [project, overridden]) {
+          const path = join(dir, ".omp", "agents");
+          await mkdir(path, { recursive: true });
+          await Bun.write(join(path, "inspector.md"), "---\nname: inspector\ndescription: Inspect the project\ntools: read\n---\nInspect.");
+          for (const [name, spawns] of Object.entries(policies)) {
+            await Bun.write(
+              join(path, `${name}.md`),
+              `---\nname: ${name}\ndescription: Inspect the project\ntools: read\nspawns: ${spawns}\n---\nInspect.`,
+            );
+          }
+        }
+        await Bun.write(
+          join(overridden, ".omp", "agents", "sonic.md"),
+          "---\nname: sonic\ndescription: Read-only project override\ntools: read\n---\nInspect.",
+        );
+        const leaves = ["inspector", "scout"];
+        const grants = Object.keys(policies);
+        const roster = [...leaves, ...grants, "sonic", "task"];
+        const sources = [...leaves, ...grants, "sonic"];
+        const parentSpawns = roster.join(",");
+        const probeSources = ["scout", "delegator"];
+        const probe = { parentSpawns, calls: probeSources.length, inputs: probeSources.map((agent) => reviewTask(agent, agent)) };
+        const report = await runIsolatedScenario({
+          sessions: [
+            { project, parentSpawns, calls: sources.length, inputs: sources.map((agent) => reviewTask(agent, agent)) },
+            { ...probe, project, disabledAgents: ["sonic"] },
+            { ...probe, project, maxDepth: 1 },
+            { ...probe, project: overridden },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          agentChoice: "relay",
+        });
+        const choices = report.requests.map(({ body }) => {
+          const { state } = JSON.parse(body);
+          return { source: state.requestedAgent, candidates: state.candidates.map(({ name }: { name: string }) => name).sort() };
+        });
+        expect(choices, diagnostics(report)).toEqual([
+          ...leaves.map((source) => ({ source, candidates: leaves })),
+          ...grants.map((source) => ({ source, candidates: [...leaves, source].sort() })),
+          { source: "sonic", candidates: roster.toSorted() },
+          ...[leaves, leaves, [...leaves, "sonic"]].flatMap((candidates) =>
+            probeSources.map((source) => ({
+              source,
+              candidates: (source === "delegator" ? [...candidates, source] : [...candidates]).sort(),
+            })),
+          ),
+        ]);
+        expect(report.sessions[0]?.results.at(-1)).toEqual({ input: { ...reviewTask("sonic", "sonic"), agent: "relay" } });
+      });
+    });
+
+    for (const leaves of [["scout"], ["scout", "inspector"]]) {
+      test(`a read-only source with ${leaves.length} eligible ${leaves.length === 1 ? "leaf" : "leaves"} can be kept by the judge`, async () => {
+        await withProjects([{}], async ([project]) => {
+          if (!project) throw new Error("missing project");
+          const agents = join(project, ".omp", "agents");
+          await mkdir(agents, { recursive: true });
+          await Bun.write(
+            join(agents, "delegator.md"),
+            "---\nname: delegator\ndescription: Inspect the project\ntools: read\nspawns: task\n---\nInspect.",
+          );
+          await Bun.write(
+            join(agents, "inspector.md"),
+            "---\nname: inspector\ndescription: Inspect the project\ntools: read\n---\nInspect.",
+          );
+          const report = await runIsolatedScenario({
+            sessions: [
+              { project, parentSpawns: ["delegator", ...leaves].join(","), calls: 1, inputs: [reviewTask("Inspect", "delegator")] },
+            ],
+            response: "success",
+            hostKey: HOST_KEY,
+            agentChoice: "delegator",
+          });
+          expect(report.requests, diagnostics(report)).toHaveLength(1);
+          const question = JSON.parse(report.requests[0]?.body ?? "{}").questions?.agent;
+          expect(Object.keys(question?.criteria ?? {}).sort()).toEqual(["delegator", ...leaves].sort());
+          expect(report.sessions[0]?.results).toEqual([null]);
+        });
+      });
+    }
+
+    test("uses validated defaults for flat, batch, and direct calls even without a described default", async () => {
+      await withProjects([{ modelTiers: "scout.demanding=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const omitted = { task: "Inspect the file", solutionSpace: "Read only" };
+        const explicit = { ...omitted, agent: "scout" };
+        const batch = { context: "Independent tasks", tasks: [omitted, explicit] };
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              parentSpawns: "scout,task",
+              batch: false,
+              steps: [{ call: omitted, id: "flat", validate: true }],
+            },
+            {
+              project,
+              calls: 0,
+              parentSpawns: "scout,task",
+              steps: [{ call: batch, id: "batch", validate: true }],
+            },
+            {
+              project,
+              calls: 0,
+              parentSpawns: "scout,task",
+              batch: false,
+              description: TASK_DESCRIPTION,
+              steps: [
+                { call: omitted, id: "unreadable", validate: true },
+                { call: explicit, id: "written", validate: true },
+                { call: omitted, id: "direct", validate: true, direct: true },
+                { call: omitted, id: "really-absent", direct: true },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { scout: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          { input: { ...explicit, name: expect.stringMatching(/^scout-[0-9a-f]{8}$/) } },
+        ]);
+        expect(report.sessions[1]?.steps).toEqual([
+          {
+            input: {
+              context: batch.context,
+              tasks: [
+                { ...explicit, name: expect.stringMatching(/^scout-[0-9a-f]{8}$/) },
+                { ...explicit, name: expect.stringMatching(/^scout-[0-9a-f]{8}$/) },
+              ],
+            },
+          },
+        ]);
+        expect(report.sessions[2]?.steps).toEqual([
+          ...Array.from({ length: 3 }, () => ({ input: { ...explicit, name: expect.stringMatching(/^scout-[0-9a-f]{8}$/) } })),
+          null,
+        ]);
+        expect(report.requests).toHaveLength(6);
+      });
+    });
+
+    test("uses the validated agent in a batch whose raw keys needed repair", async () => {
+      await withProjects([{ modelTiers: "scout.demanding=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const task = { task: "Inspect the file", agent: "scout", solutionSpace: "Read only" };
+        const context = "Independent research";
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              parentSpawns: "task,scout",
+              description: TASK_DESCRIPTION,
+              steps: [{ call: { context, '"tasks"': [task] }, id: "repaired", validate: true }],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { scout: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          { input: { context, tasks: [{ ...task, name: expect.stringMatching(/^scout-[0-9a-f]{8}$/) }] } },
+        ]);
+        expect(JSON.parse(report.requests[0]?.body ?? "{}").state?.requestedAgent).toBe("scout");
+      });
+    });
+
+    test("uses each validated agent when assistant tool-call IDs are duplicated", async () => {
+      await withProjects([{ modelTiers: "scout.demanding=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const first = { task: "Inspect the file", agent: "scout", solutionSpace: "Read only" };
+        const second = { task: "Change the setting", solutionSpace: "Known change" };
+        const id = "duplicate";
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              parentSpawns: "task,scout",
+              batch: false,
+              steps: [
+                {
+                  assistant: [
+                    { id, args: first },
+                    { id, args: second },
+                  ],
+                },
+                { call: first, id, validate: true, direct: true },
+                { end: id, result: {} },
+                { call: second, id, validate: true, direct: true },
+              ],
+            },
+          ],
+          response: "success",
+          agentChoice: "task",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { scout: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          null,
+          { input: { ...first, name: expect.stringMatching(/^scout-[0-9a-f]{8}$/) } },
+          null,
+          null,
+        ]);
+        expect(report.requests.map(({ body }) => JSON.parse(body).state.requestedAgent)).toEqual(["scout", "task"]);
+      });
+    });
+
+    test("an omitted agent uses the live read-only default for both routing and tiers", async () => {
+      await withProjects([{ modelTiers: "scout.demanding=@abliterated" }], async ([project]) => {
+        const input = { task: "Investigate the deadlock", name: "Default" };
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project: project as string,
+              calls: 0,
+              parentSpawns: "scout,task",
+              steps: [
+                { call: input, id: "omitted" },
+                { spawn: { agent: "scout", patterns: ["openai/gpt-5"] }, from: "omitted" },
+              ],
+            },
+            { project: project as string, calls: 1, inputs: [input], parentSpawns: "unknown,scout,task" },
+            { project: project as string, calls: 1, inputs: [input], description: TASK_DESCRIPTION },
+            { project: project as string, calls: 1, inputs: [input], parentSpawns: "*" },
+          ],
+          response: "success",
+          agentChoice: "task",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { scout: ["openai/gpt-5"] },
+        });
+
+        expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          null,
+          {
+            spawnKey: "Default",
+            result: { model: ["openai/gpt-5-mini", "openai/gpt-5"], note: "judge-dispatch demanding tier @abliterated" },
+          },
+        ]);
+        expect(report.sessions.slice(1).map((session) => session.results)).toEqual([[null], [null], [null]]);
+        expect(report.requests).toHaveLength(2);
+        expect(JSON.parse(report.requests[1]?.body ?? "").state.requestedAgent).toBe("task");
+        const judgment = JSON.parse(report.requests[0]?.body ?? "");
+        expect(judgment.state.requestedAgent).toBe("scout");
+        expect(judgment.state.candidates.map((candidate: { name: string }) => candidate.name)).toEqual(["scout"]);
+        expect(Object.keys(judgment.questions)).toEqual(["difficulty"]);
+      });
+    });
+
+    test("user-tagged model agents are left as written and disk agents can shadow them", async () => {
+      await withProjects([{ judgeEffort: true, modelTiers: "demanding=@abliterated" }], async ([project]) => {
+        const path = join(project as string, ".omp", "agents");
+        await mkdir(path, { recursive: true });
+        await Bun.write(join(path, "m2.md"), "---\nname: m2\ndescription: Project specialist\n---\nReview the project.");
+        const tagged = reviewTask("Tagged", "m1");
+        const retry = { ...tagged, agent: "task", task: "Retry the assignment with an ordinary agent" };
+        const disk = reviewTask("Disk", "m2");
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project: project as string,
+              calls: 0,
+              parentSpawns: "task,scout,m1,m2",
+              branch: [
+                { type: "custom", customType: "model_mention", data: { agent: "m1", selector: "openai/gpt-5:low", name: "Tagged" } },
+                { type: "custom", customType: "model_mention", data: { agent: "m2", selector: "openai/gpt-5", name: "Shadowed" } },
+              ],
+              steps: [
+                { call: tagged, id: "tagged" },
+                { spawn: { agent: "m1", patterns: ["openai/gpt-5:low"] }, from: "tagged" },
+                {
+                  end: "tagged",
+                  result: { details: { results: [{ id: "Tagged", index: 0, agent: "m1", exitCode: 0, output: "ESCALATE: deep-high" }] } },
+                },
+                { call: retry, id: "retry" },
+                { call: disk, id: "disk" },
+              ],
+            },
+          ],
+          response: "success",
+          agentChoice: "m1",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+        });
+
+        expect(report.sessions[0]?.steps.slice(0, 3), diagnostics(report)).toEqual([null, { spawnKey: "Tagged", result: null }, null]);
+        const judgments = report.requests.map(({ body }) => JSON.parse(body).state);
+        expect(judgments.map((state) => state.assignment)).toEqual([retry.task, disk.task]);
+        for (const state of judgments) {
+          expect(state.candidates.map((candidate: { name: string }) => candidate.name).sort()).toEqual(["m2", "scout", "task"]);
+        }
+        expect(judgments[1].requestedAgent).toBe("m2");
+      });
+    });
+
     test("unknown or disabled rosters, unresolved access, reserved sources and agent@model forms do not change agent or effort", async () => {
       await withProjects([{ judgeEffort: true }], async ([project]) => {
         const inputs = ["metis", "momus", "oracle", "audit-auditor", "unknown-agent", "deep-low@abliterated"].map((agent) => ({
@@ -924,17 +1525,44 @@ async function registerTests(): Promise<void> {
       });
     });
 
+    test("Atlas spawns cannot inherit a pending tier from before execution began", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "demanding=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const input = reviewTask("Shared", "task");
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              steps: [
+                { call: input, id: "before-atlas" },
+                { branch: [{ type: "custom", customType: "wows-omp-omo-prometheus.state", data: { phase: "executing" } }] },
+                { call: input, id: "atlas" },
+                { spawn: taskSpawn, from: "atlas" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          agentModels: { task: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps.at(-1), diagnostics(report)).toEqual({ spawnKey: "Shared", result: null });
+        expect(report.requests).toHaveLength(1);
+      });
+    });
+
     test("an escalated or failed lowered child raises its next same-named dispatch once, keeping the requested agent", async () => {
       const fix = { task: "Fix the deadlock", agent: "task", name: "Fix" };
       const scoutSpawn = { agent: "scout", patterns: ["openai/gpt-5"] };
-      const childResult = (id: string, agent: string, output: string, failed = false) => ({
+      const childResult = (id: string, agent: string, output: string, failed = false, index = 0) => ({
         content: [{ type: "text", text: "<task-result>" }],
         details: {
           projectAgentsDir: null,
           totalDurationMs: 1,
           results: [
             {
-              ...{ index: 0, id, agent, agentSource: "bundled", task: "", output, stderr: "", truncated: false },
+              ...{ index, id, agent, agentSource: "bundled", task: "", output, stderr: "", truncated: false },
               ...{ durationMs: 1, tokens: 0, requests: 1, exitCode: failed ? 1 : 0 },
               ...(failed ? { error: "child failed" } : {}),
             },
@@ -987,7 +1615,8 @@ async function registerTests(): Promise<void> {
       });
 
       const cheap = { ...fix, name: "Cheap" };
-      const plain = { ...fix, name: "Plain" };
+      const plain = { ...fix, name: "Plain", model: "openai/gpt-5" };
+      const batch = { context: "Independent fixes", tasks: [plain, cheap] };
       await withProjects([{ modelTiers: "routine=@abliterated" }], async ([project]) => {
         const report = await runIsolatedScenario({
           ...scenario,
@@ -997,33 +1626,36 @@ async function registerTests(): Promise<void> {
               project: project as string,
               calls: 0,
               steps: [
-                { call: cheap, id: "cheap" },
-                { spawn: scoutSpawn, from: "cheap" },
-                { end: "cheap", result: childResult("Cheap", "scout", "Could not finish.", true) },
+                { call: batch, id: "cheap" },
+                { spawn: { ...scoutSpawn, spawnKey: "Cheap" } },
+                { call: cheap, id: "overlapping" },
+                { spawn: { ...scoutSpawn, spawnKey: "Cheap", patterns: [] } },
+                { end: "overlapping", result: childResult("Cheap", "scout", "Unchanged sibling failed.", true) },
+                { call: cheap, id: "ordinary-retry" },
+                { spawn: { ...scoutSpawn, spawnKey: "Cheap" } },
+                { end: "cheap", result: childResult("parent.Cheap-2", "scout", "Could not finish.", true, 1) },
                 { call: cheap, id: "raised" },
-                // A failure without a lowered spawn is not remembered.
-                { call: plain, id: "plain" },
-                { end: "plain", result: childResult("Plain", "scout", "Could not finish.", true) },
-                { call: plain, id: "plain-again" },
               ],
             },
           ],
         });
         expect(report.sessions[0]?.steps, diagnostics(report)).toEqual([
+          { input: { ...batch, tasks: [plain, { ...cheap, agent: "scout" }] } },
+          { spawnKey: "Cheap", result: tierSpawn("routine") },
+          { input: { ...cheap, agent: "scout" } },
+          { spawnKey: "Cheap", result: null },
+          null,
           { input: { ...cheap, agent: "scout" } },
           { spawnKey: "Cheap", result: tierSpawn("routine") },
           null,
           null,
-          { input: { ...plain, agent: "scout" } },
-          null,
-          { input: { ...plain, agent: "scout" } },
         ]);
         expect(report.requests).toHaveLength(3);
         expect(report.sessions[0]?.notifications.map((notice) => notice.message)).toEqual([
+          "judge-dispatch  #1 task kept (native model) ; #2 task → scout (0.99) · model openai/gpt-5 → @abliterated (0.99)",
+          "judge-dispatch  task → scout (0.99) · model openai/gpt-5 → @abliterated (0.99)",
           "judge-dispatch  task → scout (0.99) · model openai/gpt-5 → @abliterated (0.99)",
           "judge-dispatch  task · raised to standard after a failed lowered run",
-          "judge-dispatch  task → scout (0.99) · model openai/gpt-5 → @abliterated (0.99)",
-          "judge-dispatch  task → scout (0.99) · model openai/gpt-5 → @abliterated (0.99)",
         ]);
       });
     });
@@ -1158,6 +1790,174 @@ async function registerTests(): Promise<void> {
       );
     });
 
+    test("overlapping names and allocation suffixes cannot take another item's tier or lowering", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "routine=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const lane = reviewTask("Lane", "task");
+        const suffix = reviewTask("Lane-2", "task");
+        const failed = { details: { results: [{ index: 0, id: "Lane-2", agent: "task", exitCode: 1, output: "Failed." }] } };
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              steps: [
+                { spawn: taskSpawn, allocate: "Lane" },
+                { call: lane, id: "base" },
+                { call: suffix, id: "suffix" },
+                { spawn: taskSpawn, from: "base" },
+                { spawn: taskSpawn, from: "suffix" },
+                { end: "base", result: failed },
+                { end: "suffix", result: { details: { results: [{ ...failed.details.results[0], id: "Lane-2-2" }] } } },
+                { call: lane, id: "retry" },
+                { spawn: taskSpawn, from: "retry" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          difficultyChoice: "routine",
+          agentModels: { task: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps.slice(3, 5), diagnostics(report)).toEqual([
+          { spawnKey: "Lane-2", result: null },
+          { spawnKey: "Lane-2-2", result: null },
+        ]);
+        expect(report.sessions[0]?.steps.at(-1)).toEqual({
+          spawnKey: "Lane-3",
+          result: expect.objectContaining({ note: "judge-dispatch routine tier @abliterated" }),
+        });
+        expect(report.requests).toHaveLength(3);
+      });
+    });
+
+    test.each(["empty results", "a successful sibling"])(
+      "a synchronous error with %s raises only lowered items without rows",
+      async (mode) => {
+        await withProjects([{ routeAgent: false, modelTiers: "routine=@abliterated" }], async ([project]) => {
+          if (!project) throw new Error("missing project");
+          const lowered = reviewTask("Lowered", "task");
+          const unchanged = reviewTask("Unchanged", "task");
+          const successful = reviewTask("Successful", "task");
+          const hasSibling = mode === "a successful sibling";
+          const tasks = hasSibling ? [lowered, unchanged, successful] : [lowered, unchanged];
+          const results = hasSibling ? [{ index: 2, id: "Successful", agent: "task", exitCode: 0, output: "Done." }] : [];
+          const report = await runIsolatedScenario({
+            sessions: [
+              {
+                project,
+                calls: 0,
+                steps: [
+                  { call: { context: "Independent tasks", tasks }, id: "batch" },
+                  { spawn: taskSpawn, from: "batch" },
+                  { spawn: { ...taskSpawn, patterns: [] }, from: "batch", item: 1 },
+                  ...(hasSibling ? [{ spawn: taskSpawn, from: "batch", item: 2 }] : []),
+                  { end: "batch", isError: true, result: { details: { results } } },
+                  { call: lowered, id: "raised" },
+                  { call: unchanged, id: "judged" },
+                  ...(hasSibling ? [{ call: successful, id: "judged-success" }] : []),
+                ],
+              },
+            ],
+            response: "success",
+            hostKey: HOST_KEY,
+            explicitRole: true,
+            difficultyChoice: "routine",
+            agentModels: { task: ["openai/gpt-5"] },
+          });
+          expect(
+            report.sessions[0]?.notifications.slice(-tasks.length).map(({ message }) => message),
+            diagnostics(report),
+          ).toEqual([
+            "judge-dispatch  task · raised to standard after a failed lowered run",
+            "judge-dispatch  task · model openai/gpt-5 → @abliterated (0.99)",
+            ...(hasSibling ? ["judge-dispatch  task · model openai/gpt-5 → @abliterated (0.99)"] : []),
+          ]);
+          expect(report.requests).toHaveLength(2 * tasks.length - 1);
+        });
+      },
+    );
+
+    test("a failed routine spawn raises a retry under its plugin-generated name", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "routine=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const input = { task: "Inspect the file", agent: "task" };
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              steps: [
+                { call: input, id: "unnamed" },
+                { spawn: taskSpawn, from: "unnamed" },
+                {
+                  end: "unnamed",
+                  result: { details: { results: [{ index: 0, agent: "task", id: "Child", exitCode: 1, output: "Failed." }] } },
+                },
+                { call: input, id: "retry", nameFrom: "unnamed" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          difficultyChoice: "routine",
+          agentModels: { task: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.steps[0]).toEqual({ input: { ...input, name: expect.stringMatching(/^task-[0-9a-f]{8}$/) } });
+        expect(report.sessions[0]?.notifications.at(-1)?.message, diagnostics(report)).toBe(
+          "judge-dispatch  task · raised to standard after a failed lowered run",
+        );
+        expect(report.requests).toHaveLength(1);
+      });
+    });
+
+    test("a background failure survives job expiry before its blocking sibling returns", async () => {
+      await withProjects([{ routeAgent: false, modelTiers: "task.routine=@abliterated" }], async ([project]) => {
+        if (!project) throw new Error("missing project");
+        const background = reviewTask("Background", "task");
+        const inline = reviewTask("Inline", "scout");
+        const pending = {
+          details: {
+            results: [],
+            progress: [
+              { index: 0, id: background.name, agent: "task", status: "pending" },
+              { index: 1, id: inline.name, agent: "scout", status: "pending" },
+            ],
+            async: { state: "running", jobId: background.name, type: "task" },
+          },
+        };
+        const report = await runIsolatedScenario({
+          sessions: [
+            {
+              project,
+              calls: 0,
+              jobRetention: 20,
+              steps: [
+                { call: { context: "Independent tasks", tasks: [background, inline] }, id: "mixed" },
+                { job: background.name },
+                { update: "mixed", result: pending },
+                { spawn: taskSpawn, from: "mixed" },
+                { finish: background.name, failed: true, output: "Could not finish.", expire: true },
+                { end: "mixed", result: pending },
+                { call: background, id: "retry" },
+              ],
+            },
+          ],
+          response: "success",
+          hostKey: HOST_KEY,
+          explicitRole: true,
+          difficultyChoice: "routine",
+          agentModels: { task: ["openai/gpt-5"] },
+        });
+        expect(report.sessions[0]?.notifications.at(-1)?.message, diagnostics(report)).toBe(
+          "judge-dispatch  task · raised to standard after a failed lowered run",
+        );
+        expect(report.requests).toHaveLength(1);
+      });
+    });
+
     test("background jobs are remembered only at terminal settlement and only for their owning session", async () => {
       await withProjects(
         Array.from({ length: 3 }, () => ({ modelTiers: "routine=@abliterated,demanding=@abliterated" })),
@@ -1176,9 +1976,9 @@ async function registerTests(): Promise<void> {
               calls: 0,
               steps: [
                 { call: input, id: "first" },
-                { spawn: { agent: "scout", patterns: ["openai/gpt-5"] }, from: "first" },
                 { job: "Fix", ...(index === 2 ? { owner: "another-session" } : {}) },
                 { end: "first", result: pending },
+                { spawn: { agent: "scout", patterns: ["openai/gpt-5"] }, from: "first" },
                 {
                   finish: "Fix",
                   failed: index === 1,
