@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en" data-banner="switch-until" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <title>switch-until</title>
+    <link rel="stylesheet" href="banner.css" />
+    <script>
+      document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
+    </script>
+    <style>
+      .s-tab { font: 700 15px var(--mono); letter-spacing: 0.02em; fill: var(--ink); }
+      .s-rule { stroke: var(--ink); stroke-width: 1; }
+      .s-home { fill: none; stroke: var(--ink); stroke-width: 2; }
+      .s-idle { fill: none; stroke: var(--ink-3); stroke-width: 1.5; stroke-dasharray: 2 5; }
+      .s-temp { fill: none; stroke: var(--accent); stroke-width: 3; }
+      .s-chk { fill: var(--paper); stroke: var(--ink); stroke-width: 1.5; }
+      .s-met { fill: var(--accent); }
+      .s-tick { fill: none; stroke: var(--paper); stroke-width: 2; }
+      .s-turn { font: 500 13px var(--mono); letter-spacing: 0.02em; fill: var(--ink-3); }
+      .s-off { font: 500 15px var(--mono); letter-spacing: 0.02em; fill: var(--ink-3); }
+      .legend.icons span::before { display: none; }
+      .legend.icons svg { display: block; overflow: visible; }
+    </style>
+  </head>
+  <body>
+    <div class="grid meta">
+      <div class="series">wows-omp-plugins</div>
+      <div>/switch-until</div>
+    </div>
+    <div class="rule top"></div>
+
+    <div class="grid body">
+      <div class="lead">
+        <div class="title">switch-until<span class="acc">.</span></div>
+        <div class="tag">Borrow another model until the goal is met. A judge checks each turn, then switches you back.</div>
+      </div>
+      <div class="fig">
+        <svg width="484" height="192" viewBox="0 0 484 192" role="img" aria-label="A session runs on sonnet, switches to opus until tests pass; a judge checks each turn, answers no three times and met on the fourth, and the session returns to sonnet">
+          <defs>
+            <circle id="chk" class="s-chk" r="7" />
+          </defs>
+
+          <text class="d-mono" x="0" y="15"><tspan class="s-tab">/switch-until</tspan>  opus</text>
+          <text class="d-mono accent" x="484" y="15" text-anchor="end">until: tests pass</text>
+          <line class="s-rule" x1="0" y1="34.5" x2="484" y2="34.5" />
+
+          <text class="d-lbl accent" x="0" y="82">opus</text>
+          <text class="d-lbl" x="0" y="146">sonnet</text>
+
+          <path class="s-idle" d="M100,140 H384" />
+          <path class="s-home" d="M84,140 H100 M384,140 H476" />
+          <path class="d-head" d="M484,140 L474,135 V145 z" />
+          <path class="s-temp" d="M100,140 L128,76 H356 L384,140" />
+
+          <text class="s-turn" x="168" y="60" text-anchor="middle">t1</text>
+          <text class="s-turn" x="220" y="60" text-anchor="middle">t2</text>
+          <text class="s-turn" x="272" y="60" text-anchor="middle">t3</text>
+          <text class="s-turn" x="324" y="60" text-anchor="middle">t4</text>
+
+          <use href="#chk" x="168" y="76" />
+          <use href="#chk" x="220" y="76" />
+          <use href="#chk" x="272" y="76" />
+          <circle class="s-met" cx="324" cy="76" r="9" />
+          <path class="s-tick" d="M319.5,76.5 L322.8,79.8 L328.8,72.8" />
+
+          <text class="s-off" x="168" y="104" text-anchor="middle">no</text>
+          <text class="s-off" x="220" y="104" text-anchor="middle">no</text>
+          <text class="s-off" x="272" y="104" text-anchor="middle">no</text>
+          <text class="d-mono accent" x="324" y="104" text-anchor="middle">met</text>
+
+          <text class="d-mono" x="100" y="176" text-anchor="middle">switch</text>
+          <text class="d-mono" x="384" y="176" text-anchor="middle">restore</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="rule bottom"></div>
+    <div class="grid foot">
+      <div class="status">Native judge after each meaningful turn · auto-restore</div>
+      <div class="legend icons">
+        <span><svg aria-hidden="true" width="18" height="14" viewBox="0 0 18 14"><line class="s-temp" x1="0" y1="7" x2="18" y2="7" /></svg>Switched</span>
+        <span><svg aria-hidden="true" width="14" height="14" viewBox="-7 -7 14 14"><circle class="s-chk" r="5.5" /></svg>Not yet</span>
+        <span><svg aria-hidden="true" width="14" height="14" viewBox="-7 -7 14 14"><circle class="s-met" r="6.5" /></svg>Goal met</span>
+      </div>
+    </div>
+  </body>
+</html>

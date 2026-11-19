@@ -25,6 +25,7 @@
 | [`omp-herdr-dag`](plugins/omp-herdr-dag/README.zh.md) | 在 Herdr 侧边窗格中实时显示待办、计划和子代理的关系图 |
 | [`roadmap`](plugins/roadmap/README.zh.md) | 放在仓库里的项目路线图：轮次、带完成标准的阶段，以及每个会话都能看到的 TODO |
 | [`snippets`](plugins/snippets/README.zh.md) | 保存好的文字片段，发送时由 `.review.` 这样的触发词展开，用 `/snippets` 管理 |
+| [`switch-until`](plugins/switch-until/README.zh.md) | `/switch-until` 临时换到另一个模型，等你设定的目标达成后自动换回来 |
 
 每个插件都可以单独安装，只是 roadmap 需要同时安装 adr 插件。
 

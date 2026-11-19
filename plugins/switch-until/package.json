@@ -1,0 +1,44 @@
+{
+  "name": "wows-omp-plugin-switch-until",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Switch the session model until a goal is met, then switch back",
+  "license": "MIT",
+  "imports": {
+    "#src/*": "./src/*"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "settings": {
+      "minimumConfidence": {
+        "type": "number",
+        "default": 0.8,
+        "min": 0.5,
+        "max": 1,
+        "description": "Minimum native judge probability that the goal is met"
+      },
+      "maxTurns": {
+        "type": "number",
+        "default": 0,
+        "min": 0,
+        "step": 1,
+        "description": "Maximum assistant turns before restoring the original model, or 0 for unlimited"
+      },
+      "maxHours": {
+        "type": "number",
+        "default": 6,
+        "description": "Maximum elapsed hours before restoring the original model. Accepts positive fractions."
+      },
+      "contextMessages": {
+        "type": "number",
+        "default": 6,
+        "min": 1,
+        "step": 1,
+        "description": "Number of recent session messages to include in each judgment"
+      }
+    }
+  }
+}

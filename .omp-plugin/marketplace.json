@@ -186,6 +186,23 @@
         "text-expansion"
       ],
       "license": "MIT"
+    },
+    {
+      "name": "switch-until",
+      "source": "./switch-until",
+      "description": "Switch the session model until a goal is met, then switch back",
+      "version": "0.1.0",
+      "author": {
+        "name": "TheOrdinaryWow"
+      },
+      "category": "productivity",
+      "keywords": [
+        "models",
+        "switch",
+        "judge",
+        "automation"
+      ],
+      "license": "MIT"
     }
   ]
 }

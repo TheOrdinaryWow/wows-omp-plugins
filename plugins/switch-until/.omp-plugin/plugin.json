@@ -1,0 +1,9 @@
+{
+  "name": "switch-until",
+  "version": "0.1.0",
+  "description": "Switch the session model until a goal is met, then switch back",
+  "author": {
+    "name": "TheOrdinaryWow"
+  },
+  "license": "MIT"
+}

@@ -75,6 +75,13 @@
         { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
         { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='snippets')].version" }
       ]
+    },
+    "plugins/switch-until": {
+      "component": "switch-until",
+      "extra-files": [
+        { "type": "json", "path": ".omp-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/.omp-plugin/marketplace.json", "jsonpath": "$.plugins[?(@.name==='switch-until')].version" }
+      ]
     }
   }
 }

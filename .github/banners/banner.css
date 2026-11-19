@@ -23,6 +23,7 @@
  *   omp-herdr-dag    #0E85A8   #3DB8DC   cyan
  *   roadmap          #5E7A00   #A3C93A   olive
  *   snippets         #9C2BB5   #CF73E6   orchid
+ *   switch-until     #A0522D   #E0895A   sienna
  */
 
 /* ---------- accents ---------- */
@@ -69,6 +70,10 @@
 [data-banner="snippets"] {
   --accent-light: #9c2bb5;
   --accent-dark: #cf73e6;
+}
+[data-banner="switch-until"] {
+  --accent-light: #a0522d;
+  --accent-dark: #e0895a;
 }
 
 /* ---------- themes ---------- */
@@ -244,7 +249,7 @@ body::after {
 .index {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: repeat(5, auto);
+  grid-template-rows: repeat(6, auto);
   grid-auto-flow: column;
   column-gap: var(--gut);
   list-style: none;
@@ -253,7 +258,7 @@ body::after {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 9px 0 10px;
+  padding: 6px 0;
   border-top: 1px solid var(--ink);
   font-weight: 600;
   font-size: 18px;

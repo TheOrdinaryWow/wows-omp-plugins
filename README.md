@@ -25,6 +25,7 @@ A personal marketplace of OMP plugins. Some add whole workflows, such as plannin
 | [`omp-herdr-dag`](plugins/omp-herdr-dag/README.md) | A live graph of todos, plans and subagents in a Herdr side pane |
 | [`roadmap`](plugins/roadmap/README.md) | A project roadmap in your repository: rounds, stages with done criteria, and TODOs that every session can see |
 | [`snippets`](plugins/snippets/README.md) | Saved text that expands from trigger words like `.review.` when you send, managed with `/snippets` |
+| [`switch-until`](plugins/switch-until/README.md) | `/switch-until` moves the session to another model until a goal you name is met, then switches back on its own |
 
 Each plugin installs on its own, except that roadmap needs the adr plugin.
 
