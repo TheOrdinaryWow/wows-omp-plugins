@@ -17,7 +17,7 @@ When the agent hands a task to a subagent, it picks which agent type does the wo
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-You need OMP 18.19.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below).
+You need OMP 19.0.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below).
 
 ## Quick start
 
@@ -52,7 +52,6 @@ The judge looks at the task and the agents available in your session, and switch
 Some tasks are always left exactly as they are, model and thinking level included:
 
 - tasks for the workflow agents of other plugins: audit-goal's `audit-*` agents and omo-prometheus's `metis`, `momus` and `oracle`. Other tasks are never sent to them either;
-- tasks for OMP's `seance` agent, which consults an earlier session;
 - tasks for an agent the plugin does not know;
 - tasks that already name their own model (OMP's per-task `model` field);
 - every task while an omo-prometheus plan is being carried out, because the approved plan already decided who does what.

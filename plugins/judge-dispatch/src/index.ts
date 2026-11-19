@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { findScopedSettings, type Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
-import { type ChainJudge, type JudgmentUsageLedger, journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
+import { type ChainJudge, journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
@@ -191,7 +191,7 @@ function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
     registry: ctx.modelRegistry,
     sessionId: ctx.sessionManager.getSessionId(),
     purpose: "judge-dispatch",
-    onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>),
+    onUsage: journalJudgmentUsage(ctx.sessionManager),
     costGate: currentSession && isLocalAgentSession(currentSession) ? currentSession.costGate : undefined,
   });
 }

@@ -96,7 +96,7 @@ async function createHarness(root: string, options: { sub?: boolean; entry?: str
     enableLsp: false,
     enableIrc: false,
     skipPythonPreflight: true,
-    cacheWarming: false,
+    cacheWarming: "off",
     skills: [],
     rules: [],
     contextFiles: [],

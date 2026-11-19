@@ -339,9 +339,9 @@ export function serializeCandidate(candidate: RoutingCandidate): SerializedCandi
   };
 }
 
-/** Workflow-owned roles and contract-owned lanes retain their own agent, effort, and model policy. */
+/** Workflow-owned roles retain their own agent, effort, and model policy. */
 const RESERVED_AGENT_PREFIX = "audit-";
-const RESERVED_AGENT_NAMES: Record<string, true> = { metis: true, momus: true, oracle: true, seance: true };
+const RESERVED_AGENT_NAMES: Record<string, true> = { metis: true, momus: true, oracle: true };
 
 export function isWorkflowOwnedAgent(name: string): boolean {
   return name.startsWith(RESERVED_AGENT_PREFIX) || Object.hasOwn(RESERVED_AGENT_NAMES, name);

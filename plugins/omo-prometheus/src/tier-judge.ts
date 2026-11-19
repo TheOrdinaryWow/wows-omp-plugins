@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { ChoiceQuestion } from "@oh-my-pi/pi-ai";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { findScopedSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { type ChainJudge, type JudgmentUsageLedger, journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
+import { type ChainJudge, journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 
@@ -145,7 +145,7 @@ export function resolveTierJudge(ctx: ExtensionContext): ChainJudge {
     registry: ctx.modelRegistry,
     sessionId: ctx.sessionManager.getSessionId(),
     purpose: "prometheus-tier",
-    onUsage: journalJudgmentUsage(ctx.sessionManager as unknown as Partial<JudgmentUsageLedger>),
+    onUsage: journalJudgmentUsage(ctx.sessionManager),
     costGate: currentSession && isLocalAgentSession(currentSession) ? currentSession.costGate : undefined,
   });
 }

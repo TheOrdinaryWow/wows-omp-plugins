@@ -109,6 +109,7 @@ export function emptyCascade(): CascadeResult {
     keywords: [],
     threshold: 0.2,
     coverage: "complete",
+    lexicalFallback: [],
     stats: {
       listed: 0,
       judged: 0,

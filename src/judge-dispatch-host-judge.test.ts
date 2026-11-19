@@ -873,42 +873,6 @@ async function registerTests(): Promise<void> {
       });
     });
 
-    test("seance is never an automatic destination and explicit items keep their native contract", async () => {
-      await withProjects([{ judgeEffort: true, modelTiers: "seance.demanding=@abliterated" }], async ([project]) => {
-        const ordinary = { agent: "task", task: "Review the repository boundary", name: "Review" };
-        const seance = {
-          agent: "seance",
-          task: "Consult the saved session",
-          name: "Consult",
-          sourceSession: "saved-session",
-          model: "openai/gpt-5-mini",
-          effort: "lo",
-        };
-        const savedModel = { agent: "seance", task: "Consult another saved session", sourceSession: "other-session" };
-        const batch = { context: "Review with saved context", tasks: [ordinary, seance, savedModel] };
-        const report = await runIsolatedScenario({
-          sessions: [
-            {
-              project: project as string,
-              calls: 2,
-              description: `${TASK_DESCRIPTION}\n### seance\nRead-only saved-session consultant`,
-              inputs: [{ context: "Saved context", tasks: [seance, savedModel] }, batch],
-            },
-          ],
-          response: "success",
-          hostKey: HOST_KEY,
-          agentChoice: "seance",
-        });
-        expect(report.requests).toHaveLength(1);
-        const request = JSON.parse(report.requests[0]?.body as string);
-        expect(request.state.candidates.map((candidate: { name: string }) => candidate.name)).toEqual(["scout", "task"]);
-        expect(report.sessions[0]?.results, diagnostics(report)).toEqual([
-          null,
-          { input: { ...batch, tasks: [{ ...ordinary, agent: "scout" }, seance, savedModel] } },
-        ]);
-      });
-    });
-
     test("unknown or disabled rosters, unresolved access, reserved sources and agent@model forms do not change agent or effort", async () => {
       await withProjects([{ judgeEffort: true }], async ([project]) => {
         const inputs = ["metis", "momus", "oracle", "audit-auditor", "unknown-agent", "deep-low@abliterated"].map((agent) => ({

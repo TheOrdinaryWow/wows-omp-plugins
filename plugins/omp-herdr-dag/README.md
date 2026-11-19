@@ -19,7 +19,7 @@ omp plugin install omp-herdr-dag@wows-omp-plugins
 
 You need:
 
-- OMP 18.19.0 or newer, started interactively inside a Herdr pane;
+- OMP 19.0.0 or newer, started interactively inside a Herdr pane;
 - the `herdr` command on your `PATH`;
 - Bun, either `bun` on your `PATH` or set in `viewerRuntime`.
 

@@ -28,7 +28,7 @@ async function hostCheck(root: string): Promise<void> {
     enableLsp: false,
     enableIrc: false,
     skipPythonPreflight: true,
-    cacheWarming: false,
+    cacheWarming: "off",
     skills: [],
     rules: [],
     contextFiles: [],

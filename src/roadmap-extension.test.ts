@@ -206,7 +206,7 @@ async function createHarness(
     enableLsp: options.lsp ?? false,
     enableIrc: false,
     skipPythonPreflight: true,
-    cacheWarming: false,
+    cacheWarming: "off",
     skills: [],
     rules: [],
     contextFiles: [],
@@ -664,7 +664,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             ...rename,
             new_name: "records",
           });
-          assert.match(JSON.stringify(ordinary), /No language server found for this action/);
+          assert.match(JSON.stringify(ordinary), /No language server/);
           const docs: AgentToolResult<unknown> = await lsp.execute(`symbol-rename-docs-${apply}`, { ...rename, new_name: "docs" });
           assert.deepEqual(docs, ordinary, "Renaming a symbol to docs must reach the same native implementation as records");
         }

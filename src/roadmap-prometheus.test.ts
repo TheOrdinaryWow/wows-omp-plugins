@@ -86,7 +86,7 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     enableLsp: false,
     enableIrc: false,
     skipPythonPreflight: true,
-    cacheWarming: false,
+    cacheWarming: "off",
     skills: [],
     rules: [],
     contextFiles: [],

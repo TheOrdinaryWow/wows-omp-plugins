@@ -306,7 +306,7 @@ async function scenario(name: string, root: string): Promise<void> {
     enableLsp: false,
     enableIrc: false,
     skipPythonPreflight: true,
-    cacheWarming: false,
+    cacheWarming: "off",
     skills: [],
     rules: [],
     contextFiles: [],

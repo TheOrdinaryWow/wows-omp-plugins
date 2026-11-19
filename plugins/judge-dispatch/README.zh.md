@@ -17,7 +17,7 @@
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-需要 OMP 18.19.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）。
+需要 OMP 19.0.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）。
 
 ## 快速上手
 
@@ -52,7 +52,6 @@ judge-dispatch  #1 explore → task (0.87) ; #2 task kept (0.93) · thinking med
 以下任务始终保持原样，模型和思考级别也不变：
 
 - 其他插件的工作流代理：audit-goal 的 `audit-*` 代理，以及 omo-prometheus 的 `metis`、`momus` 和 `oracle`。其他任务也不会被派给它们；
-- 交给 OMP `seance` 代理的任务，它用来查阅以前的会话；
 - 交给插件不认识的代理的任务；
 - 已经指定了自己模型的任务（OMP 的逐任务 `model` 字段）；
 - omo-prometheus 执行计划期间的所有任务，因为批准的计划已经定好了谁做什么。
