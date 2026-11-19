@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import { type AdrDoc, buildAdrBody, renderAdr, renderIndex } from "../plugins/adr/src/documents.ts";
 import { registerService } from "../plugins/adr/src/service.ts";
+import { TOOL_SOURCE_PATH as ADR_SOURCE_PATH } from "../plugins/adr/src/tools.ts";
 import { type AdrApi, type AdrRecord, type ContractEvents, resolveStage } from "../plugins/roadmap/src/adr.ts";
 import type { AtlasStagePlan } from "../plugins/roadmap/src/atlas.ts";
 import {
@@ -29,7 +30,11 @@ import {
  * extension registers it. Operation tests attach it to a Repo as the extension's requireRepo does.
  */
 export function adrApi(): AdrApi {
-  const host = { on() {}, events: { on: () => () => {}, emit() {} } } as unknown as ExtensionAPI;
+  const host = {
+    on() {},
+    events: { on: () => () => {}, emit() {} },
+    getAllTools: () => [{ name: "adr_status", sourceInfo: { path: ADR_SOURCE_PATH } }],
+  } as unknown as ExtensionAPI;
   const { api } = registerService(host, () => {});
   api.registerStageResolver(resolveStage);
   return api;

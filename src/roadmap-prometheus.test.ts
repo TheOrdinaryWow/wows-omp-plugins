@@ -47,7 +47,9 @@ const planContent = `# Integration
 - [ ] F4. Success-criteria fidelity
 `;
 
-async function sdk(root: string, reverse: boolean): Promise<void> {
+async function sdk(root: string, name: string): Promise<void> {
+  const reverse = name === "reverse";
+  const sub = name === "subagent";
   // Host state and extension factories must initialize inside the HOME-isolated child.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
@@ -92,6 +94,7 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     contextFiles: [],
     promptTemplates: [],
     slashCommands: [],
+    ...(sub ? { taskDepth: 1, agentId: "contract-child", agentName: "task", parentTaskPrefix: "contract" } : {}),
   });
   try {
     await initializeExtensions(session, {
@@ -106,6 +109,8 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     assert.equal(extensionsResult.preparedExtensions?.length, 3);
     const runner = session.extensionRunner;
     assert(runner);
+    assert.equal(runner.createContext().hasUI, false);
+    assert.equal(runner.createContext().agent.kind, sub ? "sub" : "main");
     extensionsResult.runtime.sendMessage = () => {};
     await runner.emit({ type: "session_start" });
     const sessionId = sessionManager.getSessionId();
@@ -118,6 +123,11 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     // An initialized roadmap in a Git work tree with the adr plugin loaded can record Roadmap TODOs.
     assert.equal(unbound.usable, true);
     assert.equal(consumer.requestBinding("another-session"), undefined);
+    assert.equal(consumer.requestStage(sessionId, root, "S01")?.stage?.status, "planned");
+    if (sub) {
+      console.log(`ROADMAP_PROMETHEUS_OK ${name}`);
+      return;
+    }
     const roadmapTool = session.getToolByName("roadmap_stage");
     assert(roadmapTool && session.getToolByName("atlas_ledger"));
     const started = await roadmapTool.execute("sdk-start", { action: "start", id: "S01" });
@@ -175,9 +185,20 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
       gates: ["F1", "F2", "F3", "F4"].map((gateId) => ({ gateId, verdict: "PASS", summary: `${gateId} verified the scoped acceptance` })),
       at: new Date().toISOString(),
     };
-    eventBus.emit("atlas:completed", completion);
+    assert.equal(runner.setSuspendedExtensions((ext) => ext.resolvedPath === roadmapEntry).suspended.length, 1);
+    assert(
+      !extensionsResult.runtime.getAllTools().some((tool) => tool.name === "roadmap_status" && tool.sourceInfo?.path === ROADMAP_ENTRY),
+    );
     const pending = () =>
       sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "wows-omp-roadmap.pending-close");
+    assert.equal(consumer.requestBinding(sessionId), undefined);
+    assert.equal(consumer.requestStage(sessionId, root, "S01"), undefined);
+    eventBus.emit("atlas:completed", completion);
+    assert.equal(pending().length, 0);
+    assert.equal(runner.setSuspendedExtensions(() => false).resumed.length, 1);
+    assert.deepEqual(consumer.requestBinding(sessionId)?.stage, binding?.stage);
+    assert.equal(consumer.requestStage(sessionId, root, "S01")?.stage?.status, "active");
+    eventBus.emit("atlas:completed", completion);
     assert.equal(pending().length, 1);
     const entry = pending()[0];
     assert(entry?.type === "custom");
@@ -265,18 +286,18 @@ async function sdk(root: string, reverse: boolean): Promise<void> {
     const afterClose = await runner.emitBeforeAgentStart("Continue", undefined, ["Host policy"]);
     assert(!(afterClose?.systemPrompt?.join("\n") ?? "").includes("completed for S01"));
     await atlas.handler("exit", runner.createCommandContext());
-    console.log(`ROADMAP_PROMETHEUS_OK ${reverse ? "reverse" : "sdk"}`);
+    console.log(`ROADMAP_PROMETHEUS_OK ${name}`);
   } finally {
     await session.dispose();
   }
 }
 
 if (process.env[CHILD]) {
-  await sdk(process.env.ROADMAP_PROMETHEUS_ROOT as string, process.env[CHILD] === "reverse");
+  await sdk(process.env.ROADMAP_PROMETHEUS_ROOT as string, process.env[CHILD]);
 } else {
   // The plain Bun child exercises module loading; bun:test belongs only to its parent runner.
   const { expect, test } = await import("bun:test");
-  for (const name of ["sdk", "reverse"]) {
+  for (const name of ["sdk", "reverse", "subagent"]) {
     test(`real SDK roadmap/Prometheus contract: ${name}`, async () => {
       const home = await realpath(await mkdtemp(join(tmpdir(), "roadmap-prometheus-")));
       try {

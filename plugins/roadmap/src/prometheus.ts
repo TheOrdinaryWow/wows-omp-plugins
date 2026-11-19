@@ -97,6 +97,9 @@ function roadmapInitialized(repoRoot: string): boolean {
 
 export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession): void {
   let context: ExtensionContext | undefined;
+  // Live suspension removes the tool's provenance while leaving pi.events listeners subscribed.
+  const isActive = (): boolean =>
+    pi.getAllTools().some((tool) => tool.name === "roadmap_status" && tool.sourceInfo?.path === TOOL_SOURCE_PATH);
   const capture = (_event: unknown, ctx: ExtensionContext): void => {
     context = ctx;
     ses.ensure(ctx);
@@ -118,7 +121,8 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
       payload.v !== 1 ||
       payload.sessionId !== ctx.sessionManager.getSessionId() ||
       typeof payload.requestId !== "string" ||
-      !payload.requestId
+      !payload.requestId ||
+      !isActive()
     )
       return;
     let repoRoot: string;
@@ -166,7 +170,8 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
       !payload.requestId ||
       typeof payload.repoRoot !== "string" ||
       typeof payload.stage !== "string" ||
-      !/^S\d+$/.test(payload.stage)
+      !/^S\d+$/.test(payload.stage) ||
+      !isActive()
     )
       return;
     let stage: (ContractStage & { status: StageDoc["status"]; activation?: Activation }) | undefined;
@@ -204,7 +209,8 @@ export function registerPrometheusContract(pi: ExtensionAPI, ses: RoadmapSession
       typeof payload.roadmapStage.repoRoot !== "string" ||
       typeof payload.roadmapStage.id !== "string" ||
       !/^S\d+$/.test(payload.roadmapStage.id) ||
-      !Array.isArray(payload.gates)
+      !Array.isArray(payload.gates) ||
+      !isActive()
     )
       return;
     if (

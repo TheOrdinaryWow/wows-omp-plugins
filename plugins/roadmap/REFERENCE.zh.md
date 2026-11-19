@@ -185,9 +185,9 @@ ADR 归 [adr 插件](../adr/README.zh.md)（`adr_status`、`adr_manage`、`adr_c
 
 ## Prometheus 契约
 
-事件定义见 [omo-prometheus 参考文档](../omo-prometheus/REFERENCE.zh.md#路线图契约)。在路线图这一侧：
+路线图扩展暂停期间，绑定和阶段查询不会收到回复，Atlas 完成事件也会被忽略。恢复扩展后，它会处理新的查询和完成事件。[omo-prometheus 事件定义](../omo-prometheus/REFERENCE.zh.md#路线图契约)
 
-- 路线图会同步回复 `roadmap:binding-request`，附带会话、请求、仓库、受信任的工具来源和可选的已绑定阶段。已绑定阶段处于活动状态；如果会话是在 Plan Mode 中绑定而未开始的，则处于计划状态。阶段包含 `id`、`title`、`round`，并新增 `criteria`（按文档顺序排列的当前 DC ID，不含已删除的标准）和 `revision`。即使无法读取已绑定阶段的文档，它也会回复，只是不带阶段。没有回复表示未安装路线图。
+- 路线图会同步回复 `roadmap:binding-request`，附带会话、请求、仓库、受信任的工具来源和可选的已绑定阶段。已绑定阶段处于活动状态；如果会话是在 Plan Mode 中绑定而未开始的，则处于计划状态。阶段包含 `id`、`title`、`round`，并新增 `criteria`（按文档顺序排列的当前 DC ID，不含已删除的标准）和 `revision`。即使无法读取已绑定阶段的文档，它也会回复，只是不带阶段。
 - `revision` 是阶段规划基准的小写 SHA-256 十六进制值，基准为对解析后各节计算的 `JSON.stringify([objective, scope_in, scope_out, done_criteria, design_constraints ?? ""])`（`src/documents.ts` 中的 `planningRevision`）。日期、状态、标题、依赖、风险、修订记录、自由工作日志和 Outcome 都不会改变它。使用方应把它视为不透明值。
 - 路线图会同步回复本会话的 `roadmap:stage-request` `{ v: 1, sessionId, requestId, repoRoot, stage }`，前提是 `repoRoot` 等于会话工作目录所在的 git 工作树根目录，回复为 `roadmap:stage` `{ v: 1, sessionId, requestId, repoRoot, stage? }`。`stage` 为 `{ id, title, round, status, criteria, revision, activation? }`，任何状态都会返回；仓库没有路线图、阶段不存在或文档无法读取时不带 `stage`。格式错误的请求不会得到回复。
 - `activation`（新增）表示开始实施前还欠这个阶段什么：阶段仍为计划状态时是 `{ action: "start" }`；磁盘上已是活动状态，但 HEAD 中没有已开始的副本，且阶段文档、轮次索引和路线图索引中有文件与 HEAD 不同时，是 `{ action: "commit", files }`（`files` 列出这些相对仓库根目录的路径）。不欠任何东西时不带该字段。存在该字段时，Atlas 拒绝派发计划行。

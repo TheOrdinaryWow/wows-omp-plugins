@@ -34,6 +34,7 @@ import {
 import { registerPrometheusContract } from "../plugins/roadmap/src/prometheus.ts";
 import { type PendingClose, planModeActive, RoadmapSession } from "../plugins/roadmap/src/ses.ts";
 import { roadmapStatus } from "../plugins/roadmap/src/state.ts";
+import { TOOL_SOURCE_PATH } from "../plugins/roadmap/src/tools.ts";
 import { adrApi, asFormatOne, contractEvents, modelFixture, planFixture, roundFixture, stageFixture } from "./roadmap-fixtures.ts";
 
 const main: Actor = { sessionId: "main-session", kind: "main" };
@@ -515,6 +516,7 @@ describe("roadmap:binding and roadmap:stage answers", () => {
         handlers[name].push(handler);
       },
       events,
+      getAllTools: () => [{ name: "roadmap_status", sourceInfo: { path: TOOL_SOURCE_PATH } }],
       logger: { warn() {}, info() {}, error() {}, debug() {} },
       appendEntry: (customType: string, data: unknown) => {
         entries.push({ type: "custom", customType, data });

@@ -47,17 +47,6 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Contract errors are plain Errors whose message carries the refusal and its guidance. */
-async function settle<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (error instanceof Refusal) throw new Error([error.message, ...error.hints].join(" "), { cause: error });
-    if (error instanceof DocumentError) throw new Error(`${error.message} Run adr_check.`, { cause: error });
-    throw error;
-  }
-}
-
 /**
  * Answers `adr:binding-request` synchronously, and only for this instance's own session, with the tool source path and
  * the v1 API. `written` runs after every non-dry-run write so the sidecar follows API callers too.
@@ -65,6 +54,26 @@ async function settle<T>(operation: () => Promise<T>): Promise<T> {
 export function registerService(pi: ExtensionAPI, written: (ctx: ExtensionContext) => void): AdrService {
   let context: ExtensionContext | undefined;
   let resolver: StageResolver | undefined;
+  // Live suspension removes the tool's provenance while leaving pi.events listeners subscribed.
+  const isActive = (): boolean => pi.getAllTools().some((tool) => tool.name === "adr_status" && tool.sourceInfo?.path === TOOL_SOURCE_PATH);
+  const requireActive = (): void => {
+    if (!isActive())
+      throw new Error(
+        "The adr plugin is inactive in this session. Enable it or install it with `omp plugin install adr@wows-omp-plugins`.",
+      );
+  };
+  /** Contract errors are plain Errors whose message carries the refusal and its guidance. */
+  async function settle<T>(operation: () => Promise<T>): Promise<T> {
+    requireActive();
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof Refusal) throw new Error([error.message, ...error.hints].join(" "), { cause: error });
+      if (error instanceof DocumentError) throw new Error(`${error.message} Run adr_check.`, { cause: error });
+      throw error;
+    }
+  }
+
   const capture = (_event: unknown, ctx: ExtensionContext): void => {
     context = ctx;
   };
@@ -100,6 +109,7 @@ export function registerService(pi: ExtensionAPI, written: (ctx: ExtensionContex
     link: (repoRoot, actor, id, stage, options) => write(options, (resolved) => link(repoRoot, actor, id, stage, resolved)),
     relinkStage: (repoRoot, actor, from, to, options) => write(options, (resolved) => relinkStage(repoRoot, actor, from, to, resolved)),
     registerStageResolver(next) {
+      requireActive();
       if (typeof next !== "function") throw new Error("A stage resolver must be a function.");
       resolver = next;
       return () => {
@@ -116,7 +126,8 @@ export function registerService(pi: ExtensionAPI, written: (ctx: ExtensionContex
       payload.v !== 1 ||
       payload.sessionId !== ctx.sessionManager.getSessionId() ||
       typeof payload.requestId !== "string" ||
-      !payload.requestId
+      !payload.requestId ||
+      !isActive()
     )
       return;
     pi.events.emit("adr:binding", {

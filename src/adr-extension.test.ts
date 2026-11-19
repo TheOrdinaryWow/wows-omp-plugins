@@ -279,6 +279,24 @@ async function acceptance(name: string, root: string): Promise<void> {
       first();
       await api.link(root, "main", "ADR-0001", "S05");
       await assert.rejects(api.load(join(dirname(root), "plugins")), /git work tree/);
+      const snapshot = await api.load(root);
+      assert.equal(h.runner.setSuspendedExtensions((ext) => ext.resolvedPath === entry).suspended.length, 1);
+      assert(!h.getAllTools().some((tool) => tool.name === "adr_status" && tool.sourceInfo?.path === ENTRY));
+      assert.equal(request(h, { v: 1, sessionId, requestId: "suspended" }), undefined);
+      const suspended = /adr plugin is inactive.*omp plugin install adr@wows-omp-plugins/;
+      await assert.rejects(api.dirState(root), suspended);
+      await assert.rejects(api.load(root), suspended);
+      await assert.rejects(api.initialize(root, "main"), suspended);
+      await assert.rejects(api.create(root, "main", decision), suspended);
+      await assert.rejects(api.createMany(root, "main", [decision]), suspended);
+      await assert.rejects(api.link(root, "main", "ADR-0001", undefined), suspended);
+      await assert.rejects(api.relinkStage(root, "main", "S05", "S06"), suspended);
+      assert.throws(() => api.registerStageResolver(async () => "suspended resolver"), suspended);
+      assert.equal(h.runner.setSuspendedExtensions(() => false).resumed.length, 1);
+      assert.equal(request(h, { v: 1, sessionId, requestId: "resumed" })?.api, api);
+      assert.deepEqual(await api.load(root), snapshot);
+      await api.link(root, "main", "ADR-0001", "S06");
+      assert.equal((await api.load(root))?.records[0]?.stage, "S06");
     } else if (name === "link") {
       await initialize(root, "main");
       await createMany(root, "main", [{ ...decision, status: "accepted" }]);

@@ -239,7 +239,9 @@ ID 来自 `<git common dir>/adr/counters.json`，即 `{"v":1,"adr":N}`，同一�
 
 同一会话中的其他插件通过 `pi.events` 访问本插件。roadmap 插件用它读取 ADR、把 ADR 关联到阶段，以及初始化 `docs/adr/`。
 
-请求方订阅 `adr:binding`，发出带 `{ v: 1, sessionId, requestId }` 的 `adr:binding-request`，然后取消订阅。本插件在请求处理函数内同步应答，且只在 `sessionId` 是它自己的会话时应答，内容为 `{ v: 1, sessionId, requestId, toolSourcePath, api }`。没有应答表示插件未加载；`v !== 1` 或缺少 `api` 表示版本不兼容。
+请求方订阅 `adr:binding`，发出带 `{ v: 1, sessionId, requestId }` 的 `adr:binding-request`，然后取消订阅。插件启用时会同步回复本会话的请求，内容为 `{ v: 1, sessionId, requestId, toolSourcePath, api }`。没有回复表示插件在该会话中不可用。回复中的 `v !== 1` 或缺少 `api` 表示版本不兼容。
+
+扩展暂停期间，新请求不会收到回复，通过已取得的 API 发起的新调用也会被拒绝。恢复扩展后，两者均可继续使用。
 
 ```ts
 type AdrActor = "main" | "sub";

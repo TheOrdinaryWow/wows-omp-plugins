@@ -239,7 +239,9 @@ The main session publishes `adr.json` in the shared snapshot envelope (see the [
 
 Other plugins in the same session reach this plugin through `pi.events`. The roadmap plugin uses it to read ADRs, link them to stages and initialize `docs/adr/`.
 
-The requester subscribes to `adr:binding`, emits `adr:binding-request` with `{ v: 1, sessionId, requestId }`, and unsubscribes. The plugin answers synchronously inside the request handler, only when `sessionId` is its own session, with `{ v: 1, sessionId, requestId, toolSourcePath, api }`. No answer means the plugin is not loaded; `v !== 1` or a missing `api` means an incompatible version.
+The requester subscribes to `adr:binding`, emits `adr:binding-request` with `{ v: 1, sessionId, requestId }`, and unsubscribes. The plugin answers synchronously for its own session while active with `{ v: 1, sessionId, requestId, toolSourcePath, api }`. A missing reply means the plugin is unavailable in that session. A reply with `v !== 1` or a missing `api` means the version is incompatible.
+
+While the extension is suspended, new requests go unanswered and new calls through an already obtained API fail. Both work again when the extension resumes.
 
 ```ts
 type AdrActor = "main" | "sub";

@@ -464,6 +464,7 @@ const CASES: Record<string, string> = {
   ),
   "adr-absent":
     "without the adr plugin, roadmap tools and commands refuse with an install hint, each turn notes why roadmap context is missing, the user is told once and docs/roadmap stays protected",
+  "adr-suspended": "live ADR suspension refuses cached ADR calls and new roadmap bindings, then resume restores roadmap tools",
   "adr-close": "stage close refuses while linked ADRs are proposed and succeeds after adr_manage accepts them, recording their statuses",
   stale: "init releases the preview lock and rejects files appearing before confirmation",
   overlap: "free overlap asks once and persists without duplicating its log",
@@ -1902,6 +1903,24 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert.deepEqual((await loadAll(repo)).files, before);
       await write.execute("no-adr-notes", { path: "docs/adr/notes.md", content: "allowed\n" });
       assert.equal(await readFile(join(root, "docs/adr/notes.md"), "utf8"), "allowed\n");
+    } else if (name === "adr-suspended") {
+      const repo = await initialized(root);
+      assert.equal(h.runner.createContext().hasUI, false);
+      assert((await call(h, "roadmap_stage", { action: "start", id: "S01" })).ok);
+      assert.equal(h.runner.setSuspendedExtensions((ext) => ext.resolvedPath === ADR_ENTRY).suspended.length, 1);
+      const cached = await call(h, "roadmap_stage", closeInput);
+      assert(!cached.ok, JSON.stringify(cached));
+      assert.match(cached.reason, /adr plugin is inactive.*omp plugin install adr@wows-omp-plugins/);
+      assert.equal((await loadAll(repo)).stages[0]?.status, "active");
+      // Rebuild to clear roadmap's cached API and exercise a fresh handshake while ADR is suspended.
+      await h.runner.emit({ type: "session_start" });
+      const missing = await call(h, "roadmap_status", {});
+      assert(!missing.ok, JSON.stringify(missing));
+      assert.match(missing.reason, /adr plugin, which is not loaded/);
+      assert.match(missing.hints.join("\n"), /omp plugin install adr@wows-omp-plugins/);
+      assert.equal(h.runner.setSuspendedExtensions(() => false).resumed.length, 1);
+      assert((await call(h, "roadmap_status", {})).ok);
+      assert((await call(h, "roadmap_stage", closeInput)).ok);
     } else if (name === "adr-close") {
       const repo = await initialized(root);
       const sections = { context: "Orders need identities", options: ["UUID", "Sequence"], outcome: "UUID" };
