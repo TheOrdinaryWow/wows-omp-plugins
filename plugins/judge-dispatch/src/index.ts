@@ -123,7 +123,7 @@ interface ResolvedPrimary {
   /** Index of the first selector that resolves; the host spawns with it. */
   index: number;
   model: Model;
-  /** `provider/id`. */
+  /** `provider/id[@upstream]`. */
   key: string;
   thinkingLevel?: ConfiguredThinkingLevel;
   explicitThinkingLevel: boolean;
@@ -136,7 +136,7 @@ function resolvePrimary(patterns: readonly string[], settings: Settings, ctx: Ex
   const registry = { getAvailable: () => enabled };
   for (const [index, pattern] of patterns.entries()) {
     const { model, thinkingLevel, explicitThinkingLevel } = resolveModelOverride([pattern], registry, settings);
-    if (model) return { index, model, key: `${model.provider}/${model.id}`, thinkingLevel, explicitThinkingLevel };
+    if (model) return { index, model, key: formatModelStringWithRouting(model), thinkingLevel, explicitThinkingLevel };
   }
   return undefined;
 }

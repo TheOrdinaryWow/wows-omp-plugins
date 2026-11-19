@@ -75,7 +75,7 @@ export interface ThinkingStep {
 
 /** A configured model tier for one route: the swap made, or why the agent's own model stays. */
 export interface TierChoice {
-  /** `provider/id` the agent's own selectors resolve to, when one does. */
+  /** `provider/id[@upstream]` the agent's own selectors resolve to, when one does. */
   primary?: string;
   /** The tier selector as configured. */
   tier: string;
@@ -372,7 +372,7 @@ export function acceptRoutingDecision<T extends string>(
 /** A spawn-time change decided at `tool_call`, for the spawn of `agent` only. */
 interface PendingSpawnBase {
   agent: string;
-  /** `provider/id` the host must still resolve first for the agent, or the decision is stale. */
+  /** `provider/id[@upstream]` the host must still resolve first for the agent, or the decision is stale. */
   primary?: string;
   difficulty: TaskDifficulty;
   note: string;
