@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.2.3...find-console@0.3.0) (2026-11-19)
+
+
+### Features
+
+* **find-console:** show unranked literal matches when judging is unavailable ([87bafe1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/87bafe132022fa3bc2f57933ecfff425f09fb49d))
+
+
+### Bug Fixes
+
+* honor same-provider judge restrictions by passing the session model ([995553a](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/995553afd3f883aef9cee58c27298796bee15a2e))
+* raise supported OMP floor to 19.0.0 ([46e3b7d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/46e3b7d05d32ba715cf5c15e400a053da983b84b))
+
 ## [0.2.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.2.2...find-console@0.2.3) (2026-11-12)
 
 

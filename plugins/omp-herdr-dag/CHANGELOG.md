@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.1...omp-herdr-dag@0.7.2) (2026-11-19)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** advertise the native todo schema in the todo wrapper ([976b7eb](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/976b7eb9fc0ec6f765032af11405fd8fc6f20528))
+* raise supported OMP floor to 19.0.0 ([46e3b7d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/46e3b7d05d32ba715cf5c15e400a053da983b84b))
+
 ## [0.7.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.0...omp-herdr-dag@0.7.1) (2026-11-12)
 
 
