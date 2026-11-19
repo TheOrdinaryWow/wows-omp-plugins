@@ -189,6 +189,7 @@ function sessionJudge(ctx: ExtensionContext, settings: Settings): ChainJudge {
   return resolveJudge({
     settings,
     registry: ctx.modelRegistry,
+    sessionModel: ctx.model,
     sessionId: ctx.sessionManager.getSessionId(),
     purpose: "judge-dispatch",
     onUsage: journalJudgmentUsage(ctx.sessionManager),

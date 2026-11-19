@@ -143,6 +143,7 @@ export function resolveTierJudge(ctx: ExtensionContext): ChainJudge {
   return resolveJudge({
     settings,
     registry: ctx.modelRegistry,
+    sessionModel: ctx.model,
     sessionId: ctx.sessionManager.getSessionId(),
     purpose: "prometheus-tier",
     onUsage: journalJudgmentUsage(ctx.sessionManager),

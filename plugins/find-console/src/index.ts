@@ -88,7 +88,7 @@ export default function findConsole(pi: ExtensionAPI): void {
           if (!settings)
             throw new Error("The active session has no project-scoped settings; /find cannot resolve find.enabled or the judge role.");
           const mode = cfgFindEnabled.get(settings);
-          const reason = disabledReason(mode, mode === "auto" && hasNativeJudge(settings, ctx.modelRegistry));
+          const reason = disabledReason(mode, mode === "auto" && hasNativeJudge(settings, ctx.modelRegistry, ctx.model));
           if (reason) {
             commandNotice(pi, ctx, reason, "warning");
             return;
@@ -148,6 +148,7 @@ export default function findConsole(pi: ExtensionAPI): void {
           const chain = resolveJudge({
             settings,
             registry: ctx.modelRegistry,
+            sessionModel: ctx.model,
             sessionId: ctx.sessionManager.getSessionId(),
             purpose: "find",
             onUsage: usage.onUsage,
