@@ -27,13 +27,16 @@ import {
   prepareUpgrade,
   stage,
 } from "../plugins/roadmap/src/operations.ts";
+import type { StageSizeJudge } from "../plugins/roadmap/src/planning-gate.ts";
 import { ENTRY_PREFIX, type UiFactory } from "../plugins/roadmap/src/ses.ts";
 import type { ToolReceipt } from "../plugins/roadmap/src/tools.ts";
 import {
   createTuiUi,
+  type GateAnswer,
   HeadlessUi,
   type OverlapAnswer,
   type OverlapQuestion,
+  type PlanningGateQuestion,
   type RoadmapUi,
   type RoundOutcomeChoice,
   type RoundTodoDispositionChoice,
@@ -115,10 +118,18 @@ class ScriptedUi implements RoadmapUi {
   /** Text answers, such as the console's target dates and drop reasons. */
   inputs: Array<string | undefined> = [];
   inputCalls: string[] = [];
+  /** Planning-gate answers, one per dialog; an exhausted script cancels like Esc. */
+  gateAnswers: Array<GateAnswer | undefined> = [];
+  gateCalls: PlanningGateQuestion[] = [];
 
   async overlap(q: OverlapQuestion) {
     this.overlapCalls.push(q);
     return this.answer;
+  }
+
+  async planningGate(q: PlanningGateQuestion) {
+    this.gateCalls.push(q);
+    return this.gateAnswers.shift();
   }
 
   async previewConfirm(p: Parameters<RoadmapUi["previewConfirm"]>[0]) {
@@ -170,6 +181,7 @@ interface Harness {
   kickoffs: string[];
   messages: string[];
   setUi: (factory?: UiFactory) => void;
+  setJudge: (judge?: StageSizeJudge) => void;
 }
 
 async function git(root: string, args: string[]): Promise<string> {
@@ -230,6 +242,10 @@ async function createHarness(
     setter(value);
   };
   setUi(() => ui);
+  assert("__setStageSizeJudge" in factory && typeof factory.__setStageSizeJudge === "function");
+  const setJudge = factory.__setStageSizeJudge as (judge?: StageSizeJudge) => void;
+  // Without a scripted answer every stage is undecided, so cases outside the planning gate never see its dialog.
+  setJudge(async () => 0.5);
   const runner = session.extensionRunner;
   assert(runner);
   const kickoffs: string[] = [];
@@ -265,7 +281,7 @@ async function createHarness(
   }
   assert.equal(session.getToolByName("roadmap_adr"), undefined, "roadmap_adr moved to the adr plugin as adr_manage");
   assert.equal(runner.createContext().agent.kind, options.sub ? "sub" : "main");
-  return { session, runner, ui, kickoffs, messages, setUi };
+  return { session, runner, ui, kickoffs, messages, setUi, setJudge };
 }
 
 async function command(h: Harness, name: string, args = ""): Promise<void> {
@@ -482,6 +498,13 @@ const CASES: Record<string, string> = {
   "overlap-lock-terminal": "a queued terminal transition invalidates a late overlap mutation under the lock",
   binding: "roadmap overlap starts, binds and returns its handoff",
   "plan-mode-binding": "in plan mode overlap and start bind a planned stage without writing; outside it the bound stage starts",
+  "planning-gate-direct":
+    "starting a large stage without a plan asks first: switching or cancelling writes and binds nothing, and proceeding starts it after one judgment",
+  "planning-gate-planning":
+    "planning a small stage asks first: switching binds nothing, proceeding binds it in plan mode, and the bound stage starts without asking again",
+  "planning-gate-quiet":
+    "a stage whose size fits the way of working, an undecided judge or a missing native judge never asks; the missing judge is reported once",
+  "planning-gate-headless": "without a dialog a mismatched start is refused with /roadmap proceed, whose answer survives a session rebuild",
   headless: "without a UI, previews wait for /roadmap confirm, overlaps and round close take command arguments, and notices are messages",
   "bound-start": "started stages bypass the overlap dialog and free-work log",
   "bound-join": "joined stages bypass the overlap dialog and free-work log",
@@ -2284,6 +2307,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             "close-round",
             "stage ",
             "overlap ",
+            "proceed ",
             "confirm ",
           ]);
           const labels =
@@ -2294,6 +2318,7 @@ async function acceptance(name: string, root: string): Promise<void> {
           assert.equal(new Set(labels).size, labels.length, `the menu shows every action distinctly: ${labels.join(", ")}`);
           assert.deepEqual(complete("stage S"), ["stage S01"]);
           assert.deepEqual(complete("overlap "), ["overlap S01 "]);
+          assert.deepEqual(complete("proceed s"), ["proceed S01"]);
           assert.deepEqual(complete("overlap S01 f"), ["overlap S01 free"]);
           assert.deepEqual(complete("stage s"), ["stage S01"]);
           assert.deepEqual(complete("Stage s0"), ["stage S01"]);
@@ -2333,6 +2358,101 @@ async function acceptance(name: string, root: string): Promise<void> {
         assert.equal((await loadAll(repo)).stages[0]?.status, "active");
         assert.equal(h.ui.overlapCalls.length, 1);
         assert.match(await injection(h), /Bound stage: S01\. /);
+      } else if (name === "planning-gate-direct") {
+        const judged: string[] = [];
+        h.setJudge(async (_ctx, state) => {
+          judged.push(state);
+          return 0.95;
+        });
+        const stagePath = (await loadAll(repo)).stages[0]?.path as string;
+        const before = await readFile(stagePath, "utf8");
+        h.ui.answer = "roadmap";
+        h.ui.gateAnswers = ["switch", undefined];
+        const switched = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+        assert(!switched.ok);
+        assert.match(switched.reason, /chose to plan S01/);
+        assert.match(switched.hints.join("\n"), /\/prometheus/);
+        const cancelled = await call(h, "roadmap_overlap", { stage: "S01", intent: "Build checkout" });
+        assert(!cancelled.ok);
+        assert.match(cancelled.reason, /cancelled at the planning check/);
+        assert.equal(await readFile(stagePath, "utf8"), before);
+        assert.doesNotMatch(await injection(h), /Bound stage/);
+        h.ui.gateAnswers = ["proceed"];
+        const started = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+        assert(started.ok, JSON.stringify(started));
+        assert.equal((await loadAll(repo)).stages[0]?.status, "active");
+        assert.deepEqual(
+          h.ui.gateCalls.map((question) => [question.stage.id, question.mode]),
+          [
+            ["S01", "direct"],
+            ["S01", "direct"],
+            ["S01", "direct"],
+          ],
+        );
+        assert.equal(judged.length, 1);
+        assert.match(judged[0] ?? "", /Customers pay[\s\S]*DC1/);
+      } else if (name === "planning-gate-planning") {
+        h.setJudge(async () => 0.05);
+        const stagePath = (await loadAll(repo)).stages[0]?.path as string;
+        const before = await readFile(stagePath, "utf8");
+        h.session.sessionManager.appendModeChange("plan");
+        h.ui.gateAnswers = ["switch"];
+        const switched = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+        assert(!switched.ok);
+        assert.match(switched.reason, /chose to implement S01 directly/);
+        assert.doesNotMatch(await injection(h), /Bound stage/);
+        h.ui.gateAnswers = ["proceed"];
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const bound = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+          assert(bound.ok, JSON.stringify(bound));
+          assert.deepEqual(bound.changedFiles, []);
+        }
+        assert.equal(await readFile(stagePath, "utf8"), before);
+        assert.match(await injection(h), /Bound stage: S01, still planned/);
+        h.session.sessionManager.appendModeChange("none");
+        const started = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+        assert(started.ok, JSON.stringify(started));
+        assert.equal((await loadAll(repo)).stages[0]?.status, "active");
+        assert.deepEqual(
+          h.ui.gateCalls.map((question) => question.mode),
+          ["planning", "planning"],
+        );
+      } else if (name === "planning-gate-quiet") {
+        const round = (await loadAll(repo)).rounds[0]?.id as string;
+        for (const title of ["Refunds", "Search", "Wishlist"]) assert((await call(h, "roadmap_stage", plannedStage(round, title))).ok);
+        const sizes: Record<string, number | "unavailable"> = {
+          Checkout: 0.95,
+          Refunds: "unavailable",
+          Search: "unavailable",
+          Wishlist: 0.6,
+        };
+        h.setJudge(async (_ctx, state) => sizes[/^Stage S\d+: (\w+)/.exec(state)?.[1] ?? ""] ?? 0.5);
+        h.session.sessionManager.appendModeChange("plan");
+        const model = await loadAll(repo);
+        for (const current of model.stages) {
+          const bound = await call(h, "roadmap_stage", { action: "start", id: current.id });
+          assert(bound.ok, JSON.stringify(bound));
+        }
+        assert.equal(h.ui.gateCalls.length, 0);
+        assert.deepEqual(
+          h.ui.notifications.filter((notice) => /native judge/.test(notice.message)).map((notice) => notice.level),
+          ["warning"],
+        );
+      } else if (name === "planning-gate-headless") {
+        h.setJudge(async () => 0.95);
+        h.setUi(() => new HeadlessUi({ sendMessage: () => {} }));
+        const stagePath = (await loadAll(repo)).stages[0]?.path as string;
+        const before = await readFile(stagePath, "utf8");
+        const refused = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+        assert(!refused.ok);
+        assert.match(refused.reason, /no dialog can ask the user/);
+        assert.match(refused.hints.join("\n"), /\/roadmap proceed S01/);
+        assert.equal(await readFile(stagePath, "utf8"), before);
+        await command(h, "roadmap", "proceed S01");
+        await h.runner.emit({ type: "session_start" });
+        const started = await call(h, "roadmap_stage", { action: "start", id: "S01" });
+        assert(started.ok, JSON.stringify(started));
+        assert.equal((await loadAll(repo)).stages[0]?.status, "active");
       } else if (name.startsWith("bound-")) {
         if (name.includes("join")) assert((await stage(repo, main, { action: "start", id: "S01" })).ok);
         const started = await call(h, "roadmap_stage", { action: "start", id: "S01" });
@@ -2589,7 +2709,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             .getCommand("roadmap")
             ?.getArgumentCompletions?.(prefix)
             ?.map((option) => option.value);
-        assert.deepEqual(complete("p"), ["plan-round", "plan-round "]);
+        assert.deepEqual(complete("pl"), ["plan-round", "plan-round "]);
         assert.deepEqual(complete("plan-round "), ["plan-round R1", `plan-round ${plannedId}`]);
         assert.deepEqual(complete("drop-round "), [`drop-round ${plannedId} `]);
         assert.deepEqual(complete("retarget R"), ["retarget R1 ", `retarget ${plannedId} `]);

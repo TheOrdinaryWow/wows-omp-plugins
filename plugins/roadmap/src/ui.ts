@@ -26,6 +26,16 @@ export interface OverlapQuestion {
   intent: string;
 }
 
+/** How the session is about to work on a stage: inside plan mode, or implementing without a plan. */
+export type WorkMode = "planning" | "direct";
+/** `switch` takes the suggested way of working instead; `proceed` keeps the current one for this stage and session. */
+export type GateAnswer = "proceed" | "switch";
+
+export interface PlanningGateQuestion {
+  stage: { id: string; title: string };
+  mode: WorkMode;
+}
+
 export interface PreviewFile {
   path: string;
   content: string;
@@ -71,6 +81,8 @@ export interface RoadmapUi {
   roundOutcome(round: RoundDoc): Promise<RoundOutcomeChoice | undefined>;
   /** The one-step format-2 upgrade question: true writes it, false keeps format 1, undefined is no answer. */
   upgradePrompt(purpose: UpgradePurpose, signal?: AbortSignal): Promise<boolean | undefined>;
+  /** The stage-size mismatch question at stage start; undefined when cancelled or dismissed. */
+  planningGate(q: PlanningGateQuestion): Promise<GateAnswer | undefined>;
   notify(message: string, level: "info" | "warning" | "error"): void;
 }
 
@@ -85,6 +97,10 @@ export class HeadlessUi implements RoadmapUi {
   constructor(private readonly pi: RoadmapMessenger) {}
 
   async overlap(): Promise<undefined> {
+    return undefined;
+  }
+
+  async planningGate(): Promise<undefined> {
     return undefined;
   }
 
@@ -142,6 +158,27 @@ const OVERLAP_OPTIONS: ReadonlyArray<readonly [string, OverlapAnswer]> = [
   ["Free work: proceed and log it on the stage", "free"],
   ["Unrelated: do not ask again for this stage", "unrelated"],
 ];
+
+const GATE_DIALOGS: Readonly<
+  Record<WorkMode, { title: (stage: string) => string; options: ReadonlyArray<readonly [string, GateAnswer | undefined]> }>
+> = {
+  planning: {
+    title: (stage) => `Stage ${stage} looks small enough to implement directly; planning is not needed for it.`,
+    options: [
+      ["Implement directly: I will leave plan mode, then start the stage", "switch"],
+      ["Keep planning this stage", "proceed"],
+      ["Cancel", undefined],
+    ],
+  },
+  direct: {
+    title: (stage) => `Stage ${stage} looks large; plan it with /prometheus or plan mode before implementing it.`,
+    options: [
+      ["Plan first: I will start planning, then start the stage there", "switch"],
+      ["Implement it directly anyway", "proceed"],
+      ["Cancel", undefined],
+    ],
+  },
+};
 
 const DISPOSITION_OPTIONS: ReadonlyArray<readonly [string, RoundTodoDisposition]> = [
   ["Resolved", "resolved"],
@@ -225,6 +262,11 @@ export function createTuiUi(
     interactive: true,
     overlap: (q) =>
       choose(`This request overlaps stage ${q.stage.id} "${q.stage.title}" [${q.stage.status}]\nRequest: ${q.intent}`, OVERLAP_OPTIONS),
+
+    planningGate: (q) => {
+      const dialog = GATE_DIALOGS[q.mode];
+      return choose(dialog.title(`${q.stage.id} "${q.stage.title}"`), dialog.options);
+    },
 
     async previewConfirm(p) {
       if (await fullscreen())

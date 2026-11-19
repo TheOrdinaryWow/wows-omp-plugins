@@ -35,6 +35,7 @@ import {
   todo,
   upgrade,
 } from "#src/operations.ts";
+import type { PlanningGate } from "#src/planning-gate.ts";
 import { type ArmedKind, actor, planModeActive, type RoadmapSession, type UiFactory } from "#src/ses.ts";
 import type { StageOrder, StageOrderPreference } from "#src/settings.ts";
 import { orderStages, stageReadiness } from "#src/state.ts";
@@ -372,6 +373,8 @@ export interface OverlapRequest {
   plans?: PlanLookup;
   /** Asked only when this session is not bound to the stage and has no stored answer for it. */
   ask(stage: StageDoc): Promise<OverlapAnswer | undefined>;
+  /** The planning check before this answer starts the stage; a refusal stops the start. */
+  gate(stage: StageDoc, model: Model, plans: AtlasStagePlan[] | undefined): Promise<Receipt | undefined>;
 }
 
 /** Applies the user's overlap answer (from the dialog or `/roadmap overlap`) once per stage and session. */
@@ -451,14 +454,12 @@ export async function resolveOverlap(request: OverlapRequest): Promise<ToolRecei
   let receipt: Receipt;
   if (answer === "free" && !stored)
     receipt = await recordFreeWork(repo, owner, { stage: request.stage, intent: request.intent }, { signal, guard, onSuccess });
-  else if (answer === "roadmap")
-    receipt = await stage(
-      repo,
-      owner,
-      { action: "start", id: current.id },
-      { signal, guard, onSuccess, planning, plans: request.plans?.(current.id) },
-    );
-  else
+  else if (answer === "roadmap") {
+    const plans = request.plans?.(current.id);
+    const refused = await request.gate(current, model, plans);
+    if (refused) return refused;
+    receipt = await stage(repo, owner, { action: "start", id: current.id }, { signal, guard, onSuccess, planning, plans });
+  } else
     receipt = await withRepoLock(repo, async () => {
       const guarded = guard(await loadAll(repo));
       if (guarded) return guarded;
@@ -564,6 +565,7 @@ export function registerTools(
   changed: (ctx: ExtensionContext) => void,
   adr: AdrConnection,
   stageOrder: StageOrderPreference,
+  gate: PlanningGate,
 ): void {
   const z = pi.zod;
   const overlapFlights = new Map<string, Promise<ToolReceipt>>();
@@ -752,21 +754,30 @@ export function registerTools(
       const generation = ses.currentGeneration(ctx);
       return run(
         ctx,
-        (repo, owner) =>
-          stage(repo, owner, params, {
+        async (repo, owner) => {
+          const plans =
+            params.id && (params.action === "start" || params.action === "close")
+              ? planLookup(pi.events, ctx, repo.repoRoot)(params.id)
+              : undefined;
+          if (params.action === "start") {
+            const model = await loadAll(repo);
+            const current = model.stages.find((candidate) => candidate.id === params.id);
+            const refused =
+              current && (await gate.check({ ses, ctx, repoRoot: repo.repoRoot, model, stage: current, ui: uiFor(ctx), plans, signal }));
+            if (refused) return refused;
+          }
+          return stage(repo, owner, params, {
             signal,
             planning: params.action === "start" && planModeActive(ctx),
-            plans:
-              params.id && (params.action === "start" || params.action === "close")
-                ? planLookup(pi.events, ctx, repo.repoRoot)(params.id)
-                : undefined,
+            plans,
             onSuccess() {
               if (!params.id || !ses.isCurrent(ctx, generation)) return;
               if (params.action === "start") ses.bind(ctx, repo.repoRoot, params.id);
               if (params.action === "close" || params.action === "drop" || params.action === "move")
                 ses.clearStage(ctx, repo.repoRoot, params.id);
             },
-          }),
+          });
+        },
         false,
         params.id,
       );
@@ -826,6 +837,8 @@ export function registerTools(
           signal,
           plans: planLookup(pi.events, ctx, repo.repoRoot),
           ask: (current) => uiFor(ctx).overlap({ stage: current, intent: params.intent }),
+          gate: (current, model, plans) =>
+            gate.check({ ses, ctx, repoRoot: repo.repoRoot, model, stage: current, ui: uiFor(ctx), plans, signal }),
         }).finally(() => overlapFlights.delete(key));
         overlapFlights.set(key, flight);
         return flight;

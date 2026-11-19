@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { Model, Repo } from "#src/documents.ts";
 import type { Actor, PreparedOperation } from "#src/operations.ts";
-import type { OverlapAnswer, RoadmapUi } from "#src/ui.ts";
+import type { OverlapAnswer, RoadmapUi, WorkMode } from "#src/ui.ts";
 
 export type UiFactory = (ctx: ExtensionContext) => RoadmapUi;
 export const ENTRY_PREFIX = "wows-omp-roadmap.";
@@ -37,6 +37,7 @@ interface RepoState {
   binding?: Binding;
   armed?: ArmedKind;
   overlaps: Map<string, OverlapAnswer>;
+  gates: Map<string, Set<WorkMode>>;
   pending: Map<string, PendingClose>;
 }
 
@@ -84,7 +85,7 @@ export class RoadmapSession {
   private state(repoRoot: string): RepoState {
     let state = this.repos.get(repoRoot);
     if (!state) {
-      state = { overlaps: new Map(), pending: new Map() };
+      state = { overlaps: new Map(), gates: new Map(), pending: new Map() };
       this.repos.set(repoRoot, state);
     }
     return state;
@@ -130,6 +131,11 @@ export class RoadmapSession {
     if (type === "unbound" && state.binding?.stage === data.stage) delete state.binding;
     if (type === "overlap" && (data.answer === "roadmap" || data.answer === "free" || data.answer === "unrelated")) {
       state.overlaps.set(data.stage, data.answer);
+    }
+    if (type === "gate" && (data.mode === "planning" || data.mode === "direct")) {
+      const modes = state.gates.get(data.stage) ?? new Set<WorkMode>();
+      modes.add(data.mode);
+      state.gates.set(data.stage, modes);
     }
     if (type === "pending-close" && typeof data.planId === "string" && data.planId && Array.isArray(data.gates)) {
       const gates: PendingClose["gates"] = [];
@@ -226,6 +232,15 @@ export class RoadmapSession {
 
   answerOverlap(ctx: ExtensionContext, repoRoot: string, stage: string, answer: OverlapAnswer): void {
     this.append(ctx, "overlap", { repoRoot, stage, answer });
+  }
+
+  gateAnswered(ctx: ExtensionContext, repoRoot: string, stage: string, mode: WorkMode): boolean {
+    this.ensure(ctx);
+    return this.state(repoRoot).gates.get(stage)?.has(mode) ?? false;
+  }
+
+  answerGate(ctx: ExtensionContext, repoRoot: string, stage: string, mode: WorkMode): void {
+    this.append(ctx, "gate", { repoRoot, stage, mode });
   }
 
   recordPendingClose(ctx: ExtensionContext, pending: Omit<PendingClose, "v" | "at">): void {

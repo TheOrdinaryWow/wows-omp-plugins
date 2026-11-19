@@ -73,3 +73,35 @@ export class StageOrderPreference {
     this.#override = order;
   }
 }
+
+/** `planningGate` turns the stage-size check at stage start on or off; `planningGateConfidence` is the judge confidence it needs. */
+export interface PlanningGateSettings {
+  enabled: boolean;
+  minimumConfidence: number;
+}
+
+export const DEFAULT_PLANNING_GATE: PlanningGateSettings = { enabled: true, minimumConfidence: 0.6 };
+
+export function parsePlanningGate(raw: Record<string, unknown>, warn: (message: string) => void): PlanningGateSettings {
+  let { enabled, minimumConfidence } = DEFAULT_PLANNING_GATE;
+  if (raw.planningGate !== undefined) {
+    if (typeof raw.planningGate === "boolean") enabled = raw.planningGate;
+    else warn(`planningGate is invalid; using true (${JSON.stringify(raw.planningGate)})`);
+  }
+  const confidence = raw.planningGateConfidence;
+  if (confidence !== undefined) {
+    if (typeof confidence === "number" && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1) minimumConfidence = confidence;
+    else warn(`planningGateConfidence is invalid; using 0.6 (${JSON.stringify(confidence)})`);
+  }
+  return { enabled, minimumConfidence };
+}
+
+export async function readPlanningGate(cwd: string, logger: Pick<ExtensionAPI["logger"], "warn">): Promise<PlanningGateSettings> {
+  const warn = (message: string): void => logger.warn(`roadmap ${message}`);
+  try {
+    return parsePlanningGate(await getPluginSettings(PACKAGE_NAME, cwd), warn);
+  } catch (error) {
+    warn(`planning gate settings are unreadable; using the defaults (${error instanceof Error ? error.message : String(error)})`);
+    return DEFAULT_PLANNING_GATE;
+  }
+}

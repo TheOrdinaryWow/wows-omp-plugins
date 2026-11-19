@@ -24,9 +24,10 @@ import {
   prepareUpgrade,
   type RoundCloseInput,
 } from "#src/operations.ts";
-import { type ArmedKind, actor, type RoadmapSession, type UiFactory } from "#src/ses.ts";
+import type { PlanningGate } from "#src/planning-gate.ts";
+import { type ArmedKind, actor, planModeActive, type RoadmapSession, type UiFactory } from "#src/ses.ts";
 import type { StageOrderPreference } from "#src/settings.ts";
-import { orderStages } from "#src/state.ts";
+import { orderStages, stageReadiness } from "#src/state.ts";
 import {
   applyPreview,
   awaitConfirmation,
@@ -49,7 +50,7 @@ export interface RoadmapCommands {
 const CLOSE_ROUND_USAGE =
   'Usage: /roadmap close-round [outcome=<achieved|partial|not_achieved|cancelled>:<summary>] [<todo>=resolved:<reference> | <todo>=wontfix[:<reason>] | <todo>=carried ...]; quote text with spaces, e.g. outcome=partial:"checkout shipped, refunds moved" T03=wontfix:"out of scope". Format-2 repositories need the outcome.';
 const USAGE =
-  "Usage: /roadmap [check [--fix] | upgrade | plan-round [<id>] | new-round | drop-round <id> <reason> | retarget <round-or-stage> <YYYY-MM-DD|none> | close-round [outcome=<assessment>:<summary>] [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | confirm <token>]";
+  "Usage: /roadmap [check [--fix] | upgrade | plan-round [<id>] | new-round | drop-round <id> <reason> | retarget <round-or-stage> <YYYY-MM-DD|none> | close-round [outcome=<assessment>:<summary>] [<todo>=<disposition>[:<reference>] ...] | stage <id> | overlap <stage> roadmap|free|unrelated [intent] | proceed <stage> | confirm <token>]";
 const OVERLAP_ANSWERS: readonly Completion[] = [
   { value: "roadmap", description: "Track this work under the stage" },
   { value: "free", description: "Log it as free work outside the roadmap" },
@@ -67,6 +68,11 @@ const ACTIONS: readonly Completion[] = [
   { value: "close-round", description: "Close the active round with its goal outcome and dispose its open TODOs" },
   { value: "stage ", label: "stage <id>", description: "Show a stage's document and planning handoff" },
   { value: "overlap ", label: "overlap <stage> roadmap|free|unrelated", description: "Answer the overlap question for a stage" },
+  {
+    value: "proceed ",
+    label: "proceed <stage>",
+    description: "Start a stage the planning check stopped, keeping the current way of working",
+  },
   { value: "confirm ", label: "confirm <token>", description: "Apply a pending preview by its token" },
 ];
 
@@ -160,6 +166,7 @@ export function registerCommands(
   changed: (ctx: ExtensionContext) => void,
   adr: AdrConnection,
   stageOrder: StageOrderPreference,
+  gate: PlanningGate,
 ): RoadmapCommands {
   let stages: Completion[] = [];
   let plannedRounds: Completion[] = [];
@@ -348,8 +355,20 @@ export function registerCommands(
         intent: intent.join(" "),
         plans: planLookup(pi.events, ctx, repo.repoRoot),
         ask: async () => answer,
+        gate: (current, latest, plans) => gate.check({ ses, ctx, repoRoot: repo.repoRoot, model: latest, stage: current, ui, plans }),
       });
       show("wows-omp-roadmap.overlap", receipt);
+    } else if (action === "proceed") {
+      if (!selectedStage || words.length !== 2) throw new Error("Usage: /roadmap proceed <stage>");
+      const current = model.stages.find((candidate) => candidate.id === selectedStage);
+      if (!current || !stageReadiness(model, current).startable)
+        throw new Error(`${selectedStage} is not a startable planned stage of the active round.`);
+      const mode = planModeActive(ctx) ? "planning" : "direct";
+      ses.answerGate(ctx, repo.repoRoot, current.id, mode);
+      notice(
+        `${current.id} may now start ${mode === "planning" ? "in plan mode" : "without a plan"} in this session; ask the agent to start it again.`,
+        "info",
+      );
     } else if (action === "new-round") {
       if (words.length > 1) throw new Error("Usage: /roadmap new-round");
       // Re-read after the status menu; its snapshot is only for presentation.
@@ -565,6 +584,7 @@ export function registerCommands(
       if (verb === "overlap") options = prefixed(`overlap ${id} `, OVERLAP_ANSWERS);
       else if (typed.startsWith("overlap ")) options = prefixed("overlap ", stages, " ");
       else if (typed.startsWith("stage ")) options = prefixed("stage ", stages);
+      else if (typed.startsWith("proceed ")) options = prefixed("proceed ", stages);
       else if (typed.startsWith("plan-round ")) options = prefixed("plan-round ", revisableRounds);
       else if (typed.startsWith("drop-round ")) options = prefixed("drop-round ", plannedRounds, " ");
       else if (verb === "retarget") options = [{ value: `retarget ${id} none`, description: "Clear the target date" }];

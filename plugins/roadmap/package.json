@@ -30,6 +30,16 @@
         ],
         "default": "dependency",
         "description": "List stages in dependency order (dependencies first, ties by id) or by stage id in consoles, menus, completions and agent status"
+      },
+      "planningGate": {
+        "type": "boolean",
+        "default": true,
+        "description": "At stage start, ask before planning a stage small enough to implement directly, or implementing a large stage without a plan"
+      },
+      "planningGateConfidence": {
+        "type": "number",
+        "default": 0.6,
+        "description": "How confident (0-1) the native judge must be about a stage's size before the planning check asks"
       }
     }
   }

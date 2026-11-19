@@ -12,6 +12,7 @@ import { committedFile, discoverRepo, gitSync } from "#src/git.ts";
 import { renderCloseReminder, renderInjection } from "#src/handoff.ts";
 import { interceptionReason } from "#src/interception.ts";
 import { applyPrepared, atomicWrite, prepareUpgrade } from "#src/operations.ts";
+import { nativeStageSizeJudge, PlanningGate, type StageSizeJudge } from "#src/planning-gate.ts";
 import { PluginStatePublisher } from "#src/plugin-state.ts";
 import { registerPrometheusContract } from "#src/prometheus.ts";
 import { RoadmapSession, type UiFactory } from "#src/ses.ts";
@@ -23,10 +24,16 @@ import { createTuiUi } from "#src/ui.ts";
 export { discoverRepo } from "#src/git.ts";
 
 let testUiFactory: UiFactory | undefined;
+let testStageSizeJudge: StageSizeJudge | undefined;
 
 /** Test-only injection; reset to undefined to restore the host UI. */
 export function __setUiFactory(factory?: UiFactory): void {
   testUiFactory = factory;
+}
+
+/** Test-only injection; reset to undefined to restore OMP's native judge. */
+export function __setStageSizeJudge(judge?: StageSizeJudge): void {
+  testStageSizeJudge = judge;
 }
 
 export default function roadmap(pi: ExtensionAPI): void {
@@ -59,8 +66,9 @@ export default function roadmap(pi: ExtensionAPI): void {
   };
   // Roadmap reads and writes ADRs only through the adr plugin's service, and registers its stage resolver there.
   const adr = new AdrConnection(pi.events);
-  registerTools(pi, ses, uiFor, changed, adr, stageOrder);
-  const commands = registerCommands(pi, ses, uiFor, changed, adr, stageOrder);
+  const gate = new PlanningGate(pi.logger, () => testStageSizeJudge ?? nativeStageSizeJudge);
+  registerTools(pi, ses, uiFor, changed, adr, stageOrder, gate);
+  const commands = registerCommands(pi, ses, uiFor, changed, adr, stageOrder, gate);
   registerPrometheusContract(pi, ses);
   registerMessageTitles(pi);
 
@@ -242,4 +250,5 @@ export default function roadmap(pi: ExtensionAPI): void {
 
 // The host cache-busts the entry and its graph; tests use the actual prepared factory.
 roadmap.__setUiFactory = __setUiFactory;
+roadmap.__setStageSizeJudge = __setStageSizeJudge;
 roadmap.discoverRepo = discoverRepo;

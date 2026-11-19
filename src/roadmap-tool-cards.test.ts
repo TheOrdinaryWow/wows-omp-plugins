@@ -11,6 +11,7 @@ import { MESSAGE_TITLES, registerMessageTitles } from "../plugins/roadmap/src/ca
 import { registerCommands } from "../plugins/roadmap/src/commands.ts";
 import { renderRound, renderStage } from "../plugins/roadmap/src/documents.ts";
 import { type Actor, todo } from "../plugins/roadmap/src/operations.ts";
+import type { PlanningGate } from "../plugins/roadmap/src/planning-gate.ts";
 import type { RoadmapSession, UiFactory } from "../plugins/roadmap/src/ses.ts";
 import { StageOrderPreference } from "../plugins/roadmap/src/settings.ts";
 import { checkReceipt, registerTools, statusReceipt, type ToolReceipt, toolResult } from "../plugins/roadmap/src/tools.ts";
@@ -46,6 +47,7 @@ function tools(): Map<string, Tool> {
     () => {},
     {} as AdrConnection,
     new StageOrderPreference({ warn() {} }),
+    {} as PlanningGate,
   );
   return registered;
 }
@@ -349,6 +351,7 @@ describe("roadmap message titles", () => {
         () => {},
         { require: () => repo.adr } as unknown as AdrConnection,
         new StageOrderPreference({ warn() {} }),
+        {} as PlanningGate,
       );
       await commands.get("roadmap")?.handler(`stage ${stage.id}`, ctx);
       expect(messages).toHaveLength(2);
