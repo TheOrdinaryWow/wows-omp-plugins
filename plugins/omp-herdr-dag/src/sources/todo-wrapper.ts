@@ -16,14 +16,10 @@ export interface TodoWrapperOptions {
 export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOptions): void {
   if (options.enabled === false) return;
   const { Type } = pi.typebox;
-  const parameters = Type.Object({
-    op: Type.Union(["init", "start", "done", "rm", "drop", "append", "view"].map((op) => Type.Literal(op))),
-    list: Type.Optional(Type.Array(Type.Object({ phase: Type.String(), items: Type.Array(Type.String(), { minItems: 1 }) }))),
-    task: Type.Optional(Type.String()),
-    phase: Type.Optional(Type.String()),
-    items: Type.Optional(Type.Array(Type.String())),
-    edges: Type.Optional(Type.Array(Type.Object({ task: Type.String(), after: Type.Array(Type.String()) }))),
-  });
+  const native = new TodoTool({} as ToolSession);
+  const parameters = native.parameters.and(
+    Type.Object({ edges: Type.Optional(Type.Array(Type.Object({ task: Type.String(), after: Type.Array(Type.String()) }))) }),
+  );
   const renderer = toolRenderers.todo;
   if (!renderer?.renderCall || !renderer.renderResult || !renderer.describeCall || !renderer.describeResult)
     throw new Error("The native todo renderer is unavailable.");
@@ -38,7 +34,7 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
   const definition = {
     name: "todo",
     label: "Todo",
-    description: `${new TodoTool({} as ToolSession).description}\nOptional edges declare explicit dependencies by verbatim task content; invalid dependencies are dropped with a warning.`,
+    description: `${native.description}\nOptional edges declare explicit dependencies by verbatim task content; invalid dependencies are dropped with a warning.`,
     parameters,
     approval: "read" as const,
     strict: true,
