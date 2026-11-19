@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.10.1...roadmap@0.10.2) (2026-11-19)
+
+
+### Bug Fixes
+
+* raise supported OMP floor to 19.0.0 ([46e3b7d](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/46e3b7d05d32ba715cf5c15e400a053da983b84b))
+* stop adr and roadmap from answering handshakes while suspended ([d07cb04](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/d07cb045f9352509247b82f6ddf1164336f74304))
+
 ## [0.10.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.10.0...roadmap@0.10.1) (2026-11-12)
 
 
