@@ -157,7 +157,7 @@
       "name": "roadmap",
       "source": "./roadmap",
       "description": "Tool-managed project rounds, stages and TODOs, with stage-linked ADRs through the adr plugin",
-      "version": "0.10.2",
+      "version": "0.11.0",
       "author": {
         "name": "TheOrdinaryWow"
       },
@@ -191,7 +191,7 @@
       "name": "switch-until",
       "source": "./switch-until",
       "description": "Switch the session model until a goal is met, then switch back",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "TheOrdinaryWow"
       },

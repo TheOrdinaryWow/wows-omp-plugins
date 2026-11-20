@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.10.2...roadmap@0.11.0) (2026-11-20)
+
+
+### Features
+
+* **roadmap:** check stage size against plan mode when a stage starts ([b286d2f](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/b286d2fbfca1cd39cf0611fcc884430798c14da3))
+
 ## [0.10.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.10.1...roadmap@0.10.2) (2026-11-19)
 
 
