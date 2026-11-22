@@ -166,7 +166,7 @@ Interest alone is not a trigger. Anything without one stays a queued lead in `ex
 
 **Budget the dive before you take it.** State the worker count and the probe count for this level in the ENTER row. An excursion may spawn at most ONE nested sub-excursion; a third level means the thing has become its own research question — surface immediately and either promote it to a real axis with its own worker or record it as an out-of-scope gap in `SYNTHESIS.md`. Only when an explicitly active loop owns the research, promote a new axis through the native `ulw_loop` steering operation `add_subgoal`, supplying its title/objective and concrete criterion seed. Otherwise record the promotion in the journal only.
 
-When `bash` is active, run the steering operation as a command. If the session lists `ulw_loop` as a top-level tool, pass the same JSON object as its structured arguments. Use `complete_goals` to acquire or resume work, with completion determined by evidence.
+If the session lists `ulw_loop` as a tool, pass the JSON object below as its structured arguments; if it lists `ulw_loop` as a bash command instead, run the command as shown. Use `complete_goals` to acquire or resume work, with completion determined by evidence.
 
 ```bash
 ulw_loop -j '{"op":"steer","kind":"add_subgoal","source":"finding","title":"<axis>","objective":"<answer needed>","shape":"research","tier":"LIGHT","criteria":[{"scenario":"<observable question>","expectedEvidence":"<source/proof artifact>"}],"evidence":"<finding>","rationale":"<why the axis changes>"}'
@@ -181,7 +181,7 @@ ulw_loop -j '{"op":"steer","kind":"add_subgoal","source":"finding","title":"<axi
 
 **Fold back on the way out.** Every EXIT writes one line saying what the excursion changed in the top-level answer, and `none — <reason>` is a legitimate, required outcome; an excursion whose result is silently dropped is a lost run. Update the parent claim node or axis digest with the result, then, only for an explicitly active loop, mirror it through native `ulw_loop` steering `annotate_ledger` and record criterion evidence with `record_evidence` when appropriate. Use the tool's declared schema and the real artifact paths. After compaction read native `ulw_loop` status and `excursion-log.md`; without an active loop this journal is the only authority.
 
-Run the following commands through `bash`, or pass each JSON object as structured arguments when the session lists `ulw_loop` as a tool. Choose the observed status from `pass`, `fail`, or `blocked`.
+Pass each JSON object as structured arguments when the session lists `ulw_loop` as a tool, or run the commands through `bash` when it lists `ulw_loop` as a command. Choose the observed status from `pass`, `fail`, or `blocked`.
 
 ```bash
 ulw_loop -j '{"op":"steer","kind":"annotate_ledger","source":"finding","evidence":"<observation>","rationale":"<effect or none>"}'
