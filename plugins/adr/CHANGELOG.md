@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.5.1...adr@0.5.2) (2026-11-22)
+
+
+### Bug Fixes
+
+* **adr:** guard magic-mode edits and only treat command words as bash mutations ([897e0ff](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/897e0ff45f4ef87ce2aa0d08b65f551dc919c5e0))
+* **adr:** restore conservative bash mutation detection and exempt only tool commands ([20d4f5e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/20d4f5eb02ff1a3b71126130bdc0a4b02575913e))
+* **adr:** scan tool-command lines that contain command substitutions ([88260ba](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/88260bad8ba7ba71f11891422de76ff6207da928))
+* raise supported OMP floor to 19.1.0 ([e4d84e1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e4d84e1afc0061507d429c582e94084daeabbb47))
+
 ## [0.5.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/adr@0.5.0...adr@0.5.1) (2026-11-19)
 
 

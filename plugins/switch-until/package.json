@@ -1,6 +1,6 @@
 {
   "name": "wows-omp-plugin-switch-until",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "private": true,
   "description": "Switch the session model until a goal is met, then switch back",
