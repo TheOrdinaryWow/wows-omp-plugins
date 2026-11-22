@@ -100,7 +100,7 @@ async function sdk(root: string, name: string): Promise<void> {
     agentDir: join(root, "agent"),
     sessionManager,
     settings: Settings.isolated({ "tools.approvalMode": "yolo", "tools.commands": true, "autolearn.enabled": false }),
-    toolNames: ["read", "write", "task", "bash"],
+    toolNames: name === "proposal-no-bash" ? ["read", "write", "task"] : ["read", "write", "task", "bash"],
     // Roadmap needs the adr plugin; both load orders must connect it.
     additionalExtensionPaths: reverse
       ? [ADR_ENTRY, roadmapEntry, PROMETHEUS_ENTRY]
@@ -159,30 +159,28 @@ async function sdk(root: string, name: string): Promise<void> {
       const prometheus = runner.getCommand("prometheus");
       assert(prometheus);
       await prometheus.handler("", runner.createCommandContext());
-      const bash = session.getToolByName("bash");
-      assert(bash);
-      const failed = await bash.execute("sdk-proposal-failed", { command: "propose absent" });
-      assert.match(JSON.stringify(failed.content), /Plan file not found/);
-      assert.equal(await marker.exists(), false);
-      assert.notEqual(cfgCycleOrder.get(session.settings)[0], "atlas");
+      assert(!session.getActiveToolNames().includes("bash"));
+      assert(session.getActiveToolNames().includes("propose"));
+      const direct = session.getToolByName("propose");
+      assert(direct);
+      const provenance = extensionsResult.runtime.getAllTools().find((tool) => tool.name === "propose")?.sourceInfo;
+      assert.equal(provenance?.source, name === "proposal-no-bash" ? "builtin" : "extension");
+      if (provenance?.source === "extension") assert.equal(provenance.path, shadow ? shadowEntry : "<extension:propose>");
+      if (!shadow) {
+        await assert.rejects(() => direct.execute("sdk-proposal-failed", { title: "absent" }));
+        assert.equal(await marker.exists(), false);
+        assert.notEqual(cfgCycleOrder.get(session.settings)[0], "atlas");
+      }
       await mkdir(dirname(planPath), { recursive: true });
       await writeFile(planPath, planContent);
-      if (name === "proposal-bash") {
-        const result = await bash.execute("sdk-proposal-bash", { command: `propose --title "Integration!"` });
-        assert.deepEqual(proposeDispatchDetails("bash", result), { planFilePath: planUrl, planExists: true, title: "Integration" });
-      } else {
-        await session.setActiveToolsByName(session.getEnabledToolNames().filter((tool) => tool !== "bash"));
-        assert(session.getActiveToolNames().includes("propose"));
-        const direct = session.getToolByName("propose");
-        assert(direct);
-        const provenance = extensionsResult.runtime.getAllTools().find((tool) => tool.name === "propose")?.sourceInfo;
-        assert.equal(provenance?.source, "extension");
-        assert.equal(provenance.path, shadow ? shadowEntry : "<extension:propose>");
-        const result = await direct.execute("sdk-proposal-direct", { title: "Integration!" });
-        assert.equal(proposeDispatchDetails("propose", result) !== undefined, true, JSON.stringify(result));
-      }
+      const result = await direct.execute("sdk-proposal-direct", { title: "Integration!" });
+      assert.equal(proposeDispatchDetails("propose", result) !== undefined, true, JSON.stringify(result));
       assert.equal(await marker.exists(), !shadow);
       assert.equal(cfgCycleOrder.get(session.settings)[0] === "atlas", !shadow);
+      session.setPlanModeState(undefined);
+      await runner.emitBeforeAgentStart("Leave planning", undefined, []);
+      assert.equal(session.getActiveToolNames().includes("bash"), name !== "proposal-no-bash");
+      assert(!session.getActiveToolNames().includes("propose"));
       console.log(`ROADMAP_PROMETHEUS_OK ${name}`);
       return;
     }
@@ -357,7 +355,7 @@ if (process.env[CHILD]) {
 } else {
   // The plain Bun child exercises module loading; bun:test belongs only to its parent runner.
   const { expect, test } = await import("bun:test");
-  for (const name of ["sdk", "reverse", "subagent", "proposal-bash", "proposal-direct", "proposal-shadow"]) {
+  for (const name of ["sdk", "reverse", "subagent", "proposal-direct", "proposal-no-bash", "proposal-shadow"]) {
     test(`real SDK roadmap/Prometheus contract: ${name}`, async () => {
       const home = await realpath(await mkdtemp(join(tmpdir(), "roadmap-prometheus-")));
       try {

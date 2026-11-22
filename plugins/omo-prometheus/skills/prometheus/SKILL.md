@@ -307,7 +307,7 @@ When the plan is complete and its required reviews approved, present a short sum
 - for a roadmap stage, the done criteria this plan covers and those it leaves for other plans;
 - for UNCLEAR work, the routing call first, then the adopted defaults; otherwise the decisions worth a glance. Either way, the user can still veto them.
 
-Submit the finished plan with `propose <slug>` in native plan mode. Use the plan's slug without the `-plan.md` suffix. Follow the host's instructions to run `propose <slug>` as its own Bash command or call the `propose` tool with `title` set to the slug.
+Prometheus planning runs without `bash`. Submit the finished plan in native plan mode by calling the `propose` tool with `title` set to the plan's slug without the `-plan.md` suffix. Do not use an OpenCode approval path, create `.omo` state, or ask for a chat-only approval instead.
 
 If approval is declined or revisions are requested, stay in planning, update the plan, repeat the affected review, and propose again. If the user cancels, stop and let the workflow be released.
 

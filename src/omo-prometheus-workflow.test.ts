@@ -36,14 +36,10 @@ describe("Prometheus command parsing", () => {
 describe("native approval binding", () => {
   test("uses only a successful propose result with a real plan artifact", () => {
     const receipt = { planFilePath: "local:/checkout-plan.md", planExists: true };
-    const dispatch = { tool: "propose", mode: "execute", exitCode: 0, inner: receipt };
     expect(proposedPlanPathFromToolResult("propose", false, receipt)).toBe("local://checkout-plan.md");
     expect(proposedPlanPathFromToolResult("propose", true, receipt)).toBeUndefined();
     expect(proposedPlanPathFromToolResult("propose", false, { ...receipt, planExists: false })).toBeUndefined();
-    expect(proposedPlanPathFromToolResult("bash", false, { toolCommands: [dispatch] })).toBe("local://checkout-plan.md");
-    expect(proposedPlanPathFromToolResult("bash", false, { toolCommands: [{ ...dispatch, exitCode: 1 }] })).toBeUndefined();
-    expect(proposedPlanPathFromToolResult("bash", false, { toolCommands: [{ ...dispatch, mode: "help" }] })).toBeUndefined();
-    expect(proposedPlanPathFromToolResult("write", false, { toolCommands: [dispatch] })).toBeUndefined();
+    expect(proposedPlanPathFromToolResult("write", false, receipt)).toBeUndefined();
   });
 
   test("rejects approval-looking user text unless the host reference and full envelope agree", () => {

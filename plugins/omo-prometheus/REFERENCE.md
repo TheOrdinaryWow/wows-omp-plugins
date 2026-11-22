@@ -6,6 +6,8 @@ English | [简体中文](REFERENCE.zh.md)
 
 In an ordinary `/plan` session the planner calls `prometheus_activate` for a request it judges complex. The tool takes no arguments and shows a two-option dialog itself (standard planning, Prometheus); only the user picking Prometheus there switches the session. Keeping standard planning, or dismissing the dialog, ends the offer for that plan-mode episode. Without a dialog the tool refuses.
 
+Prometheus planning and Atlas execution both run without `bash`. To submit `local://<slug>-plan.md` for native approval, call the `propose` tool with `title` set to the slug. The plugin restores the original `bash` selection when you leave the workflow.
+
 Both approval choices of a Prometheus plan hand off to Atlas. "Approve and execute" starts a fresh session, so the plugin writes a marker to `local://prometheus/<slug>.proposal.json` at proposal time and OMP copies it into the new session with the plan. Plans approved in ordinary Plan Mode have no marker and are left alone.
 
 Prometheus calls `architect` for an open boundary or decomposition question, and `ultrabrain` for a hard, independent algorithm or contract question. It calls an advisor only when that exact name is in the live agent list; trivial and ordinary Standard plans call neither, and an unavailable advisor is skipped. Advisors are read-only and do not replace Metis, Oracle or the user's decisions. Ideal-state rows name the stakeholder and the source of each requirement (the request, a confirmed decision or an evidenced existing contract); every task carries a `Mechanisms:` line and the plan a `## Must not build` section, and reviewers can reject a plan for building too much.
@@ -58,7 +60,7 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 
 One refusal lists every offending row at once.
 
-**Asking the user.** The planner uses the host's `ask` tool to send one question with one checkbox per row, all unchecked. Submitting with nothing checked keeps the judge's tier or the LIGHT default for every row. The terminal UI shows the whole form. In RPC, the host sends one HTML form request containing all questions. When `ask` is unavailable, the planner keeps the tiers and lists those rows in the proposal summary. `ask` has no timeout in plan mode.
+**Asking the user.** The planner uses the host's `ask` tool to send one question with one checkbox per row, all unchecked. Submitting with nothing checked keeps the judge's tier or the LIGHT default for every row. The terminal UI shows the whole form. In RPC, the host sends one HTML form request containing all questions. A host with only simple dialogs asks one field at a time. When `ask` is unavailable, the planner keeps the tiers and lists those rows in the proposal summary. `ask` has no timeout in plan mode.
 
 **Fallback.** When `tierJudge` is off or no native judge is configured, every task needs a `Tier basis:` line and nothing else is enforced. When a judge call fails or times out, tiers the judge settled earlier in the session stay binding and every other task needs a `Tier basis:` line for that check. A missing native judge is reported once per session. A failed check is reported each time with its error.
 
@@ -68,7 +70,7 @@ One refusal lists every offending row at once.
 
 ## Atlas tool guard
 
-Atlas removes `bash` from the active tools during execution, so tool commands such as `roadmap_status` and `lsp` are presented as direct tools. Atlas remembers whether `bash` was active before execution and restores that state on exit, release, a switch out of execution, or shutdown. The guard applies the following rules to calls in the Atlas parent.
+The plugin removes `bash` throughout Prometheus planning and Atlas execution, so tools such as `propose`, `roadmap_status` and `lsp` are presented directly where they are available. It saves the original `bash` selection when the workflow first takes over and keeps it through approval. It restores that selection on live exit when you leave planning without approval, turn Prometheus off, exit or release Atlas, or switch out of the workflow session. If an ACP client leaves Plan Mode without approval, restoration runs at the start of the next turn. After a restart, the plugin uses the saved selection when the resumed workflow exits. The guard applies the following rules to calls in the Atlas parent.
 
 | Tool | Allowed in the Atlas parent |
 | --- | --- |

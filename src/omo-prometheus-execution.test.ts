@@ -266,7 +266,19 @@ async function scenario(name: string, root: string): Promise<void> {
     },
   } as unknown as ExtensionContext;
   let activeTools = ["task", "read", "write", "atlas_ledger", "atlas_release"];
-  if (["atlas-bash-exit", "atlas-bash-resume", "atlas-bash-release"].includes(name)) activeTools.push("bash");
+  if (
+    [
+      "planning-bash-off",
+      "planning-bash-abort",
+      "planning-bash-switch",
+      "atlas-bash-tui",
+      "atlas-bash-exit",
+      "atlas-bash-resume",
+      "atlas-bash-release",
+      "fresh-handoff",
+    ].includes(name)
+  )
+    activeTools.push("bash");
   const install = (registerExtension: typeof register = register) => {
     hooks = new Map();
     tools = new Map();
@@ -441,6 +453,36 @@ async function scenario(name: string, root: string): Promise<void> {
             : plan,
   );
   await commands.get("prometheus")?.("", ctx);
+  if (name.startsWith("planning-bash-")) {
+    assert(!activeTools.includes("bash"));
+    if (name === "planning-bash-off") {
+      activeTools.push("bash");
+      await hook("tool_call", { toolName: "read", toolCallId: "plan-read", input: { path: sourcePlanFile } });
+      assert(!activeTools.includes("bash"));
+      activeTools.push("bash");
+      const blocked = (await hook("tool_call", { toolName: "bash", toolCallId: "plan-shell", input: { command: "true" } })) as
+        | { block?: boolean }
+        | undefined;
+      assert.equal(blocked?.block, true);
+      assert(!activeTools.includes("bash"));
+      assert.deepEqual(await hook("input", { text: "/prometheus", source: "interactive" }), { text: "/plan" });
+      assert(!activeTools.includes("bash"));
+      mode = false;
+      await hook("mode_changed", { previous: { plan: { status: "active" } }, state: { plan: { status: "paused" } } });
+    } else if (name === "planning-bash-abort") {
+      await hook("session_shutdown");
+      assert(!activeTools.includes("bash"));
+      install();
+      await hook("session_start");
+      mode = false;
+      await hook("mode_changed", { previous: { plan: { status: "active" } }, state: { plan: { status: "inactive" } } });
+    } else {
+      mode = false;
+      await switchTo("ordinary-session", [], "new");
+    }
+    assert(activeTools.includes("bash"));
+    return;
+  }
   // Magic Context fences the provider request against the rows it prepared, so the context hook keeps their count and order.
   const assertContextRowShape = async (heading: RegExp, fullPolicy: RegExp) => {
     const continuation = { role: "developer", attribution: "agent", synthetic: true, content: "<system-notice>\nContinue.", timestamp: 5 };
@@ -522,52 +564,37 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(selections.length, before);
     return;
   }
-  if (name === "propose-grammar") {
-    const propose = async (toolName: string, input: Record<string, unknown>) =>
-      (await hook("tool_call", { toolName, toolCallId: `propose-${sequence++}`, input })) as
+  if (name === "propose-grammar" || name === "propose-non-local") {
+    const propose = async (title: string) =>
+      (await hook("tool_call", { toolName: "propose", toolCallId: `propose-${sequence++}`, input: { title } })) as
         | { block?: boolean; reason?: string }
         | undefined;
+    if (name === "propose-non-local") {
+      nativePlanPath = "checkout-plan.md";
+      await writeFile(join(root, nativePlanPath), plan);
+      const refusal = await propose("checkout");
+      assert.equal(refusal?.block, true);
+      assert(refusal.reason?.includes(nativePlanPath));
+      assert(refusal.reason?.includes("local://<slug>-plan.md"));
+      assert.equal(await propose("integrity"), undefined);
+      return;
+    }
     const invalid = join(artifacts, "local", "slices-plan.md");
+    const current = join(artifacts, "local", "current.md");
     nativePlanPath = "local://current.md";
-    await writeFile(join(artifacts, "local", "current.md"), plan);
+    await writeFile(current, plan);
     await writeFile(invalid, "# Plan\n\n## Approach\n\n### Slice A\n");
-    for (const [toolName, input] of [
-      ["propose", { title: "slices!" }],
-      ["bash", { command: "propose slices" }],
-      ["bash", { command: `propose --title="slices!"` }],
-      ["bash", { command: `propose --title 'slices!'` }],
-    ] as const) {
-      const refusal = await propose(toolName, input);
-      assert.equal(refusal?.block, true, JSON.stringify(input));
-      assert.match(refusal?.reason ?? "", /slices-plan\.md.*Missing ## Tasks or T rows/);
-    }
-    for (const command of [
-      "cd . && propose slices",
-      "true; propose slices",
-      "propose slices | cat",
-      "(propose slices)",
-      'printf "%s" "$(propose slices)"',
-      "printf '%s' `propose slices`",
-      "FLAG=yes propose slices",
-      "true; propose>out slices",
-      "eval 'propose slices'",
-      "pro'pose' slices",
-    ]) {
-      const refusal = await propose("bash", { command });
-      assert.equal(refusal?.block, true, command);
-      assert.match(refusal?.reason ?? "", /propose <slug>.*own command/);
-    }
-    assert.equal(await propose("bash", { command: `propose --title 'integrity'` }), undefined);
-    assert.equal(await propose("bash", { command: `printf '%s' 'propose slices'` }), undefined);
-    assert.equal(await propose("bash", { command: `printf '%s' 'propose'` }), undefined);
+    assert.equal((await propose("slices!"))?.block, true);
+    assert.equal(await propose("integrity"), undefined);
     nativePlanPath = "local:/current.md";
-    await rename(invalid, join(artifacts, "local", "current.md"));
-    assert.match((await propose("propose", { title: "absent" }))?.reason ?? "", /current\.md.*Missing ## Tasks/);
-    await rename(join(artifacts, "local", "current.md"), invalid);
+    assert.equal(await propose("absent"), undefined);
+    await rename(invalid, current);
+    assert.equal((await propose("absent"))?.block, true);
+    await rename(current, invalid);
     await utimes(sourcePlanFile, new Date(1_000), new Date(1_000));
     await utimes(invalid, new Date(2_000), new Date(2_000));
     nativePlanPath = "local:/integrity-plan.md";
-    assert.match((await propose("bash", { command: "propose absent" }))?.reason ?? "", /slices-plan\.md.*Missing ## Tasks/);
+    assert.equal((await propose("absent"))?.block, true);
     return;
   }
   if (name === "tier-judge-fallback") {
@@ -662,6 +689,32 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(mode, true);
     assert.equal(await Bun.file(join(`${sourcePlanFile}.reviews`, "001-high_accuracy-okay.md")).exists(), true);
   }
+  if (name.startsWith("atlas-bash-tui")) {
+    assert(!activeTools.includes("bash"));
+    assert.equal(await hook("tool_call", { toolName: "propose", toolCallId: "proposal", input: { title: "integrity" } }), undefined);
+    const approvedPath = "local://integrity-plan.md";
+    await hook("tool_result", {
+      toolName: "propose",
+      toolCallId: "proposal",
+      isError: false,
+      details: { planFilePath: approvedPath, planExists: true },
+      content: [],
+    });
+    mode = false;
+    activeTools.push("bash");
+    await hook("mode_changed", { previous: { plan: { status: "active" } }, state: { plan: { status: "inactive" } } });
+    reference = approvedPath;
+    await hook("before_agent_start", { prompt: approvedHandoff(reference, plan), systemPrompt: [] });
+    assert(reference.startsWith("atlas://"));
+    assert(!activeTools.includes("bash"));
+    await commands.get("atlas")?.("exit", ctx);
+    assert.equal(activeTools.includes("bash"), name === "atlas-bash-tui");
+    return;
+  }
+  if (name === "atlas-bash-exit") {
+    assert(!activeTools.includes("bash"));
+    assert.equal(await hook("tool_call", { toolName: "propose", toolCallId: "proposal", input: { title: "integrity" } }), undefined);
+  }
   mode = false;
   reference = "local://integrity-plan.md";
   await hook("tool_result", {
@@ -694,12 +747,13 @@ async function scenario(name: string, root: string): Promise<void> {
   if (name === "atlas-bash-exit" || name === "atlas-bash-resume" || name === "atlas-no-bash") {
     assert(!activeTools.includes("bash"));
     assert(activeTools.includes("atlas_ledger"));
+    activeTools.push("bash");
     const blocked = (await hook("tool_call", { toolName: "bash", input: { command: "true" } })) as { block?: boolean } | undefined;
     assert.equal(blocked?.block, true);
+    assert(!activeTools.includes("bash"));
     if (name === "atlas-bash-resume" || name === "atlas-no-bash") {
       await hook("session_shutdown");
-      assert.equal(activeTools.includes("bash"), name === "atlas-bash-resume");
-      if (name === "atlas-bash-resume") activeTools = activeTools.filter((tool) => tool !== "bash");
+      assert(!activeTools.includes("bash"));
       install();
       await hook("session_start");
       assert(!activeTools.includes("bash"));
@@ -1909,10 +1963,12 @@ async function scenario(name: string, root: string): Promise<void> {
       const markerFile = join(artifacts, "local", "prometheus", "integrity.proposal.json");
       const marker = JSON.parse(await readFile(markerFile, "utf8"));
       marker.version = Number(name.at(-1));
+      delete marker.bashWasActive;
       delete marker.reviewHistory;
       await writeFile(markerFile, JSON.stringify(marker));
     }
     entries.length = 0;
+    sessionId = "fresh-approved-session";
     install();
     await hook("before_agent_start", {
       prompt: approvedHandoff(reference, plan),
@@ -1923,6 +1979,9 @@ async function scenario(name: string, root: string): Promise<void> {
     ledgerFile = join(dirname(planFile), "ledger.json");
     ok(await call({ action: "status" }));
     await finish("T1");
+    assert(!activeTools.includes("bash"));
+    await commands.get("atlas")?.("exit", ctx);
+    assert.equal(activeTools.includes("bash"), name === "fresh-handoff");
     return;
   }
   if (name === "compact-after-save-and-quit") {
@@ -3749,6 +3808,7 @@ if (process.env[CHILD_ENV]) {
       "fresh-handoff",
       "fresh-handoff-v3",
       "fresh-handoff-v4",
+      "fresh-handoff-v5",
       "url-boundaries",
       "parallel-url-bindings",
       "exit-during-url-binding",
@@ -3814,6 +3874,10 @@ if (process.env[CHILD_ENV]) {
       "plan-mode-restored",
       "plan-mode-reentered",
       "propose-grammar",
+      "propose-non-local",
+      "planning-bash-off",
+      "planning-bash-abort",
+      "planning-bash-switch",
       "tier-judge-fallback",
       "review-round-limit",
       "review-artifacts",
@@ -3848,6 +3912,8 @@ if (process.env[CHILD_ENV]) {
       "heavy-unbound-native-verifier",
       "duplicate-bindings",
       "structured-results",
+      "atlas-bash-tui",
+      "atlas-bash-tui-inactive",
       "atlas-bash-exit",
       "atlas-bash-resume",
       "atlas-bash-release",

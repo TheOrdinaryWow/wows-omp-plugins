@@ -4,8 +4,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { parseToolArgs, ToolCliUsageError } from "@oh-my-pi/pi-coding-agent/exec/tool-cli";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
+import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { type ResolvedApprovedPlan, resolveApprovedPlan } from "@oh-my-pi/pi-coding-agent/plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
@@ -15,13 +15,6 @@ import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-ses
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { BashToolInput } from "@oh-my-pi/pi-coding-agent/tools/bash";
-import { isProposeToolCall } from "@oh-my-pi/pi-coding-agent/tools/resolve";
-import {
-  extractLiteralAndChainSegments,
-  isShellEnvironmentAssignment,
-  tokenizeShellSegments,
-} from "@oh-my-pi/pi-coding-agent/tools/shell-tokenize";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { isNativeRendering } from "@oh-my-pi/pi-tui";
 
@@ -518,7 +511,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         proposedByToolCallId: record.proposedByToolCallId,
         atlasPlanId: record.atlasPlanId,
         sourceSessionId: record.sourceSessionId,
-        bashWasActive: record.phase === "executing" ? record.bashWasActive : undefined,
+        bashWasActive: record.phase === "idle" ? undefined : record.bashWasActive,
         roadmapStage: record.roadmapStage,
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
@@ -583,7 +576,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       restored = {
         phase: data.phase,
         atlasPlanId: typeof data.atlasPlanId === "string" && data.atlasPlanId ? data.atlasPlanId : undefined,
-        bashWasActive: data.phase === "executing" && typeof data.bashWasActive === "boolean" ? data.bashWasActive : undefined,
+        bashWasActive: data.phase !== "idle" && typeof data.bashWasActive === "boolean" ? data.bashWasActive : undefined,
         sourceSessionId: typeof data.sourceSessionId === "string" && data.sourceSessionId ? data.sourceSessionId : undefined,
         roadmapStage: isRoadmapStage(data.roadmapStage) ? data.roadmapStage : undefined,
         planFilePath: typeof data.planFilePath === "string" && data.planFilePath.trim() ? data.planFilePath : undefined,
@@ -610,9 +603,12 @@ export default function prometheus(pi: ExtensionAPI): void {
     return restored;
   };
 
-  /** `wantLedger` means Atlas executes, which also needs the host's structured task results for gates and verifiers. */
-  const syncTools = async (ctx: ExtensionContext, wantActivate: boolean, wantRelease: boolean, wantLedger: boolean): Promise<void> => {
+  /** Atlas execution also needs the host's structured task results for gates and verifiers. */
+  const syncTools = async (ctx: ExtensionContext, wantActivate = false): Promise<void> => {
     const live = mainSession(ctx);
+    const sessionId = ctx.sessionManager.getSessionId();
+    const record = records.get(sessionId);
+    const wantLedger = record?.phase === "executing";
     if (live && !wantLedger) restoreStructuredResults(live);
     else if (live && forceStructuredResults(live)) {
       notify(
@@ -623,25 +619,27 @@ export default function prometheus(pi: ExtensionAPI): void {
     try {
       const active = pi.getActiveTools();
       const desired = new Set(active);
-      const sessionId = ctx.sessionManager.getSessionId();
-      const record = records.get(sessionId);
       const previous = live && bashOverrides.get(live);
-      if (previous && (!wantLedger || previous.sessionId !== sessionId)) {
-        if (previous.wasActive) desired.add("bash");
-        else desired.delete("bash");
-      }
+      const planActive = live?.getPlanModeState()?.enabled === true;
+      const holdBash =
+        wantLedger ||
+        (record?.phase === "planning" && (planActive || previous?.sessionId === sessionId || record.proposalAwaitingApproval));
       let override: typeof previous;
-      if (live && wantLedger && record?.phase === "executing") {
+      if (live && holdBash && record) {
         if (record.bashWasActive === undefined) {
-          record.bashWasActive = previous?.sessionId === sessionId ? previous.wasActive : desired.has("bash");
+          record.bashWasActive = previous?.wasActive ?? desired.has("bash");
           persist(ctx, record);
         }
         override = { sessionId, wasActive: record.bashWasActive };
         desired.delete("bash");
+      } else if (live) {
+        const original = record?.phase === "idle" ? (record.bashWasActive ?? previous?.wasActive) : previous?.wasActive;
+        if (original === true) desired.add("bash");
+        else if (original === false) desired.delete("bash");
       }
       if (wantActivate) desired.add(ACTIVATE_TOOL);
       else desired.delete(ACTIVATE_TOOL);
-      if (wantRelease) desired.add(RELEASE_TOOL);
+      if (wantLedger) desired.add(RELEASE_TOOL);
       else desired.delete(RELEASE_TOOL);
       if (wantLedger) {
         desired.add(LEDGER_TOOL);
@@ -650,12 +648,14 @@ export default function prometheus(pi: ExtensionAPI): void {
         desired.delete(LEDGER_TOOL);
         desired.delete(GIT_TOOL);
       }
-      if (desired.size !== active.length || !active.every((name) => desired.has(name))) await pi.setActiveTools([...desired]);
+      if (previous?.sessionId !== override?.sessionId || desired.size !== active.length || !active.every((name) => desired.has(name))) {
+        await pi.setActiveTools([...desired]);
+      }
       if (live) {
         if (override) bashOverrides.set(live, override);
         else bashOverrides.delete(live);
       }
-      if (record && record.phase !== "executing") record.bashWasActive = undefined;
+      if (record?.phase === "idle") record.bashWasActive = undefined;
     } catch (error) {
       pi.logger.warn("prometheus could not reconcile workflow tools", { error: errorMessage(error) });
     }
@@ -1178,7 +1178,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.lastContinuationLedgerStamp = undefined;
     record.stallCount = 0;
     persist(ctx, record);
-    await syncTools(ctx, false, false, false);
+    await syncTools(ctx);
     if (proposalPath) await clearProposalMarker(ctx, proposalPath);
     await settleDetached();
     await refreshAtlasCompletions(ctx);
@@ -1467,7 +1467,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.roadmapStage = plan.roadmapStage;
       persist(ctx, record);
       await bindPlan(ctx, record, store, plan, true);
-      await syncTools(ctx, false, true, true);
+      await syncTools(ctx);
       retitleSession(ctx, plan);
       let modelNotice = "";
       try {
@@ -1497,7 +1497,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (record.activation !== activation) return;
       record.ledgerError = errorMessage(error);
       publishState(ctx);
-      await syncTools(ctx, false, true, true);
+      await syncTools(ctx);
       await refreshAtlasCompletions(ctx);
       commandNotice(ctx, pauseMessage(record), "error");
     }
@@ -1702,7 +1702,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   };
 
   const activate = async (ctx: ExtensionContext): Promise<boolean> => {
-    if (!mainSession(ctx)) {
+    const live = mainSession(ctx);
+    if (!live) {
       notify(ctx, "Prometheus runs in the main session only.", "warning");
       return false;
     }
@@ -1741,6 +1742,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       record.reviewRounds = undefined;
     }
     persist(ctx, record);
+    if (live.getPlanModeState()?.enabled === true) await syncTools(ctx);
     return true;
   };
 
@@ -1753,7 +1755,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.reviewRounds ??= { used: 0, extra: 0 };
     const rounds = record.reviewRounds;
     const stopGuidance =
-      "Do not dispatch more Momus or Oracle plan reviews for this plan. Propose it now as it stands with propose <slug>, and list every outstanding eligible blocker from the latest round in the proposal summary so the user can weigh them at approval.";
+      "Do not dispatch more Momus or Oracle plan reviews for this plan. Propose it now as it stands by calling the propose tool with title set to the slug, and list every outstanding eligible blocker from the latest round in the proposal summary so the user can weigh them at approval.";
     while (configured > 0 && rounds.used >= configured + rounds.extra) {
       const limit = configured + rounds.extra;
       if (!ctx.hasUI) return `Plan review reached its limit of ${limit} rounds and no user is available to raise it. ${stopGuidance}`;
@@ -1791,27 +1793,8 @@ export default function prometheus(pi: ExtensionAPI): void {
       PLUGIN_OWNED_TOOLS[toolName] === true && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
     return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool, trusted, provenance?.path);
   };
-  const shellProposalPrefix = /^(?:!|\{|if|then|elif|else|do|while|until|time|command|builtin|--)$/;
-
-  const containsShellProposal = (command: string): boolean => {
-    if (/(?:\$\(|`)\s*propose(?:$|[<>;&|`)\s])/.test(command)) return true;
-    return tokenizeShellSegments(command).some((words) => {
-      for (let index = 0; index < words.length; index++) {
-        const word = words[index] ?? "";
-        if (shellProposalPrefix.test(word) || isShellEnvironmentAssignment(word)) continue;
-        if (/^\d*[<>]/.test(word)) {
-          if (/^\d*[<>]+$/.test(word)) index++;
-          continue;
-        }
-        if (word === "eval") return words.slice(index + 1).some((arg) => /\bpropose(?:$|[<>;&|\s])/.test(arg));
-        return /^propose(?:$|[<>])/.test(word);
-      }
-      return false;
-    });
-  };
 
   const trustedProposalResult = (live: AgentSession, toolName: string): boolean => {
-    if (toolName === "bash") return toolProvenance(toolName)?.source === "builtin";
     if (toolName !== "propose" || live.extensionRunner?.getRegisteredTool(toolName)) return false;
     const source = toolProvenance(toolName);
     return source?.source === "builtin" || (source?.source === "extension" && source.path === "<extension:propose>");
@@ -1821,46 +1804,8 @@ export default function prometheus(pi: ExtensionAPI): void {
   const proposalGrammarBlockReason = async (
     ctx: ExtensionContext,
     statePlanFilePath: string,
-    toolName: string,
-    input: BashToolInput | Record<string, unknown>,
+    title: unknown,
   ): Promise<string | undefined> => {
-    let title = "title" in input ? input.title : undefined;
-    if (toolName === "bash" && typeof input.command === "string") {
-      const command = input.command.trim();
-      const leading = isProposeToolCall({ name: toolName, arguments: { command } });
-      const segments = extractLiteralAndChainSegments(`${command} && true`);
-      const [proposal, tail] = segments ?? [];
-      const literal = segments?.length === 2 && proposal?.text === command && tail?.text === "true" ? proposal.argv : undefined;
-      const proposalCommand =
-        leading || (literal ? literal.find((word) => !isShellEnvironmentAssignment(word)) === "propose" : containsShellProposal(command));
-      if (!proposalCommand) return undefined;
-      const standalone = "Run `propose <slug>` as its own command with a literal title.";
-      if (
-        !leading ||
-        !literal ||
-        literal[0] !== "propose" ||
-        input.async === true ||
-        input.notify !== undefined ||
-        input.name !== undefined
-      ) {
-        return standalone;
-      }
-      const argv = literal.slice(1);
-      if (argv.includes("--help") || argv.includes("-h")) return undefined;
-      const schema = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
-      const fileTitle = new ToolCliUsageError(standalone);
-      try {
-        ({ title } = await parseToolArgs(schema, argv, {
-          cwd: ctx.cwd,
-          stdin: "",
-          readSource: () => Promise.reject(fileTitle),
-        }));
-      } catch (error) {
-        if (error === fileTitle) return standalone;
-        if (error instanceof ToolCliUsageError) return undefined;
-        throw error;
-      }
-    } else if (toolName !== "propose") return undefined;
     if (typeof title !== "string") return undefined;
 
     let selected: ResolvedApprovedPlan;
@@ -1877,6 +1822,9 @@ export default function prometheus(pi: ExtensionAPI): void {
       return undefined;
     }
     const { planFilePath: planUrl, planContent: content } = selected;
+    if (!InternalUrlRouter.instance().normalize(planUrl).startsWith("local://")) {
+      return `Prometheus refused the plan at ${planUrl}. Write it to \`local://<slug>-plan.md\` and call \`propose\` with \`title\` set to that slug.`;
+    }
     const { items, errors, roadmapCriteria } = parsePlanChecklist(content, availableAgents());
     const reasons: string[] = [];
     if (errors.length) {
@@ -2048,22 +1996,6 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (trimmed.startsWith("/") && current?.phase === "planning") current.proposalAwaitingApproval = false;
       if (trimmed.startsWith("/") && current?.phase === "planning") current.approvalCompactionPending = false;
       if (trimmed.startsWith("/") && current?.phase === "planning") publishState(ctx);
-      if (/^\/plan(?:[ \t]|$)/.test(trimmed)) {
-        const record = current ?? rehydrate(ctx);
-        if (live?.getPlanModeState()?.enabled === true && record?.phase === "planning") {
-          record.phase = "idle";
-          await clearProposalMarker(ctx, record.planFilePath);
-          record.planFilePath = undefined;
-          record.roadmapStage = undefined;
-          record.proposedByToolCallId = undefined;
-          record.planningModeEntryId = undefined;
-          record.proposalAwaitingApproval = false;
-          record.approvalCompactionPending = false;
-          record.offerPendingForModeEntryId = undefined;
-          persist(ctx, record);
-          await syncTools(ctx, false, false, false);
-        }
-      }
       return undefined;
     }
     if (!live) {
@@ -2073,6 +2005,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
     const planModeActive = live.getPlanModeState()?.enabled === true;
     if (record?.phase === "planning") {
+      if (ctx.mode === "tui" && planModeActive) return { text: "/plan" };
       await release(ctx, "/prometheus", "planning");
       return planModeActive ? { text: "/plan" } : { handled: true };
     }
@@ -2280,7 +2213,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       if (choice !== PROMETHEUS_PLANNING_CHOICE) {
         record.suppressedForModeEntryId = episodeId;
         persist(ctx, record);
-        await syncTools(ctx, false, false, false);
+        await syncTools(ctx);
         return {
           content: [
             {
@@ -2292,7 +2225,6 @@ export default function prometheus(pi: ExtensionAPI): void {
         };
       }
       if (!(await activate(ctx))) return refuse("Prometheus prompt assets are unavailable; activation was refused.");
-      await syncTools(ctx, false, false, false);
       return {
         content: [
           {
@@ -3145,6 +3077,38 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
   };
 
+  const endPlanning = async (ctx: ExtensionContext, record: SessionRecord): Promise<void> => {
+    const planFilePath = record.planFilePath;
+    record.phase = "idle";
+    record.planFilePath = undefined;
+    record.roadmapStage = undefined;
+    record.proposedByToolCallId = undefined;
+    record.planningModeEntryId = undefined;
+    record.proposalAwaitingApproval = false;
+    record.approvalCompactionPending = false;
+    record.offerPendingForModeEntryId = undefined;
+    persist(ctx, record);
+    await clearProposalMarker(ctx, planFilePath);
+  };
+
+  pi.on("mode_changed", async (event, ctx) => {
+    const live = mainSession(ctx);
+    if (!live) return;
+    const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+    if (record?.phase === "executing") {
+      if (pi.getActiveTools().includes("bash")) await syncTools(ctx);
+      return;
+    }
+    if (record?.phase !== "planning") return;
+    if (event.state.plan.status === "active") {
+      await syncTools(ctx);
+    } else if (event.previous.plan.status === "active" && (event.state.plan.status === "paused" || !record.proposalAwaitingApproval)) {
+      restoreApprovalTiers(live);
+      await endPlanning(ctx, record);
+      await syncTools(ctx);
+    }
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     const live = mainSession(ctx);
     if (!live) return undefined;
@@ -3163,12 +3127,13 @@ export default function prometheus(pi: ExtensionAPI): void {
           planSha256?: unknown;
           proposedByToolCallId?: unknown;
           sourceSessionId?: unknown;
+          bashWasActive?: unknown;
           roadmapStage?: unknown;
         };
         // A present but invalid plugin marker must pause this handoff, not silently become ordinary execution.
         if (
           // Version 5 carries diagnostic history through fresh-session approval; older markers still resume without it.
-          (marker.version !== 3 && marker.version !== 4 && marker.version !== 5) ||
+          (marker.version !== 3 && marker.version !== 4 && marker.version !== 5 && marker.version !== 6) ||
           typeof marker.planFilePath !== "string" ||
           !planReferencesMatch(marker.planFilePath, reference) ||
           typeof marker.proposedByToolCallId !== "string" ||
@@ -3183,6 +3148,7 @@ export default function prometheus(pi: ExtensionAPI): void {
           planSha256: typeof marker.planSha256 === "string" && /^[a-f0-9]{64}$/.test(marker.planSha256) ? marker.planSha256 : undefined,
           proposedByToolCallId: marker.proposedByToolCallId,
           sourceSessionId: marker.sourceSessionId,
+          bashWasActive: typeof marker.bashWasActive === "boolean" ? marker.bashWasActive : undefined,
           roadmapStage: isRoadmapStage(marker.roadmapStage) ? marker.roadmapStage : undefined,
           lastBlockedAt: 0,
           stallCount: 0,
@@ -3202,15 +3168,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (record?.phase === "planning" && planModeActive) {
       const episodeId = planModeEpisodeId(ctx);
       if (record.planningModeEntryId && episodeId && record.planningModeEntryId !== episodeId) {
-        record.phase = "idle";
-        record.planFilePath = undefined;
-        record.roadmapStage = undefined;
-        record.proposedByToolCallId = undefined;
-        record.planningModeEntryId = undefined;
-        record.proposalAwaitingApproval = false;
-        record.approvalCompactionPending = false;
-        record.offerPendingForModeEntryId = undefined;
-        persist(ctx, record);
+        await endPlanning(ctx, record);
       } else if (!record.planningModeEntryId && episodeId) {
         record.planningModeEntryId = episodeId;
         persist(ctx, record);
@@ -3236,16 +3194,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         await enterExecution(ctx, record, event.prompt);
         executing = true;
       } else {
-        await clearProposalMarker(ctx, record.planFilePath);
-        record.phase = "idle";
-        record.planFilePath = undefined;
-        record.roadmapStage = undefined;
-        record.proposedByToolCallId = undefined;
-        record.planningModeEntryId = undefined;
-        record.proposalAwaitingApproval = false;
-        record.approvalCompactionPending = false;
-        record.offerPendingForModeEntryId = undefined;
-        persist(ctx, record);
+        await endPlanning(ctx, record);
       }
     } else if (!executing && planModeActive) {
       const episodeId = planModeEpisodeId(ctx);
@@ -3263,7 +3212,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       injected = await atlasBlock(ctx, record);
     }
 
-    await syncTools(ctx, wantActivate, executing, executing);
+    await syncTools(ctx, wantActivate);
     if (!injected) return undefined;
     return { systemPrompt: [...event.systemPrompt, injected] };
   });
@@ -3335,6 +3284,8 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     const live = mainSession(ctx);
+    const record = live && (records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx));
+    if (record && record.phase !== "idle" && pi.getActiveTools().includes("bash")) await syncTools(ctx);
     observeFinalJobs(ctx);
     if (event.toolName === ACTIVATE_TOOL) {
       if (!live || !ctx.hasUI) return { block: true, reason: "Prometheus activation requires an interactive main session." };
@@ -3345,10 +3296,12 @@ export default function prometheus(pi: ExtensionAPI): void {
       return undefined;
     }
     if (!live) return undefined;
-    const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
+    if (record?.phase === "planning" && event.toolName === "bash") {
+      return { block: true, reason: "Bash is disabled during Prometheus planning. Call the tools directly." };
+    }
     const planning = record?.phase === "planning" ? live.getPlanModeState() : undefined;
-    if (planning?.enabled && (event.toolName === "propose" || event.toolName === "bash")) {
-      const proposalDetail = await proposalGrammarBlockReason(ctx, planning.planFilePath, event.toolName, event.input);
+    if (planning?.enabled && event.toolName === "propose") {
+      const proposalDetail = await proposalGrammarBlockReason(ctx, planning.planFilePath, event.input.title);
       if (proposalDetail) return { block: true, reason: proposalDetail };
     }
     if (event.toolName === "task") {
@@ -3553,11 +3506,12 @@ export default function prometheus(pi: ExtensionAPI): void {
         pi.logger.warn("prometheus could not collect diagnostic review history for the native handoff", { error: errorMessage(error) });
       });
       await writeLedgerAtomic(markerFile, {
-        version: 5,
+        version: 6,
         planFilePath: proposedPath,
         planSha256: record.planSha256,
         proposedByToolCallId: event.toolCallId,
         sourceSessionId: sessionId,
+        bashWasActive: record.bashWasActive,
         roadmapStage: record.roadmapStage,
         reviewHistory,
         createdAt: Date.now(),
@@ -3572,7 +3526,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const approvedInResult = event.content.some((part) => part.type === "text" && part.text.trimStart().startsWith("Plan approved at "));
     if (approvedInResult && live.getPlanModeState()?.enabled !== true && planReferencesMatch(live.getPlanReferencePath(), proposedPath)) {
       await enterExecution(ctx, record);
-      await syncTools(ctx, false, true, true);
+      await syncTools(ctx);
     }
     return undefined;
   });
@@ -3597,7 +3551,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (record?.phase === "planning" && record.approvalCompactionPending === true) {
       record.compactHandoffPending = true;
       await enterExecution(ctx, record);
-      await syncTools(ctx, false, true, true);
+      await syncTools(ctx);
     }
   });
 
@@ -3688,8 +3642,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (live && knownBinding && !restored?.ownership && planReferencesMatch(live.getPlanReferencePath(), knownBinding.planUrl)) {
       live.setPlanReferencePath(DEFAULT_PLAN_REFERENCE);
     }
-    const executing = restored?.phase === "executing";
-    await syncTools(ctx, false, executing, executing);
+    await syncTools(ctx);
     publishState(ctx);
   };
 
@@ -3730,7 +3683,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (live) {
       restoreApprovalTiers(live);
       restoreIsolationMerge(live);
-      await syncTools(ctx, false, false, false);
+      restoreStructuredResults(live);
     }
     const sessionId = ctx.sessionManager.getSessionId();
     tierJudges.delete(sessionId);

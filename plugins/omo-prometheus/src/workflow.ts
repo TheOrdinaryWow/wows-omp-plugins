@@ -7,7 +7,6 @@
  * decision can be exercised in isolation.
  */
 
-import { proposeDispatchDetails } from "@oh-my-pi/pi-coding-agent/tools/resolve";
 import { prompt } from "@oh-my-pi/pi-utils";
 
 /** Slash command that toggles Prometheus planning, like the host's `/plan`. */
@@ -343,7 +342,8 @@ export function planReferencesMatch(left: string | undefined, right: string | un
 }
 
 export function proposedPlanPathFromToolResult(toolName: string, isError: boolean, details: unknown): string | undefined {
-  const inner = record(proposeDispatchDetails(toolName, { details, isError }));
+  if (toolName !== "propose" || isError) return undefined;
+  const inner = record(details);
   const path = typeof inner?.planFilePath === "string" ? inner.planFilePath.trim() : "";
   if (!path || inner?.planExists !== true) return undefined;
   return canonicalPlanPath(path);
@@ -620,7 +620,7 @@ export const PLANNING_PREAMBLE = [
   "# Prometheus planning workflow (active)",
   "",
   "The Prometheus workflow owns this native plan-mode session. Follow the complete workflow below until native approval or an explicit user exit.",
-  "Do not repeat opt-in, do not mix in the host's generic planning workflow, and do not announce this instruction block. Keep native read-only boundaries and submit the final local://<slug>-plan.md with propose <slug>. The host tells you whether to run that as a bash command or call the propose tool directly.",
+  "Do not repeat opt-in, do not mix in the host's generic planning workflow, and do not announce this instruction block. Keep native read-only boundaries. Prometheus planning runs without bash. Write the final plan to local://<slug>-plan.md and submit it by calling the propose tool with title set to the slug.",
   "Before every proposal, including a re-proposal and a draft written before this workflow took over, make the plan follow the plan grammar in this workflow: `## Tasks` with sequential T rows and `## Final gates` with F1–F4. Rewrite a non-conforming draft first; the plugin refuses a proposal whose plan does not parse.",
 ].join("\n");
 
