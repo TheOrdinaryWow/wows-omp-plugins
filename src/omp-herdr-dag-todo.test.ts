@@ -30,6 +30,8 @@ const phases: TodoPhase[] = [
 ];
 const handoff =
   'Plan approved.\n\n<plan path="local://approved.md">\n# Plan\n</plan>\nFull plan inlined below; durable copy at `local://approved.md`';
+const proposalDetails = { planFilePath: "local://approved.md", title: "approved", planExists: true };
+const proposalResult = { toolName: "propose", isError: false, details: proposalDetails };
 const resultEvent = (op = "init", list = phases) => ({
   toolName: "todo",
   isError: false,
@@ -278,10 +280,7 @@ if (process.env[CHILD_ENV]) {
         });
         const source = new TodoSource({ sessionId: "session", plan });
         source.replay(entries, null);
-        plan.observeResult({
-          toolName: "write",
-          details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
-        });
+        plan.observeResult(proposalResult);
         plan.beforeAgentStart(handoff, "local://approved.md");
         const canonical = (id: string, list: TodoPhase[]) =>
           writer === "tool-result"
@@ -311,10 +310,7 @@ if (process.env[CHILD_ENV]) {
       const source = new TodoSource({ sessionId: "session", plan });
       source.replay(entries, null);
       entries.push({ ...customEntry("user_todo_edit", { phases }), id: "before-approval" });
-      plan.observeResult({
-        toolName: "write",
-        details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
-      });
+      plan.observeResult(proposalResult);
       plan.beforeAgentStart(handoff, "local://approved.md");
       source.poll({ getLeafId: () => entries.at(-1)?.id ?? null, getBranch: () => entries });
       expect(source.current?.source).toBe("todo");
@@ -354,10 +350,7 @@ if (process.env[CHILD_ENV]) {
         const source = new TodoSource({ sessionId: "session", plan });
         source.replay(entries, null);
         source.setAtlasBound(true);
-        plan.observeResult({
-          toolName: "write",
-          details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
-        });
+        plan.observeResult(proposalResult);
         plan.beforeAgentStart(handoff, "local://approved.md");
         const mirrored = ["Atlas tasks", "Atlas discovered", "Atlas fixes", "Atlas final gates", "Atlas delivery"].map(
           (name): TodoPhase => ({ name, tasks: [{ content: name, status: "pending" }] }),
@@ -417,10 +410,20 @@ if (process.env[CHILD_ENV]) {
     test("requires proposal, matching host reference and the complete approval envelope", () => {
       const tracker = new PlanExecutionTracker({ now: () => 1_000 });
       expect(tracker.beforeAgentStart(handoff, "local://approved.md")).toBe(false);
+      expect(tracker.observeResult({ ...proposalResult, isError: true })).toBe(false);
+      expect(tracker.observeResult({ ...proposalResult, details: { ...proposalDetails, planExists: false } })).toBe(false);
+      expect(tracker.observeResult({ ...proposalResult, details: { ...proposalDetails, planFilePath: " " } })).toBe(false);
       expect(
         tracker.observeResult({
-          toolName: "write",
-          details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local:/approved.md", planExists: true } } },
+          toolName: "bash",
+          isError: true,
+          details: { toolCommands: [{ tool: "propose", mode: "execute", exitCode: 1, inner: proposalDetails }] },
+        }),
+      ).toBe(false);
+      expect(
+        tracker.observeResult({
+          ...proposalResult,
+          details: { ...proposalDetails, planFilePath: "local:/approved.md" },
         }),
       ).toBe(true);
       expect(tracker.state.state).toBe("proposed");
@@ -446,10 +449,7 @@ if (process.env[CHILD_ENV]) {
       });
       const source = new TodoSource({ sessionId: "session", plan: tracker, now: () => 1_000 });
       source.observeResult(resultEvent());
-      tracker.observeResult({
-        toolName: "write",
-        details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
-      });
+      tracker.observeResult(proposalResult);
       tracker.beforeAgentStart(handoff, "local://approved.md");
       expect(tracker.claimRun("empty", [])).toBe("todo");
       source.observeResult(resultEvent("start"));
@@ -488,10 +488,7 @@ if (process.env[CHILD_ENV]) {
 
     test("approval clear and compact retain only a proposal until the verified handoff", () => {
       const tracker = new PlanExecutionTracker({ now: () => 1_000 });
-      tracker.observeResult({
-        toolName: "write",
-        details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } },
-      });
+      tracker.observeResult(proposalResult);
       const source = new TodoSource({ sessionId: "new-session", plan: tracker, now: () => 1_000 });
       source.replay([], "cleared", true);
       expect(tracker.state.state).toBe("proposed");

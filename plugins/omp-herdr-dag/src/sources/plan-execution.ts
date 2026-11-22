@@ -1,3 +1,5 @@
+import { proposeDispatchDetails } from "@oh-my-pi/pi-coding-agent/tools/resolve";
+
 import type { Run, TodoPhase } from "#src/model.ts";
 
 export const PLAN_EXECUTION_ENTRY = "omp-herdr-dag:plan-execution";
@@ -56,11 +58,9 @@ export class PlanExecutionTracker {
   }
 
   observeResult(event: { toolName: string; isError?: boolean; details?: unknown }): boolean {
-    if (event.toolName !== "write" || event.isError) return false;
-    const xdev = record(record(event.details)?.xdev);
-    const inner = record(xdev?.inner);
-    const path = typeof inner?.planFilePath === "string" ? inner.planFilePath.trim() : "";
-    if (xdev?.tool !== "propose" || xdev.mode !== "execute" || inner?.planExists !== true || !path) return false;
+    const proposal = record(proposeDispatchDetails(event.toolName, event));
+    const path = typeof proposal?.planFilePath === "string" ? proposal.planFilePath.trim() : "";
+    if (proposal?.planExists !== true || !path) return false;
     this.#set({ v: 1, state: "proposed", planFilePath: canonicalPlanPath(path), at: this.#now() });
     return true;
   }

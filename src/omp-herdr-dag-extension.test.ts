@@ -215,10 +215,22 @@ async function scenario(name: string, root: string): Promise<void> {
   const dir = () => join(manager.getSessionDir(), "herdr-dag", manager.getSessionId());
   const proposal = () =>
     hook("tool_execution_end", {
-      toolName: "write",
+      toolName: "bash",
       toolCallId: "proposal",
       isError: false,
-      result: { details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://approved.md", planExists: true } } } },
+      result: {
+        details: {
+          toolCommands: [
+            {
+              tool: "propose",
+              mode: "execute",
+              exitCode: 0,
+              args: { title: "approved" },
+              inner: { planFilePath: "local://approved.md", title: "approved", planExists: true },
+            },
+          ],
+        },
+      },
     });
   const handoff =
     'Plan approved.\n\n<plan path="local://approved.md">\n# Plan\n</plan>\nFull plan inlined below; durable copy at `local://approved.md`';
@@ -632,7 +644,7 @@ async function scenario(name: string, root: string): Promise<void> {
       await hook("session_start");
       bus.emit("task:subagent:lifecycle", { id: "solo", status: "started", agent: "task", index: 0 });
       await todo();
-      assert.equal(splits(), 0); // never: only the command may open.
+      assert.equal(splits(), 0);
       await command("open");
       await command("open");
       assert.equal(splits(), 1);
@@ -651,7 +663,7 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal(splits(), 2);
       await todo();
       assert.equal(splits(), 3);
-      await command(); // bare toggle closes.
+      await command();
       await command("toggle");
       assert.equal(splits(), 4);
       await command("nonsense");

@@ -533,11 +533,11 @@ export default function herdrDag(pi: ExtensionAPI, deps: Dependencies = {}): voi
   );
   pi.on("agent_end", (event) => extension.run(() => extension.agentEnd(event.willContinue)));
   // Notification-only, unlike `tool_result`: a lifecycle handler would disable host speculative launches.
-  pi.on("tool_execution_end", (event, ctx) => {
+  pi.on("tool_execution_end", ({ toolName, result, isError }, ctx) => {
     // A collab guest's replica session never streams; its tool_execution_end events are mirrored host calls.
     const local = !ctx.isIdle();
-    const details = (event.result as { details?: unknown } | undefined)?.details;
-    return extension.run(() => extension.toolResult({ toolName: event.toolName, isError: event.isError, details }, local));
+    const details = result && typeof result === "object" && "details" in result ? result.details : undefined;
+    return extension.run(() => extension.toolResult({ toolName, isError, details }, local));
   });
   pi.on("session_shutdown", () => extension.shutdown());
 }
