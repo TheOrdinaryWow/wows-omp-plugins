@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.2...omp-herdr-dag@0.7.3) (2026-11-22)
+
+
+### Bug Fixes
+
+* **omp-herdr-dag:** track plans proposed through the native propose command ([82fca6a](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/82fca6ae2975c1aa24999f9c48a164eaf1719210))
+* raise supported OMP floor to 19.1.0 ([e4d84e1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e4d84e1afc0061507d429c582e94084daeabbb47))
+
 ## [0.7.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.1...omp-herdr-dag@0.7.2) (2026-11-19)
 
 

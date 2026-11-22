@@ -24,6 +24,16 @@
 - Require final native task success after isolation postprocessing; reject early completion events and invalidate older receipts without final-result proof.
 - Accept a gate or verifier `outputSchema` sent as JSON text, the only form models on strict tool-schema providers such as OpenAI Responses can send; every such dispatch used to be refused.
 
+## [0.32.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.32.3...omo-prometheus@0.32.4) (2026-11-22)
+
+
+### Bug Fixes
+
+* **omo-prometheus:** keep a proposal receipt through reopened reviews and refuse aliased plan paths ([d15d58e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/d15d58e7df6e40b2983dbdfd70723bb305a9ac04))
+* **omo-prometheus:** plan without bash and submit through the direct propose tool ([f067511](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/f06751153facdea529b016484f5906336c5351af))
+* **omo-prometheus:** submit plans through native propose and run Atlas without bash ([2cdd66b](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/2cdd66b826f1c0673bc369c970b330fbea4ef9f9))
+* raise supported OMP floor to 19.1.0 ([e4d84e1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e4d84e1afc0061507d429c582e94084daeabbb47))
+
 ## [0.32.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-prometheus@0.32.2...omo-prometheus@0.32.3) (2026-11-19)
 
 

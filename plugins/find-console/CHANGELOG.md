@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.3.0...find-console@0.3.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **find-console:** keep URL segments with literal percent signs ([0f43020](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/0f43020679de99efb37428d075c36c6baf525f4c))
+* **find-console:** match and search within percent-encoded URL file names ([52cb3cf](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/52cb3cfba79fd97af1cd9c84060732717d347912))
+* raise supported OMP floor to 19.1.0 ([e4d84e1](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/e4d84e1afc0061507d429c582e94084daeabbb47))
+
 ## [0.3.0](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.2.3...find-console@0.3.0) (2026-11-19)
 
 
