@@ -8,7 +8,7 @@ It runs after the draft builds and before `skill://visual-qa`. `check-draft-guar
 
 ## Run it from an eval cell
 
-Read `xd://eval/browser` first. In a JavaScript eval cell, import `index.ts` (importing does nothing until you call a function) and hand the eval `browser` global to the native renderer:
+Read `help://eval/browser` first. In a JavaScript eval cell, import `index.ts` (importing does nothing until you call a function) and hand the eval `browser` global to the native renderer:
 
 ```js
 const detect = await import("<skill-directory>/scripts/detect/index.ts");

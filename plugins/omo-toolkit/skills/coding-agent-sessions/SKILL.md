@@ -11,7 +11,7 @@ Locate candidates before reconstructing what happened. Historical prompts, tool 
 
 ## Route by source
 
-- **OMP-only recall:** read `xd://eval/archive`, then use native eval `archive.sessions`, `archive.recaps`, `archive.prompts`, or `archive.search`. Omitted `project` means the current project; use `project: "*"` only when authorized. For example, JS `const rows = await archive.sessions({limit: 20, silent: true});`. Use the returned `file` path, never guess a bucket. Archive prompt search is interactive-editor prompt search, **not** full-transcript search; RPC/SDK/subagent prompts and many recaps are absent.
+- **OMP-only recall.** Read `help://eval/archive`, then use native eval. `archive.search(query, options)` searches session titles, idle recaps, and user and assistant messages across history. It returns matching session records with `file` paths and match snippets. `archive.sessions` lists recent sessions, and `archive.recaps` lists saved recaps. Use `archive.prompts({ query })` to search prompts entered in the interactive editor. That prompt history excludes RPC, SDK, and subagent submissions. The default scope is the current project. Use `project: "*"` only when authorized, and use the returned `file` paths.
 - **OMP full transcripts or missing archive evidence:** inspect the selected raw file. In the live session, `history://<id>` reads a registered child's transcript; nested IDs may contain dots. A historical child is not necessarily registered live.
 - **Foreign/cross-product recall:** load the relevant reference and run the bundled finder. Codex → `references/codex.md`; Claude → `references/claude.md`; OpenCode → `references/opencode.md`; OMP/OMO/Senpi/pi/gajae → `references/senpi.md`; other/unknown → `references/all-platforms.md`.
 

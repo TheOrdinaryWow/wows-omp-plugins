@@ -11,7 +11,7 @@ Answer the question through the cheapest engine and execution surface that can p
 
 ## Persistent eval first
 
-Read `references/execution-surfaces.md` before the first query. Native `eval` keeps connections, arrays and frames across cells; import/connect/load once, then reuse. Do not assume any package is resident. Read `xd://eval/helpers` before native managed provisioning; provision only the packages needed, in its managed environment. Otherwise use an explicitly invoked isolated `uv run --with ...` process or the scoped cache helpers below. Heavy/crash-prone work can use uv rather than risk the live kernel.
+Read `references/execution-surfaces.md` before the first query. Native `eval` keeps connections, arrays and frames across cells; import/connect/load once, then reuse. Do not assume any package is resident. Read `help://eval/helpers` before native managed provisioning; provision only the packages needed, in its managed environment. Otherwise use an explicitly invoked isolated `uv run --with ...` process or the scoped cache helpers below. Heavy/crash-prone work can use uv rather than risk the live kernel.
 
 Resolve helper paths from the host-provided physical skill directory. Scripts are not extension imports or automatic install hooks. Never write into the copied skill/plugin tree, mutate system Python, or install/upgrade a global tool on skill load. First package use may access a registry/network. `setup-uv.sh` and `.ps1` are manual consent-only toolchain utilities, not a fallback to run silently.
 

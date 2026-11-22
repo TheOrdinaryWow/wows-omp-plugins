@@ -2,7 +2,7 @@
 
 # Native browser escalation and account boundary
 
-The historical filename does not indicate a stealth installer. This port uses the host's browser and ships no browser runtime, fingerprint scripts or credential utilities. Read `xd://eval/browser` for the live facade contract before browser automation. Use native `read` for static material.
+The historical filename does not indicate a stealth installer. This port uses the host's browser and ships no browser runtime, fingerprint scripts or credential utilities. Read `help://eval/browser` for the live facade contract before browser automation. Use native `read` for static material.
 
 ## Choose the correct session
 
@@ -11,7 +11,7 @@ For a public rendered page, open a dedicated named browser tab. Managed Chromium
 For account-dependent reading, use the user's attached signed-in profile. With the OMP Chrome relay this is `app: { relay: true }`; a new unique name without `app.target` opens a task-owned tab while retaining the attached account session. Use only a configured, authorized attachment. If attachment/login is unavailable, ask the user to connect/sign in and name the missing prerequisite. Do not quietly replace it with a managed, unauthenticated profile.
 
 ```javascript
-// In native eval, after reading xd://eval/browser.
+// In native eval, after reading help://eval/browser.
 const tab = await browser.open({
   name: "platform-read-case-unique",
   url: "https://platform.example/the-requested-item",

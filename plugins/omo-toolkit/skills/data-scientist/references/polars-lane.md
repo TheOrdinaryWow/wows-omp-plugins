@@ -2,7 +2,7 @@
 
 # Polars lane (resident Python kernel)
 
-When the work is DataFrame-shaped and the project has not chosen another engine, use Polars in the resident Python kernel. Do not assume Polars/Arrow is installed. Prefer native managed provisioning after reading `xd://eval/helpers`; the explicit cache helper below is an alternative that installs only when invoked. Resolve `<skill-dir>` from the host-provided physical skill directory, not the project cwd; the cache is outside the copied plugin and does not mutate the interpreter.
+When the work is DataFrame-shaped and the project has not chosen another engine, use Polars in the resident Python kernel. Do not assume Polars/Arrow is installed. Prefer native managed provisioning after reading `help://eval/helpers`; the explicit cache helper below is an alternative that installs only when invoked. Resolve `<skill-dir>` from the host-provided physical skill directory, not the project cwd; the cache is outside the copied plugin and does not mutate the interpreter.
 
 ```python
 import subprocess, sys

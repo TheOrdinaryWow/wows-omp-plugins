@@ -4,7 +4,7 @@
 
 ## Native eval first
 
-Read `xd://eval/helpers` before the first package-provisioning operation. Import only what is actually available; missing DuckDB/NumPy/matplotlib/Polars/Arrow is not evidence that a global install is needed. Native Python managed provisioning targets its actual interpreter; native managed JS uses its own scoped environment. JS provisioning disables lifecycle scripts: native bindings may need explicit preparation, so a DuckDB Python uv environment is often simpler. No install belongs in the copied skill tree.
+Read `help://eval/helpers` before the first package-provisioning operation. Import only what is actually available; missing DuckDB/NumPy/matplotlib/Polars/Arrow is not evidence that a global install is needed. Native Python managed provisioning targets its actual interpreter; native managed JS uses its own scoped environment. JS provisioning disables lifecycle scripts: native bindings may need explicit preparation, so a DuckDB Python uv environment is often simpler. No install belongs in the copied skill tree.
 
 Reuse one persistent connection/frame across cells:
 

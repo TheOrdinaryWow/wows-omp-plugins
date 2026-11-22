@@ -105,7 +105,7 @@ On the grounded path, close the gap ledger row by row: each fixed gap has its be
 
 ## OMP execution and audit surfaces
 
-Use native OMP `browser` for rendered inspection, captures and the detect SDK (`skill://agent-browser`, `xd://eval/browser`), attached to the user's signed-in session when required; do not introduce upstream browser engines. Use `ask` for consequential design decisions. Optional session design notes belong at `local://frontend-design/state.md`; project design contracts belong in `DESIGN.md`. Pass evidence by path: prompts are not byte-preserving transports. Read-only helpers never write inside the shipped skill tree.
+Use native OMP `browser` for rendered inspection, captures and the detect SDK (`skill://agent-browser`, `help://eval/browser`), attached to the user's signed-in session when required; do not introduce upstream browser engines. Use `ask` for consequential design decisions. Optional session design notes belong at `local://frontend-design/state.md`; project design contracts belong in `DESIGN.md`. Pass evidence by path: prompts are not byte-preserving transports. Read-only helpers never write inside the shipped skill tree.
 
 Build production output before performance measurement. The Lighthouse helper requires local Chrome, Node and a project-resolvable `lighthouse` package; Python dependencies are isolated by `uv run`. It never installs Node packages or tools globally. If prerequisites are absent, report the exact missing prerequisite; ask before a project-local install or use an explicitly selected ephemeral audit environment.
 

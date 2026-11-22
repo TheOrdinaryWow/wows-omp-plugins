@@ -6,7 +6,7 @@ Use this when native diagnostics/navigation/refactoring reports no server, a sta
 
 ## 1. Detect the actual failure
 
-Read the repository's guidance, manifest and compiler configuration. Identify the language, project/workspace root and a real source file with a known symbol. Read `xd://lsp` for its current schema, then use native `status` and `capabilities` for that file. Distinguish an absent executable, invalid project configuration, indexing delay, unsupported operation and genuine source diagnostics; do not treat every empty response as a missing installation.
+Read the repository's guidance, manifest and compiler configuration. Identify the language, project/workspace root and a real source file with a known symbol. Run `lsp --help` or read the `lsp` schema if the session lists it as a top-level tool. Use native `status` and `capabilities` for that file. Distinguish an absent executable, invalid project configuration, indexing delay, unsupported operation and genuine source diagnostics.
 
 ```json
 {"action":"status","file":"src/owned.ts"}

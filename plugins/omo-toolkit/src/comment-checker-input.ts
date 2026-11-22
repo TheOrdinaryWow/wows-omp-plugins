@@ -8,6 +8,8 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
+import { resolveDispatchDetails } from "@oh-my-pi/pi-coding-agent/tools/resolve";
+import { toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
 
 import type { CheckerInput } from "#src/comment-checker-runner.ts";
 
@@ -27,29 +29,39 @@ function text(value: unknown): string | undefined {
 
 /** No rendered diffs or success prose are interpreted as mutation metadata. */
 export async function checkerTargets(event: ToolResultEvent, ctx: ExtensionContext): Promise<CheckerTarget[]> {
+  if (event.toolName === "bash") {
+    const targets: CheckerTarget[] = [];
+    for (const dispatch of toolCommandDispatches("bash", event)) {
+      if (dispatch.tool === "resolve" && dispatch.mode === "execute" && dispatch.exitCode === 0) {
+        targets.push(...(await resolvedTargets({ details: dispatch.inner }, ctx)));
+      }
+    }
+    return targets;
+  }
   if (event.isError) return [];
-  let tool = event.toolName;
-  let details = record(event.details);
-  // A device dispatch is not itself a file write. Only unwrap known mutation result contracts.
-  if (tool === "write" && details.xdev) {
-    const dispatch = record(details.xdev);
-    if (dispatch.mode !== "execute") return [];
-    tool = text(dispatch.tool) ?? "";
-    details = record(dispatch.inner);
-  }
-  if (tool === "resolve") {
-    if (details.action !== "apply") return [];
-    tool = text(details.sourceToolName) ?? "";
-    details = record(details.sourceResultDetails);
-  }
+  if (event.toolName === "resolve") return resolvedTargets(event, ctx);
+  return mutationTargets(event.toolName, record(event.details), ctx, text(event.input.path));
+}
+
+async function resolvedTargets(result: unknown, ctx: ExtensionContext): Promise<CheckerTarget[]> {
+  const details = resolveDispatchDetails("resolve", result);
+  if (details?.action !== "apply" || !details.sourceToolName) return [];
+  return mutationTargets(details.sourceToolName, record(details.sourceResultDetails), ctx);
+}
+
+async function mutationTargets(
+  tool: string,
+  details: Record<string, unknown>,
+  ctx: ExtensionContext,
+  writePath?: string,
+): Promise<CheckerTarget[]> {
   let files: Record<string, unknown>[];
   if (tool === "write") {
-    const rawPath = text(event.input.path);
-    if (!rawPath || /^[a-z][\w+.-]*:\/\//i.test(rawPath)) return [];
+    if (!writePath || /^[a-z][\w+.-]*:\/\//i.test(writePath)) return [];
     const path = text(details.resolvedPath);
     if (!path) return [];
     // Archive members and SQLite rows report the container as resolvedPath, not a source-file mutation.
-    if (rawPath.includes(":") && resolve(ctx.cwd, rawPath) !== resolve(ctx.cwd, path)) return [];
+    if (writePath.includes(":") && resolve(ctx.cwd, writePath) !== resolve(ctx.cwd, path)) return [];
     files = [{ path }];
   } else if (tool === "edit" || tool === "apply_patch") {
     files = Array.isArray(details.perFileResults) ? details.perFileResults.map(record) : [details];
@@ -61,7 +73,7 @@ export async function checkerTargets(event: ToolResultEvent, ctx: ExtensionConte
   const targets: CheckerTarget[] = [];
   const seen = new Set<string>();
   for (const file of files) {
-    if (file.op === "delete" || file.op === "remove") continue;
+    if (file.isError === true || file.op === "delete" || file.op === "remove") continue;
     const rawPath = text(file.move) ?? text(file.path);
     if (!rawPath || /^[a-z][\w+.-]*:\/\//i.test(rawPath)) continue;
     let path: string;

@@ -127,7 +127,7 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
     deadline: number,
   ): Promise<ToolResultEventResult | undefined> => {
     const config = settings(ctx);
-    if (!config.commentChecker || state.inert || event.isError) return undefined;
+    if (!config.commentChecker || state.inert) return undefined;
     const targets = await checkerTargets(event, ctx);
     const feedback: string[] = [];
     for (const target of targets) {
@@ -183,7 +183,7 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
     // The host permits late registration, but has no unregister API. Reload to restore speculation.
     pi.on("tool_result", (event, context) => {
       const state = stateFor(context);
-      if (state.inert || event.isError || !settings(context).commentChecker) return undefined;
+      if (state.inert || (event.isError && event.toolName !== "bash") || !settings(context).commentChecker) return undefined;
       const deadline = performance.now() + RESULT_BUDGET_MS;
       const expired = Promise.withResolvers<ToolResultEventResult | undefined>();
       const timer = setTimeout(() => {

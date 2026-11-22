@@ -54,8 +54,12 @@ async function scenario(name: string, root: string): Promise<void> {
     const ctx = context(root);
     const first = join(root, "first.ts");
     const moved = join(root, "renamed.ts");
+    const unchanged = join(root, "unchanged.ts");
+    const magic = join(root, "magic.ts");
     await writeFile(first, "// formatted final file\nexport const a = 1;\n");
     await writeFile(moved, "// renamed\nexport const b = 2;\n");
+    await writeFile(unchanged, "// existing comment\nexport const c = 3;\n");
+    await writeFile(magic, "export const magic = true;\n");
     const write = await checkerTargets(result("write", { resolvedPath: first }, { path: "first.ts", content: "raw input" }), ctx);
     assert.equal(write[0]?.input.tool_input.content, await readFile(first, "utf8"));
     assert.equal(write[0]?.scope, "file-wide write");
@@ -64,31 +68,49 @@ async function scenario(name: string, root: string): Promise<void> {
         perFileResults: [
           { path: first, oldText: "old", newText: "new", op: "update" },
           { path: moved, sourcePath: "old.ts", move: moved, snapshotsPruned: true },
+          { path: unchanged, diff: "", isError: true, errorText: "Edit did not match" },
+          { path: magic, diff: "+export const magic = true;" },
           { path: "gone.ts", op: "delete" },
         ],
       }),
       ctx,
     );
-    assert.equal(edit.length, 2);
+    assert.deepEqual(
+      edit.map(({ path }) => path),
+      [first, moved, magic],
+    );
     assert.equal(edit[0]?.input.tool_input.old_string, "old");
     assert.equal(edit[0]?.input.tool_input.new_string, "new");
     assert.match(edit[1]?.scope ?? "", /file-wide fallback.*may predate/);
-    const ast = await checkerTargets(
-      result(
-        "write",
-        {
-          xdev: {
-            tool: "resolve",
-            mode: "execute",
-            inner: { action: "apply", sourceToolName: "ast_edit", sourceResultDetails: { applied: true, files: [first] } },
-          },
-        },
-        { path: "xd://resolve" },
-      ),
-      ctx,
-    );
+    assert.match(edit[2]?.scope ?? "", /file-wide fallback.*may predate/);
+    const appliedAst = (path: string) => ({
+      action: "apply",
+      reason: "Apply the reviewed AST edit",
+      sourceToolName: "ast_edit",
+      sourceResultDetails: { applied: true, files: [path] },
+    });
+    const ast = await checkerTargets(result("resolve", appliedAst(first), { reason: "Apply the reviewed AST edit" }), ctx);
     assert.equal(ast[0]?.path, first);
     assert.match(ast[0]?.scope ?? "", /file-wide fallback/);
+    const batch = await checkerTargets(
+      {
+        ...result("bash", {
+          toolCommands: [
+            { tool: "resolve", mode: "help", exitCode: 0 },
+            { tool: "resolve", mode: "execute", exitCode: 0, inner: appliedAst(first) },
+            { tool: "reject", mode: "execute", exitCode: 0, inner: { action: "discard", reason: "Discard another AST edit" } },
+            { tool: "resolve", mode: "execute", exitCode: 0, inner: appliedAst(moved) },
+            { tool: "resolve", mode: "execute", exitCode: 1, inner: appliedAst(unchanged) },
+          ],
+        }),
+        isError: true,
+      },
+      ctx,
+    );
+    assert.deepEqual(
+      batch.map(({ path }) => path),
+      [first, moved],
+    );
     assert.deepEqual(await checkerTargets(result("ast_edit", { applied: false, files: [first] }), ctx), []);
     assert.deepEqual(
       await checkerTargets(result("apply_patch", { path: first, oldText: "before", newText: "after" }), ctx).then((targets) =>
@@ -96,13 +118,15 @@ async function scenario(name: string, root: string): Promise<void> {
       ),
       [first],
     );
-    for (const path of ["xd://anything", "agent://Main", "proc://1", "local://scratch.ts", "archive.zip:member.ts", "state.db:table"]) {
+    for (const path of ["agent://Main", "proc://1", "local://scratch.ts", "archive.zip:member.ts", "state.db:table"]) {
       assert.deepEqual(await checkerTargets(result("write", { resolvedPath: first }, { path }), ctx), []);
     }
     assert.deepEqual(await checkerTargets({ ...result("edit", { path: first }), isError: true }, ctx), []);
     assert.deepEqual(
       await checkerTargets(
-        result("write", { xdev: { tool: "lsp", mode: "execute", inner: { success: true } } }, { path: "xd://lsp" }),
+        result("bash", {
+          toolCommands: [{ tool: "ast_edit", mode: "execute", exitCode: 0, inner: { applied: true, files: [first] } }],
+        }),
         ctx,
       ),
       [],
@@ -434,7 +458,8 @@ async function scenario(name: string, root: string): Promise<void> {
     agentDir: join(root, "agent"),
     sessionManager: SessionManager.create(root, join(root, "sessions")),
     settings: Settings.isolated({ "tools.approvalMode": "yolo", "autolearn.enabled": false, "edit.mode": "replace" }),
-    toolNames: ["read", "write", "edit"],
+    toolNames: ["read", "write", "edit", "bash", "ast_edit"],
+    mountedToolNames: ["ast_edit"],
     additionalExtensionPaths: [ENTRY],
     disableExtensionDiscovery: true,
     enableMCP: false,
@@ -474,8 +499,33 @@ async function scenario(name: string, root: string): Promise<void> {
     const recorded: CheckerInput = JSON.parse((await readFile(log, "utf8")).trim());
     assert.equal(recorded.tool_name, "edit");
     assert(recorded.tool_input.old_string?.includes("value = 1"));
+    const staged = join(root, "staged.ts");
+    await writeFile(staged, "export const staged = 1;\n");
+    const bash = session.getToolByName("bash");
+    assert(bash);
+    assert(session.getMountedToolCommandNames().includes("ast_edit"));
+    const preview = await bash.execute("sdk-bash-preview", {
+      command: `ast_edit -j '{"paths":["staged.ts"],"ops":[{"pat":"const staged = 1","out":"const staged = 2"}]}'`,
+    });
+    assert(!preview.isError, JSON.stringify(preview.content));
+    assert.equal(await readFile(staged, "utf8"), "export const staged = 1;\n");
+    assert.equal((await readFile(log, "utf8")).trim().split("\n").length, 1);
+    const applied = await bash.execute("sdk-bash-resolve", { command: `resolve 'Apply reviewed AST edit'` });
+    assert(!applied.isError, JSON.stringify(applied.content));
+    assert(applied.content.some((block) => block.type === "text" && block.text.includes("SDK_CHECKER_FINDING")));
+    const checks: CheckerInput[] = (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      checks.map((check) => check.tool_input.file_path),
+      [join(root, "source.ts"), staged],
+    );
+    const appliedSource = await readFile(staged, "utf8");
+    assert.match(appliedSource, /\bconst staged = 2\b/);
+    assert.equal(checks[1]?.tool_input.content, appliedSource);
     console.log(
-      "SDK_CHECKER_OK: real native edit result received one finding; second same-turn edit received none; configured executable resolved through PATH; exact old/new snapshots delivered",
+      "SDK_CHECKER_OK: native edits supply exact snapshots, findings are reported once per turn, and resolving a mounted AST preview checks the applied file",
     );
   } finally {
     await session.dispose();

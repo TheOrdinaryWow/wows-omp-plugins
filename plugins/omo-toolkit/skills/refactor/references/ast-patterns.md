@@ -23,7 +23,7 @@ Use native `ast_grep` for discovery and native `ast_edit` for structural rewrite
    {"ops":[{"pat":"legacy($$$ARGS)","out":"current($$$ARGS)"}],"paths":["src/owned.ts"]}
    ```
 
-3. Inspect the proposed matches and diff. The native editor **stages**, rather than immediately applies, changes; accept the reviewed proposal through `xd://resolve`, or discard it through `xd://reject`, using the live device contract.
+3. Inspect the staged matches and diff. Accept the reviewed proposal with `resolve <reason>` or discard it with `reject <reason>`. If the session lists `resolve` or `reject` as top-level tools, pass the reason through the corresponding tool schema.
 4. Parse failures, unexpected captures, zero matches or an unexpected match count require refining the pattern, not claiming completion. Never apply a broad rewrite to discover what it would do.
 5. After a coherent change, run only the assignment-authorized checks and compare relevant diagnostics with the baseline. Do not add new dependencies or install the upstream Python AST helper; this skill ships no such helper.
 
