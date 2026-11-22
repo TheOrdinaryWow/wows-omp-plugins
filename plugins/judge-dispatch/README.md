@@ -17,7 +17,7 @@ When the agent hands a task to a subagent, it picks which agent type does the wo
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-You need OMP 19.0.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below).
+You need OMP 19.1.0 or newer. Restart the session after installing. Automatic routing needs a judgment model behind OMP's `judge` role (see below).
 
 ## Quick start
 

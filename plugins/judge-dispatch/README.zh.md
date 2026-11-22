@@ -17,7 +17,7 @@
 omp plugin install judge-dispatch@wows-omp-plugins
 ```
 
-需要 OMP 19.0.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）。
+需要 OMP 19.1.0 或更高版本。安装后重启会话。自动路由需要 OMP 的 `judge` 角色配置了判定模型（见下文）。
 
 ## 快速上手
 
