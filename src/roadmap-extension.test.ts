@@ -714,9 +714,15 @@ async function acceptance(name: string, root: string): Promise<void> {
       } else if (name === "interception-bash") {
         const bash = h.session.getToolByName("bash");
         assert(bash);
-        for (const [dir, reason] of [
-          ["docs/adr", /adr_manage/],
-          ["docs/roadmap", /roadmap_stage/],
+        const status = await bash.execute("bash-roadmap-status", { command: "roadmap_status --stage S01" });
+        assert.equal(
+          toolCommandDispatches("bash", status).find((dispatch) => dispatch.tool === "roadmap_status")?.exitCode,
+          0,
+          JSON.stringify(status),
+        );
+        for (const [dir, target, reason] of [
+          ["docs/adr", "docs/adr/0001.md", /adr_manage/],
+          ["docs/roadmap", "docs/roadmap/README.md", /roadmap_stage/],
         ] as const) {
           const path = `${dir}/guard.ts`;
           const source = "const rm = 1;\n";
@@ -728,6 +734,8 @@ async function acceptance(name: string, root: string): Promise<void> {
             JSON.stringify(searched),
           );
           assert.match(JSON.stringify(searched.content), /guard\.ts/);
+          const assigned = await bash.execute(`bash-ast-grep-assigned-${dir}`, { command: `MODE="quiet mode" ast_grep rm --path ${dir}` });
+          assert.equal(toolCommandDispatches("bash", assigned).find((dispatch) => dispatch.tool === "ast_grep")?.exitCode, 0);
           for (const command of [
             `rm ${path}`,
             `echo x > ${path}`,
@@ -738,9 +746,21 @@ async function acceptance(name: string, root: string): Promise<void> {
             `true\nrm ${path}`,
             `MODE="quiet mode" env -i rm ${path}`,
             `command -- rm ${path}`,
+            `cp $(cat list) ${target}`,
+            `timeout 5 rm ${target}`,
+            `xargs -n 1 rm ${target}`,
+            `xargs --max-procs 2 rm ${target}`,
+            `sudo -u x rm ${target}`,
+            `env X=1 rm ${target}`,
+            `eval rm ${target}`,
+            `read x; find . -name y; rm ${target}`,
+            `sed -i 's/x/y/' ${target}`,
+            `echo x > ${target}`,
+            `echo x 2>> ${target}`,
+            `ast_grep --pattern x > ${target}`,
             `ast_grep rm --path ${dir} > ${path}`,
           ]) {
-            await assert.rejects(bash.execute(`bash-mutation-${crypto.randomUUID()}`, { command }), reason);
+            await assert.rejects(bash.execute(`bash-mutation-${crypto.randomUUID()}`, { command }), reason, command);
           }
           const args = JSON.stringify({ ops: [{ pat: "rm", out: "replacement" }], paths: [path] });
           const edited: AgentToolResult<unknown> = await bash.execute(`bash-ast-edit-${dir}`, { command: `ast_edit -j '${args}'` });

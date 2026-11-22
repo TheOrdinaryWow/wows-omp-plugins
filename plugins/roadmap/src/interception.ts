@@ -16,19 +16,6 @@ import {
 
 const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;
 
-const COMMAND_PREFIXES = ["!", "{", "if", "then", "elif", "else", "do", "while", "until"];
-const COMMAND_WRAPPERS: Readonly<Record<string, readonly string[]>> = {
-  builtin: [],
-  command: [],
-  env: ["-C", "-u", "--chdir", "--unset"],
-  exec: ["-a"],
-  nice: ["-n", "--adjustment"],
-  nohup: [],
-  sudo: ["-C", "-D", "-g", "-h", "-p", "-R", "-T", "-u", "--user", "--group"],
-  time: [],
-  xargs: ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--replace", "--max-args"],
-};
-
 /** Includes the managed directory itself, since removing it also mutates its files. docs/adr belongs to the adr plugin. */
 export function isManaged(path: string, repoRoot: string): boolean {
   const name = relative(join(repoRoot, "docs/roadmap"), path);
@@ -42,25 +29,20 @@ function shellWord(raw: string): string {
   );
 }
 
-function bashTargets(command: string): string[] {
+function bashTargets(command: string, toolNames?: ReadonlySet<string>): string[] {
   // Deliberately a static shell projection, not a shell evaluator or sandbox.
   const tokens =
     command.match(/#[^\n]*|&>>?|\d*(?:>>?[&|]?|<<[-<]?|<[&>]?)|[\n|;&()]|(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"|'[^']*'|[^\s|;&()<>"'\\])+/g) ??
     [];
   const paths: string[] = [];
-  let commandStart = true;
-  let wrapper: string | undefined;
-  let skipWrapperValue = false;
-  let collecting = false;
-  let sed = false;
+  const initial = { mounted: undefined, collecting: false, sed: false };
+  let segment: { mounted?: boolean; collecting: boolean; sed: boolean } = { ...initial };
+  const enclosing: (typeof segment)[] = [];
   for (let index = 0; index < tokens.length; index++) {
     const raw = tokens[index] as string;
     if (/^[\n|;&()]$/.test(raw)) {
-      commandStart = true;
-      wrapper = undefined;
-      skipWrapperValue = false;
-      collecting = false;
-      sed = false;
+      if (raw === "(") enclosing.push(segment);
+      segment = (raw === ")" ? enclosing.pop() : undefined) ?? { ...initial };
       continue;
     }
     if (raw.startsWith("#")) continue;
@@ -74,33 +56,32 @@ function bashTargets(command: string): string[] {
     }
     const token = shellWord(raw);
     if (!token) continue;
-    if (commandStart) {
-      if (skipWrapperValue) {
-        skipWrapperValue = false;
-        continue;
-      }
-      if (wrapper && token.startsWith("-")) {
-        if (wrapper === "command" && /^-[p]*[vV]/.test(token)) commandStart = false;
-        skipWrapperValue = COMMAND_WRAPPERS[wrapper]?.includes(token) ?? false;
-        continue;
-      }
-      if (/^[A-Za-z_]\w*\+?=/.test(raw) || COMMAND_PREFIXES.includes(raw)) continue;
-      if (Object.hasOwn(COMMAND_WRAPPERS, token)) {
-        wrapper = token;
-        continue;
-      }
-      commandStart = false;
-      collecting = ["tee", "mv", "cp", "rm", "truncate"].includes(token);
-      sed = token === "sed";
+    if (segment.mounted === undefined) {
+      if (/^[A-Za-z_]\w*\+?=/.test(raw)) continue;
+      segment.mounted = toolNames?.has(token) ?? false;
+    }
+    if (segment.mounted) continue;
+    if (["tee", "mv", "cp", "rm", "truncate"].includes(token)) {
+      segment.collecting = true;
       continue;
     }
-    if (sed && /^-(?:[A-Za-z]*i|-[A-Za-z]*in-place)/.test(token)) collecting = true;
-    if (collecting && !token.startsWith("-")) paths.push(token);
+    if (token === "sed") {
+      segment.sed = true;
+      continue;
+    }
+    if (segment.sed && /^-(?:[A-Za-z]*i|-[A-Za-z]*in-place)/.test(token)) segment.collecting = true;
+    if (segment.collecting && !token.startsWith("-")) paths.push(token);
   }
   return paths;
 }
 
-async function managedTargets(toolName: string, input: Record<string, unknown>, cwd: string, magic: boolean): Promise<string[]> {
+async function managedTargets(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  magic: boolean,
+  toolNames?: ReadonlySet<string>,
+): Promise<string[]> {
   const paths: string[] = [];
   if (toolName === "write" && typeof input.path === "string") paths.push(input.path);
   if (toolName === "edit" || toolName === "apply_patch") {
@@ -139,7 +120,7 @@ async function managedTargets(toolName: string, input: Record<string, unknown>, 
     if (input.action === "rename_file" && typeof input.new_name === "string") paths.push(input.new_name);
   }
   if (toolName === "bash" && typeof input.command === "string") {
-    paths.push(...bashTargets(input.command));
+    paths.push(...bashTargets(input.command, toolNames));
     if (typeof input.cwd === "string") cwd = resolveToCwd(input.cwd, cwd);
   }
   return [
@@ -227,9 +208,10 @@ export async function interceptionReason(
   input: Record<string, unknown>,
   cwd: string,
   magic: boolean,
+  toolNames?: ReadonlySet<string>,
 ): Promise<string | undefined> {
   if (!["write", "edit", "apply_patch", "ast_edit", "lsp", "bash"].includes(toolName)) return;
-  const candidates = await managedTargets(toolName, input, cwd, magic);
+  const candidates = await managedTargets(toolName, input, cwd, magic, toolNames);
   if (!candidates.length) return;
   const currentRepo = targetRepo(cwd);
   const marked = new Map<string, boolean>();
