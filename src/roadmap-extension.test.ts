@@ -8,6 +8,8 @@ import { scheduler } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { AgentSession, AgentToolResult, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
+import { resolveDispatchDetails } from "@oh-my-pi/pi-coding-agent/tools/resolve";
+import { toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
 
 import type { ConsoleChoice, ConsoleState } from "../plugins/roadmap/src/console.ts";
 import { loadAll, loadRepo, type Model, type Repo, replaceGenerated, roundFiles, roundSha256 } from "../plugins/roadmap/src/documents.ts";
@@ -193,7 +195,7 @@ async function git(root: string, args: string[]): Promise<string> {
 
 async function createHarness(
   root: string,
-  options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number]; lsp?: boolean; adr?: boolean } = {},
+  options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number] | "magic"; lsp?: boolean; adr?: boolean; mountedAst?: boolean } = {},
 ): Promise<Harness> {
   // These imports intentionally exercise the loader boundary after the child's isolated HOME is set.
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
@@ -208,10 +210,14 @@ async function createHarness(
     sessionManager: SessionManager.create(root, join(root, "sessions")),
     settings: Settings.isolated({
       "tools.approvalMode": "yolo",
+      "tools.commands": true,
+      "astGrep.enabled": options.mountedAst ?? false,
       "autolearn.enabled": false,
       "edit.mode": options.editMode ?? "hashline",
+      ...(options.editMode === "magic" ? { "edit.magic.model": "unavailable-regression-fixture-model" } : {}),
     }),
-    toolNames: ["read", "write", "edit", "ast_edit", "bash", ...(options.lsp ? ["lsp"] : [])],
+    toolNames: ["read", "write", "edit", "ast_edit", "bash", ...(options.lsp ? ["lsp"] : []), ...(options.mountedAst ? ["ast_grep"] : [])],
+    ...(options.mountedAst ? { mountedToolNames: ["ast_grep", "ast_edit"] } : {}),
     additionalExtensionPaths: options.adr === false ? [ENTRY] : [ENTRY, ADR_ENTRY],
     disableExtensionDiscovery: true,
     enableMCP: false,
@@ -429,6 +435,8 @@ async function confirmedPreviewBehindLock(
 const CASES: Record<string, string> = {
   interception: "initialized repositories block native mutators and allow other files",
   patch: "the real apply_patch edit mode is intercepted",
+  "interception-magic": "magic edits protect each managed root in single-file and mixed requests while allowing other files",
+  "interception-bash": "bash distinguishes mounted tool arguments from shell mutations and guards wrapped AST edits",
   "interception-lsp-rename": "LSP symbol rename identifiers are not paths while managed file renames remain blocked",
   "interception-dangling": "dangling-symlink writes protect nonexistent managed targets but allow unmanaged targets",
   "interception-globs": "partial-name ast_edit globs protect managed directories",
@@ -561,13 +569,16 @@ async function acceptance(name: string, root: string): Promise<void> {
     sub: name === "subagent" || name === "subagent-planning" || name === "upgrade-subagent",
     adr: name !== "adr-absent" && name !== "upgrade-auto-no-adr",
     lsp: name === "interception-lsp-rename",
+    mountedAst: name === "interception-bash",
     editMode:
       EDIT_MODES.find((mode) => name === `interception-mode-${mode}`) ??
-      (name === "patch" || name === "interception-patch-aliases"
-        ? "apply_patch"
-        : name === "interception-replace-aliases" || name === "interception-replace-hardlinks" || name === "interception-hardlink-errors"
-          ? "replace"
-          : "hashline"),
+      (name === "interception-magic"
+        ? "magic"
+        : name === "patch" || name === "interception-patch-aliases"
+          ? "apply_patch"
+          : name === "interception-replace-aliases" || name === "interception-replace-hardlinks" || name === "interception-hardlink-errors"
+            ? "replace"
+            : "hashline"),
   });
   try {
     if (name === "interception" || name === "patch" || name === "worktree") {
@@ -677,7 +688,68 @@ async function acceptance(name: string, root: string): Promise<void> {
       assert(current);
       const write = h.session.getToolByName("write");
       assert(write);
-      if (name === "interception-lsp-rename") {
+      if (name === "interception-magic") {
+        const edit = h.session.getToolByName("edit");
+        assert(edit);
+        const ordinary = "ordinary.md";
+        const original = "# Ordinary\n";
+        await writeFile(join(root, ordinary), original);
+        const inputFor = (...paths: string[]) => ({ input: paths.map((path) => `# ${path}\n- Rename the first heading.\n`).join("\n") });
+        for (const [path, reason] of [
+          [current.path, /roadmap_stage/],
+          [join(repo.adrDir, "README.md"), /adr_manage/],
+        ] as const) {
+          const before = await readFile(path, "utf8");
+          await assert.rejects(edit.execute(`magic-single-${crypto.randomUUID()}`, inputFor(relative(root, path))), reason);
+          await assert.rejects(edit.execute(`magic-mixed-${crypto.randomUUID()}`, inputFor(ordinary, relative(root, path))), reason);
+          assert.equal(await readFile(path, "utf8"), before);
+          assert.equal(await readFile(join(root, ordinary), "utf8"), original);
+        }
+        await assert.rejects(edit.execute("magic-ordinary", inputFor(ordinary)), /edit\.magic\.model.*matches no available model/);
+        const example = `# ${ordinary}\n- Use this example.\n\n\`\`\`\n[docs/adr/README.md#ABCD]\nPUT <1:\n+example\n\`\`\`\n`;
+        await assert.rejects(
+          edit.execute("magic-with-legacy-example", { input: example }),
+          /edit\.magic\.model.*matches no available model/,
+        );
+      } else if (name === "interception-bash") {
+        const bash = h.session.getToolByName("bash");
+        assert(bash);
+        for (const [dir, reason] of [
+          ["docs/adr", /adr_manage/],
+          ["docs/roadmap", /roadmap_stage/],
+        ] as const) {
+          const path = `${dir}/guard.ts`;
+          const source = "const rm = 1;\n";
+          await writeFile(join(root, path), source);
+          const searched: AgentToolResult<unknown> = await bash.execute(`bash-ast-grep-${dir}`, { command: `ast_grep rm --path ${dir}` });
+          assert.equal(
+            toolCommandDispatches("bash", searched).find((dispatch) => dispatch.tool === "ast_grep")?.exitCode,
+            0,
+            JSON.stringify(searched),
+          );
+          assert.match(JSON.stringify(searched.content), /guard\.ts/);
+          for (const command of [
+            `rm ${path}`,
+            `echo x > ${path}`,
+            `true; rm ${path}`,
+            `true && (rm ${path})`,
+            `false || rm ${path}`,
+            `true | rm ${path}`,
+            `true\nrm ${path}`,
+            `MODE="quiet mode" env -i rm ${path}`,
+            `command -- rm ${path}`,
+            `ast_grep rm --path ${dir} > ${path}`,
+          ]) {
+            await assert.rejects(bash.execute(`bash-mutation-${crypto.randomUUID()}`, { command }), reason);
+          }
+          const args = JSON.stringify({ ops: [{ pat: "rm", out: "replacement" }], paths: [path] });
+          const edited: AgentToolResult<unknown> = await bash.execute(`bash-ast-edit-${dir}`, { command: `ast_edit -j '${args}'` });
+          assert.equal(toolCommandDispatches("bash", edited).find((dispatch) => dispatch.tool === "ast_edit")?.exitCode, 1);
+          assert.match(JSON.stringify(edited.content), reason);
+          assert.equal(await readFile(join(root, path), "utf8"), source);
+          await rm(join(root, path));
+        }
+      } else if (name === "interception-lsp-rename") {
         const lsp = h.session.getToolByName("lsp");
         assert(lsp, "The real SDK must register the native LSP tool");
         const source = "const oldName = 1;\n";
@@ -763,7 +835,8 @@ async function acceptance(name: string, root: string): Promise<void> {
         const ordinary = join(root, "ordinary.ts");
         const second = join(root, "second.ts");
         const ast = h.session.getToolByName("ast_edit");
-        assert(ast);
+        const bash = h.session.getToolByName("bash");
+        assert(ast && bash);
         const ops = [{ pat: "const guarded = 1;", out: "const guarded = 2;" }];
         function scopes(path: string): string[] {
           if (name.endsWith("delimited")) return [`ordinary.ts;${path}`, `ordinary.ts,${path}`, `ordinary.ts ${path}`];
@@ -792,12 +865,12 @@ async function acceptance(name: string, root: string): Promise<void> {
                 paths: [scope],
               });
               assert(!preview.isError, JSON.stringify(preview));
-              const applied: AgentToolResult<unknown> = await write.execute(`apply-normalized-${crypto.randomUUID()}`, {
-                path: "xd://resolve",
-                content: "Apply the unrelated AST edit.",
-              });
-              assert(!applied.isError, JSON.stringify(applied));
               const changed = scope === "ordinary.ts" ? ordinary : second;
+              assert.equal(await readFile(changed, "utf8"), source);
+              const applied: AgentToolResult<unknown> = await bash.execute(`apply-normalized-${crypto.randomUUID()}`, {
+                command: 'resolve "Apply the unrelated AST edit."',
+              });
+              assert.equal(resolveDispatchDetails("bash", applied)?.sourceToolName, "ast_edit", JSON.stringify(applied));
               assert.equal(await readFile(changed, "utf8"), "const guarded = 2;\n");
               for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
             }
@@ -830,6 +903,13 @@ async function acceptance(name: string, root: string): Promise<void> {
         for (const path of [current.path, join(repo.adrDir, "README.md")]) {
           const source = await readFile(path, "utf8");
           await assert.rejects(edit.execute(`managed-${mode}-${crypto.randomUUID()}`, await inputFor(path)), PROTECTED);
+          if (mode === "apply_patch") {
+            const patch = await inputFor(path);
+            await assert.rejects(
+              edit.execute(`legacy-with-magic-heading-${crypto.randomUUID()}`, { input: `# ordinary.md\n${patch.input}` }),
+              PROTECTED,
+            );
+          }
           assert.equal(await readFile(path, "utf8"), source);
         }
         const ordinary = join(root, "ordinary.md");
@@ -893,7 +973,8 @@ async function acceptance(name: string, root: string): Promise<void> {
         }
       } else if (name === "interception-outside-scopes") {
         const ast = h.session.getToolByName("ast_edit");
-        assert(ast);
+        const bash = h.session.getToolByName("bash");
+        assert(ast && bash);
         const source = "const guarded = 1;\n";
         const guards = [join(repo.roadmapDir, "guard.ts"), join(repo.adrDir, "guard.ts")];
         for (const path of guards) await writeFile(path, source);
@@ -920,11 +1001,10 @@ async function acceptance(name: string, root: string): Promise<void> {
             });
             assert(!preview.isError, JSON.stringify(preview));
             assert.equal(await readFile(ordinary, "utf8"), source);
-            const applied: AgentToolResult<unknown> = await write.execute(`apply-unrelated-${crypto.randomUUID()}`, {
-              path: "xd://resolve",
-              content: "Apply the unrelated AST edit.",
+            const applied: AgentToolResult<unknown> = await bash.execute(`apply-unrelated-${crypto.randomUUID()}`, {
+              command: 'resolve "Apply the unrelated AST edit."',
             });
-            assert(!applied.isError, JSON.stringify(applied));
+            assert.equal(resolveDispatchDetails("bash", applied)?.sourceToolName, "ast_edit", JSON.stringify(applied));
             assert.equal(await readFile(ordinary, "utf8"), "const guarded = 2;\n");
             for (const path of guards) assert.equal(await readFile(path, "utf8"), source);
           }

@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { relative } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { magicEditSchema } from "@oh-my-pi/pi-coding-agent/edit/schemas";
 
 import { ADR_INSTALL_HINT, AdrConnection } from "#src/adr.ts";
 import { requestPlans } from "#src/atlas.ts";
@@ -195,7 +196,9 @@ export default function roadmap(pi: ExtensionAPI): void {
           };
         }
       }
-      const reason = await interceptionReason(event.toolName, { ...event.input }, ctx.cwd);
+      const magic =
+        event.toolName === "edit" && pi.getAllTools().some((tool) => tool.name === "edit" && tool.parameters === magicEditSchema);
+      const reason = await interceptionReason(event.toolName, { ...event.input }, ctx.cwd, magic);
       if (reason) return { block: true, reason };
     } catch (error) {
       return {

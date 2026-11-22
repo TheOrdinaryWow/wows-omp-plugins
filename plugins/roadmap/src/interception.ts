@@ -1,6 +1,8 @@
 import { lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { magicEditPaths } from "@oh-my-pi/pi-coding-agent/edit/magic";
+
 import { loadRepo } from "#src/documents.ts";
 import { discoverRepo, type GitRepo } from "#src/git.ts";
 import {
@@ -14,37 +16,82 @@ import {
 
 const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;
 
+const COMMAND_PREFIXES = ["!", "{", "if", "then", "elif", "else", "do", "while", "until"];
+const COMMAND_WRAPPERS: Readonly<Record<string, readonly string[]>> = {
+  builtin: [],
+  command: [],
+  env: ["-C", "-u", "--chdir", "--unset"],
+  exec: ["-a"],
+  nice: ["-n", "--adjustment"],
+  nohup: [],
+  sudo: ["-C", "-D", "-g", "-h", "-p", "-R", "-T", "-u", "--user", "--group"],
+  time: [],
+  xargs: ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--replace", "--max-args"],
+};
+
 /** Includes the managed directory itself, since removing it also mutates its files. docs/adr belongs to the adr plugin. */
 export function isManaged(path: string, repoRoot: string): boolean {
   const name = relative(join(repoRoot, "docs/roadmap"), path);
   return name === "" || (name !== ".." && !name.startsWith(`..${sep}`) && !isAbsolute(name));
 }
 
+function shellWord(raw: string): string {
+  return raw.replace(
+    /"((?:\\[\s\S]|[^"\\])*)"|'([^']*)'|\\([\s\S])/g,
+    (_, doubleQuoted, singleQuoted, escaped) => doubleQuoted ?? singleQuoted ?? (escaped === "\n" ? "" : escaped),
+  );
+}
+
 function bashTargets(command: string): string[] {
   // Deliberately a static shell projection, not a shell evaluator or sandbox.
-  const tokens = command.match(/"(?:\\.|[^"\\])*"|'[^']*'|[12]?>>?|[|;&]|[^\s|;&<>]+/g) ?? [];
+  const tokens =
+    command.match(/#[^\n]*|&>>?|\d*(?:>>?[&|]?|<<[-<]?|<[&>]?)|[\n|;&()]|(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"|'[^']*'|[^\s|;&()<>"'\\])+/g) ??
+    [];
   const paths: string[] = [];
+  let commandStart = true;
+  let wrapper: string | undefined;
+  let skipWrapperValue = false;
   let collecting = false;
   let sed = false;
   for (let index = 0; index < tokens.length; index++) {
     const raw = tokens[index] as string;
-    const token = raw.replace(/^(["'])([\s\S]*)\1$/, "$2");
-    if (/^[|;&]$/.test(token)) {
+    if (/^[\n|;&()]$/.test(raw)) {
+      commandStart = true;
+      wrapper = undefined;
+      skipWrapperValue = false;
       collecting = false;
       sed = false;
       continue;
     }
-    if (/^[12]?>>?$/.test(token)) {
+    if (raw.startsWith("#")) continue;
+    if (/^(?:&?>|\d*[<>])/.test(raw)) {
       const next = tokens[++index];
-      if (next) paths.push(next.replace(/^(["'])([\s\S]*)\1$/, "$2"));
+      if (next && raw.includes(">")) {
+        const target = shellWord(next);
+        if (!raw.endsWith("&") || !/^(?:\d+|-)$/.test(target)) paths.push(target);
+      }
       continue;
     }
-    if (["tee", "mv", "cp", "rm", "truncate"].includes(token)) {
-      collecting = true;
-      continue;
-    }
-    if (token === "sed") {
-      sed = true;
+    const token = shellWord(raw);
+    if (!token) continue;
+    if (commandStart) {
+      if (skipWrapperValue) {
+        skipWrapperValue = false;
+        continue;
+      }
+      if (wrapper && token.startsWith("-")) {
+        if (wrapper === "command" && /^-[p]*[vV]/.test(token)) commandStart = false;
+        skipWrapperValue = COMMAND_WRAPPERS[wrapper]?.includes(token) ?? false;
+        continue;
+      }
+      if (/^[A-Za-z_]\w*\+?=/.test(raw) || COMMAND_PREFIXES.includes(raw)) continue;
+      if (Object.hasOwn(COMMAND_WRAPPERS, token)) {
+        wrapper = token;
+        continue;
+      }
+      commandStart = false;
+      collecting = ["tee", "mv", "cp", "rm", "truncate"].includes(token);
+      sed = token === "sed";
       continue;
     }
     if (sed && /^-(?:[A-Za-z]*i|-[A-Za-z]*in-place)/.test(token)) collecting = true;
@@ -53,26 +100,23 @@ function bashTargets(command: string): string[] {
   return paths;
 }
 
-/** Native editInspect projects every supported edit grammar, including move/delete intents. */
-export async function managedTargets(
-  toolName: string,
-  input: Record<string, unknown>,
-  editMode: string | undefined,
-  cwd: string,
-): Promise<string[]> {
+async function managedTargets(toolName: string, input: Record<string, unknown>, cwd: string, magic: boolean): Promise<string[]> {
   const paths: string[] = [];
   if (toolName === "write" && typeof input.path === "string") paths.push(input.path);
   if (toolName === "edit" || toolName === "apply_patch") {
-    // The active host mode can depend on the model; inspect every grammar rather than guessing from wire fields.
-    const modes = toolName === "apply_patch" ? ["apply_patch"] : editMode === undefined ? EDIT_MODES : [editMode];
-    const payload = JSON.stringify(input);
-    for (const mode of modes) {
-      if (!EDIT_MODES.some((supported) => supported === mode)) throw new Error(`Unknown native edit mode: ${mode}`);
-      const projection = editInspect(mode, payload);
-      paths.push(...projection.paths, ...projection.entries.map((entry) => entry.path));
-      for (const op of projection.fileOps) {
-        paths.push(op.path);
-        if (op.to) paths.push(op.to);
+    if (toolName === "edit" && magic) {
+      if (typeof input.input === "string") paths.push(...magicEditPaths(input.input));
+    } else {
+      // The active native grammar can depend on the model and use the same wire fields as other grammars.
+      const modes = toolName === "apply_patch" ? (["apply_patch"] as const) : EDIT_MODES;
+      const payload = JSON.stringify(input);
+      for (const mode of modes) {
+        const projection = editInspect(mode, payload);
+        paths.push(...projection.paths, ...projection.entries.map((entry) => entry.path));
+        for (const op of projection.fileOps) {
+          paths.push(op.path);
+          if (op.to) paths.push(op.to);
+        }
       }
     }
     if (!paths.length) throw new Error("Unrecognized native edit grammar; its mutation targets cannot be validated");
@@ -178,9 +222,14 @@ function managedFileIdentities(repoRoot: string): Set<string> {
   return files;
 }
 
-export async function interceptionReason(toolName: string, input: Record<string, unknown>, cwd: string): Promise<string | undefined> {
+export async function interceptionReason(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  magic: boolean,
+): Promise<string | undefined> {
   if (!["write", "edit", "apply_patch", "ast_edit", "lsp", "bash"].includes(toolName)) return;
-  const candidates = await managedTargets(toolName, input, undefined, cwd);
+  const candidates = await managedTargets(toolName, input, cwd, magic);
   if (!candidates.length) return;
   const currentRepo = targetRepo(cwd);
   const marked = new Map<string, boolean>();
