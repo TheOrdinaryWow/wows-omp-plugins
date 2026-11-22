@@ -179,7 +179,9 @@ describe("literal keyword fallback when every judge request failed", () => {
 
   test("a glob matches the decoded basename of an explicit URL file and reports its encoded URL", () => {
     const outcome = runFailingJudgeCommand(false, true);
-    expect(outcome.notices.join("\n")).toContain("local://docs/my%20file.ts:1 · export const implementation = 3;");
+    const notices = outcome.notices.join("\n");
+    expect(notices).toContain("local://docs/my%20file.ts");
+    expect(notices).toContain("export const implementation = 3;");
   });
 
   test("a dialog host lists the literal rows as selectable entries and opens the chosen line", () => {

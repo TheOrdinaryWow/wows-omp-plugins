@@ -3,6 +3,15 @@ import type { SearchRoot } from "@oh-my-pi/pi-coding-agent/tools/jfind/tree";
 import { resolveSearchResultPath } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import { type ShellFsDirEntry, ShellFsFileType } from "@oh-my-pi/pi-natives";
 
+/** Entry name of a raw URL segment; a segment the host keeps verbatim (an invalid escape such as `100%`) stays as is. */
+export function decodeUrlSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Build only the ancestors of known hit files; no directory enumeration or repository scan occurs. */
 export function withinTree(root: SearchRoot, files: readonly string[]): Map<string, ShellFsDirEntry[]> {
   const tree = new Map<string, Map<string, ShellFsDirEntry>>([[root.path, new Map()]]);
@@ -15,7 +24,7 @@ export function withinTree(root: SearchRoot, files: readonly string[]): Map<stri
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       if (!part) continue;
-      const name = url ? decodeURIComponent(part) : part;
+      const name = url ? decodeUrlSegment(part) : part;
       const directory = i < parts.length - 1;
       let entries = tree.get(parent);
       if (!entries) {

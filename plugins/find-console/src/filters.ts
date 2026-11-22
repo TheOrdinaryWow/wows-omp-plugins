@@ -8,7 +8,7 @@ import { resolveSearchResultPath } from "@oh-my-pi/pi-coding-agent/tools/path-ut
 import { type ShellFilesystem, ShellFsFileType, ShellFsOp } from "@oh-my-pi/pi-natives";
 
 import type { ConsoleHit } from "#src/report.ts";
-import { withinTree } from "#src/within.ts";
+import { decodeUrlSegment, withinTree } from "#src/within.ts";
 
 export interface FindFilters {
   globs: string[];
@@ -40,11 +40,11 @@ export function rootRelative(root: SearchRoot, path: string): string {
   const url = isUrlPath(root.path);
   if (root.type === "file") {
     const name = basename(path);
-    return url ? decodeURIComponent(name) : name;
+    return url ? decodeUrlSegment(name) : name;
   }
   if (!url) return relative(root.path, path).replace(/\\/g, "/");
   const encoded = path.slice(root.path.replace(/\/+$/, "").length).replace(/^\/+/, "");
-  return encoded.split("/").map(decodeURIComponent).join("/");
+  return encoded.split("/").map(decodeUrlSegment).join("/");
 }
 
 /** Intercept directory entries before both native lexical scanning and cascade filename ranking. */

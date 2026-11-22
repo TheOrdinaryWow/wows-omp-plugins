@@ -7,7 +7,8 @@ import { InternalUrlFilesystem } from "@oh-my-pi/pi-coding-agent/internal-urls/u
 import { grepIndex } from "@oh-my-pi/pi-coding-agent/tools/jfind/lexical";
 import { resolveSearchRoot } from "@oh-my-pi/pi-coding-agent/tools/jfind/tree";
 
-import { filteredFilesystem } from "../plugins/find-console/src/filters.ts";
+import { filteredFilesystem, rootRelative } from "../plugins/find-console/src/filters.ts";
+import { withinTree } from "../plugins/find-console/src/within.ts";
 
 const directory = "notes with spaces";
 const filename = "my 100%20.md";
@@ -39,4 +40,11 @@ test.each([
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test("keeps URL segments the host serves verbatim instead of failing on an invalid escape", () => {
+  const file = "agent://Worker/100%";
+  expect(rootRelative({ type: "file", path: file, size: 0 }, file)).toBe("100%");
+  const tree = withinTree({ type: "directory", path: "agent://Worker" }, [file]);
+  expect(tree.get("agent://Worker")?.map((entry) => entry.name)).toEqual(["100%"]);
 });
