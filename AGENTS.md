@@ -219,19 +219,21 @@ a plugin that only observes results listens to `tool_execution_end` instead, as
 omp-herdr-dag does. Guidance for the model after a tool runs goes through the
 `tool_result` `additionalContext` return, not an extra `sendMessage`.
 
-Since omp 19.1.0 there are no `xd://` devices. Discoverable tools, which
-include every extension tool that declares no `loadMode` (`roadmap_*`, `adr_*`,
-`ulw_loop`, `toolkit_init_deep`), become tool commands while `bash` is active:
-the model runs them as bash command lines (`<tool> --help`, `<tool> <argv>`),
-and they are top-level tools again once `bash` is inactive. A mounted command
-still reaches extensions as its own `tool_call`/`tool_result`, with toolCallId
-`<bash id>:cmd:<n>`. The special commands `resolve`, `reject`, `propose` and
-`report_issue` run raw inside bash and fire no inner events; read their outcome
-from the bash result's `details.toolCommands` through the host helpers in
-`tools/resolve` and `tools/tool-commands` (`proposeDispatchDetails`,
-`resolveDispatchDetails`, `toolCommandDispatches`). Atlas deactivates `bash`
-while it executes, so its guard sees roadmap and ADR tools as direct calls,
-and restores it on exit.
+Since omp 19.1.0, discoverable tools, which include every extension tool that
+declares no `loadMode` (`roadmap_*`, `adr_*`, `ulw_loop`, `toolkit_init_deep`),
+become tool commands while `bash` is active and `tools.commands` is on: the
+model runs them as bash command lines (`<tool> --help`, `<tool> <argv>`). They
+are top-level tools when `bash` is inactive, and the host always keeps `todo`,
+`ask`, `grep`, `web_search`, `yield` and pinned tools top-level. A mounted
+command still reaches extensions as its own `tool_call`/`tool_result`, with
+toolCallId `<bash id>:cmd:<n>`. The special commands `resolve`, `reject`,
+`propose` and `report_issue` run raw inside bash and fire no inner events; read
+their outcome from the bash result's `details.toolCommands` through the host
+helpers in `tools/resolve` and `tools/tool-commands` (`proposeDispatchDetails`,
+`resolveDispatchDetails`, `toolCommandDispatches`). The whole Prometheus
+workflow, planning and Atlas execution, deactivates `bash`, so `propose` and the
+roadmap and ADR tools are direct calls there, and restores it when the workflow
+ends.
 
 Since omp 18.4.12 the host tells subagents not to run builds or tests unless
 their assignment explicitly says so. Prompts that dispatch children whose work
