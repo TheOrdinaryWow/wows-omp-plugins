@@ -35,6 +35,7 @@ function bashTargets(command: string, toolNames?: ReadonlySet<string>): string[]
     command.match(/#[^\n]*|&>>?|\d*(?:>>?[&|]?|<<[-<]?|<[&>]?)|[\n|;&()]|(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"|'[^']*'|[^\s|;&()<>"'\\])+/g) ??
     [];
   const paths: string[] = [];
+  const exempt = /\$\(|`|[<>]\(/.test(command) ? undefined : toolNames;
   const initial = { mounted: undefined, collecting: false, sed: false };
   let segment: { mounted?: boolean; collecting: boolean; sed: boolean } = { ...initial };
   const enclosing: (typeof segment)[] = [];
@@ -58,7 +59,7 @@ function bashTargets(command: string, toolNames?: ReadonlySet<string>): string[]
     if (!token) continue;
     if (segment.mounted === undefined) {
       if (/^[A-Za-z_]\w*\+?=/.test(raw)) continue;
-      segment.mounted = toolNames?.has(token) ?? false;
+      segment.mounted = exempt?.has(token) ?? false;
     }
     if (segment.mounted) continue;
     if (["tee", "mv", "cp", "rm", "truncate"].includes(token)) {

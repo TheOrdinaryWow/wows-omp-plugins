@@ -754,6 +754,7 @@ async function acceptance(name: string, root: string): Promise<void> {
             `env X=1 rm ${target}`,
             `eval rm ${target}`,
             `read x; find . -name y; rm ${target}`,
+            `ast_grep $(case x in x) rm ${target};; esac) --path ${dir}`,
             `sed -i 's/x/y/' ${target}`,
             `echo x > ${target}`,
             `echo x 2>> ${target}`,
