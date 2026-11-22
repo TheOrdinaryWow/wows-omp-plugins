@@ -36,9 +36,15 @@ export function filterHits(hits: readonly ConsoleHit[], filters: Pick<FindFilter
     .slice(0, filters.limit);
 }
 
-function rootRelative(root: SearchRoot, path: string): string {
-  if (root.type === "file") return basename(path);
-  return isUrlPath(root.path) ? path.slice(root.path.replace(/\/+$/, "").length + 1) : relative(root.path, path).replace(/\\/g, "/");
+export function rootRelative(root: SearchRoot, path: string): string {
+  const url = isUrlPath(root.path);
+  if (root.type === "file") {
+    const name = basename(path);
+    return url ? decodeURIComponent(name) : name;
+  }
+  if (!url) return relative(root.path, path).replace(/\\/g, "/");
+  const encoded = path.slice(root.path.replace(/\/+$/, "").length).replace(/^\/+/, "");
+  return encoded.split("/").map(decodeURIComponent).join("/");
 }
 
 /** Intercept directory entries before both native lexical scanning and cascade filename ranking. */

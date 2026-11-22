@@ -17,7 +17,7 @@ interface CommandOutcome {
   opened: string;
 }
 
-function runFailingJudgeCommand(hasUI: boolean): CommandOutcome {
+function runFailingJudgeCommand(hasUI: boolean, explicitUrlFile = false): CommandOutcome {
   // Dynamic imports load the host only after the judge transport mock replaces it in this isolated process.
   const script = `
     import { mock } from "bun:test";
@@ -48,6 +48,7 @@ function runFailingJudgeCommand(hasUI: boolean): CommandOutcome {
     const modelRegistry = { getAvailable: () => models, getApiKey: async () => "fixture", resolver: () => "fixture",
       resolveModelHeaders: async () => undefined };
     const cwd = await mkdtemp(join(tmpdir(), "find-console-literal-"));
+    const explicitUrlFile = ${explicitUrlFile};
     const opened = join(cwd, "opened.txt");
     process.env.VISUAL = "printf '%s %s' > '" + opened + "'";
     const notices = [];
@@ -57,6 +58,11 @@ function runFailingJudgeCommand(hasUI: boolean): CommandOutcome {
       await mkdir(join(cwd, "src"));
       await writeFile(join(cwd, "src", "alpha.ts"), "const a = 1;\\nexport function implementation() {\\n  return 'implementation answer';\\n}\\n");
       await writeFile(join(cwd, "src", "beta.ts"), "// unrelated\\nexport const implementation = 2;\\n");
+      if (explicitUrlFile) {
+        const docs = join(cwd, "local", "docs");
+        await mkdir(docs, { recursive: true });
+        await writeFile(join(docs, "my file.ts"), "export const implementation = 3;\\n");
+      }
       const sessionManager = {
         getSessionId: () => "fixture-session", getSessionDir: () => cwd, getSessionFile: () => undefined,
         getArtifactsDir: () => cwd, getLeafId: () => null, appendModelUsage: () => {},
@@ -88,7 +94,8 @@ function runFailingJudgeCommand(hasUI: boolean): CommandOutcome {
         sendMessage: (message) => notices.push(message.content),
         sendUserMessage() {},
       });
-      await withActiveSettings(settings, () => command.handler("--no-cache --no-translate --path src -k implementation implementation", ctx));
+      const scope = explicitUrlFile ? '--path local://docs/my%20file.ts --glob "my *.ts"' : "--path src";
+      await withActiveSettings(settings, () => command.handler("--no-cache --no-translate " + scope + " -k implementation implementation", ctx));
       const openedText = await readFile(opened, "utf8").catch(() => "");
       console.log(JSON.stringify({ judgeCalls, notices, dialogs, uiNotices, opened: openedText.replace(cwd, "<cwd>") }));
     } finally {
@@ -168,6 +175,11 @@ describe("literal keyword fallback when every judge request failed", () => {
     expect(notice).toContain("src/alpha.ts:2 · export function implementation() {");
     expect(notice).toContain("src/beta.ts:2 · export const implementation = 2;");
     expect(notice).not.toContain("try grep");
+  });
+
+  test("a glob matches the decoded basename of an explicit URL file and reports its encoded URL", () => {
+    const outcome = runFailingJudgeCommand(false, true);
+    expect(outcome.notices.join("\n")).toContain("local://docs/my%20file.ts:1 · export const implementation = 3;");
   });
 
   test("a dialog host lists the literal rows as selectable entries and opens the chosen line", () => {

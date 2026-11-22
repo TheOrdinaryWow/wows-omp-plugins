@@ -13,7 +13,7 @@ import { cfgFindEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { argumentCompletions, parseFindArgs, USAGE } from "#src/args.ts";
 import { accountCache } from "#src/cache.ts";
 import { pickHistory, showResults } from "#src/dialogs.ts";
-import { emptyCascade, fileMatcher, filteredFilesystem, filterHits } from "#src/filters.ts";
+import { emptyCascade, fileMatcher, filteredFilesystem, filterHits, rootRelative } from "#src/filters.ts";
 import { type HistoryEntry, HistoryStore, historyCommand, type WithinSearch } from "#src/history.ts";
 import { commandNotice } from "#src/notices.ts";
 import { PreviewReader } from "#src/preview.ts";
@@ -187,7 +187,7 @@ export default function findConsole(pi: ExtensionAPI): void {
             const root = await resolveSearchRoot(filesystem, args.path, ctx.cwd);
             const excluded =
               root.type === "file" &&
-              (!fileMatcher(args)(root.path.split("/").at(-1) ?? root.path) || (within !== undefined && !within.files.includes(root.path)));
+              (!fileMatcher(args)(rootRelative(root, root.path)) || (within !== undefined && !within.files.includes(root.path)));
             const raw = excluded
               ? emptyCascade()
               : await runCascade({
