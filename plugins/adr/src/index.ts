@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { magicEditSchema } from "@oh-my-pi/pi-coding-agent/edit/schemas";
+import { isToolCommandName } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
 
 import { registerMessageTitles } from "#src/cards.ts";
 import { registerCommands } from "#src/commands.ts";
@@ -82,7 +83,8 @@ export default function adr(pi: ExtensionAPI): void {
     try {
       const magic =
         event.toolName === "edit" && pi.getAllTools().some((tool) => tool.name === "edit" && tool.parameters === magicEditSchema);
-      const reason = await interceptionReason(event.toolName, { ...event.input }, ctx.cwd, magic);
+      const toolNames = event.toolName === "bash" ? new Set(pi.getActiveTools().filter(isToolCommandName)) : undefined;
+      const reason = await interceptionReason(event.toolName, { ...event.input }, ctx.cwd, magic, toolNames);
       if (reason) return { block: true, reason };
     } catch (error) {
       return {
