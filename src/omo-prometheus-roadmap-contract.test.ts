@@ -103,6 +103,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const entries: Array<{ type: string; customType?: string; data?: Record<string, unknown> }> = [];
   const sessionManager = {
     getSessionId: () => sessionId,
+    getCwd: () => root,
     getSessionDir: () => sessionDir,
     getArtifactsDir: () => artifacts,
     getBranch: () => entries,
@@ -113,7 +114,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const live = {
     settings: Settings.isolated(),
     sessionManager,
-    getPlanModeState: () => ({ enabled: mode }),
+    getPlanModeState: () => ({ enabled: mode, planFilePath: "local://bound-plan.md" }),
     getPlanReferencePath: () => reference,
     setPlanReferencePath: (next: string) => {
       reference = next;
@@ -164,6 +165,7 @@ async function scenario(name: string, root: string): Promise<void> {
       getAllTools: () => [
         { name: "task", description: "# Available Agents\n- `task`: worker\n- `reviewer`: review", sourceInfo: { source: "builtin" } },
         { name: "write", sourceInfo: { source: "builtin" } },
+        { name: "propose", sourceInfo: { source: "builtin" } },
         { name: "ask", sourceInfo: { source: "builtin" } },
         { name: "roadmap_stage", sourceInfo: { source, path: sourcePath } },
         { name: "adr_manage", sourceInfo: { source: "extension", path: adrSourcePath } },
@@ -248,9 +250,9 @@ async function scenario(name: string, root: string): Promise<void> {
   if (name === "criteria") await hook("session_start");
   await commands.get("prometheus")?.("", ctx);
   const propose = {
-    toolName: "write",
+    toolName: "propose",
     toolCallId: "proposal-check",
-    input: { path: "xd://propose", content: JSON.stringify({ title: "bound" }) },
+    input: { title: "bound" },
   };
   if (criteria) {
     // Each refusal arrives before the approval overlay and names what the planner must fix.
@@ -275,10 +277,10 @@ async function scenario(name: string, root: string): Promise<void> {
   const restore = name === "restored" || name === "legacy";
   mode = restore;
   await hook("tool_result", {
-    toolName: "write",
+    toolName: "propose",
     toolCallId: "proposal",
     isError: false,
-    details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: reference, planExists: true } } },
+    details: { planFilePath: reference, planExists: true },
     content: [{ type: "text", text: restore ? "Plan proposal submitted" : "Plan approved at local://bound-plan.md" }],
   });
   const proposalState = entries.filter((entry) => entry.customType === "wows-omp-omo-prometheus.state").at(-1)?.data;
@@ -365,41 +367,27 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(isComplete(JSON.parse(readFileSync(ledgerPath, "utf8")) as ExecutionLedger), "Event must follow the durable ledger write");
     completionEvents.push(raw as AtlasCompleted);
   });
-  const roadmapDevice = (content: Record<string, unknown>) => ({
-    toolName: "write",
-    toolCallId: crypto.randomUUID(),
-    input: { path: "xd://roadmap_stage", content: JSON.stringify(content) },
-  });
+  const roadmapCall = (input: Record<string, unknown>) => ({ toolName: "roadmap_stage", toolCallId: crypto.randomUUID(), input });
   if (name === "adr") {
     // An ADR-only repository: no roadmap answers, yet the ADR tools reach Atlas through their own handshake.
     const adrCall = { toolName: "adr_manage", input: { action: "set_status", id: "ADR-0001", status: "accepted" } };
-    const adrDevice = () => ({
-      toolName: "write",
-      toolCallId: crypto.randomUUID(),
-      input: { path: "xd://adr_manage", content: JSON.stringify(adrCall.input) },
-    });
-    for (const event of [adrCall, adrDevice()]) {
-      const denied = (await hook("tool_call", event)) as { block: boolean; reason: string };
-      assert.equal(denied.block, true);
-      assert.match(denied.reason, /adr plugin did not answer the binding handshake.*adr plugin is installed and enabled/);
-    }
+    const denied = (await hook("tool_call", adrCall)) as { block: boolean; reason: string };
+    assert.equal(denied.block, true);
+    assert.match(denied.reason, /adr plugin did not answer the binding handshake.*adr plugin is installed and enabled/);
     let adrRequests = 0;
     bus.on("adr:binding-request", (raw) => {
       adrRequests++;
       bus.emit("adr:binding", { ...(raw as Record<string, unknown>), v: 1, toolSourcePath: ADR_ENTRY, api: { version: 1 } });
     });
     assert.equal(await hook("tool_call", adrCall), undefined);
-    assert.equal(await hook("tool_call", adrDevice()), undefined);
     assert.equal(adrRequests, 1);
     // The ADR binding never vouches for roadmap tools.
     const roadmapDenied = (await hook("tool_call", { toolName: "roadmap_stage", input: { action: "close" } })) as { reason: string };
     assert.match(roadmapDenied.reason, /roadmap plugin did not answer the binding handshake/);
     adrSourcePath = `${ADR_ENTRY}-shadow`;
-    for (const event of [adrCall, adrDevice()]) {
-      const denied = (await hook("tool_call", event)) as { block: boolean; reason: string };
-      assert.equal(denied.block, true);
-      assert.match(denied.reason, /verified adr runtime.*-shadow/);
-    }
+    const shadowed = (await hook("tool_call", adrCall)) as { block: boolean; reason: string };
+    assert.equal(shadowed.block, true);
+    assert.match(shadowed.reason, /verified adr runtime.*-shadow/);
     await hook("session_shutdown");
     console.log(`PROMETHEUS_ROADMAP_OK ${name}`);
     return;
@@ -408,20 +396,17 @@ async function scenario(name: string, root: string): Promise<void> {
     await hook("session_shutdown");
     install();
     await hook("session_start");
-    const unanswered = (await hook("tool_call", roadmapDevice({ action: "start", id: "S01" }))) as { block: boolean; reason: string };
+    const unanswered = (await hook("tool_call", roadmapCall({ action: "start", id: "S01" }))) as { block: boolean; reason: string };
     assert.equal(unanswered.block, true);
     assert.match(unanswered.reason, /did not answer the binding handshake/);
     const unsubscribe = responder();
-    assert.equal(await hook("tool_call", { toolName: "roadmap_stage", input: { action: "close" } }), undefined);
-    assert.equal(await hook("tool_call", roadmapDevice({ action: "start", id: "S01" })), undefined);
+    assert.equal(await hook("tool_call", roadmapCall({ action: "start", id: "S01" })), undefined);
     assert.equal(requestCount, 1);
     unsubscribe();
     sourcePath = `${ROADMAP_ENTRY}-shadow`;
-    for (const event of [{ toolName: "roadmap_stage", input: { action: "close" } }, roadmapDevice({ action: "close", id: "S01" })]) {
-      const denied = (await hook("tool_call", event)) as { block: boolean; reason: string };
-      assert.equal(denied.block, true);
-      assert.match(denied.reason, /verified roadmap runtime.*-shadow/);
-    }
+    const denied = (await hook("tool_call", roadmapCall({ action: "close", id: "S01" }))) as { block: boolean; reason: string };
+    assert.equal(denied.block, true);
+    assert.match(denied.reason, /verified roadmap runtime.*-shadow/);
     sourcePath = ROADMAP_ENTRY;
     source = "builtin";
     assert.equal(((await hook("tool_call", { toolName: "roadmap_stage", input: {} })) as { block: boolean }).block, true);
@@ -431,7 +416,6 @@ async function scenario(name: string, root: string): Promise<void> {
   }
   if (name === "bound" || name === "unbound" || name === "late") {
     assert.equal(await hook("tool_call", { toolName: "roadmap_stage", input: { action: "close" } }), undefined);
-    assert.equal(await hook("tool_call", roadmapDevice({ action: "start", id: "S01" })), undefined);
     assert.equal(requestCount, 1);
   }
   // Atlas starts the stage after a proposal that carried none.
@@ -802,15 +786,14 @@ if (process.env[CHILD]) {
     expect(executionBlockReason("bash", {}, trusted)).toBeTruthy();
     expect(executionToolSourceBlockReason("task", "extension", false, trusted, ROADMAP_ENTRY)).toBeTruthy();
   });
-  test("Atlas admits ADR tools and devices only from the ADR handshake's runtime", () => {
+  test("Atlas admits ADR tools only from the ADR handshake's runtime", () => {
     const trusted = { adr: ADR_ENTRY };
     const input = { action: "set_status", id: "ADR-0001", status: "accepted" };
-    const device = { path: "xd://adr_manage", content: JSON.stringify(input) };
     expect(executionBlockReason("adr_manage", input, trusted)).toBeUndefined();
-    expect(executionBlockReason("write", device, trusted)).toBeUndefined();
     expect(executionToolSourceBlockReason("adr_manage", "extension", false, trusted, ADR_ENTRY)).toBeUndefined();
-    for (const reason of [executionBlockReason("adr_manage", input), executionBlockReason("write", device)])
-      expect(reason).toMatch(/adr plugin did not answer the binding handshake.*check that the adr plugin is installed and enabled/);
+    expect(executionBlockReason("adr_manage", input)).toMatch(
+      /adr plugin did not answer the binding handshake.*check that the adr plugin is installed and enabled/,
+    );
     expect(executionToolSourceBlockReason("adr_manage", "extension", false, trusted, "/shadow.ts")).toMatch(
       /not from the verified adr runtime.*\/shadow\.ts/,
     );
@@ -819,12 +802,9 @@ if (process.env[CHILD]) {
     // Each family is vouched for only by its own handshake, even when both name the same path.
     const roadmapOnly = { roadmap: ADR_ENTRY };
     expect(executionBlockReason("adr_manage", input, roadmapOnly)).toMatch(/adr plugin did not answer/);
-    expect(executionBlockReason("write", device, roadmapOnly)).toMatch(/adr plugin did not answer/);
     expect(executionToolSourceBlockReason("adr_manage", "extension", false, roadmapOnly, ADR_ENTRY)).toMatch(/adr plugin did not answer/);
     const adrOnly = { adr: ROADMAP_ENTRY };
-    const roadmapDevice = { path: "xd://roadmap_todo", content: JSON.stringify({ action: "add", title: "Later" }) };
     expect(executionBlockReason("roadmap_stage", {}, adrOnly)).toMatch(/roadmap plugin did not answer/);
-    expect(executionBlockReason("write", roadmapDevice, adrOnly)).toMatch(/roadmap plugin did not answer/);
     expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, adrOnly, ROADMAP_ENTRY)).toMatch(
       /roadmap plugin did not answer/,
     );
@@ -833,13 +813,10 @@ if (process.env[CHILD]) {
     expect(executionToolSourceBlockReason("adr_manage", "extension", false, both, ROADMAP_ENTRY)).toMatch(/verified adr runtime/);
     expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, both, ADR_ENTRY)).toMatch(/verified roadmap runtime/);
   });
-  test("Atlas admits the planned-round tool and device only from authenticated roadmap provenance", () => {
+  test("Atlas admits the planned-round tool only from authenticated roadmap provenance", () => {
     const name = "roadmap_round_plan";
-    const device = { path: `xd://${name}`, content: JSON.stringify({ round: { title: "Later" } }) };
     expect(executionBlockReason(name, {}, { roadmap: ROADMAP_ENTRY })).toBeUndefined();
-    expect(executionBlockReason("write", device, { roadmap: ROADMAP_ENTRY })).toBeUndefined();
     expect(executionBlockReason(name, {})).toBeTruthy();
-    expect(executionBlockReason("write", device)).toBeTruthy();
     expect(executionToolSourceBlockReason(name, "extension", false, { roadmap: ROADMAP_ENTRY }, ROADMAP_ENTRY)).toBeUndefined();
     expect(executionToolSourceBlockReason(name, "extension", false, { roadmap: ROADMAP_ENTRY }, "/shadow.ts")).toBeTruthy();
   });
@@ -849,10 +826,6 @@ if (process.env[CHILD]) {
     expect(executionBlockReason("roadmap_stage", close, trusted)).toBeUndefined();
     expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, trusted, ROADMAP_ENTRY)).toBeUndefined();
     expect(executionBlockReason("roadmap_stage", close)).toMatch(/did not answer the binding handshake/);
-    const device = { path: "xd://roadmap_todo", content: JSON.stringify({ action: "resolve", id: "T001", resolution: "done" }) };
-    expect(executionBlockReason("write", device, trusted)).toBeUndefined();
-    expect(executionBlockReason("write", device)).toMatch(/did not answer the binding handshake/);
-    expect(executionBlockReason("write", { ...device, path: "xd://bash" }, trusted)).toMatch(/not an approved/);
     expect(executionToolSourceBlockReason("roadmap_stage", "extension", false, trusted, "/shadow.ts")).toBeTruthy();
     for (const [toolName, input] of [
       ["write", { path: "docs/roadmap/README.md", content: "changed" }],

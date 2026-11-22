@@ -58,7 +58,7 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 一次拒绝会同时列出所有违规的行。
 
-**向用户确认。** 这个问题通过 OMP 自带的 `ask` 工具发出，由规划者调用；插件没有自己的对话框。规划者只发一个问题，每行对应一个可勾选的选项，默认都不勾选。什么都不勾就提交也算回答：每一行保持判定方的层级或 LIGHT 默认值。问题怎么显示由宿主决定：终端界面整体显示；只有简单对话框的宿主会逐项提问。没有对话框的宿主不提供 `ask`，这时规划者保持这些行不变，并在提案摘要里列出它们。规划在计划模式下进行，此时 `ask` 没有超时，不会替用户做选择。
+**向用户确认。** 规划者使用宿主的 `ask` 工具发出一个问题，每个任务行有一个复选框，默认都不选中。直接提交空白表单表示所有任务行保留判定层级或默认的 LIGHT。终端界面一次显示整个表单，RPC 则在一次 HTML 表单请求中发送所有问题。如果 `ask` 不可用，规划者保留这些任务行的层级，并在提案摘要里列出它们。计划模式下的 `ask` 没有超时。
 
 **回退。** `tierJudge` 关闭或没有配置原生判定方时，每个任务都必须有 `Tier basis:` 行，别的不再检查。调用失败或超时时，本会话里判定方此前已有结论的层级继续有效，其余任务在这次检查中必须有 `Tier basis:` 行。没有原生判定方时，每个会话只报告一次；检查失败时每次都报告并附上错误。
 
@@ -68,7 +68,7 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 
 ## Atlas 工具守卫
 
-守卫只放行观察会话或修改宿主自有状态的工具；除 `atlas_git commit` 外，这些工具都不会写入工作区。它不会启用任何工具：会话中本来没有的工具，仍然不可用。
+Atlas 执行期间会从可用工具中移除 `bash`，这样 `roadmap_status`、`lsp` 等工具就能直接调用。Atlas 会记住进入执行前 `bash` 是否启用，并在退出、释放、切换到非执行会话或关闭时恢复原先的状态。下表列出 Atlas 主会话可调用的工具及其限制。
 
 | 工具 | 在 Atlas 父会话中允许 |
 | --- | --- |
@@ -82,7 +82,7 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 | `ida` | `list` |
 | `recall`、`reflect`、`retain`、`memory_edit`、`learn`、`manage_skill` | 始终：它们写入的是记忆后端和托管技能，不是工作区 |
 | `goal`、`context_notes`、`new_context` | 始终 |
-| `write` | `agent://` 同伴消息、`proc://<id>/kill`，以及对任何已放行工具的 `xd://` 调用 |
+| `write` | 通过 `agent://` 给同伴发消息，或通过 `proc://<id>/kill` 取消作业 |
 
 其他工具一律屏蔽，包括 `bash`、`eval`、`edit`、`ast_edit`、文件写入、`security_scan` 以及 `checkpoint`/`rewind`（回退会让会话树分叉，脱离证明已完成行的回执）。其他扩展或 MCP 服务器注册的工具即使与原生工具同名也会被屏蔽，下表列出的除外。
 
@@ -92,8 +92,8 @@ Prometheus 计划的两个批准选项都会交给 Atlas。“Approve and execut
 | --- | --- |
 | [Magic Context](https://github.com/cortexkit/magic-context) | `ctx_reduce`、`ctx_expand`、`ctx_search`、`ctx_memory`、`ctx_note`，仅限由扩展注册的；同名 MCP 工具仍被屏蔽 |
 | 包装 `todo` 的扩展，例如 [omp-herdr-dag](../omp-herdr-dag/README.zh.md) 支持依赖边的 `todo` | 由扩展重新注册的 `todo`；MCP 提供的 `todo` 仍被屏蔽 |
-| [roadmap](../roadmap/README.zh.md) | `roadmap_*`，可直接调用或以 `write xd://roadmap_*` 调用，仅限来自经路线图绑定握手验证过的扩展源路径（见[路线图契约](#路线图契约)） |
-| [adr](../adr/README.zh.md) | `adr_*`，可直接调用或以 `write xd://adr_*` 调用，仅限来自经 ADR 绑定握手验证过的扩展源路径（见[ADR 契约](#adr-契约)）；与 `roadmap` 无关 |
+| [roadmap](../roadmap/README.zh.md) | 直接调用 `roadmap_*`，工具须来自路线图绑定握手验证过的扩展路径，见[路线图契约](#路线图契约) |
+| [adr](../adr/README.zh.md) | 直接调用 `adr_*`，工具须来自独立的 ADR 绑定握手验证过的扩展路径，见 [ADR 契约](#adr-契约) |
 
 ## 任务派发
 
@@ -245,7 +245,9 @@ F1 读取经哈希校验的 `plan.md`，以及插件在 F1 开始时写入的合
 | ACP 编辑器 | 通过表单询问显示同样的对话框。没有小组件。 |
 | SDK、`--no-ui`、print | 没有对话框，请使用子命令。删除需要 `--yes`。`/atlas resume` 只能从唯一执行过该计划的会话中使用；否则会列出可以打开的会话。 |
 
-Prometheus 规划需要 Plan Mode 的交互式批准，所以只能在 TUI、RPC 和 ACP 中运行。在 Tern 中，Atlas Dispatch 和计划视图以原生面板覆盖在对话之上，进度小组件显示原生进度条。单击选中，双击打开，标签、按钮和按键都可以使用。Atlas 和 Prometheus 的工具调用显示为原生卡片。`atlas_ledger` 卡片显示变更的行和计划进度，展开后再显示该行的验收标准、证据、时限、重试状态，以及接下来可以开始的行。被拒绝的 `atlas_release` 会写明原因，并列出未完成的行或未分诊的发现。模型收到的原文放在展开卡片里默认折叠的 “Model text” 区块中，并做了格式化：表格按表格显示，JSON 缩进，`Label: value` 行排成对齐的字段。
+在 TUI 中，`/plan` 会进入原生计划模式，`propose` 会打开审批面板。Tern 用原生界面呈现同一套审批流程。普通 RPC 支持 Atlas 执行和扩展对话框，但 `/plan` 只在 TUI 中可用，普通 RPC 没有原生计划审批。ACP 客户端通过切换会话模式进入计划模式。客户端支持表单询问时，宿主会请用户选择批准或继续修改。客户端不支持时，ACP 会自动批准提案。
+
+在 Tern 中，Atlas Dispatch 和计划视图以原生面板覆盖在对话之上，进度组件显示原生进度条。单击选中，双击打开，标签、按钮和按键都可以使用。Atlas 和 Prometheus 的工具调用显示为原生卡片。`atlas_ledger` 卡片显示变更的行和计划进度，展开后可查看验收标准、证据、时限、重试状态及接下来可开始的行。`atlas_release` 被拒绝时，卡片会说明原因，并列出未完成的行或尚未分诊的发现。展开卡片后，可在默认折叠的 “Model text” 区块查看模型收到的回执，表格会按列呈现，JSON 会缩进，`Label: value` 字段会对齐。
 
 ## 所有权
 
@@ -308,7 +310,7 @@ Prometheus 规划需要 Plan Mode 的交互式批准，所以只能在 TUI、RPC
 安装了 `roadmap` 时，Prometheus 使用独立于 `herdrDag` 的 `pi.events` 契约。所有载荷都带 `v: 1`。请求携带 `sessionId` 和新生成的 `requestId`；只有在请求内同步到达、且会话和请求都匹配的回复才算数，格式不对的回复会被丢弃。没有回复说明路线图插件不存在或版本较旧。
 
 1. 绑定。检查提案时和记录提案时，Prometheus 都会发送 `roadmap:binding-request {v, sessionId, requestId}`，接受带有 `repoRoot`、`toolSourcePath`、可选已绑定阶段 `{id, title, round, criteria?, revision?}` 以及可选布尔值 `usable` 的 `roadmap:binding` 回复。已绑定阶段处于活动状态；如果规划会话是在 Plan Mode 中开始它的（这时只会绑定），则仍处于计划状态。`criteria` 是该阶段当前完成标准的编号；`revision` 是路线图计算的规划依据哈希，Prometheus 不解析它。`usable` 表示路线图工具（包括 `roadmap_todo`）此刻能否在本仓库中工作：Git 工作树中有已初始化的路线图，并已连上 adr 插件。延后发现分诊时会重新询问并以它为准。`criteria`、`revision` 和 `usable` 都不发送的旧版本回复照常接受。
-2. 覆盖声明。绑定阶段带有 `criteria` 时，计划必须有且仅有一行计划级声明，例如 `Roadmap criteria: DC1, DC3`（位于第 0 列，在 `## Tasks`、`## Final gates` 和代码块之外），列出的编号不重复且都是当前完成标准。缺少这一行、写了多行、没有列出标准、格式错误、位置不对或列出其他编号时，`write xd://propose` 调用会在批准对话框打开之前被拒绝，拒绝信息会列出当前编号。没有绑定阶段，或绑定中没有 `criteria` 时，这一行可写可不写，既不校验也不保存。
+2. 覆盖声明。绑定阶段有 `criteria` 时，计划必须有且仅有一行计划级声明，例如 `Roadmap criteria: DC1, DC3`。这一行须顶格书写，并且位于 `## Tasks`、`## Final gates` 和代码块之外。列出的编号不得重复，且都须是当前完成标准。声明缺失、重复、为空、格式或位置有误，或包含其他编号时，Prometheus 会在原生审批前拒绝 `propose`，并列出当前编号。没有绑定阶段或绑定不提供 `criteria` 时，这一行可省略，写了也不会校验或保存。
 3. 存储。提案标记（版本 4）和批准文件（版本 3）记录 `roadmapStage: {repoRoot, id, criteria?, revision?}`：只有针对带标准的绑定作出声明时才记录 `criteria`，绑定带有 `revision` 时就记录它。版本 3 的提案标记以及版本 1、2 的批准文件仍可加载和恢复。
 4. 工具。只有当 `roadmap_*` 工具（包括 `roadmap_upgrade`）的扩展源路径与 `toolSourcePath` 一致时，Atlas 才会放行；拒绝信息会说明是缺少握手，还是工具来自其他来源。在此范围内，计划需要的所有路线图操作都允许。
 5. 计划查询。对于自己的主会话，Prometheus 用 `atlas:plans {v, sessionId, requestId, plans}` 回复 `atlas:plans-request {v, sessionId, requestId, repoRoot, stage?}`，同步读取共享计划存储，不加锁也不写入。每个计划包含 `planId`、`name`、`repoRoot`、`stage`，已记录时还有声明的 `criteria` 和批准时的 `revision`，以及 `status`（`unfinished` 或 `complete`）、`done`、`total`、`gates`（经过验证的关口结论和摘要，完成前为空）、P1 完成后的 `delivery: {mode, summary}`、`deferred`（`id`、`title`，分诊后还有 `disposition` 和 `reference`）和计划包目录 `directory`。只列出批准中记录了该 `repoRoot`（给定 `stage` 时还要求是该阶段）的计划包；无法读取的计划包会被跳过并记录警告，没有会话目录的会话回复空列表。只在完成时才绑定阶段的计划不会列出。
@@ -322,6 +324,6 @@ Prometheus 规划需要 Plan Mode 的交互式批准，所以只能在 TUI、RPC
 
 安装了 `adr` 时，Atlas 通过 ADR 自己的 `pi.events` 握手放行 ADR 工具，与 `roadmap` 和 `herdrDag` 无关：
 
-1. Atlas 调用 `adr_*` 工具（直接调用或以 `write xd://adr_*` 调用）时，Prometheus 发送 `adr:binding-request {v:1, sessionId, requestId}`，只接受 `v: 1`、会话与请求都匹配、且带绝对路径 `toolSourcePath` 的同步 `adr:binding` 回复。确认过的回复在本会话内缓存，会话关闭时丢弃；没有回复时，下一次调用会重新请求。
+1. Atlas 直接调用 `adr_*` 工具时，Prometheus 发送 `adr:binding-request {v:1, sessionId, requestId}`。它只接受同步返回的 `adr:binding` 回复，要求版本为 `v: 1`、会话和请求均匹配，且 `toolSourcePath` 为绝对路径。已确认的回复缓存到会话关闭。没有收到回复时，下次调用会重新请求。
 2. Prometheus 只使用 `toolSourcePath`。回复中的 `api` 对象供 `roadmap` 使用，Prometheus 从不读取或调用它。
 3. 只有当 `adr_*` 工具的扩展源路径与 ADR 的 `toolSourcePath` 一致时，Atlas 才会放行；拒绝信息会说明是缺少握手（请检查 adr 插件是否已安装并启用），还是工具来自其他来源。每类工具只通过自己的握手验证：路线图绑定不会放行 `adr_*` 工具，ADR 绑定也不会放行 `roadmap_*` 工具。

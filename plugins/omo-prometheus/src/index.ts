@@ -4,14 +4,24 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { parseToolArgs, ToolCliUsageError } from "@oh-my-pi/pi-coding-agent/exec/tool-cli";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
+import { type ResolvedApprovedPlan, resolveApprovedPlan } from "@oh-my-pi/pi-coding-agent/plan-mode/approved-plan";
+import { listPlanFiles, readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
 import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { BashToolInput } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import { isProposeToolCall } from "@oh-my-pi/pi-coding-agent/tools/resolve";
+import {
+  extractLiteralAndChainSegments,
+  isShellEnvironmentAssignment,
+  tokenizeShellSegments,
+} from "@oh-my-pi/pi-coding-agent/tools/shell-tokenize";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { isNativeRendering } from "@oh-my-pi/pi-tui";
 
@@ -138,7 +148,6 @@ import {
   inlinesApprovedPlan,
   isApprovedPlanHandoff,
   isPlanReviewDispatch,
-  nestedXdevToolCall,
   OPT_IN_ADDENDUM,
   PLANNING_PREAMBLE,
   PLUGIN_OWNED_TOOLS,
@@ -149,7 +158,6 @@ import {
   planReferencesMatch,
   prometheusArtifactUrl,
   proposedPlanPathFromToolResult,
-  proposedPlanUrl,
   researchSpawnBlockReason,
   type TrustedToolSources,
   taskSpawnBlockReason,
@@ -250,7 +258,7 @@ interface Ownership {
 
 interface SessionRecord {
   phase: Phase;
-  /** Canonical path returned by the host's successful xd://propose dispatch. */
+  /** Canonical path returned by the host's successful native `propose`. */
   planFilePath?: string;
   /** Exact content observed at the successful native proposal. */
   planSha256?: string;
@@ -269,6 +277,7 @@ interface SessionRecord {
   /** Shared pointer only; approval, attempts and proof are owned by AtlasStore. */
   atlasPlanId?: string;
   sourceSessionId?: string;
+  bashWasActive?: boolean;
   ledgerPath?: string;
   ledgerError?: string;
   /** Never persisted: a pathname/session entry cannot grant execution ownership. */
@@ -301,6 +310,7 @@ function errorMessage(error: unknown): string {
 
 export default function prometheus(pi: ExtensionAPI): void {
   const records = new Map<string, SessionRecord>();
+  const bashOverrides = new WeakMap<AgentSession, { sessionId: string; wasActive: boolean }>();
   const reviewLevels = new Map<string, ReviewLevel>();
   const reviewRoundLimits = new Map<string, number>();
   const tierJudgeSettings = new Map<string, TierJudgeSettings>();
@@ -458,7 +468,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     return reasons.length ? reasons.join("\n") : undefined;
   };
 
-  /** Prometheus plans inside native plan mode; with plan.enabled off the host refuses /plan and xd://propose never exists. */
+  /** Prometheus plans inside native plan mode; with plan.enabled off the host refuses /plan and `propose` never exists. */
   const planModeDisabled = (live: AgentSession): boolean => !cfgPlanEnabled.get(live.settings);
 
   const mainSession = (ctx: ExtensionContext): AgentSession | undefined => {
@@ -508,6 +518,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         proposedByToolCallId: record.proposedByToolCallId,
         atlasPlanId: record.atlasPlanId,
         sourceSessionId: record.sourceSessionId,
+        bashWasActive: record.phase === "executing" ? record.bashWasActive : undefined,
         roadmapStage: record.roadmapStage,
         offeredForModeEntryId: record.offeredForModeEntryId,
         suppressedForModeEntryId: record.suppressedForModeEntryId,
@@ -555,6 +566,7 @@ export default function prometheus(pi: ExtensionAPI): void {
         | {
             phase?: unknown;
             atlasPlanId?: unknown;
+            bashWasActive?: unknown;
             sourceSessionId?: unknown;
             planFilePath?: unknown;
             planSha256?: unknown;
@@ -571,6 +583,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       restored = {
         phase: data.phase,
         atlasPlanId: typeof data.atlasPlanId === "string" && data.atlasPlanId ? data.atlasPlanId : undefined,
+        bashWasActive: data.phase === "executing" && typeof data.bashWasActive === "boolean" ? data.bashWasActive : undefined,
         sourceSessionId: typeof data.sourceSessionId === "string" && data.sourceSessionId ? data.sourceSessionId : undefined,
         roadmapStage: isRoadmapStage(data.roadmapStage) ? data.roadmapStage : undefined,
         planFilePath: typeof data.planFilePath === "string" && data.planFilePath.trim() ? data.planFilePath : undefined,
@@ -610,6 +623,22 @@ export default function prometheus(pi: ExtensionAPI): void {
     try {
       const active = pi.getActiveTools();
       const desired = new Set(active);
+      const sessionId = ctx.sessionManager.getSessionId();
+      const record = records.get(sessionId);
+      const previous = live && bashOverrides.get(live);
+      if (previous && (!wantLedger || previous.sessionId !== sessionId)) {
+        if (previous.wasActive) desired.add("bash");
+        else desired.delete("bash");
+      }
+      let override: typeof previous;
+      if (live && wantLedger && record?.phase === "executing") {
+        if (record.bashWasActive === undefined) {
+          record.bashWasActive = previous?.sessionId === sessionId ? previous.wasActive : desired.has("bash");
+          persist(ctx, record);
+        }
+        override = { sessionId, wasActive: record.bashWasActive };
+        desired.delete("bash");
+      }
       if (wantActivate) desired.add(ACTIVATE_TOOL);
       else desired.delete(ACTIVATE_TOOL);
       if (wantRelease) desired.add(RELEASE_TOOL);
@@ -621,8 +650,12 @@ export default function prometheus(pi: ExtensionAPI): void {
         desired.delete(LEDGER_TOOL);
         desired.delete(GIT_TOOL);
       }
-      if (desired.size === active.length && active.every((name) => desired.has(name))) return;
-      await pi.setActiveTools([...desired]);
+      if (desired.size !== active.length || !active.every((name) => desired.has(name))) await pi.setActiveTools([...desired]);
+      if (live) {
+        if (override) bashOverrides.set(live, override);
+        else bashOverrides.delete(live);
+      }
+      if (record && record.phase !== "executing") record.bashWasActive = undefined;
     } catch (error) {
       pi.logger.warn("prometheus could not reconcile workflow tools", { error: errorMessage(error) });
     }
@@ -1720,7 +1753,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     record.reviewRounds ??= { used: 0, extra: 0 };
     const rounds = record.reviewRounds;
     const stopGuidance =
-      "Do not dispatch more Momus or Oracle plan reviews for this plan. Propose it now as it stands with xd://propose, and list every outstanding eligible blocker from the latest round in the proposal summary so the user can weigh them at approval.";
+      "Do not dispatch more Momus or Oracle plan reviews for this plan. Propose it now as it stands with propose <slug>, and list every outstanding eligible blocker from the latest round in the proposal summary so the user can weigh them at approval.";
     while (configured > 0 && rounds.used >= configured + rounds.extra) {
       const limit = configured + rounds.extra;
       if (!ctx.hasUI) return `Plan review reached its limit of ${limit} rounds and no user is available to raise it. ${stopGuidance}`;
@@ -1758,18 +1791,92 @@ export default function prometheus(pi: ExtensionAPI): void {
       PLUGIN_OWNED_TOOLS[toolName] === true && provenance?.source === "extension" && provenance.path === RUNTIME_SOURCE_PATH;
     return executionToolSourceBlockReason(toolName, provenance?.source, trustedPrometheusTool, trusted, provenance?.path);
   };
+  const shellProposalPrefix = /^(?:!|\{|if|then|elif|else|do|while|until|time|command|builtin|--)$/;
+
+  const containsShellProposal = (command: string): boolean => {
+    if (/(?:\$\(|`)\s*propose(?:$|[<>;&|`)\s])/.test(command)) return true;
+    return tokenizeShellSegments(command).some((words) => {
+      for (let index = 0; index < words.length; index++) {
+        const word = words[index] ?? "";
+        if (shellProposalPrefix.test(word) || isShellEnvironmentAssignment(word)) continue;
+        if (/^\d*[<>]/.test(word)) {
+          if (/^\d*[<>]+$/.test(word)) index++;
+          continue;
+        }
+        if (word === "eval") return words.slice(index + 1).some((arg) => /\bpropose(?:$|[<>;&|\s])/.test(arg));
+        return /^propose(?:$|[<>])/.test(word);
+      }
+      return false;
+    });
+  };
+
+  const trustedProposalResult = (live: AgentSession, toolName: string): boolean => {
+    if (toolName === "bash") return toolProvenance(toolName)?.source === "builtin";
+    if (toolName !== "propose" || live.extensionRunner?.getRegisteredTool(toolName)) return false;
+    const source = toolProvenance(toolName);
+    return source?.source === "builtin" || (source?.source === "extension" && source.path === "<extension:propose>");
+  };
 
   /** Refuses a Prometheus proposal Atlas could not execute, before the native approval overlay opens. */
-  const proposalGrammarBlockReason = async (ctx: ExtensionContext, input: unknown): Promise<string | undefined> => {
-    const planUrl = proposedPlanUrl(input);
-    if (!planUrl) return undefined;
-    let content: string;
+  const proposalGrammarBlockReason = async (
+    ctx: ExtensionContext,
+    statePlanFilePath: string,
+    toolName: string,
+    input: BashToolInput | Record<string, unknown>,
+  ): Promise<string | undefined> => {
+    let title = "title" in input ? input.title : undefined;
+    if (toolName === "bash" && typeof input.command === "string") {
+      const command = input.command.trim();
+      const leading = isProposeToolCall({ name: toolName, arguments: { command } });
+      const segments = extractLiteralAndChainSegments(`${command} && true`);
+      const [proposal, tail] = segments ?? [];
+      const literal = segments?.length === 2 && proposal?.text === command && tail?.text === "true" ? proposal.argv : undefined;
+      const proposalCommand =
+        leading || (literal ? literal.find((word) => !isShellEnvironmentAssignment(word)) === "propose" : containsShellProposal(command));
+      if (!proposalCommand) return undefined;
+      const standalone = "Run `propose <slug>` as its own command with a literal title.";
+      if (
+        !leading ||
+        !literal ||
+        literal[0] !== "propose" ||
+        input.async === true ||
+        input.notify !== undefined ||
+        input.name !== undefined
+      ) {
+        return standalone;
+      }
+      const argv = literal.slice(1);
+      if (argv.includes("--help") || argv.includes("-h")) return undefined;
+      const schema = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
+      const fileTitle = new ToolCliUsageError(standalone);
+      try {
+        ({ title } = await parseToolArgs(schema, argv, {
+          cwd: ctx.cwd,
+          stdin: "",
+          readSource: () => Promise.reject(fileTitle),
+        }));
+      } catch (error) {
+        if (error === fileTitle) return standalone;
+        if (error instanceof ToolCliUsageError) return undefined;
+        throw error;
+      }
+    } else if (toolName !== "propose") return undefined;
+    if (typeof title !== "string") return undefined;
+
+    let selected: ResolvedApprovedPlan;
+    const localProtocolOptions = localOptions(ctx);
     try {
-      content = await fs.readFile(resolveLocalUrlToPath(planUrl, localOptions(ctx)), "utf8");
+      selected = await resolveApprovedPlan({
+        suppliedTitle: title.trim(),
+        statePlanFilePath,
+        readPlan: (url) => readPlanFile(url, { localProtocolOptions, cwd: ctx.sessionManager.getCwd() }),
+        listPlanFiles: () => listPlanFiles({ localProtocolOptions }),
+      });
     } catch {
       // The host resolves the plan itself and reports a missing file.
       return undefined;
     }
+    const { planFilePath: planUrl, planContent: content } = selected;
     const { items, errors, roadmapCriteria } = parsePlanChecklist(content, availableAgents());
     const reasons: string[] = [];
     if (errors.length) {
@@ -1834,7 +1941,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     const decisionPolicy =
       `\n\n<decision-policy retry="${decisions.retry}" amend="${decisions.amend}" release="${decisions.release}" ask-timeout-minutes="${decisions.timeoutMs / 60_000}" auto-retry-limit="${decisions.autoRetryLimit || "unlimited"}">` +
       'Apply this session\'s decision settings as "Decision settings" describes. The plugin settles each decision and enforces the limit.</decision-policy>';
-    const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-xd-propose" />${ledgerBlock}${capability}${workspace}${reports}${decisionPolicy}`;
+    const header = `${EXECUTION_PREAMBLE}\n\n<approved-plan-reference path="${planPath}" provenance="native-propose" />${ledgerBlock}${capability}${workspace}${reports}${decisionPolicy}`;
     try {
       return `${header}\n\n${loadPromptAsset(ATLAS_ASSET)}`;
     } catch (error) {
@@ -3239,8 +3346,9 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     if (!live) return undefined;
     const record = records.get(ctx.sessionManager.getSessionId()) ?? rehydrate(ctx);
-    if (event.toolName === "write" && record?.phase === "planning" && live.getPlanModeState()?.enabled === true) {
-      const proposalDetail = await proposalGrammarBlockReason(ctx, event.input);
+    const planning = record?.phase === "planning" ? live.getPlanModeState() : undefined;
+    if (planning?.enabled && (event.toolName === "propose" || event.toolName === "bash")) {
+      const proposalDetail = await proposalGrammarBlockReason(ctx, planning.planFilePath, event.toolName, event.input);
       if (proposalDetail) return { block: true, reason: proposalDetail };
     }
     if (event.toolName === "task") {
@@ -3259,19 +3367,15 @@ export default function prometheus(pi: ExtensionAPI): void {
     }
     if (record?.phase !== "executing") return undefined;
 
-    const nested = event.toolName === "write" ? nestedXdevToolCall(event.input) : undefined;
     // Only the families actually called ask their plugin for a handshake; each family is trusted only through its own binding.
+    const family = trustedToolFamily(event.toolName);
+    const sessionId = ctx.sessionManager.getSessionId();
     const trusted: TrustedToolSources = {};
-    for (const family of [trustedToolFamily(event.toolName), nested && trustedToolFamily(nested.toolName)]) {
-      if (family === "roadmap") trusted.roadmap = roadmap.binding(ctx.sessionManager.getSessionId())?.toolSourcePath;
-      else if (family === "adr") trusted.adr = adr.binding(ctx.sessionManager.getSessionId())?.toolSourcePath;
-    }
-    let detail = executionBlockReason(event.toolName, event.input, trusted);
-    if (!detail) detail = provenanceBlockReason(event.toolName, trusted);
-    if (!detail && nested) detail = provenanceBlockReason(nested.toolName, trusted);
+    if (family === "roadmap") trusted.roadmap = roadmap.binding(sessionId)?.toolSourcePath;
+    else if (family === "adr") trusted.adr = adr.binding(sessionId)?.toolSourcePath;
+    const detail = executionBlockReason(event.toolName, event.input, trusted) ?? provenanceBlockReason(event.toolName, trusted);
     // Progress guard: the HUD only redraws on a model-made todo call, and a finished child must be recorded before Atlas moves on.
     if (!detail && (event.toolName === "task" || event.toolName === "wait" || event.toolName === RELEASE_TOOL)) {
-      const sessionId = ctx.sessionManager.getSessionId();
       if (record.ownership && (event.toolName === RELEASE_TOOL || (event.toolName === "task" && carriesAtlasAssignment(event.input)))) {
         const unbound = await childEvidence.unboundJobs.blockReason(
           sessionId,
@@ -3320,7 +3424,6 @@ export default function prometheus(pi: ExtensionAPI): void {
         };
       }
     }
-    // Native xdev task dispatch is intercepted again at its inner task boundary.
     if (!detail && event.toolName === "task" && !carriesAtlasAssignment(event.input)) {
       // Unbound read-only research needs no ledger row, yet still requires a valid ledger: a paused plan dispatches nothing.
       try {
@@ -3423,7 +3526,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     observeFinalJobs(ctx);
 
     const proposedPath = proposedPlanPathFromToolResult(event.toolName, event.isError, event.details);
-    if (!proposedPath || provenanceBlockReason("write") !== undefined || record.phase !== "planning") return undefined;
+    if (!proposedPath || record.phase !== "planning" || !trustedProposalResult(live, event.toolName)) return undefined;
     record.planFilePath = proposedPath;
     record.proposedByToolCallId = event.toolCallId;
     record.sourceSessionId = sessionId;
@@ -3627,7 +3730,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     if (live) {
       restoreApprovalTiers(live);
       restoreIsolationMerge(live);
-      restoreStructuredResults(live);
+      await syncTools(ctx, false, false, false);
     }
     const sessionId = ctx.sessionManager.getSessionId();
     tierJudges.delete(sessionId);

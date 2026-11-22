@@ -7,7 +7,6 @@ import {
   executionToolSourceBlockReason,
   isApprovedPlanHandoff,
   isPlanReviewDispatch,
-  nestedXdevToolCall,
   parseAtlasCommand,
   parsePrometheusCommand,
   proposedPlanPathFromToolResult,
@@ -36,20 +35,15 @@ describe("Prometheus command parsing", () => {
 
 describe("native approval binding", () => {
   test("uses only a successful propose result with a real plan artifact", () => {
-    const details = {
-      xdev: {
-        tool: "propose",
-        mode: "execute",
-        inner: { planFilePath: "local:/checkout-plan.md", planExists: true },
-      },
-    };
-    expect(proposedPlanPathFromToolResult("write", false, details)).toBe("local://checkout-plan.md");
-    expect(proposedPlanPathFromToolResult("write", true, details)).toBeUndefined();
-    expect(
-      proposedPlanPathFromToolResult("write", false, {
-        xdev: { ...details.xdev, inner: { planFilePath: "local:/checkout-plan.md", planExists: false } },
-      }),
-    ).toBeUndefined();
+    const receipt = { planFilePath: "local:/checkout-plan.md", planExists: true };
+    const dispatch = { tool: "propose", mode: "execute", exitCode: 0, inner: receipt };
+    expect(proposedPlanPathFromToolResult("propose", false, receipt)).toBe("local://checkout-plan.md");
+    expect(proposedPlanPathFromToolResult("propose", true, receipt)).toBeUndefined();
+    expect(proposedPlanPathFromToolResult("propose", false, { ...receipt, planExists: false })).toBeUndefined();
+    expect(proposedPlanPathFromToolResult("bash", false, { toolCommands: [dispatch] })).toBe("local://checkout-plan.md");
+    expect(proposedPlanPathFromToolResult("bash", false, { toolCommands: [{ ...dispatch, exitCode: 1 }] })).toBeUndefined();
+    expect(proposedPlanPathFromToolResult("bash", false, { toolCommands: [{ ...dispatch, mode: "help" }] })).toBeUndefined();
+    expect(proposedPlanPathFromToolResult("write", false, { toolCommands: [dispatch] })).toBeUndefined();
   });
 
   test("rejects approval-looking user text unless the host reference and full envelope agree", () => {
@@ -74,16 +68,8 @@ describe("Atlas execution guard", () => {
     expect(executionBlockReason("lsp", { action: "rename", apply: true })).toBeTruthy();
   });
 
-  test("recursively classifies xd device calls instead of treating write as a bypass", () => {
-    const safe = { path: "xd://read", content: JSON.stringify({ path: "src/index.ts" }) };
-    const unsafe = { path: "xd://lsp", content: JSON.stringify({ action: "rename", file: "src/index.ts" }) };
-
-    expect(nestedXdevToolCall(safe)).toEqual({ toolName: "read", input: { path: "src/index.ts" }, documentation: false });
-    expect(executionBlockReason("write", safe)).toBeUndefined();
-    expect(executionBlockReason("write", unsafe)).toBeTruthy();
+  test("blocks writes to workspace files", () => {
     expect(executionBlockReason("write", { path: "src/index.ts", content: "changed" })).toBeTruthy();
-    expect(executionBlockReason("write", { path: "xd://read", content: "?" })).toBeUndefined();
-    expect(executionBlockReason("write", { path: "xd://read", content: "not JSON" })).toBeTruthy();
   });
 
   test("lets Atlas message and cancel children through native write coordination paths", () => {
@@ -121,9 +107,6 @@ test("admits only the read-only operations of op-gated native tools", () => {
   expect(executionBlockReason("ida", { action: "list" })).toBeUndefined();
   expect(executionBlockReason("ida", { action: "exec" })).toBeTruthy();
   expect(executionBlockReason("rewind", { report: "x" })).toBeTruthy();
-  const device = (tool: string, args: object) => ({ path: `xd://${tool}`, content: JSON.stringify(args) });
-  expect(executionBlockReason("write", device("github", { op: "file_read" }))).toBeUndefined();
-  expect(executionBlockReason("write", device("github", { op: "pr_create" }))).toBeTruthy();
 });
 
 describe("plan-gated reviewer spawns", () => {

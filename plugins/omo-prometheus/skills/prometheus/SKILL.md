@@ -307,7 +307,7 @@ When the plan is complete and its required reviews approved, present a short sum
 - for a roadmap stage, the done criteria this plan covers and those it leaves for other plans;
 - for UNCLEAR work, the routing call first, then the adopted defaults; otherwise the decisions worth a glance. Either way, the user can still veto them.
 
-Then submit for approval: call `write` on `xd://propose` with content exactly `<slug>` (the plan's slug, with no `-plan.md` suffix). This requires active native plan mode. Do not use an OpenCode approval path, do not create `.omo` state, and do not ask for a chat-only approval instead.
+Submit the finished plan with `propose <slug>` in native plan mode. Use the plan's slug without the `-plan.md` suffix. Follow the host's instructions to run `propose <slug>` as its own Bash command or call the `propose` tool with `title` set to the slug.
 
 If approval is declined or revisions are requested, stay in planning, update the plan, repeat the affected review, and propose again. If the user cancels, stop and let the workflow be released.
 

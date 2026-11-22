@@ -103,6 +103,7 @@ async function scenario(name: string, root: string): Promise<void> {
   let bus = new EventBus();
   let mode = true;
   let reference: string | undefined;
+  let nativePlanPath = "local://PLAN.md";
   let sequence = 0;
   let confirmations = 0;
   let confirmAnswer = true as boolean;
@@ -160,6 +161,7 @@ async function scenario(name: string, root: string): Promise<void> {
   };
   const sessionManager = {
     getSessionId: () => sessionId,
+    getCwd: () => root,
     getSessionDir: () => join(root, "sessions"),
     getArtifactsDir: () => artifacts,
     getBranch: () => entries,
@@ -192,7 +194,7 @@ async function scenario(name: string, root: string): Promise<void> {
     setTodoPhases: (next: typeof todoPhases) => {
       todoPhases = next;
     },
-    getPlanModeState: () => ({ enabled: mode }),
+    getPlanModeState: () => ({ enabled: mode, planFilePath: nativePlanPath }),
     getPlanReferencePath: () => reference,
     setPlanReferencePath: (path: string) => {
       reference = path;
@@ -264,6 +266,7 @@ async function scenario(name: string, root: string): Promise<void> {
     },
   } as unknown as ExtensionContext;
   let activeTools = ["task", "read", "write", "atlas_ledger", "atlas_release"];
+  if (["atlas-bash-exit", "atlas-bash-resume", "atlas-bash-release"].includes(name)) activeTools.push("bash");
   const install = (registerExtension: typeof register = register) => {
     hooks = new Map();
     tools = new Map();
@@ -293,7 +296,9 @@ async function scenario(name: string, root: string): Promise<void> {
         entries.push({ type: "custom", customType, data });
       },
       getActiveTools: () => activeTools,
-      setActiveTools: async () => {},
+      setActiveTools: async (next: string[]) => {
+        activeTools = next;
+      },
       getAllTools: () => [
         {
           name: "task",
@@ -302,6 +307,8 @@ async function scenario(name: string, root: string): Promise<void> {
           sourceInfo: { source: "builtin" },
         },
         { name: "write", sourceInfo: { source: "builtin" } },
+        { name: "bash", sourceInfo: { source: "builtin" } },
+        { name: "propose", sourceInfo: { source: "builtin" } },
         { name: "wait", sourceInfo: { source: "builtin" } },
         { name: "ask", sourceInfo: { source: "builtin" } },
         ...[...tools.values()].map((tool) => ({
@@ -404,10 +411,10 @@ async function scenario(name: string, root: string): Promise<void> {
     // Ordinary Plan Mode proposals never expose the atlas tier.
     reference = "local://integrity-plan.md";
     await hook("tool_result", {
-      toolName: "write",
+      toolName: "propose",
       toolCallId: "plain-proposal",
       isError: false,
-      details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: reference, planExists: true } } },
+      details: { planFilePath: reference, planExists: true },
       content: [{ type: "text", text: "Plan proposal submitted" }],
     });
     assert.deepEqual(cfgCycleOrder.get(settings), ["smol", "default", "slow"]);
@@ -516,17 +523,51 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
   if (name === "propose-grammar") {
-    const propose = async (content: string) =>
-      (await hook("tool_call", { toolName: "write", toolCallId: `propose-${sequence++}`, input: { path: "xd://propose", content } })) as
+    const propose = async (toolName: string, input: Record<string, unknown>) =>
+      (await hook("tool_call", { toolName, toolCallId: `propose-${sequence++}`, input })) as
         | { block?: boolean; reason?: string }
         | undefined;
-    await writeFile(join(artifacts, "local", "slices-plan.md"), "# Plan\n\n## Approach\n\n### Slice A\n");
-    const refusal = await propose("slices");
-    assert.equal(refusal?.block, true);
-    assert.match(refusal?.reason ?? "", /Missing ## Tasks or T rows/);
-    assert.equal(await propose(JSON.stringify({ title: "integrity" })), undefined);
-    // An unresolvable slug is left to the host, which reports the missing plan itself.
-    assert.equal(await propose("absent"), undefined);
+    const invalid = join(artifacts, "local", "slices-plan.md");
+    nativePlanPath = "local://current.md";
+    await writeFile(join(artifacts, "local", "current.md"), plan);
+    await writeFile(invalid, "# Plan\n\n## Approach\n\n### Slice A\n");
+    for (const [toolName, input] of [
+      ["propose", { title: "slices!" }],
+      ["bash", { command: "propose slices" }],
+      ["bash", { command: `propose --title="slices!"` }],
+      ["bash", { command: `propose --title 'slices!'` }],
+    ] as const) {
+      const refusal = await propose(toolName, input);
+      assert.equal(refusal?.block, true, JSON.stringify(input));
+      assert.match(refusal?.reason ?? "", /slices-plan\.md.*Missing ## Tasks or T rows/);
+    }
+    for (const command of [
+      "cd . && propose slices",
+      "true; propose slices",
+      "propose slices | cat",
+      "(propose slices)",
+      'printf "%s" "$(propose slices)"',
+      "printf '%s' `propose slices`",
+      "FLAG=yes propose slices",
+      "true; propose>out slices",
+      "eval 'propose slices'",
+      "pro'pose' slices",
+    ]) {
+      const refusal = await propose("bash", { command });
+      assert.equal(refusal?.block, true, command);
+      assert.match(refusal?.reason ?? "", /propose <slug>.*own command/);
+    }
+    assert.equal(await propose("bash", { command: `propose --title 'integrity'` }), undefined);
+    assert.equal(await propose("bash", { command: `printf '%s' 'propose slices'` }), undefined);
+    assert.equal(await propose("bash", { command: `printf '%s' 'propose'` }), undefined);
+    nativePlanPath = "local:/current.md";
+    await rename(invalid, join(artifacts, "local", "current.md"));
+    assert.match((await propose("propose", { title: "absent" }))?.reason ?? "", /current\.md.*Missing ## Tasks/);
+    await rename(join(artifacts, "local", "current.md"), invalid);
+    await utimes(sourcePlanFile, new Date(1_000), new Date(1_000));
+    await utimes(invalid, new Date(2_000), new Date(2_000));
+    nativePlanPath = "local:/integrity-plan.md";
+    assert.match((await propose("bash", { command: "propose absent" }))?.reason ?? "", /slices-plan\.md.*Missing ## Tasks/);
     return;
   }
   if (name === "tier-judge-fallback") {
@@ -540,9 +581,9 @@ async function scenario(name: string, root: string): Promise<void> {
     await writeFile(sourcePlanFile, unbased);
     const propose = () =>
       hook("tool_call", {
-        toolName: "write",
+        toolName: "propose",
         toolCallId: `tier-proposal-${sequence++}`,
-        input: { path: "xd://propose", content: "integrity" },
+        input: { title: "integrity" },
       });
     const refusal = (await propose()) as { block?: boolean; reason?: string } | undefined;
     assert.equal(refusal?.block, true);
@@ -573,10 +614,10 @@ async function scenario(name: string, root: string): Promise<void> {
     await hook("session_start");
     await hook("before_agent_start", { prompt: "Continue", systemPrompt: [] });
     await hook("tool_result", {
-      toolName: "write",
+      toolName: "propose",
       toolCallId: "proposal",
       isError: false,
-      details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: "local://integrity-plan.md", planExists: true } } },
+      details: { planFilePath: "local://integrity-plan.md", planExists: true },
       content: [{ type: "text", text: "Plan proposal submitted" }],
     });
     // The atlas approval tier appears only for a Prometheus proposal.
@@ -624,10 +665,10 @@ async function scenario(name: string, root: string): Promise<void> {
   mode = false;
   reference = "local://integrity-plan.md";
   await hook("tool_result", {
-    toolName: "write",
+    toolName: "propose",
     toolCallId: "proposal",
     isError: false,
-    details: { xdev: { tool: "propose", mode: "execute", inner: { planFilePath: reference, planExists: true } } },
+    details: { planFilePath: reference, planExists: true },
     content: [
       {
         type: "text",
@@ -650,6 +691,24 @@ async function scenario(name: string, root: string): Promise<void> {
     install();
     await hook("session_start");
   };
+  if (name === "atlas-bash-exit" || name === "atlas-bash-resume" || name === "atlas-no-bash") {
+    assert(!activeTools.includes("bash"));
+    assert(activeTools.includes("atlas_ledger"));
+    const blocked = (await hook("tool_call", { toolName: "bash", input: { command: "true" } })) as { block?: boolean } | undefined;
+    assert.equal(blocked?.block, true);
+    if (name === "atlas-bash-resume" || name === "atlas-no-bash") {
+      await hook("session_shutdown");
+      assert.equal(activeTools.includes("bash"), name === "atlas-bash-resume");
+      if (name === "atlas-bash-resume") activeTools = activeTools.filter((tool) => tool !== "bash");
+      install();
+      await hook("session_start");
+      assert(!activeTools.includes("bash"));
+    }
+    await commands.get("atlas")?.("exit", ctx);
+    assert.equal(activeTools.includes("bash"), name !== "atlas-no-bash");
+    assert(!activeTools.includes("atlas_ledger"));
+    return;
+  }
   if (name === "review-artifacts") {
     const reviews = join(dirname(planFile), "reviews");
     assert.match(await readFile(join(reviews, "001-high_accuracy-okay.md"), "utf8"), /Momus diagnostic/);
@@ -3607,6 +3666,12 @@ async function scenario(name: string, root: string): Promise<void> {
     return;
   }
   await gatesDone();
+  if (name === "atlas-bash-release") {
+    assert(!activeTools.includes("bash"));
+    ok(await call({ reason: "verified completion" }, "atlas_release"));
+    assert(activeTools.includes("bash"));
+    return;
+  }
   if (name === "rollback") {
     const completed = await readFile(ledgerFile, "utf8");
     ok(await call({ action: "reopen", id: "T1" }));
@@ -3783,6 +3848,10 @@ if (process.env[CHILD_ENV]) {
       "heavy-unbound-native-verifier",
       "duplicate-bindings",
       "structured-results",
+      "atlas-bash-exit",
+      "atlas-bash-resume",
+      "atlas-bash-release",
+      "atlas-no-bash",
       "isolation-required",
       "non-git-workspace",
       "atlas-git",

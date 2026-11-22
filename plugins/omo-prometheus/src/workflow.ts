@@ -7,6 +7,7 @@
  * decision can be exercised in isolation.
  */
 
+import { proposeDispatchDetails } from "@oh-my-pi/pi-coding-agent/tools/resolve";
 import { prompt } from "@oh-my-pi/pi-utils";
 
 /** Slash command that toggles Prometheus planning, like the host's `/plan`. */
@@ -342,10 +343,7 @@ export function planReferencesMatch(left: string | undefined, right: string | un
 }
 
 export function proposedPlanPathFromToolResult(toolName: string, isError: boolean, details: unknown): string | undefined {
-  if (toolName !== "write" || isError) return undefined;
-  const xdev = record(record(details)?.xdev);
-  if (xdev?.tool !== "propose" || xdev.mode !== "execute") return undefined;
-  const inner = record(xdev.inner);
+  const inner = record(proposeDispatchDetails(toolName, { details, isError }));
   const path = typeof inner?.planFilePath === "string" ? inner.planFilePath.trim() : "";
   if (!path || inner?.planExists !== true) return undefined;
   return canonicalPlanPath(path);
@@ -480,66 +478,12 @@ const READ_ONLY_DEBUG_ACTIONS: Record<string, true> = {
   variables: true,
 };
 
-const SAFE_XDEV_TOOLS: Record<string, true> = {
-  ...ALLOWED_TOOLS,
-  ...MAGIC_CONTEXT_TOOLS,
-  debug: true,
-  github: true,
-  ida: true,
-  lsp: true,
-  read: true,
-};
-
 /** `proc://<id>/kill` cancels a job or child; stdin and service-mode writes drive a process instead. */
 const PROC_CANCEL_PATH = /^proc:\/\/[^/?#]+\/kill\/?$/i;
 
 function stringField(input: Record<string, unknown>, key: string): string {
   const value = input[key];
   return typeof value === "string" ? value.trim() : "";
-}
-
-export interface NestedXdevToolCall {
-  toolName: string;
-  input?: Record<string, unknown>;
-  documentation: boolean;
-}
-
-export function nestedXdevToolCall(input: unknown): NestedXdevToolCall | undefined {
-  const args = record(input);
-  const path = stringField(args ?? {}, "path");
-  const match = /^xd:\/\/([^/?#]+)\/?$/.exec(path);
-  if (!match?.[1]) return undefined;
-  let toolName: string;
-  try {
-    toolName = decodeURIComponent(match[1]);
-  } catch {
-    toolName = match[1];
-  }
-  const content = typeof args?.content === "string" ? args.content.trim() : "";
-  if (content === "?") return { toolName, documentation: true };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return { toolName, documentation: false };
-  }
-  return { toolName, input: record(parsed), documentation: false };
-}
-
-/**
- * The `local://<slug>-plan.md` a `write xd://propose` names, which the host tries first. The slug arrives as plain
- * text or as `{ "title": … }`; anything that is not a plain slug yields undefined so the host's own resolution applies.
- */
-export function proposedPlanUrl(input: unknown): string | undefined {
-  if (nestedXdevToolCall(input)?.toolName !== "propose") return undefined;
-  const content = stringField(record(input) ?? {}, "content");
-  let title = content;
-  try {
-    const parsed = record(JSON.parse(content));
-    title = typeof parsed?.title === "string" ? parsed.title.trim() : "";
-  } catch {}
-  const slug = title.replace(/-plan$/i, "");
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(slug) ? `local://${slug}-plan.md` : undefined;
 }
 
 function readBlockReason(input: Record<string, unknown>): string | undefined {
@@ -577,7 +521,7 @@ function idaBlockReason(input: Record<string, unknown>): string | undefined {
   return `\`ida\` action \`${action || "(missing)"}\` opens, edits, or scripts a database`;
 }
 
-function writeBlockReason(input: Record<string, unknown>, trusted: TrustedToolSources): string | undefined {
+function writeBlockReason(input: Record<string, unknown>): string | undefined {
   const path = stringField(input, "path");
   const lowerPath = path.toLowerCase();
   // Peer messaging; the host rejects JSON-path targets.
@@ -585,21 +529,7 @@ function writeBlockReason(input: Record<string, unknown>, trusted: TrustedToolSo
   if (PROC_CANCEL_PATH.test(path)) return undefined;
   if (lowerPath.startsWith("proc://"))
     return "`proc://` stdin and service-mode writes drive a process; only `proc://<id>/kill` is coordination";
-  const nested = nestedXdevToolCall(input);
-  if (!nested) {
-    return lowerPath.startsWith("xd://")
-      ? "the `xd://` target or its JSON payload is not a valid guarded device call"
-      : "normal file/database/archive writes are direct implementation";
-  }
-  // The host re-emits `tool_call` for the inner roadmap/ADR dispatch, where provenance is checked again.
-  const family = trustedToolFamily(nested.toolName);
-  if (family) return trusted[family] ? undefined : unauthenticatedTool(family, nested.toolName);
-  if (SAFE_XDEV_TOOLS[nested.toolName] !== true) {
-    return `\`xd://${nested.toolName}\` is not an approved orchestration or observation device`;
-  }
-  if (nested.documentation) return undefined;
-  if (!nested.input) return `\`xd://${nested.toolName}\` requires a JSON object before it can be safety-classified`;
-  return executionBlockReason(nested.toolName, nested.input);
+  return "normal file/database/archive writes are direct implementation";
 }
 
 /**
@@ -623,11 +553,7 @@ function unauthenticatedTool(family: keyof TrustedToolSources, toolName: string)
   return `\`${toolName}\` is not authenticated: the ${family} plugin did not answer the binding handshake in this session, so no trusted ${family} runtime is known (check that the ${family} plugin is installed and enabled)`;
 }
 
-/**
- * Why a tool call must not run in the Atlas parent, or `undefined` when it is
- * orchestration/observation. Nested xdev calls are classified recursively and
- * their real inner dispatch is intercepted again by the host's `tool_call` event.
- */
+/** Why a tool call must not run in the Atlas parent, or `undefined` when it is orchestration/observation. */
 export function executionBlockReason(toolName: string, input: unknown, trusted: TrustedToolSources = {}): string | undefined {
   const family = trustedToolFamily(toolName);
   if (family) return trusted[family] ? undefined : unauthenticatedTool(family, toolName);
@@ -645,7 +571,7 @@ export function executionBlockReason(toolName: string, input: unknown, trusted: 
     case "ida":
       return idaBlockReason(args);
     case "write":
-      return writeBlockReason(args, trusted);
+      return writeBlockReason(args);
     default:
       return `\`${toolName}\` is neither an orchestration tool nor a read-only inspection surface`;
   }
@@ -694,7 +620,7 @@ export const PLANNING_PREAMBLE = [
   "# Prometheus planning workflow (active)",
   "",
   "The Prometheus workflow owns this native plan-mode session. Follow the complete workflow below until native approval or an explicit user exit.",
-  "Do not repeat opt-in, do not mix in the host's generic planning workflow, and do not announce this instruction block. Keep native read-only boundaries and submit the final local://<slug>-plan.md only through write xd://propose.",
+  "Do not repeat opt-in, do not mix in the host's generic planning workflow, and do not announce this instruction block. Keep native read-only boundaries and submit the final local://<slug>-plan.md with propose <slug>. The host tells you whether to run that as a bash command or call the propose tool directly.",
   "Before every proposal, including a re-proposal and a draft written before this workflow took over, make the plan follow the plan grammar in this workflow: `## Tasks` with sequential T rows and `## Final gates` with F1–F4. Rewrite a non-conforming draft first; the plugin refuses a proposal whose plan does not parse.",
 ].join("\n");
 
@@ -704,7 +630,7 @@ export const EXECUTION_PREAMBLE = [
   "A Prometheus plan was approved through the host's native approval flow. This main session is Atlas, the orchestrator of that exact approved plan.",
   "Every plan task — implementation, tests, QA, documentation, cleanup, and final verification — MUST be executed by child agents spawned with `task`. Atlas delegates, tracks `todo`, collects and inspects child evidence, and otherwise uses observation/coordination tools only.",
   "This overrides `task.eager` and every preference that would permit parent implementation. It does not override capability policy: if `task` is disabled or spawning is denied, report the blocker and never downgrade to parent implementation.",
-  "Atlas itself writes to the workspace only through provenance-verified plugin tools: `roadmap_*` tools from the runtime authenticated by the roadmap handshake and `adr_*` tools from the runtime authenticated by the ADR handshake, called directly or as `write xd://roadmap_*` / `write xd://adr_*` devices. Use them for the plan's root-session roadmap and ADR steps: starting or joining the stage, amending it, TODO changes, ADR changes (acceptance, rejection and supersession go through `adr_manage`), and `roadmap_stage` action=close with verified evidence and the required TODO dispositions. A stage with proposed ADRs cannot close, so dispose of them with `adr_manage` first. These tools change only roadmap- and ADR-managed documents. Everything else that touches the workspace or a remote — implementation, commits, pushes, pull requests, CI waits, merges — is a child's ledger row; Atlas never runs git or gh. Read-only research children may run without a ledger row, but their output is never row evidence.",
+  "Atlas itself writes to the workspace only through provenance-verified plugin tools: `roadmap_*` tools from the runtime authenticated by the roadmap handshake and `adr_*` tools from the runtime authenticated by the ADR handshake, called directly as tools (Atlas runs without `bash`). Use them for the plan's root-session roadmap and ADR steps: starting or joining the stage, amending it, TODO changes, ADR changes (acceptance, rejection and supersession go through `adr_manage`), and `roadmap_stage` action=close with verified evidence and the required TODO dispositions. A stage with proposed ADRs cannot close, so dispose of them with `adr_manage` first. These tools change only roadmap- and ADR-managed documents. Everything else that touches the workspace or a remote — implementation, commits, pushes, pull requests, CI waits, merges — is a child's ledger row; Atlas never runs git or gh outside `atlas_git`. Read-only research children may run without a ledger row, but their output is never row evidence.",
   "The runtime guard is policy interception, not an OS sandbox. It stays active after completion until the user explicitly exits. Once every plan item has child-produced proof, call `atlas_release` exactly once with a concise evidence summary; human confirmation exits the mode. Bare `/atlas` is the user's immediate exit and preserves shared progress. Exit does not cancel native children; their plan ownership remains until final outcomes. `/prometheus` controls planning only.",
 ].join("\n");
 

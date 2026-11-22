@@ -58,7 +58,7 @@ The plan writes only T and F rows; Atlas appends D, X and P1 rows. The `delivery
 
 One refusal lists every offending row at once.
 
-**Asking the user.** The question goes through OMP's own `ask` tool, called by the planner; the plugin adds no dialog of its own. The planner sends one question with one tickable choice per row and none preselected. Submitting with nothing ticked is an answer: every row keeps the judge's tier or the LIGHT default. The host decides how the question is drawn: the terminal UI shows it whole, and a host that only has simple dialogs walks through it one prompt at a time. A host without dialogs offers no `ask`, so the planner leaves the rows as they are and lists them in the proposal summary. Planning runs in plan mode, where `ask` has no timeout, so nothing is chosen on the user's behalf.
+**Asking the user.** The planner uses the host's `ask` tool to send one question with one checkbox per row, all unchecked. Submitting with nothing checked keeps the judge's tier or the LIGHT default for every row. The terminal UI shows the whole form. In RPC, the host sends one HTML form request containing all questions. When `ask` is unavailable, the planner keeps the tiers and lists those rows in the proposal summary. `ask` has no timeout in plan mode.
 
 **Fallback.** When `tierJudge` is off or no native judge is configured, every task needs a `Tier basis:` line and nothing else is enforced. When a judge call fails or times out, tiers the judge settled earlier in the session stay binding and every other task needs a `Tier basis:` line for that check. A missing native judge is reported once per session. A failed check is reported each time with its error.
 
@@ -68,7 +68,7 @@ One refusal lists every offending row at once.
 
 ## Atlas tool guard
 
-The guard admits only tools that observe the session or change host-owned state; apart from `atlas_git commit`, none writes to the workspace. It enables nothing: a tool missing from your session stays unavailable.
+Atlas removes `bash` from the active tools during execution, so tool commands such as `roadmap_status` and `lsp` are presented as direct tools. Atlas remembers whether `bash` was active before execution and restores that state on exit, release, a switch out of execution, or shutdown. The guard applies the following rules to calls in the Atlas parent.
 
 | Tool | Allowed in the Atlas parent |
 | --- | --- |
@@ -82,7 +82,7 @@ The guard admits only tools that observe the session or change host-owned state;
 | `ida` | `list` |
 | `recall`, `reflect`, `retain`, `memory_edit`, `learn`, `manage_skill` | always: they write memory backends and managed skills, not the workspace |
 | `goal`, `context_notes`, `new_context` | always |
-| `write` | `agent://` peer messages, `proc://<id>/kill`, and `xd://` dispatch of any admitted tool |
+| `write` | `agent://` peer messages and `proc://<id>/kill` |
 
 Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file writes, `security_scan` and `checkpoint`/`rewind` (rewinding would branch the session tree away from the receipts that prove completed rows). Tools registered by other extensions or MCP servers are blocked even when they share a native tool's name, unless listed below.
 
@@ -92,8 +92,8 @@ Everything else is blocked, including `bash`, `eval`, `edit`, `ast_edit`, file w
 | --- | --- |
 | [Magic Context](https://github.com/cortexkit/magic-context) | `ctx_reduce`, `ctx_expand`, `ctx_search`, `ctx_memory`, `ctx_note`, only when registered by an extension; same-named MCP tools stay blocked |
 | Extension wrappers of `todo`, such as [omp-herdr-dag](../omp-herdr-dag/README.md)'s edge-aware `todo` | `todo`, when an extension re-registers it; an MCP `todo` stays blocked |
-| [roadmap](../roadmap/README.md) | `roadmap_*`, called directly or as `write xd://roadmap_*`, only from the extension source path verified by the roadmap binding handshake (see [Roadmap contract](#roadmap-contract)) |
-| [adr](../adr/README.md) | `adr_*`, called directly or as `write xd://adr_*`, only from the extension source path verified by the ADR binding handshake (see [ADR contract](#adr-contract)); independent of `roadmap` |
+| [roadmap](../roadmap/README.md) | Direct `roadmap_*` calls from the extension source path verified by the roadmap binding handshake (see [Roadmap contract](#roadmap-contract)) |
+| [adr](../adr/README.md) | Direct `adr_*` calls from the extension source path verified by the independent ADR binding handshake (see [ADR contract](#adr-contract)) |
 
 ## Task dispatch
 
@@ -243,7 +243,9 @@ The plan's `Delivery:` line governs execution, and children always do the pushes
 | ACP editors | The same dialogs through form elicitation. No widget. |
 | SDK, `--no-ui`, print | No dialogs; use the subcommands. Deleting needs `--yes`. `/atlas resume` works only from the one session that executed the plan; otherwise it names the sessions to open. |
 
-Prometheus planning needs Plan Mode's interactive approval, so it runs only in the TUI, RPC and ACP. In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation and the progress widget shows a native progress bar. Clicks select, double-clicks open, and the tabs, buttons and keys all work. Atlas and Prometheus tool calls appear as native cards. An `atlas_ledger` card shows the changed row and plan progress; expanded, it adds that row's acceptance, evidence, time limit and retry state and the rows that can start next. A refused `atlas_release` names its reason and the unfinished rows or untriaged findings. The text the model received sits in a folded "Model text" section of an expanded card, formatted: tables as tables, JSON indented, `Label: value` lines as aligned fields.
+In the TUI, `/plan` opens native Plan Mode and `propose` opens the approval overlay. Tern renders the same approval flow as native UI. Plain RPC supports Atlas execution and its extension dialogs, but `/plan` is TUI-only and plain RPC has no native plan approval. ACP clients enter Plan Mode via the session mode. When the client supports form elicitation, the host asks whether to approve or refine the plan. Without that capability, ACP auto-approves the proposal.
+
+In Tern, Atlas Dispatch and the plan view open as native sheets over the conversation and the progress widget shows a native progress bar. Clicks select, double-clicks open, and the tabs, buttons and keys all work. Atlas and Prometheus tool calls appear as native cards. An `atlas_ledger` card shows the changed row and plan progress. Expanded, it adds that row's acceptance, evidence, time limit and retry state and the rows that can start next. A refused `atlas_release` names its reason and the unfinished rows or untriaged findings. The folded "Model text" section of an expanded card shows the model's receipt with formatted tables, indented JSON and aligned `Label: value` fields.
 
 ## Ownership
 
@@ -306,7 +308,7 @@ Startup order does not matter. Unsupported versions and unknown sessions are ign
 With `roadmap` installed, Prometheus uses `pi.events` contracts independent of `herdrDag`. Every payload has `v: 1`. A request carries `sessionId` and a fresh `requestId`; an answer counts only when it arrives synchronously inside the request, for the same session and request, and a malformed answer is dropped. No answer means the roadmap plugin is absent or older.
 
 1. Binding. When Prometheus checks a proposal and again when it records it, it emits `roadmap:binding-request {v, sessionId, requestId}` and accepts a `roadmap:binding` reply carrying `repoRoot`, `toolSourcePath`, an optional bound stage `{id, title, round, criteria?, revision?}` and an optional `usable` boolean. The bound stage is active, or still planned when the planning session started it in plan mode, which only binds. `criteria` lists the stage's current done-criterion ids; `revision` is roadmap's opaque planning-basis hash. `usable` says whether roadmap tools, `roadmap_todo` included, can work in this repository now: a Git work tree with an initialized roadmap and the adr plugin connected. Deferred-finding triage asks afresh and follows it. Replies from releases that send none of `criteria`, `revision` and `usable` are accepted.
-2. Coverage. When the bound stage lists `criteria`, the plan needs exactly one plan-level line such as `Roadmap criteria: DC1, DC3` (column 0, outside `## Tasks`, `## Final gates` and code fences) naming unique ids that are all current criteria. The `write xd://propose` call is refused before the approval dialog opens when the line is missing, repeated, empty, malformed, misplaced or names another id; the refusal lists the current ids. Without a bound stage, or when the binding has no `criteria`, the line is optional and is neither validated nor stored.
+2. Coverage. When the bound stage lists `criteria`, the plan needs exactly one plan-level line such as `Roadmap criteria: DC1, DC3` (column 0, outside `## Tasks`, `## Final gates` and code fences) naming unique ids that are all current criteria. Prometheus refuses `propose` before native approval when the line is missing, repeated, empty, malformed, misplaced or names another id. The refusal lists the current ids. Without a bound stage, or when the binding has no `criteria`, the line is optional and is neither validated nor stored.
 3. Storage. The proposal marker (version 4) and the approval (version 3) record `roadmapStage: {repoRoot, id, criteria?, revision?}`: `criteria` only when declared against a binding that listed criteria, `revision` whenever the binding carried one. Version 3 markers and version 1 and 2 approvals still load and resume.
 4. Tools. Atlas admits `roadmap_*` tools, `roadmap_upgrade` included, only from the extension source path equal to `toolSourcePath`; a refusal says whether the handshake is missing or the tool comes from another source. Within that boundary every roadmap action the plan needs is allowed.
 5. Plans. Prometheus answers `atlas:plans-request {v, sessionId, requestId, repoRoot, stage?}` for its own main sessions with `atlas:plans {v, sessionId, requestId, plans}`, read synchronously from the shared plan store with no locks or writes. Each plan has `planId`, `name`, `repoRoot`, `stage`, the declared `criteria` and approval `revision` when recorded, `status` (`unfinished` or `complete`), `done`, `total`, `gates` (verified verdicts and summaries, empty until complete), `delivery: {mode, summary}` once P1 is done, `deferred` (`id`, `title`, and `disposition` and `reference` once triaged) and the bundle `directory`. Only bundles whose approval records a stage in that `repoRoot` (and that stage, when given) are listed; unreadable bundles are skipped with a warning, and a session without a session directory answers with no plans. Plans bound to a stage only at completion are not listed.
@@ -320,6 +322,6 @@ Completion events are deduplicated per producer instance only, so a restart foll
 
 With `adr` installed, Atlas admits the ADR tools through their own `pi.events` handshake, independent of `roadmap` and `herdrDag`:
 
-1. When Atlas calls an `adr_*` tool, directly or as `write xd://adr_*`, Prometheus emits `adr:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `adr:binding` reply with `v: 1`, the same session and request, and an absolute `toolSourcePath`. A confirmed answer is cached for the session and forgotten at shutdown; a missing one is asked again on the next call.
+1. When Atlas calls an `adr_*` tool directly, Prometheus emits `adr:binding-request {v:1, sessionId, requestId}` and accepts only a synchronous `adr:binding` reply with `v: 1`, the same session and request, and an absolute `toolSourcePath`. A confirmed answer is cached for the session and forgotten at shutdown. If there is no reply, the next call asks again.
 2. Prometheus uses only `toolSourcePath`. The reply's `api` object serves `roadmap` and is never read or called by Prometheus.
 3. Atlas admits `adr_*` tools only from the extension source path equal to the ADR `toolSourcePath`; a refusal says whether the handshake is missing (check that the adr plugin is installed and enabled) or the tool comes from another source. Each family is verified only through its own handshake: the roadmap binding never admits an `adr_*` tool, and the ADR binding never admits a `roadmap_*` tool.
