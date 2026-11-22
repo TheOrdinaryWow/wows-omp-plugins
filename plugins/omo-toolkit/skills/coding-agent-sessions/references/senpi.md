@@ -2,7 +2,7 @@
 
 # OMP and the OMO / Senpi / pi family
 
-For OMP recall, read `help://eval/archive` and use native archive first. `archive.search(query, options)` searches session titles, idle recaps, and user and assistant messages across history. It returns session records with match snippets and raw `file` paths, which `archive.sessions` also provides for recent sessions. `archive.prompts({ query })` searches interactive-editor prompt history, which excludes RPC, SDK, and subagent submissions. Read the selected raw logs when needed and within the authorized scope.
+For OMP recall, read `help://eval/archive` and use native archive first. `archive.search(query, options)` searches session titles, idle recaps, and user and assistant messages across history, not tool output or child transcripts. It returns session records with match snippets and raw `file` paths, which `archive.sessions` also provides for recent sessions. `archive.prompts({ query })` searches interactive-editor prompt history, which excludes RPC, SDK, and subagent submissions. Recaps exist only for interactive sessions that went idle, so their absence proves nothing. Read the selected raw logs when needed and within the authorized scope.
 
 | Platform key | Aliases | Actual conventional locations |
 |---|---|---|
