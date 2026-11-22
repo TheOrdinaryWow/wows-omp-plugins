@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
-import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { type ResolvedApprovedPlan, resolveApprovedPlan } from "@oh-my-pi/pi-coding-agent/plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
@@ -132,6 +131,7 @@ import {
   atlasArgumentCompletions,
   BLOCKED_TOOL_NOTICE,
   blockedToolMessage,
+  canonicalPlanPath,
   carriesAtlasAssignment,
   DEFAULT_REVIEW_ROUND_LIMIT,
   EXECUTION_PREAMBLE,
@@ -623,7 +623,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       const planActive = live?.getPlanModeState()?.enabled === true;
       const holdBash =
         wantLedger ||
-        (record?.phase === "planning" && (planActive || previous?.sessionId === sessionId || record.proposalAwaitingApproval));
+        (record?.phase === "planning" && (planActive || previous?.sessionId === sessionId || record.planFilePath !== undefined));
       let override: typeof previous;
       if (live && holdBash && record) {
         if (record.bashWasActive === undefined) {
@@ -1822,7 +1822,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       return undefined;
     }
     const { planFilePath: planUrl, planContent: content } = selected;
-    if (!InternalUrlRouter.instance().normalize(planUrl).startsWith("local://")) {
+    if (!canonicalPlanPath(planUrl).startsWith("local://")) {
       return `Prometheus refused the plan at ${planUrl}. Write it to \`local://<slug>-plan.md\` and call \`propose\` with \`title\` set to that slug.`;
     }
     const { items, errors, roadmapCriteria } = parsePlanChecklist(content, availableAgents());
@@ -3100,13 +3100,12 @@ export default function prometheus(pi: ExtensionAPI): void {
       return;
     }
     if (record?.phase !== "planning") return;
-    if (event.state.plan.status === "active") {
-      await syncTools(ctx);
-    } else if (event.previous.plan.status === "active" && (event.state.plan.status === "paused" || !record.proposalAwaitingApproval)) {
+    if (event.state.plan.status !== "active" && event.previous.plan.status !== "active") return;
+    if (event.state.plan.status === "paused" || (event.state.plan.status === "inactive" && !record.planFilePath)) {
       restoreApprovalTiers(live);
       await endPlanning(ctx, record);
-      await syncTools(ctx);
     }
+    await syncTools(ctx);
   });
 
   pi.on("before_agent_start", async (event, ctx) => {

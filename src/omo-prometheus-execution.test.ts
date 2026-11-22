@@ -272,6 +272,9 @@ async function scenario(name: string, root: string): Promise<void> {
       "planning-bash-abort",
       "planning-bash-switch",
       "atlas-bash-tui",
+      "atlas-bash-tui-review-reopened",
+      "atlas-bash-tui-review-resumed",
+      "atlas-bash-tui-review-abandoned",
       "atlas-bash-exit",
       "atlas-bash-resume",
       "atlas-bash-release",
@@ -343,6 +346,26 @@ async function scenario(name: string, root: string): Promise<void> {
     const handler = hooks.get(event);
     assert(handler, `Missing ${event} hook`);
     return handler({ type: event, ...data }, ctx);
+  };
+  const resumeLegacySession = async () => {
+    await hook("session_shutdown");
+    for (const entry of entries) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        "customType" in entry &&
+        entry.customType === "wows-omp-omo-prometheus.state" &&
+        "data" in entry &&
+        entry.data &&
+        typeof entry.data === "object" &&
+        "bashWasActive" in entry.data
+      ) {
+        delete entry.data.bashWasActive;
+      }
+    }
+    activeTools.push("bash");
+    install();
+    await hook("session_start");
   };
   const call = async (params: Record<string, unknown>, toolName = "atlas_ledger") => {
     const tool = tools.get(toolName);
@@ -570,12 +593,15 @@ async function scenario(name: string, root: string): Promise<void> {
         | { block?: boolean; reason?: string }
         | undefined;
     if (name === "propose-non-local") {
-      nativePlanPath = "checkout-plan.md";
-      await writeFile(join(root, nativePlanPath), plan);
-      const refusal = await propose("checkout");
-      assert.equal(refusal?.block, true);
-      assert(refusal.reason?.includes(nativePlanPath));
-      assert(refusal.reason?.includes("local://<slug>-plan.md"));
+      await writeFile(join(root, "checkout-plan.md"), plan);
+      await writeFile(join(artifacts, "local", "current.md"), plan);
+      for (const planPath of ["checkout-plan.md", "/project/local://current.md"]) {
+        nativePlanPath = planPath;
+        const refusal = await propose("checkout");
+        assert.equal(refusal?.block, true);
+        assert(refusal.reason?.includes(nativePlanPath));
+        assert(refusal.reason?.includes("local://<slug>-plan.md"));
+      }
       assert.equal(await propose("integrity"), undefined);
       return;
     }
@@ -700,15 +726,31 @@ async function scenario(name: string, root: string): Promise<void> {
       details: { planFilePath: approvedPath, planExists: true },
       content: [],
     });
+    const markerPath = join(artifacts, "local", "prometheus", "integrity.proposal.json");
+    if (name === "atlas-bash-tui-review-resumed") {
+      await resumeLegacySession();
+      assert(!activeTools.includes("bash"));
+    } else if (name.startsWith("atlas-bash-tui-review-")) {
+      assert.equal(await hook("input", { text: "/plan-review", source: "interactive" }), undefined);
+    }
     mode = false;
     activeTools.push("bash");
     await hook("mode_changed", { previous: { plan: { status: "active" } }, state: { plan: { status: "inactive" } } });
-    reference = approvedPath;
-    await hook("before_agent_start", { prompt: approvedHandoff(reference, plan), systemPrompt: [] });
-    assert(reference.startsWith("atlas://"));
     assert(!activeTools.includes("bash"));
-    await commands.get("atlas")?.("exit", ctx);
-    assert.equal(activeTools.includes("bash"), name === "atlas-bash-tui");
+    assert(await Bun.file(markerPath).exists());
+    if (name === "atlas-bash-tui-review-abandoned") {
+      await hook("before_agent_start", { prompt: "Continue", systemPrompt: [] });
+      assert(activeTools.includes("bash"));
+      assert(!activeTools.includes("atlas_ledger"));
+      await assert.rejects(readFile(markerPath), { code: "ENOENT" });
+    } else {
+      reference = approvedPath;
+      await hook("before_agent_start", { prompt: approvedHandoff(reference, plan), systemPrompt: [] });
+      assert(reference.startsWith("atlas://"));
+      assert(!activeTools.includes("bash"));
+      await commands.get("atlas")?.("exit", ctx);
+      assert.equal(activeTools.includes("bash"), name !== "atlas-bash-tui-inactive");
+    }
     return;
   }
   if (name === "atlas-bash-exit") {
@@ -744,6 +786,14 @@ async function scenario(name: string, root: string): Promise<void> {
     install();
     await hook("session_start");
   };
+  if (name === "atlas-bash-legacy-execution") {
+    await resumeLegacySession();
+    assert(!activeTools.includes("bash"));
+    ok(await call({ action: "status" }));
+    await commands.get("atlas")?.("exit", ctx);
+    assert(activeTools.includes("bash"));
+    return;
+  }
   if (name === "atlas-bash-exit" || name === "atlas-bash-resume" || name === "atlas-no-bash") {
     assert(!activeTools.includes("bash"));
     assert(activeTools.includes("atlas_ledger"));
@@ -3914,6 +3964,10 @@ if (process.env[CHILD_ENV]) {
       "structured-results",
       "atlas-bash-tui",
       "atlas-bash-tui-inactive",
+      "atlas-bash-tui-review-reopened",
+      "atlas-bash-tui-review-resumed",
+      "atlas-bash-tui-review-abandoned",
+      "atlas-bash-legacy-execution",
       "atlas-bash-exit",
       "atlas-bash-resume",
       "atlas-bash-release",

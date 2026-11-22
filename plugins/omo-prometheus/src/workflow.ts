@@ -332,7 +332,7 @@ export function researchSpawnBlockReason(
   return undefined;
 }
 
-function canonicalPlanPath(path: string): string {
+export function canonicalPlanPath(path: string): string {
   return path.replace(/^local:\/(?!\/)/, "local://");
 }
 
