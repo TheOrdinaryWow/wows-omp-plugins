@@ -16,7 +16,7 @@ Scale: <axis count, source territories, target document length> · Precision dem
 </analysis>
 ```
 
-**Intentional OMP deviation:** static-first native `read`/search for complete static sources, with immutable snapshots and truthful extractor provenance. `Collection: browser-required` is mandatory when any claim depends on rendered, authenticated, interactive, or visual state. Assign those lanes to native OMP browser, beginning with `read xd://eval/browser`; snippets alone do not back a substantive claim.
+**Intentional OMP deviation:** static-first native `read`/search for complete static sources, with immutable snapshots and truthful extractor provenance. `Collection: browser-required` is mandatory when any claim depends on rendered, authenticated, interactive, or visual state. Assign those lanes to native OMP browser, beginning with `read help://eval/browser`; snippets alone do not back a substantive claim.
 
 Then create the session directory:
 
@@ -129,7 +129,7 @@ Choose one owner per real independent axis and a skeptic; use cheap breadth and 
 Role protocols — embed the relevant one in each spawn message; every worker gets a unique angle:
 
 - **Codebase (`scout`), 2-4 workers.** Grep with 3+ keyword variations; structural/AST search; LSP definitions and references; file-name globs; `git log --all -S '<keyword>'` and `--grep` for history including deleted code. Cross-validate hits across tools. Report absolute file paths, patterns with `file:line`, and how findings connect.
-- **Web, 3-9 workers, assigned disjoint source territories.** Search varied primary and independent sources; snippets identify candidates only. Native `read`/search is static-first, and every substantive source is captured immutably. If a claim depends on rendering/authentication/interaction/visual state, the assignment requires native OMP browser, starts with `read xd://eval/browser`, and names the actual captured HTML/text/screenshots plus access state, URL, observation time, and extractor provenance. Use owned tabs, close them after capture, and never refetch authenticated bytes with `--url` as a substitute. Imported pages use `--html`; extracted documents use `--raw <original> --text <extraction>`, defaulting truthfully to lower-trust `model`; `--text` alone is converted-only and cannot back measurements; a named extractor is used only when it actually produced the file. Optional installed `ultimate-browsing` is only for a genuinely blocked host/platform/archive; absent access stays a gap, not a fabricated source.
+- **Web, 3-9 workers, assigned disjoint source territories.** Search varied primary and independent sources; snippets identify candidates only. Native `read`/search is static-first, and every substantive source is captured immutably. If a claim depends on rendering/authentication/interaction/visual state, the assignment requires native OMP browser, starts with `read help://eval/browser`, and names the actual captured HTML/text/screenshots plus access state, URL, observation time, and extractor provenance. Use owned tabs, close them after capture, and never refetch authenticated bytes with `--url` as a substitute. Imported pages use `--html`; extracted documents use `--raw <original> --text <extraction>`, defaulting truthfully to lower-trust `model`; `--text` alone is converted-only and cannot back measurements; a named extractor is used only when it actually produced the file. Optional installed `ultimate-browsing` is only for a genuinely blocked host/platform/archive; absent access stays a gap, not a fabricated source.
 
 - **Repo deep-dive (librarian), 0-2 workers.** Shallow-clone the most relevant repos to `${TMPDIR:-/tmp}`, pin the HEAD SHA, read core modules, follow call chains, return SHA-pinned permalinks.
 
@@ -148,7 +148,7 @@ This loop is what makes the mode research rather than search. Collect returns as
 3. Spawn an expansion worker immediately for each new unchecked lead:
 
 ```
-task({context: "GOAL: <research question>. SHARED: <scope, pinned versions and exclusions every child must respect>.", tasks: [{agent: "deep-low", name: "Expansion", task: "TASK: investigate <lead>. PARENT: <observation>. Follow the native protocol for its territory; browser-required claims begin with read xd://eval/browser and return real capture files. Return the EXPAND tail; do not edit the lead journal.", solutionSpace: "The lead may confirm, refute, or remain unresolved", effort: "med"}]})
+task({context: "GOAL: <research question>. SHARED: <scope, pinned versions and exclusions every child must respect>.", tasks: [{agent: "deep-low", name: "Expansion", task: "TASK: investigate <lead>. PARENT: <observation>. Follow the native protocol for its territory; browser-required claims begin with read help://eval/browser and return real capture files. Return the EXPAND tail; do not edit the lead journal.", solutionSpace: "The lead may confirm, refute, or remain unresolved", effort: "med"}]})
 ```
 
 ### Excursions — dive deep on a new find, then surface back out
@@ -166,7 +166,11 @@ Interest alone is not a trigger. Anything without one stays a queued lead in `ex
 
 **Budget the dive before you take it.** State the worker count and the probe count for this level in the ENTER row. An excursion may spawn at most ONE nested sub-excursion; a third level means the thing has become its own research question — surface immediately and either promote it to a real axis with its own worker or record it as an out-of-scope gap in `SYNTHESIS.md`. Only when an explicitly active loop owns the research, promote a new axis through the native `ulw_loop` steering operation `add_subgoal`, supplying its title/objective and concrete criterion seed. Otherwise record the promotion in the journal only.
 
-Native call shape: `ulw_loop({op:"steer",kind:"add_subgoal",source:"finding",title:"<axis>",objective:"<answer needed>",shape:"research",tier:"LIGHT",criteria:[{scenario:"<observable question>",expectedEvidence:"<source/proof artifact>"}],evidence:"<finding>",rationale:"<why the axis changes>"})`. Use `complete_goals` to acquire/resume through the tool, never to assert completion without evidence.
+When `bash` is active, run the steering operation as a command. If the session lists `ulw_loop` as a top-level tool, pass the same JSON object as its structured arguments. Use `complete_goals` to acquire or resume work, with completion determined by evidence.
+
+```bash
+ulw_loop -j '{"op":"steer","kind":"add_subgoal","source":"finding","title":"<axis>","objective":"<answer needed>","shape":"research","tier":"LIGHT","criteria":[{"scenario":"<observable question>","expectedEvidence":"<source/proof artifact>"}],"evidence":"<finding>","rationale":"<why the axis changes>"}'
+```
 
 **EXIT (surface) the moment any of these holds** — you do not need all of them:
 
@@ -177,7 +181,14 @@ Native call shape: `ulw_loop({op:"steer",kind:"add_subgoal",source:"finding",tit
 
 **Fold back on the way out.** Every EXIT writes one line saying what the excursion changed in the top-level answer, and `none — <reason>` is a legitimate, required outcome; an excursion whose result is silently dropped is a lost run. Update the parent claim node or axis digest with the result, then, only for an explicitly active loop, mirror it through native `ulw_loop` steering `annotate_ledger` and record criterion evidence with `record_evidence` when appropriate. Use the tool's declared schema and the real artifact paths. After compaction read native `ulw_loop` status and `excursion-log.md`; without an active loop this journal is the only authority.
 
-Use `ulw_loop({op:"steer",kind:"annotate_ledger",source:"finding",evidence:"<observation>",rationale:"<effect or none>"})` and `ulw_loop({op:"record_evidence",goalId:"<owned goal>",criterionId:"<current criterion>",status:"pass|fail|blocked",evidence:"<observed result>",artifacts:["<real file>"]})`. A pass requires a nonempty real artifact and binds to the acquired attempt/current criterion. Git-shaped capture requires clean tracked files; non-Git research binds source/artifact hashes. Do not pass a session/store identifier.
+Run the following commands through `bash`, or pass each JSON object as structured arguments when the session lists `ulw_loop` as a tool. Choose the observed status from `pass`, `fail`, or `blocked`.
+
+```bash
+ulw_loop -j '{"op":"steer","kind":"annotate_ledger","source":"finding","evidence":"<observation>","rationale":"<effect or none>"}'
+ulw_loop -j '{"op":"record_evidence","goalId":"<owned goal>","criterionId":"<current criterion>","status":"pass","evidence":"<observed result>","artifacts":["<real file>"]}'
+```
+
+A pass requires a nonempty real artifact and binds to the acquired attempt/current criterion. Git-shaped capture requires clean tracked files; non-Git research binds source/artifact hashes. Omit session and store identifiers.
 
 **Anti-drift.** After every EXIT, re-read the core question in the journal and confirm the run still answers it. Three consecutive excursions that changed nothing end excursions for the run: converge on what you have.
 

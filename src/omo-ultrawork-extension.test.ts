@@ -129,7 +129,7 @@ async function scenario(name: string, root: string): Promise<void> {
       const images = [{ type: "image", data: "fixture", mimeType: "image/png" }];
       const binding = (await hook("input", { source: "rpc", text: input, images })) as { text: string; images: unknown };
       assert(binding.text.includes("<omo-ulw-research-mode>"));
-      assert(binding.text.includes("<omo-ulw-research-companions>"));
+      assert(/<omo-ulw-research-companions>[^<]*help:\/\/eval\/browser/.test(binding.text));
       assert.equal(binding.images, images);
       await command("ulw-research", input);
       assert(requests.at(-1));

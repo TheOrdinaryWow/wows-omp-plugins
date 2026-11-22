@@ -5,7 +5,7 @@ import { loadPromptAsset, RESEARCH_ASSET } from "#src/assets.ts";
 import { materializeResearchAssets } from "#src/research-assets.ts";
 
 export const RESEARCH_COMPANIONS =
-  "<omo-ulw-research-companions>Use native read/search for static sources and immutable snapshots. Read xd://eval/browser and use the native browser when rendering, authentication or visual evidence matters; name that requirement in child assignments. skill://ultimate-browsing is optional blocked-host/platform/archive routing only, not a second browser engine. Reuse only an explicitly active compatible loop; otherwise keep the research journal and do not create a native goal.</omo-ulw-research-companions>";
+  "<omo-ulw-research-companions>Use native read/search for static sources and immutable snapshots. Read help://eval/browser and use the native browser when rendering, authentication or visual evidence matters; name that requirement in child assignments. skill://ultimate-browsing is optional blocked-host/platform/archive routing only, not a second browser engine. Reuse only an explicitly active compatible loop; otherwise keep the research journal and do not create a native goal.</omo-ulw-research-companions>";
 
 export interface ResearchPayloadOptions {
   sessionDir: string;
