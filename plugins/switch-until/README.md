@@ -21,7 +21,7 @@ Only the main session's model changes. Subagents keep the models they already ha
 omp plugin install switch-until@wows-omp-plugins
 ```
 
-You need OMP 19.1.0 or newer and a judgment model behind OMP's `judge` role. The judge decides whether the goal is met, so `/switch-until` refuses to start unless the judge can run for the model you pick. It never falls back to a chat model.
+You need OMP 19.1.1 or newer and a judgment model behind OMP's `judge` role. The judge decides whether the goal is met, so `/switch-until` refuses to start unless the judge can run for the model you pick. It never falls back to a chat model.
 
 ## Quick start
 
