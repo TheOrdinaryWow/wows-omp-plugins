@@ -1,13 +1,13 @@
 {
-  "plugins/adr": "0.5.2",
-  "plugins/audit-goal": "0.4.6",
-  "plugins/find-console": "0.3.1",
-  "plugins/judge-dispatch": "0.9.3",
-  "plugins/omp-herdr-dag": "0.7.3",
-  "plugins/omo-prometheus": "0.32.4",
-  "plugins/omo-ultrawork": "0.8.3",
-  "plugins/omo-toolkit": "0.8.3",
-  "plugins/roadmap": "0.11.1",
-  "plugins/snippets": "0.2.5",
-  "plugins/switch-until": "0.2.1"
+  "plugins/adr": "0.5.3",
+  "plugins/audit-goal": "0.4.7",
+  "plugins/find-console": "0.3.2",
+  "plugins/judge-dispatch": "0.9.4",
+  "plugins/omp-herdr-dag": "0.7.4",
+  "plugins/omo-prometheus": "0.32.5",
+  "plugins/omo-ultrawork": "0.8.4",
+  "plugins/omo-toolkit": "0.8.4",
+  "plugins/roadmap": "0.11.2",
+  "plugins/snippets": "0.2.6",
+  "plugins/switch-until": "0.2.2"
 }
