@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
-import type { EvidenceStatus, GoalSeed, Steering, ValidationBatch } from "#src/ulw-loop-state.ts";
+import { type EvidenceStatus, type GoalSeed, LoopError, type Steering, type ValidationBatch } from "#src/ulw-loop-state.ts";
 
 export type LoopParameters =
   | { op: "help" | "status" }
@@ -23,7 +23,27 @@ export type LoopParameters =
   | { op: "record_review_blockers"; goalId: string; title: string; objective: string; evidence: string; artifacts: string[] }
   | { op: "pause" | "resume" | "stop"; reason?: string };
 
-/** Strict operation/steering unions keep typos and unrelated fields out of durable state. */
+const OPS = [
+  "help",
+  "status",
+  "create_goals",
+  "complete_goals",
+  "criteria",
+  "record_evidence",
+  "checkpoint",
+  "steer",
+  "add_goal",
+  "record_review_blockers",
+  "pause",
+  "resume",
+  "stop",
+] as const satisfies readonly LoopParameters["op"][];
+
+/**
+ * Providers accept only a plain object at the top of a tool schema, so the tool advertises a flat superset of every
+ * operation's fields; `parse` then applies the strict per-operation unions that keep typos and unrelated fields out of
+ * durable state.
+ */
 export function loopParameters(pi: ExtensionAPI) {
   const z = pi.zod;
   const text = z.string().trim().min(1);
@@ -91,8 +111,7 @@ export function loopParameters(pi: ExtensionAPI) {
       })
       .strict(),
   ]);
-  // The two checkpoint shapes share an op; Zod's union preserves their mutually exclusive payloads.
-  return z.union([
+  const operations = z.union([
     z.object({ op: z.literal("help") }).strict(),
     z.object({ op: z.literal("status") }).strict(),
     z
@@ -132,4 +151,55 @@ export function loopParameters(pi: ExtensionAPI) {
       .strict(),
     ...(["pause", "resume", "stop"] as const).map((op) => z.object({ op: z.literal(op), reason: text.optional() }).strict()),
   ]);
+  const parameters = z
+    .object({
+      op: z.enum(OPS),
+      kind: z
+        .enum([
+          "add_subgoal",
+          "split_subgoal",
+          "reorder_pending",
+          "revise_pending_wording",
+          "revise_criterion",
+          "annotate_ledger",
+          "mark_blocked_superseded",
+        ])
+        .optional(),
+      source: z.literal("finding").optional(),
+      briefPath: text.optional(),
+      objective: text.optional(),
+      goals: z.array(goal).optional(),
+      validationBatches: z.array(z.object({ id: text, goalIds: z.array(text), finalGoalId: text }).strict()).optional(),
+      retryFailed: z.boolean().optional(),
+      goalId: text.optional(),
+      criterionId: text.optional(),
+      targetGoalId: text.optional(),
+      status: z.enum(["pass", "fail", "blocked", "complete", "failed"]).optional(),
+      evidence: text.optional(),
+      artifacts: z.array(text).optional(),
+      notes: text.optional(),
+      printTemplate: z.boolean().optional(),
+      qualityGatePath: text.optional(),
+      rationale: text.optional(),
+      title: text.optional(),
+      shape: seed.shape.optional(),
+      tier: seed.tier.optional(),
+      criteria: z.array(criterion).optional(),
+      childGoals: z.array(goal).optional(),
+      pendingOrder: z.array(text).optional(),
+      revisedTitle: text.optional(),
+      revisedObjective: text.optional(),
+      scenario: text.optional(),
+      expectedEvidence: text.optional(),
+      userModel: z.enum(["happy", "edge", "regression", "adversarial"]).optional(),
+      blockedReason: text.optional(),
+      reason: text.optional(),
+    })
+    .strict();
+  const parse = (input: unknown): LoopParameters => {
+    const result = operations.safeParse(input);
+    if (!result.success) throw new LoopError("ULW_LOOP_INVALID_ARGUMENTS", result.error.message);
+    return result.data;
+  };
+  return { parameters, parse };
 }

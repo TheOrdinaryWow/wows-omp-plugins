@@ -17,7 +17,7 @@ import {
   qualityGateTemplate,
   requireCriteria,
 } from "#src/ulw-loop-evidence.ts";
-import { type LoopParameters, loopParameters } from "#src/ulw-loop-schema.ts";
+import { loopParameters } from "#src/ulw-loop-schema.ts";
 import {
   acquireGoal,
   appendGoal,
@@ -100,7 +100,7 @@ function requireState(state: LoopState | undefined): asserts state is LoopState 
 
 export function registerLoop(pi: ExtensionAPI, host: LoopHost): LoopIntegration {
   const internalGoalChange = new Set<string>();
-  const parameters = loopParameters(pi);
+  const { parameters, parse } = loopParameters(pi);
   const main = (ctx: ExtensionContext): AgentSession => {
     const session = host.mainSession(ctx);
     requireLoop(session, "ULW_LOOP_MAIN_ONLY", "ulw-loop runs only in the main session.");
@@ -450,9 +450,10 @@ export function registerLoop(pi: ExtensionAPI, host: LoopHost): LoopIntegration 
     },
     strict: true,
     ...loopCard,
-    async execute(_id, params: LoopParameters, _signal, _update, ctx) {
-      const op = params.op;
+    async execute(_id, input: typeof parameters.infer, _signal, _update, ctx) {
       try {
+        const params = parse(input);
+        const op = params.op;
         const session = main(ctx);
         if (op === "help")
           return receipt(
@@ -719,7 +720,7 @@ export function registerLoop(pi: ExtensionAPI, host: LoopHost): LoopIntegration 
         if (error instanceof LoopError && error.code.startsWith("ULW_LOOP_STATE_")) await pauseBoundDriver(ctx);
         const failure = {
           ok: false,
-          op,
+          op: input.op,
           error: {
             code: error instanceof LoopError ? error.code : "ULW_LOOP_ERROR",
             message: error instanceof Error ? error.message : String(error),

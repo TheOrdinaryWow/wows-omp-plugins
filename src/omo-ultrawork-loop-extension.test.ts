@@ -295,6 +295,9 @@ async function scenario(name: string, root: string): Promise<void> {
       assert.equal((await store(h, cwd).load())?.status, "paused");
       const modelResume = await call(h, { op: "resume" });
       assert.equal(modelResume.error?.code, "ULW_LOOP_USER_RESUME_REQUIRED");
+      const mixed = await call(h, { op: "checkpoint", printTemplate: true, status: "complete", evidence: "mixed shapes" });
+      assert.equal(mixed.error?.code, "ULW_LOOP_INVALID_ARGUMENTS");
+      assert.equal((await call(h, { op: "resume", goalId: "G001" })).error?.code, "ULW_LOOP_INVALID_ARGUMENTS");
       await command(h, "resume");
       assert.notEqual(h.session.getGoalModeState()?.goal.id, ownId);
       await command(h, "stop");
