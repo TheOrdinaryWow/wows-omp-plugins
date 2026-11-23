@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.11.1...roadmap@0.11.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* raise supported OMP floor to 19.1.1 ([00f6880](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/00f68806460f1b3a9b29d63a11fe0d113e331f62))
+
 ## [0.11.1](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/roadmap@0.11.0...roadmap@0.11.1) (2026-11-22)
 
 
