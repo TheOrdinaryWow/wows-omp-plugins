@@ -4,7 +4,7 @@
   "plugins/find-console": "0.3.2",
   "plugins/judge-dispatch": "0.9.4",
   "plugins/omp-herdr-dag": "0.7.4",
-  "plugins/omo-prometheus": "0.32.5",
+  "plugins/omo-prometheus": "0.33.0",
   "plugins/omo-ultrawork": "0.8.4",
   "plugins/omo-toolkit": "0.8.4",
   "plugins/roadmap": "0.11.2",
