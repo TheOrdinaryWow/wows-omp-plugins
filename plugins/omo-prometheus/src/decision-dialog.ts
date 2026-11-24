@@ -9,7 +9,7 @@
  */
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import type { DecidedBy } from "./ledger.ts";
+import type { DecidedBy, RetryResolution } from "./ledger.ts";
 
 export interface DecisionOption {
   label: string;
@@ -291,3 +291,78 @@ export const retryDecision = (proposal: RetryProposal): Decision => ({
   ].join("\n\n"),
   initial: "decline",
 });
+
+export interface DivergingProposal {
+  rowId: string;
+  /** The row's ledger summary and failure history. */
+  history: string;
+  acceptance: string;
+  /** The acceptance in force once the owner accepts the remaining finding as a known limitation. */
+  limitation: string;
+  note: string;
+  /** False for a gate, which reviews work and has no design to redo. */
+  redesign: boolean;
+}
+
+/**
+ * How the owner ends a row whose repairs keep surfacing different defects. Undefined keeps it blocked: that option,
+ * Esc and a dismissed dialog all record nothing.
+ */
+export async function resolveDiverging(
+  ui: DecisionUI,
+  proposal: DivergingProposal,
+  timeoutMs?: number,
+): Promise<RetryResolution | "timeout" | undefined> {
+  const { rowId } = proposal;
+  const resolutions: Array<DecisionOption & { resolution: RetryResolution }> = [
+    {
+      resolution: "limit",
+      label: `Accept the remaining finding as a known limitation of ${rowId}`,
+      description: "Records an owner ruling with the proposed acceptance; the finding is not repaired and the final report lists it",
+    },
+    ...(proposal.redesign
+      ? [
+          {
+            resolution: "redesign" as const,
+            label: `Redo ${rowId} with another design`,
+            description: "Discards the current implementation; the fresh attempt gets a full verification",
+          },
+        ]
+      : []),
+    {
+      resolution: "continue",
+      label: `Keep repairing ${rowId}`,
+      description: "Opens one more retry window; acceptance unchanged, failures kept",
+    },
+  ];
+  const blocked: DecisionOption = { label: `Keep ${rowId} blocked`, description: "Nothing is recorded" };
+  const options = [...resolutions, blocked, REVIEW_DETAILS];
+  const change = firstChange(proposal.acceptance, proposal.limitation);
+  const title = [
+    `${rowId} keeps surfacing different defects. How should it end?`,
+    "Each repair fixed what was reported, and the next check found another defect.",
+    change === undefined ? "Known limitation: drops part of the current acceptance" : `Known limitation: ${oneLine(change)}`,
+  ].join("\n");
+  const details = [
+    section("Row and failure history", proposal.history),
+    section("Acceptance in force", proposal.acceptance),
+    section("Acceptance if the remaining finding is accepted as a known limitation", proposal.limitation),
+    section("Remaining finding and its consequence", proposal.note),
+    section(
+      "What each choice does",
+      "Accepting a known limitation records an owner ruling, a deviation from the approved plan. A redo discards the implementation and starts another design. Keeping on repairs under the unchanged acceptance. Each of them opens a new retry window; prior failures stay in history and nothing is rolled back.",
+    ),
+  ].join("\n\n");
+  const initialIndex = resolutions.length;
+  while (true) {
+    let timedOut = false;
+    const choice = await ui.select(
+      title,
+      options,
+      timeoutMs === undefined ? { initialIndex } : { initialIndex, timeout: timeoutMs, onTimeout: () => (timedOut = true) },
+    );
+    if (timedOut) return "timeout";
+    if (choice !== REVIEW_DETAILS.label) return resolutions.find((option) => option.label === choice)?.resolution;
+    await ui.editor(`${rowId} failure history (read-only)`, details);
+  }
+}

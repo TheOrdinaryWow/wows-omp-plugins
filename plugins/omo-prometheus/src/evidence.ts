@@ -14,6 +14,7 @@ import {
   ledgerRows,
   noteRetryDispatch,
   planDigest,
+  type ReviewScope,
   retryWindow,
   verificationStatus,
 } from "./ledger.ts";
@@ -80,15 +81,28 @@ function object(value: unknown): value is Record<string, unknown> {
 
 /**
  * The host takes a task `outputSchema` as an object or as its JSON text, which it parses. Providers with strict tool
- * schemas (OpenAI Responses) narrow the object branch to `{}`, so their models can only send the text form.
+ * schemas (OpenAI Responses) narrow the object branch to `{}`, so their models can only send the text form. A schema for
+ * an attempt with a bound review scope must pin that scope, or the child could state another one.
  */
-function suppliesObjectSchema(value: unknown): boolean {
-  if (typeof value !== "string") return object(value);
-  try {
-    return object(JSON.parse(value));
-  } catch {
-    return false;
+function suppliesBoundSchema(value: unknown, scope: ReviewScope | undefined): boolean {
+  let schema = value;
+  if (typeof value === "string") {
+    try {
+      schema = JSON.parse(value);
+    } catch {
+      return false;
+    }
   }
+  if (!object(schema)) return false;
+  if (scope === undefined) return true;
+  return (
+    object(schema.properties) &&
+    object(schema.properties.scope) &&
+    schema.properties.scope.const === scope &&
+    Array.isArray(schema.required) &&
+    schema.required.includes("scope") &&
+    schema.required.includes("findings")
+  );
 }
 /** These native task validation returns happen before the host derives or schedules any spawns. */
 const DISPATCH_REJECTIONS = [
@@ -112,11 +126,62 @@ interface FailureDetails {
   priorResolved?: boolean;
 }
 
-interface BoundVerdict {
+export type FindingKind = (typeof FINDING_KINDS)[number];
+export type FindingConsequence = (typeof FINDING_CONSEQUENCES)[number];
+
+export interface Finding {
+  kind: FindingKind;
+  consequence: FindingConsequence;
+  summary: string;
+}
+
+export interface BoundVerdict {
+  /**
+   * What the ledger records. It differs from the child's stated verdict when `adjudicated`, and a stated PASS whose
+   * scope is not the one bound to the attempt is INCONCLUSIVE.
+   */
   verdict: ChildVerdict;
   summary: string;
   failure?: FailureDetails;
+  findings: Finding[];
+  /** The child stated FAIL in a confirmation scope, listing only new findings without a severe consequence. */
+  adjudicated: boolean;
 }
+
+const FINDING_KINDS = ["listed", "regression", "unreached", "new"] as const;
+const FINDING_CONSEQUENCES = [
+  "none",
+  "access",
+  "secrets",
+  "data_loss",
+  "irreversible_change",
+  "published_contract",
+  "concurrency",
+] as const;
+
+const FINDINGS_SCHEMA = {
+  type: "array",
+  description:
+    "Every defect and observation you found, one entry each, whatever the verdict; empty when there is none. In scope confirmation, a FAIL that lists at least one finding, all of kind new with consequence none, and whose failure is not a harness failure, is recorded as a PASS with those findings as observations.",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "consequence", "summary"],
+    properties: {
+      kind: {
+        enum: FINDING_KINDS,
+        description:
+          "listed: an earlier attempt of this row or gate reported it and it is still present. regression: a check the repair's diff can affect that passed before the repair and fails now. unreached: a check the acceptance in force or the plan names explicitly (a named command, scenario, case or listed item) that no earlier attempt ran to a result; another instance of a general clause is new. new: anything else first observed now.",
+      },
+      consequence: {
+        enum: FINDING_CONSEQUENCES,
+        description:
+          "The severe consequence the defect has under supported conditions, else none. access: unauthorized access, or a bypassed permission or policy check. secrets: exposed secrets or credentials. data_loss: loss or corruption of persisted data. irreversible_change: an irreversible migration or stored-format upgrade. published_contract: existing callers of a published contract break. concurrency: a concurrency defect on a path carrying user traffic or user data.",
+      },
+      summary: { type: "string", minLength: 1, description: "The defect with its check, observed result and file:line" },
+    },
+  },
+};
 
 const FAILURE_SCHEMA = {
   type: "object",
@@ -151,6 +216,59 @@ function failureDetails(result: Record<string, unknown>): FailureDetails | undef
   return failure as unknown as FailureDetails;
 }
 
+function findingsOf(result: Record<string, unknown>): Finding[] {
+  const findings = result.findings;
+  if (findings === undefined) return [];
+  if (
+    !Array.isArray(findings) ||
+    findings.some(
+      (finding) =>
+        !object(finding) ||
+        !FINDING_KINDS.includes(finding.kind as FindingKind) ||
+        !FINDING_CONSEQUENCES.includes(finding.consequence as FindingConsequence) ||
+        typeof finding.summary !== "string" ||
+        !finding.summary.trim(),
+    )
+  ) {
+    throw new Error("Invalid child findings");
+  }
+  return findings as Finding[];
+}
+
+/**
+ * `bound` is the review scope the ledger gave the attempt. An attempt started before scopes existed has none: its
+ * output keeps the stated verdict, and fields that were opaque then stay unread.
+ */
+function boundVerdict(
+  result: Record<string, unknown>,
+  stated: ChildVerdict,
+  summary: string,
+  bound: ReviewScope | undefined,
+): BoundVerdict {
+  const failure = failureDetails(result);
+  if (bound === undefined) return { verdict: stated, summary, failure, findings: [], adjudicated: false };
+  const findings = findingsOf(result);
+  if (result.scope !== bound) {
+    if (stated !== "PASS") return { verdict: stated, summary, failure, findings, adjudicated: false };
+    const mismatch = `The output states scope ${JSON.stringify(result.scope) ?? "none"}, but this attempt is bound to ${bound}: ${summary}`;
+    // A harness failure, so the review that never ran in its bound scope does not narrow the next one to a confirmation pass.
+    return {
+      verdict: "INCONCLUSIVE",
+      summary: mismatch,
+      failure: { failureClass: "harness", check: "output scope", firstError: mismatch },
+      findings,
+      adjudicated: false,
+    };
+  }
+  const adjudicated =
+    stated === "FAIL" &&
+    bound === "confirmation" &&
+    failure?.failureClass !== "harness" &&
+    findings.length > 0 &&
+    findings.every((finding) => finding.kind === "new" && finding.consequence === "none");
+  return { verdict: adjudicated ? "PASS" : stated, summary, failure, findings, adjudicated };
+}
+
 interface CaptureOptions {
   registry: AgentRegistryApi;
   parentAgentId: string;
@@ -168,7 +286,7 @@ export function gateOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Reco
   return {
     type: "object",
     additionalProperties: false,
-    required: ["gateId", "planSha256", "attempt", "verdict", "summary", "evidence"],
+    required: ["gateId", "planSha256", "attempt", "verdict", "summary", "evidence", "findings", ...(row.reviewScope ? ["scope"] : [])],
     properties: {
       gateId: { const: row.id },
       planSha256: { const: ledger.planSha256 },
@@ -177,6 +295,8 @@ export function gateOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Reco
       summary: { type: "string", minLength: 1 },
       evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
       failure: FAILURE_SCHEMA,
+      findings: FINDINGS_SCHEMA,
+      ...(row.reviewScope ? { scope: { const: row.reviewScope } } : {}),
     },
   };
 }
@@ -204,16 +324,17 @@ export function parseGateOutput(content: string, ledger: ExecutionLedger, row: L
   ) {
     throw new Error(`${row.id} child output does not match the current plan and attempt`);
   }
-  return { verdict: result.verdict, summary: result.summary.trim(), failure: failureDetails(result) };
+  return boundVerdict(result, result.verdict, result.summary.trim(), row.reviewScope);
 }
 
 /** Historical success receipts remain PASS-only; legacy extra fields stay tolerated. */
-export function validateGateOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): void {
+export function validateGateOutput(content: string, ledger: ExecutionLedger, row: LedgerItem): BoundVerdict {
   const result = parseGateOutput(content, ledger, row);
   if (result.verdict !== "PASS")
     throw new Error(
       `${row.id} did not pass: ${String(result.verdict)}. Record each correction with atlas_ledger fix, or report the blocker.`,
     );
+  return result;
 }
 
 /** The exact outputSchema given to a HEAVY row's verifier child, bound like a gate to the row and verify attempt. */
@@ -221,7 +342,16 @@ export function verifyOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Re
   return {
     type: "object",
     additionalProperties: false,
-    required: ["rowId", "planSha256", "attempt", "verdict", "summary", "evidence"],
+    required: [
+      "rowId",
+      "planSha256",
+      "attempt",
+      "verdict",
+      "summary",
+      "evidence",
+      "findings",
+      ...(row.verification?.scope ? ["scope"] : []),
+    ],
     properties: {
       rowId: { const: row.id },
       planSha256: { const: ledger.planSha256 },
@@ -230,6 +360,8 @@ export function verifyOutputSchema(ledger: ExecutionLedger, row: LedgerItem): Re
       summary: { type: "string", minLength: 1 },
       evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
       failure: FAILURE_SCHEMA,
+      findings: FINDINGS_SCHEMA,
+      ...(row.verification?.scope ? { scope: { const: row.verification.scope } } : {}),
     },
   };
 }
@@ -257,7 +389,7 @@ export function parseVerifyOutput(content: string, ledger: ExecutionLedger, row:
   ) {
     throw new Error(`${row.id} verifier output does not match the current plan and verification attempt`);
   }
-  return { verdict: result.verdict, summary: result.summary.trim(), failure: failureDetails(result) };
+  return boundVerdict(result, result.verdict, result.summary.trim(), row.verification.scope);
 }
 
 /** Correlates native dispatch and terminal lifecycle events; it never launches or schedules children. */
@@ -369,7 +501,11 @@ export class ChildEvidence {
           if ((task.agent ?? "task") !== verification.dispatchAgent) {
             throw new Error(`${id} verification requires dispatch agent ${verification.dispatchAgent}`);
           }
-          if (Object.keys(entries).length !== 1 || !suppliesObjectSchema(task.outputSchema) || task.schemaMode !== "strict") {
+          if (
+            Object.keys(entries).length !== 1 ||
+            !suppliesBoundSchema(task.outputSchema, verification.scope) ||
+            task.schemaMode !== "strict"
+          ) {
             throw new Error("Each verification needs its own fresh child with the supplied outputSchema and schemaMode strict");
           }
         } else {
@@ -380,7 +516,7 @@ export class ChildEvidence {
           if ((task.agent ?? "task") !== row.dispatchAgent) throw new Error(`${id} requires dispatch agent ${row.dispatchAgent}`);
           if (
             id.startsWith("F") &&
-            (Object.keys(entries).length !== 1 || !suppliesObjectSchema(task.outputSchema) || task.schemaMode !== "strict")
+            (Object.keys(entries).length !== 1 || !suppliesBoundSchema(task.outputSchema, row.reviewScope) || task.schemaMode !== "strict")
           ) {
             throw new Error("Each final gate needs its own fresh child with the supplied outputSchema and schemaMode strict");
           }

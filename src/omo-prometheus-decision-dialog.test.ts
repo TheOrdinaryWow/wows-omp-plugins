@@ -10,6 +10,7 @@ import {
   parseDecisionSettings,
   REVIEW_DETAILS,
   releaseDecision,
+  resolveDiverging,
   retryDecision,
   settle,
   withoutAutoApproval,
@@ -109,6 +110,44 @@ describe("Atlas decision dialogs", () => {
     const { ui, calls } = scripted([undefined]);
     await decide(ui, deleteDecision("CSV import", "csv--1"));
     expect(calls[0]).toMatchObject({ labels: ["Delete plan and evidence", "Keep the plan"] });
+  });
+
+  test("a diverging row offers its ways on, defaults to staying blocked, and reviews details without deciding", async () => {
+    const proposal = {
+      rowId: "X18",
+      history: "Window 1: product; release on close; 241 bytes held",
+      acceptance: "- released when the hello completes, fails or the connection closes",
+      limitation: "- released when the hello completes or fails; a half-closed peer keeps 241 bytes until the accept timeout",
+      note: "241 bytes per half-closed peer until the accept timeout",
+      redesign: true,
+    };
+    const limit = "Accept the remaining finding as a known limitation of X18";
+    const { ui, calls } = scripted([REVIEW_DETAILS.label, limit]);
+    expect(await resolveDiverging(ui, proposal)).toBe("limit");
+    expect(calls[0]).toMatchObject({
+      kind: "select",
+      labels: [limit, "Redo X18 with another design", "Keep repairing X18", "Keep X18 blocked", REVIEW_DETAILS.label],
+      initialIndex: 3,
+    });
+    expect(calls[0]).not.toHaveProperty("timeout");
+    expect(calls[0]?.title).toContain("Known limitation: released when the hello completes or fails; a half-closed peer keeps 241 bytes");
+    expect(calls[1]).toMatchObject({ kind: "editor" });
+    expect(calls[1]?.kind === "editor" ? calls[1].text : "").toContain(proposal.history);
+    for (const [answer, expected] of [
+      ["Redo X18 with another design", "redesign"],
+      ["Keep repairing X18", "continue"],
+      ["Keep X18 blocked", undefined],
+      [undefined, undefined],
+    ] as const) {
+      expect(await resolveDiverging(scripted([answer]).ui, proposal)).toBe(expected);
+    }
+    const gate = scripted([TIMEOUT]);
+    expect(await resolveDiverging(gate.ui, { ...proposal, rowId: "F2", redesign: false }, 60_000)).toBe("timeout");
+    expect(gate.calls[0]).toMatchObject({
+      labels: ["Accept the remaining finding as a known limitation of F2", "Keep repairing F2", "Keep F2 blocked", REVIEW_DETAILS.label],
+      initialIndex: 2,
+      timeout: 60_000,
+    });
   });
 });
 

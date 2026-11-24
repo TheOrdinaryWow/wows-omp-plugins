@@ -1046,6 +1046,7 @@ async function scenario(name: string, root: string): Promise<void> {
             gateId: prepared.item.id,
             planSha256: prepared.current.planSha256,
             attempt: prepared.item.attempt,
+            scope: prepared.item.reviewScope,
             verdict: "PASS",
             summary: "The named criteria were exercised",
             evidence: ["actual command and observed result"],
@@ -1389,6 +1390,7 @@ async function scenario(name: string, root: string): Promise<void> {
               rowId: "T1",
               planSha256: current.planSha256,
               attempt: item.verification?.attempt,
+              scope: item.verification?.scope,
               verdict: "PASS",
               summary: "Fresh verification passed",
               evidence: ["Acceptance exercised"],
@@ -1877,6 +1879,7 @@ async function scenario(name: string, root: string): Promise<void> {
           rowId: "X1",
           planSha256: current.planSha256,
           attempt: item.verification?.attempt,
+          scope: item.verification?.scope,
           verdict: "PASS",
           summary: "Affected QA independently verified",
           evidence: ["native output and scenario"],
@@ -2341,6 +2344,7 @@ async function scenario(name: string, root: string): Promise<void> {
     await tasksDone();
     await finish("F1");
     const review = await prepare("F2");
+    assert.match(review.startText ?? "", /^gate_scope: full$/m);
     await publish(review, "Rejecting", {
       content: JSON.stringify({
         gateId: "F2",
@@ -2354,15 +2358,17 @@ async function scenario(name: string, root: string): Promise<void> {
     ok(await done("F2", "Rejecting"));
     refused(await call({ action: "fix", id: "F2", evidence: "nondeterministic test", title: "Stabilize retention test" }));
     refused(await call({ action: "fix", id: "T2", evidence: "x", title: "x", acceptance: "x" }));
-    ok(
-      await call({
-        action: "fix",
-        id: "F2",
-        evidence: "snapshot retention test is nondeterministic",
-        title: "Stabilize retention test",
-        acceptance: "the retention test passes on repeated runs",
-      }),
-    );
+    const fixed = await call({
+      action: "fix",
+      id: "F2",
+      evidence: "snapshot retention test is nondeterministic",
+      title: "Stabilize retention test",
+      acceptance: "the retention test passes on repeated runs",
+      tier: "HEAVY",
+    });
+    ok(fixed);
+    assert.match(fixed.content.map((part) => part.text ?? "").join("\n"), /X1 is LIGHT whatever tier was requested/);
+    assert.equal((await row("X1")).tier, "light");
     assert.deepEqual(todoPhases.find((phase) => phase.name === "Atlas fixes")?.tasks, [
       { content: "X1. Stabilize retention test", status: "pending" },
     ]);
@@ -2398,7 +2404,42 @@ async function scenario(name: string, root: string): Promise<void> {
     refused(await call({ action: "start", id: "F2" }));
     await finish("X1");
     assert.equal(todoPhases.find((phase) => phase.name === "Atlas fixes")?.tasks[0]?.status, "completed");
-    await finish("F2");
+    const rerun = await prepare("F2");
+    assert.match(rerun.startText ?? "", /^gate_scope: confirmation$/m);
+    await publish(rerun, "Confirming", {
+      content: JSON.stringify({
+        gateId: "F2",
+        planSha256: rerun.current.planSha256,
+        attempt: rerun.item.attempt,
+        scope: "confirmation",
+        verdict: "FAIL",
+        summary: "the retention test is stable; a sibling test sleeps",
+        evidence: ["retention test passed five runs", "sibling.test.ts:12 sleeps 50 ms"],
+        failure: { failureClass: "product", check: "code quality", firstError: "sibling test uses a fixed sleep", priorResolved: true },
+        findings: [{ kind: "new", consequence: "none", summary: "sibling.test.ts:12 uses a fixed 50 ms sleep" }],
+      }),
+    });
+    refused(
+      await call({
+        action: "fail",
+        id: "F2",
+        childAgentId: "Confirming",
+        check: "code quality",
+        firstError: "sibling test uses a fixed sleep",
+        evidence: "Inspected the gate output",
+      }),
+    );
+    const confirmed = await done("F2", "Confirming");
+    ok(confirmed);
+    assert.match(confirmed.content.map((part) => part.text ?? "").join("\n"), /F2 is recorded as PASS[^\n]*deferred as O1/);
+    const confirmedGate = await row("F2");
+    assert.equal(confirmedGate.status, "done");
+    assert.equal(confirmedGate.retry?.windows[0]?.failures.length, 1);
+    const [observation] = (await ledger()).deferred;
+    assert.equal(observation?.origin, "F2");
+    assert.match(observation?.reason ?? "", /fixed 50 ms sleep/);
+    refused(await call({ reason: "verified completion" }, "atlas_release"));
+    ok(await call({ action: "triage", id: "O1", disposition: "wontfix", evidence: "test-only sleep without product effect" }));
     await finish("F3");
     await finish("F4");
     const current = await ledger();
@@ -2415,7 +2456,151 @@ async function scenario(name: string, root: string): Promise<void> {
         ["F4", "done"],
       ],
     );
+    // Host-dependent storage stays inside the isolated child process.
+    const { gateResults } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    assert.deepEqual(
+      gateResults(current, dirname(planFile)).find((gate) => gate.gateId === "F2"),
+      { gateId: "F2", verdict: "PASS", summary: "the retention test is stable; a sibling test sleeps" },
+    );
     ok(await call({ reason: "verified completion" }, "atlas_release"));
+    return;
+  }
+  if (name === "gate-diverging") {
+    const text = (result: { content: { text?: string }[] }) => result.content.map((part) => part.text ?? "").join("\n");
+    await tasksDone();
+    for (const gate of ["F1", "F3", "F4"]) await finish(gate);
+    const reject = async (child: string, firstError: string, repaired: boolean) => {
+      const review = await prepare("F2");
+      await publish(review, child, {
+        content: JSON.stringify({
+          gateId: "F2",
+          planSha256: review.current.planSha256,
+          attempt: review.item.attempt,
+          scope: review.item.reviewScope,
+          verdict: "FAIL",
+          summary: firstError,
+          evidence: [firstError],
+          failure: { failureClass: "product", check: "code quality", firstError, ...(repaired ? { priorResolved: true } : {}) },
+          findings: [{ kind: repaired ? "regression" : "new", consequence: "none", summary: firstError }],
+        }),
+      });
+      ok(await done("F2", child));
+    };
+    await reject("RejectA", "panel spec Debug prints the obfs password", false);
+    await reject("RejectB", "panel spec Debug prints the TLS private key", true);
+    assert.equal((await row("F2")).status, "open");
+    await reject("RejectC", "panel spec Debug prints the REALITY short id", true);
+    const diverged = await row("F2");
+    assert.equal(diverged.status, "blocked");
+    assert.equal(diverged.retry?.windows[0]?.stop?.reason, "diverging");
+    const limitation = "Code quality review; Debug output of panel specifications is an accepted known limitation";
+    const resolve = () =>
+      call({ action: "retry", id: "F2", evidence: "Debug output of panel specifications is never logged", acceptance: limitation });
+    const missing = await call({ action: "retry", id: "F2", evidence: "Debug output of panel specifications is never logged" });
+    refused(missing);
+    assert.match(text(missing), /F2 is diverging, so the owner chooses how it ends/);
+    await mkdir(join(root, ".omp"), { recursive: true });
+    await writeFile(
+      join(root, ".omp", "plugin-overrides.json"),
+      JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { atlasRetry: "approve" } } }),
+    );
+    await hook("session_start");
+    interactive = false;
+    const unattended = await resolve();
+    refused(unattended);
+    assert.match(text(unattended), /only the user resolves a diverging row/);
+    assert.equal((await row("F2")).retry?.windows.length, 1);
+    interactive = true;
+    confirmAnswer = true;
+    const resolved = await resolve();
+    ok(resolved);
+    assert.match(text(resolved), /R1 records the known limitation as F2's acceptance in force/);
+    const dialog = decisions.at(-1);
+    assert.match(dialog?.title ?? "", /^F2 keeps surfacing different defects\. How should it end\?/);
+    assert.deepEqual(
+      dialog?.options.map((option) => option.label),
+      ["Accept the remaining finding as a known limitation of F2", "Keep repairing F2", "Keep F2 blocked", "Review full details"],
+    );
+    const current = await ledger();
+    assert.deepEqual(
+      current.rulings.map((ruling) => [ruling.id, ruling.rowId, ruling.acceptance, ruling.decidedBy]),
+      [["R1", "F2", limitation, "user"]],
+    );
+    assert.equal((await row("F2")).retry?.windows[1]?.grant?.resolution, "limit");
+    const rerun = await prepare("F2");
+    assert.match(rerun.startText ?? "", /^gate_scope: confirmation$/m);
+    assert.match(rerun.startText ?? "", /F2 acceptance was amended by R1/);
+    assert.match(
+      rerun.startText ?? "",
+      /- R1 F2: Code quality review; Debug output of panel specifications is an accepted known limitation/,
+    );
+    await publish(rerun, "Accepting");
+    ok(await done("F2", "Accepting"));
+    await reload();
+    ok(await call({ action: "status" }));
+    assert.equal((await row("F2")).status, "done");
+    return;
+  }
+  if (name === "heavy-diverging-redo") {
+    const text = (result: { content: { text?: string }[] }) => result.content.map((part) => part.text ?? "").join("\n");
+    const planSha256 = (await ledger()).planSha256;
+    const verify = async (child: string) => {
+      const implemented = await prepare("T1");
+      await publish(implemented, `${child}Implementer`);
+      ok(await done("T1", `${child}Implementer`));
+      const started = await call({ action: "verify", id: "T1" });
+      ok(started);
+      const current = await row("T1");
+      const marker = `atlas_assignment: ${JSON.stringify({ planSha256, verify: { T1: current.verification?.attempt } })}`;
+      const input = {
+        agent: current.verification?.dispatchAgent,
+        task: `${marker}\nVerify T1 and report; never fix.`,
+        solutionSpace: "Verification only",
+        outputSchema: started.details?.outputSchema,
+        schemaMode: "strict",
+      };
+      const verifier: PreparedAssignment = { item: current, current: await ledger(), toolCallId: `dispatch-${sequence++}`, input };
+      assert.equal(await hook("tool_call", { toolName: "task", toolCallId: verifier.toolCallId, input }), undefined);
+      return { implemented, verifier, scope: current.verification?.scope };
+    };
+    const reject = async (child: string, firstError: string, repaired: boolean) => {
+      const { verifier, scope } = await verify(child);
+      await publish(verifier, child, {
+        createdAt: verifier.item.verification?.startedAt,
+        content: JSON.stringify({
+          rowId: "T1",
+          planSha256,
+          attempt: verifier.item.verification?.attempt,
+          scope,
+          verdict: "FAIL",
+          summary: firstError,
+          evidence: [firstError],
+          failure: { failureClass: "product", check: "release on close", firstError, ...(repaired ? { priorResolved: true } : {}) },
+          findings: [{ kind: repaired ? "regression" : "new", consequence: "none", summary: firstError }],
+        }),
+      });
+      ok(await done("T1", child));
+      return scope;
+    };
+    assert.equal(await reject("VerifierA", "reservation is kept after the client closes", false), "full");
+    assert.equal(await reject("VerifierB", "a client FIN is treated as a disconnect", true), "confirmation");
+    assert.equal(await reject("VerifierC", "FIN then close keeps the reservation", true), "confirmation");
+    assert.equal((await row("T1")).retry?.windows[0]?.stop?.reason, "diverging");
+    ok(await call({ action: "block", id: "T3", evidence: "Independent task needs owner credentials" }));
+    confirmAnswer = false;
+    const resolved = await call({
+      action: "retry",
+      id: "T1",
+      evidence: "241 bytes stay reserved until the accept timeout",
+      acceptance: "prerequisite behavior observed; a half-closed peer may keep 241 bytes until the accept timeout",
+    });
+    ok(resolved);
+    assert.match(text(resolved), /Start T1 again as a reimplementation/);
+    assert.equal((await ledger()).rulings.length, 0);
+    await reload();
+    const redone = await verify("Redone");
+    assert.match(redone.implemented.startText ?? "", /The owner chose to redo T1 with another design/);
+    assert.equal(redone.scope, "full");
     return;
   }
   if (name === "final-native-outcome") {
@@ -3176,6 +3361,7 @@ async function scenario(name: string, root: string): Promise<void> {
           rowId: "T1",
           planSha256: current.planSha256,
           attempt: item.verification?.attempt,
+          scope: item.verification?.scope,
           verdict: "PASS",
           summary: "Twelve-hour suite passed independently",
           evidence: ["12h command output"],
@@ -3260,6 +3446,7 @@ async function scenario(name: string, root: string): Promise<void> {
           rowId: "T1",
           planSha256: next.current.planSha256,
           attempt: next.item.verification?.attempt,
+          scope: next.item.verification?.scope,
           verdict: "PASS",
           summary: "Independent acceptance passed",
           evidence: ["Observed native command results"],
@@ -3396,6 +3583,21 @@ async function scenario(name: string, root: string): Promise<void> {
       input: { ...input, outputSchema: "[]" },
     })) as { block?: boolean } | undefined;
     assert.equal(notObject?.block, true);
+    const unpinned = (await hook("tool_call", {
+      toolName: "task",
+      toolCallId: `dispatch-${sequence++}`,
+      input: { ...input, outputSchema: { type: "object", properties: { verdict: { enum: ["PASS", "FAIL"] } } } },
+    })) as { block?: boolean } | undefined;
+    assert.equal(unpinned?.block, true);
+    const issued = input.outputSchema as { required: string[] };
+    for (const optional of ["scope", "findings"]) {
+      const weakened = (await hook("tool_call", {
+        toolName: "task",
+        toolCallId: `dispatch-${sequence++}`,
+        input: { ...input, outputSchema: { ...issued, required: issued.required.filter((key) => key !== optional) } },
+      })) as { block?: boolean } | undefined;
+      assert.equal(weakened?.block, true, `a schema that leaves ${optional} optional is refused`);
+    }
     // Strict tool-schema providers (OpenAI Responses) can only send the schema as JSON text, which the host parses.
     const textInput = { ...input, outputSchema: JSON.stringify(input.outputSchema) };
     const verifier: PreparedAssignment = { item: current, current: await ledger(), toolCallId: `dispatch-${sequence++}`, input: textInput };
@@ -3409,6 +3611,7 @@ async function scenario(name: string, root: string): Promise<void> {
         rowId: "T1",
         planSha256,
         attempt,
+        scope: current.verification?.scope,
         verdict,
         summary: `Verifier ${verdict}`,
         evidence: ["reproduced"],
@@ -3431,6 +3634,56 @@ async function scenario(name: string, root: string): Promise<void> {
       const confirmation = await call({ action: "verify", id: "T1" });
       ok(confirmation);
       assert.match(confirmation.content.map((part) => part.text ?? "").join("\n"), /^verification_scope: confirmation$/m);
+      if (name !== "heavy-verify-fail") return;
+      current = await row("T1");
+      const confirmAttempt = current.verification?.attempt;
+      const confirmMarker = `atlas_assignment: ${JSON.stringify({ planSha256, verify: { T1: confirmAttempt } })}`;
+      const confirmInput = {
+        agent: current.verification?.dispatchAgent,
+        task: `${confirmMarker}\nConfirm the repair of T1 and report; never fix.`,
+        solutionSpace: "Verification only",
+        outputSchema: confirmation.details?.outputSchema,
+        schemaMode: "strict",
+      };
+      const confirmer: PreparedAssignment = {
+        item: current,
+        current: await ledger(),
+        toolCallId: `dispatch-${sequence++}`,
+        input: confirmInput,
+      };
+      assert.equal(await hook("tool_call", { toolName: "task", toolCallId: confirmer.toolCallId, input: confirmInput }), undefined);
+      await publish(confirmer, "Confirmer", {
+        createdAt: current.verification?.startedAt,
+        content: JSON.stringify({
+          rowId: "T1",
+          planSha256,
+          attempt: confirmAttempt,
+          scope: "confirmation",
+          verdict: "FAIL",
+          summary: "The listed defect is fixed; another close order keeps a small reservation",
+          evidence: ["probe.log"],
+          failure: {
+            failureClass: "product",
+            check: "release on close",
+            firstError: "241 bytes held until the accept timeout",
+            priorResolved: true,
+          },
+          findings: [
+            { kind: "new", consequence: "none", summary: "FIN then close keeps 241 bytes until the accept timeout (server.rs:475)" },
+          ],
+        }),
+      });
+      const adjudicated = await done("T1", "Confirmer");
+      ok(adjudicated);
+      assert.match(adjudicated.content.map((part) => part.text ?? "").join("\n"), /T1 is recorded as PASS[^\n]*deferred as O1/);
+      current = await row("T1");
+      assert.equal(current.status, "done");
+      assert.equal(current.verification?.verdict, "pass");
+      assert.equal(current.retry?.windows[0]?.failures.length, 1);
+      assert.equal((await ledger()).deferred[0]?.origin, "T1");
+      await reload();
+      ok(await call({ action: "status" }));
+      assert.equal((await row("T1")).status, "done");
       return;
     }
     assert.equal(current.status, "done");
@@ -3679,7 +3932,7 @@ async function scenario(name: string, root: string): Promise<void> {
     // The ruling is part of the shared bundle, so it survives a session restart.
     await reload();
     ok(await call({ action: "status" }));
-    assert.equal((await ledger()).version, 12);
+    assert.equal((await ledger()).version, 13);
     assert.deepEqual(
       (await ledger()).rulings.map((entry) => [entry.id, entry.decidedBy]),
       [["R1", "user"]],
@@ -3687,14 +3940,13 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal((await row("T1")).status, "done");
     await finish("T2");
     await finish("T3");
-    // F1 reads the plan plus every ruling from its compliance bundle; F4 gets them inline; F2 and F3 need none.
+    // F1 reads the plan plus every ruling from its compliance bundle; the other gates get them inline.
     const rulings =
       /Owner rulings — amendments to the approved plan \(1;[^\n]*\n- R1 T1: prerequisite p95 latency stays under 250 ms — The user relaxed/;
     const f1 = (await prepare("F1")).startText ?? "";
     assert.doesNotMatch(f1, /Owner rulings/);
     assert.match(await readFile(/compliance_bundle_path: (\S+)/.exec(f1)?.[1] ?? "missing", "utf8"), rulings);
-    assert.doesNotMatch((await prepare("F2")).startText ?? "", /Owner rulings/);
-    assert.match((await prepare("F4")).startText ?? "", rulings);
+    for (const gate of ["F2", "F3", "F4"]) assert.match((await prepare(gate)).startText ?? "", rulings);
     return;
   }
   await tasksDone();
@@ -3875,6 +4127,8 @@ if (process.env[CHILD_ENV]) {
       "invalid-ledger",
       "ordering",
       "gate-fix",
+      "gate-diverging",
+      "heavy-diverging-redo",
       "progress-guard",
       "progress-reports",
       "ask-guard",

@@ -260,9 +260,8 @@ export function gateResults(ledger: ExecutionLedger, directory: string): Array<{
   return ledger.gates.map((gate) => {
     if (!gate.receipt) throw new Error(`Missing verified gate receipt for ${gate.id}`);
     const output = regularFileSync(path.join(directory, "evidence", `${gate.receipt.receiptId}.md`));
-    validateGateOutput(output, ledger, gate);
-    const result = JSON.parse(output) as { gateId: string; verdict: string; summary: string };
-    return { gateId: result.gateId, verdict: result.verdict, summary: result.summary };
+    const result = validateGateOutput(output, ledger, gate);
+    return { gateId: gate.id, verdict: result.verdict, summary: result.summary };
   });
 }
 

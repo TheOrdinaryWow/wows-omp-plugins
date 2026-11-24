@@ -73,7 +73,7 @@
           "decline"
         ],
         "default": "ask",
-        "description": "How Atlas settles another retry window for a row that ran out of attempts: ask and wait, ask then approve or decline after atlasAskTimeout, or approve or decline without asking"
+        "description": "How Atlas settles another retry window for a row that ran out of attempts: ask and wait, ask then approve or decline after atlasAskTimeout, or approve or decline without asking. A row whose repairs keep finding new defects always asks you how it should end; this setting can only decline that"
       },
       "atlasAmend": {
         "type": "enum",
@@ -109,7 +109,7 @@
         "type": "number",
         "default": 1,
         "min": 0,
-        "description": "Most retry windows per row granted without your answer; past it an approving atlasRetry declines instead; 0 means unlimited"
+        "description": "Most retry windows per row granted without your answer; past it an approving atlasRetry declines instead; 0 means unlimited. It does not apply to a row whose repairs keep finding new defects"
       },
       "herdrDag": {
         "type": "boolean",

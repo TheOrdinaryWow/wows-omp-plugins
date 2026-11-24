@@ -105,9 +105,19 @@ Subagents may find problems along the way:
 
 Atlas keeps going until the plan is done. If the plan or ledger files go missing, get damaged, or no longer match the approved plan, Atlas pauses until you restore them, or until you exit with `/atlas exit` and approve a changed plan.
 
-A task stops being retried after two identical failures in a row, a third failure, or four hours of work unless the plan sets another limit (see below). A failure doesn't count when the checking subagent shows that every earlier failure is now fixed and it found a different problem, up to three such failures per try. Once no other task is ready to start, you can give the stopped task another try without losing its history, even while other tasks are still running. A failure that comes from the test harness rather than the product gets one extra repair. If the subagent that checks a `Tier: HEAVY` task is stopped by a broken environment and finds nothing wrong with the change, the finished work is kept and only the check runs again. A subagent call that fails before any subagent starts costs the task no retry. The [reference](REFERENCE.md#retry-windows-and-delivery-repair) has the exact rules.
+A task stops being retried after two identical failures in a row, a third failure, or four hours of work unless the plan sets another limit (see below). When the checking subagent shows that every earlier failure is now fixed and it found a different problem, the first such failure doesn't count. The second one stops the task, so you can decide how it ends (see below). Once no other task is ready to start, you can give the stopped task another try without losing its history, even while other tasks are still running. A failure that comes from the test harness rather than the product gets one extra repair. If the subagent that checks a `Tier: HEAVY` task is stopped by a broken environment and finds nothing wrong with the change, the finished work is kept and only the check runs again. A subagent call that fails before any subagent starts costs the task no retry. The [reference](REFERENCE.md#retry-windows-and-delivery-repair) has the exact rules.
 
-A `HEAVY` task's first check looks at everything. It reports every problem it finds in one pass and fails the task only for its own acceptance. After a failed check and its repair, the next check is narrower: it confirms that each listed problem is fixed and that the repair broke nothing. It fails the task again only for a listed problem that is still there, a regression the repair caused, or a newly found problem with a severe result: exposed secrets or credentials, unauthorized access, lost or corrupted stored data, an irreversible migration or stored-format upgrade, a broken caller of a published contract, or a concurrency bug on a path that carries user traffic or data. Any other new finding goes on the list of discovered tasks or findings, and the task is not reopened for it. Problems in other tasks' code go on that list too.
+When each repair fixes what the last check reported, but the next check finds a different defect, Atlas stops the task or review after the second such round, even if the limits above are not reached, and asks how it should end. The dialog offers these choices, where `<row>` is the task's ID, such as `T3`:
+
+- `Accept the remaining finding as a known limitation of <row>`: the defect stays unrepaired, and the acceptance is changed to allow it. Atlas records that as an owner ruling, the final report lists it, and the task runs again under that ruling. For a `HEAVY` task, the next check confirms the earlier repairs instead of reviewing everything again.
+- `Redo <row> with another design`: discards the current implementation and starts a fresh attempt with a different design, which gets a full check. Offered for tasks only.
+- `Keep repairing <row>`: one more round of repairs under the same acceptance. Earlier failures stay in the history. For a `HEAVY` task, the next check confirms those repairs instead of reviewing everything again.
+- `Keep <row> blocked`: the default choice. Nothing is recorded and the task waits. Esc does the same.
+- `Review full details`: shows the failure history and the acceptance texts read-only, then returns you to these choices.
+
+A final review (F1 to F4) has no redo option, since it only checks the work.
+
+A `HEAVY` task's first check looks at everything. It reports every problem it finds in one pass and fails the task only for its own acceptance. After a failed check and its repair, the next check is narrower: it confirms that each listed problem is fixed and that the repair broke nothing. It fails the task again only for a listed problem that is still there, a regression the repair caused, or a newly found problem with a severe result: exposed secrets or credentials, unauthorized access, lost or corrupted stored data, an irreversible migration or stored-format upgrade, a broken caller of a published contract, or a concurrency bug on a path that carries user traffic or data. Any other new finding does not reopen the task. Atlas records it as a finding, and if the check failed the task only because of such findings, Atlas counts the check as a pass. The final report lists every finding with its disposition. Problems in other tasks' code go on that list too.
 
 If a task reaches its time limit but its subagent has already finished successfully, granting another try keeps that result without making the subagent repeat the work.
 
@@ -133,6 +143,8 @@ When every task is done, Atlas runs four reviews in parallel, each by a fresh su
 | F4. Success-criteria fidelity | `deep-high` (fallback `task`) | the result against each success criterion; it passes unless a criterion is shown to fail |
 
 Only `PASS` counts. When a review rejects the work, each fix becomes a new task (`X1`, …), and only that review runs again afterwards; reviews that passed keep their result.
+
+A rerun only checks the fixes. A problem still there, or one a fix caused, fails the review again, and so does a new problem with a severe result. A new minor problem does not start another round: Atlas records it as a finding instead, and if that is the only reason the review failed, the review counts as passed. A fix for the code quality, real-surface QA or success-criteria review is always `LIGHT`, and that review's rerun checks it, so it gets no separate check.
 
 ### Deliver the result
 
@@ -222,11 +234,11 @@ Settings are read when a session starts, so restart the session after changing t
 | `atlasWidget` | `true` | Show the progress widget above the editor while Atlas runs. |
 | `progressReports` | `false` | Have Atlas post a short chat update before each batch of tasks and after each task: progress, result, how it was checked, any problem and the next step. |
 | `herdrDag` | `true` | Show Atlas progress in the `omp-herdr-dag` pane. |
-| `atlasRetry` | `ask` | Who gives a stopped task another try (see [Decisions while you are away](#decisions-while-you-are-away)). |
-| `atlasAmend` | `ask` | Who confirms owner rulings that change a task's acceptance. |
+| `atlasRetry` | `ask` | Who gives a stopped task another try (see [Decisions while you are away](#decisions-while-you-are-away)). For a task or review that keeps surfacing new problems, `decline` declines it at once and `ask-then-decline` declines it when the dialog times out; every other value asks you. |
+| `atlasAmend` | `ask` | Who confirms owner rulings that change a task's acceptance. A task or review that keeps surfacing new problems is decided in its own dialog, not by this setting. |
 | `atlasRelease` | `ask` | Who confirms that a finished plan is complete. |
 | `atlasAskTimeout` | `30` | Minutes a dialog stays open before an `ask-then-*` value decides. |
-| `atlasAutoRetryLimit` | `1` | How many extra tries per task a setting may give without you. `0` means no limit. |
+| `atlasAutoRetryLimit` | `1` | How many extra tries per task a setting may give without you. `0` means no limit. It does not apply to a task or review that keeps surfacing new problems. |
 
 `reviewLevel` values:
 
@@ -248,6 +260,8 @@ During a run, Atlas needs you for three kinds of decision: giving a stopped task
 | `decline` | Declines without a dialog. |
 
 Past `atlasAutoRetryLimit`, a setting can no longer approve extra tries for that task; you still can in the dialog. Every decision says whether you or a setting made it, and rulings approved by a setting are marked as such for the reviewers and in the final report. A declined completion keeps Atlas active until `/atlas exit`.
+
+The question of how a task or review that keeps surfacing new problems ends is always yours. `decline` declines it at once, `ask-then-decline` declines it when the dialog times out, and every other value still asks you, with no timeout. Without a dialog, it stays blocked.
 
 `atlasAmend: approve` lets Atlas loosen a task's acceptance without asking you, so only use it if you accept that risk. A mostly unattended setup, which still stops on problems that need you, could look like this:
 
@@ -271,6 +285,7 @@ omp plugin config set wows-omp-plugin-omo-prometheus atlasRelease approve
 - Atlas needs sessions saved on a local disk that supports hard links, atomic renames and syncing files and directories. With in-memory or remote-only session storage it refuses to run, and sessions with different session directories cannot see each other's plans.
 - Planning with Prometheus needs Plan Mode's interactive approval, so it does not run in headless or SDK sessions.
 - Plans from versions before the shared ledger cannot be resumed. Have them approved again.
+- A task or final review that keeps surfacing new problems can be ended only by you, in a dialog. Without a dialog it stays blocked, and no setting accepts its remaining finding for you. A final review also has no redo option.
 - In Tern, the plan list and plan view keep one size and scroll their panes inside, so text in the scrolling panes cannot be selected or copied there.
 - The tier judge reads only each task's text. A task whose risk does not show in its description can come out `LIGHT`, either judged so or left at the `LIGHT` default, so check the tiers of risky tasks before you approve and ask Prometheus to change any that are wrong. Your change is recorded as an owner decision.
 

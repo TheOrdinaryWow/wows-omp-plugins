@@ -168,7 +168,7 @@ describe("Prometheus execution ledger", () => {
 
     expect(resumed).toBe(saved);
     expect(resumed).toEqual(JSON.parse(JSON.stringify(ledger)));
-    expect(resumed.version).toBe(12);
+    expect(resumed.version).toBe(13);
     expect(nextDispatchable(resumed).map((row) => row.id)).toEqual(["T3"]);
     expect(movableRows(resumed).map((row) => row.id)).toEqual(["T2", "T3"]);
     expect(renderLedgerSummary(resumed)).toContain("Next dispatchable: T3");
@@ -371,7 +371,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(12);
+    expect(restored.version).toBe(13);
     expect(restored.fixes).toEqual([]);
     expect(restored.gates[3]?.dependsOn).toEqual(["T1", "T2", "T3"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -387,7 +387,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(12);
+    expect(restored.version).toBe(13);
     expect(restored.gitBaseline).toBeUndefined();
     expect(restored.fixes.map((row) => row.id)).toEqual(["X1"]);
     expect(restored.items.map((row) => row.status)).toEqual(["done", "open", "done"]);
@@ -425,7 +425,7 @@ describe("Prometheus execution ledger", () => {
       gates: ledger.gates.map((row) => ({ ...row, dependsOn: [], status: "done" })),
     };
     const restored = restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(12);
+    expect(restored.version).toBe(13);
     expect([...restored.items, ...restored.gates].every((row) => row.status === "open" && row.receipt === undefined)).toBe(true);
   });
 
@@ -546,7 +546,7 @@ describe("Prometheus execution ledger", () => {
     const ledger = createLedger("local://example-plan.md", content);
     for (const row of ledger.items) row.status = "done";
     for (const gate of ledger.gates) startRow(ledger, gate.id);
-    addFixRow(ledger, "F3", { title: "Fix QA", acceptance: "scenario passes", agent: "task", reason: "failed", tier: "HEAVY" });
+    addFixRow(ledger, "F1", { title: "Fix scope", acceptance: "scenario passes", agent: "task", reason: "failed", tier: "HEAVY" });
     expect(ledger.fixes[0]?.tier).toBe("heavy");
     const fix = startRow(ledger, "X1");
     recordReceipt(fix, receiptFor(fix, fix.attempt ?? "", "FixImplementer"), "fix implementation evidence");
@@ -668,7 +668,7 @@ describe("Prometheus execution ledger", () => {
     expect(addDeferredFinding(ledger, { title: "Late finding", reason: "outside" }).id).toBe("O3");
 
     const restored = restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256);
-    expect(restored.version).toBe(12);
+    expect(restored.version).toBe(13);
     expect(restored.deferred.map((finding) => [finding.id, finding.triage?.disposition])).toEqual([
       ["O1", "duplicate"],
       ["O2", "report"],
@@ -702,7 +702,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(12);
+    expect(restored.version).toBe(13);
     expect(restored.deferred.map(({ id, title, triage }) => ({ id, title, triage }))).toEqual([
       { id: "O1", title: "First", triage: undefined },
       { id: "O2", title: "Second", triage: undefined },
@@ -712,7 +712,7 @@ describe("Prometheus execution ledger", () => {
   test("owner rulings replace a T, D or X row's acceptance in force, never a gate's or P1's, and persist as version nine", () => {
     const shipped = plan.replace("# Work plan\n", "# Work plan\n\nDelivery: pr\n");
     const ledger = createLedger("local://example-plan.md", shipped, ["task", "deep-low", "sonic"]);
-    expect(ledger.version).toBe(12);
+    expect(ledger.version).toBe(13);
     expect(ledger.rulings).toEqual([]);
     expect(renderOwnerRulings(ledger)).toBe("");
     const t1 = ledger.items[0];
@@ -816,7 +816,7 @@ describe("Prometheus execution ledger", () => {
     const legacy = { ...rest, version: 6 };
     const restored = restoreLedger(legacy, current.planFilePath, plan, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(12);
+    expect(restored.version).toBe(13);
     expect(restored.rulings).toEqual([]);
     expect(restored.deferred.map((finding) => finding.id)).toEqual(["O1"]);
     // Version six carried no rulings, so a stray one is not trusted.
@@ -910,7 +910,7 @@ describe("Prometheus execution ledger", () => {
     };
     const restored = restoreLedger(legacy, current.planFilePath, content, current.planSha256);
     expect(restored).toBe(legacy as unknown as typeof restored);
-    expect(restored.version).toBe(12);
+    expect(restored.version).toBe(13);
     // Rows approved before tiers existed keep the LIGHT evidence rule, even where the plan text names HEAVY.
     expect([...restored.items, ...restored.fixes].map((row) => row.tier)).toEqual(["light", "light", "light", "light"]);
     expect(restored.delivery).toBe("ship");
@@ -982,7 +982,7 @@ describe("Prometheus execution ledger", () => {
     expect(retryWindow(row)?.stop?.reason).toBe("harness");
   });
 
-  test("a failure that proves earlier failures fixed skips the attempt count only with a new defect and within its allowance", () => {
+  test("a failure that proves earlier failures fixed is uncounted once, and the second stops the window as diverging", () => {
     const ledger = createLedger("local://example-plan.md", plan);
     const row = ledger.items[0] as LedgerItem;
     const flags = () => retryWindow(row)?.failures.map((failure) => failure.progress ?? false);
@@ -992,13 +992,239 @@ describe("Prometheus execution ledger", () => {
     expect(flags()).toEqual([false, true, false]);
     expect(retryWindow(row)?.stop).toBeUndefined();
     failed(ledger, "T1", "p2", "expected 5, got 6", "product", true);
-    failed(ledger, "T1", "p3", "expected 7, got 8", "product", true);
-    failed(ledger, "T1", "p4", "expected 9, got 10", "product", true);
-    expect(flags()).toEqual([false, true, false, true, true, false]);
-    expect(retryWindow(row)?.stop?.reason).toBe("attempts");
+    expect(flags()).toEqual([false, true, false, true]);
+    expect(retryWindow(row)?.stop?.reason).toBe("diverging");
+    expect(row.status).toBe("blocked");
+    expect(renderLedgerSummary(ledger, undefined, "T1")).toContain("STOP diverging — each repair surfaced a different defect");
     expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).items[0]?.retry).toEqual(row.retry);
-    const legacy = { ...structuredClone(ledger), version: 11 };
+    const legacy = { ...structuredClone(ledger), version: 12 };
     expect(() => restoreLedger(legacy, ledger.planFilePath, plan, ledger.planSha256)).toThrow("Malformed execution ledger row T1");
+  });
+
+  test("only the user's resolution reopens a diverging row, and a known limitation becomes the acceptance in force", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    const row = ledger.items[0] as LedgerItem;
+    failed(ledger, "T1", "first", "expected 1, got 2");
+    failed(ledger, "T1", "p1", "expected 3, got 4", "product", true);
+    failed(ledger, "T1", "p2", "expected 5, got 6", "product", true);
+    expect(() => grantRetry(ledger, row, "try again", "user")).toThrow("needs the owner's resolution");
+    expect(() => grantRetry(ledger, row, "try again", "setting", 5000, undefined, { resolution: "continue" })).toThrow(
+      "only the user resolves it",
+    );
+    expect(() => grantRetry(ledger, row, "accept it", "user", 5000, undefined, { resolution: "limit" })).toThrow(
+      "complete acceptance text",
+    );
+    expect(row.retry?.windows).toHaveLength(1);
+    const limitation = "initial behavior observed; a half-closed peer keeps its 241-byte reservation until the accept timeout";
+    const ruling = grantRetry(ledger, row, "241 bytes stay reserved until the accept timeout", "user", 5000, undefined, {
+      resolution: "limit",
+      acceptance: limitation,
+    });
+    expect(ruling).toMatchObject({ id: "R1", rowId: "T1", acceptance: limitation, confirmedAt: 5000, decidedBy: "user" });
+    expect(effectiveAcceptance(ledger, row).text).toBe(limitation);
+    expect(retryWindow(row)?.grant).toEqual({
+      confirmedAt: 5000,
+      note: "241 bytes stay reserved until the accept timeout",
+      decidedBy: "user",
+      resolution: "limit",
+    });
+    expect(row.status).toBe("open");
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).rulings).toEqual(ledger.rulings);
+    const tampered = (edit: (saved: ExecutionLedger) => void) => {
+      const saved = structuredClone(ledger);
+      edit(saved);
+      return () => restoreLedger(saved, ledger.planFilePath, plan, ledger.planSha256);
+    };
+    expect(
+      tampered((saved) => {
+        const grant = saved.items[0]?.retry?.windows[1]?.grant;
+        if (grant) grant.decidedBy = "setting";
+      }),
+    ).toThrow("Malformed execution ledger row T1");
+    expect(
+      tampered((saved) => {
+        const grant = saved.items[0]?.retry?.windows[1]?.grant;
+        if (grant) grant.resolution = undefined;
+      }),
+    ).toThrow("Malformed execution ledger row T1");
+    expect(
+      tampered((saved) => {
+        saved.rulings = [];
+      }),
+    ).toThrow("T1 holds a known-limitation grant without its one owner ruling");
+    expect(
+      tampered((saved) => {
+        const first = saved.items[0]?.retry?.windows[0];
+        if (first) first.grant = { confirmedAt: 4000, note: "never asked", decidedBy: "user", resolution: "continue" };
+      }),
+    ).toThrow("Malformed execution ledger row T1");
+    const settled = createLedger("local://example-plan.md", plan);
+    failed(settled, "T1", "one", "expected 1, got 2");
+    failed(settled, "T1", "two", "expected 1, got 2");
+    const settledRow = settled.items[0] as LedgerItem;
+    expect(() => grantRetry(settled, settledRow, "redo", "user", 5000, undefined, { resolution: "redesign" })).toThrow(
+      "only a diverging row takes a resolution",
+    );
+    grantRetry(settled, settledRow, "another hypothesis", "user", 5000);
+    const promoted = structuredClone(settled);
+    const ordinary = promoted.items[0]?.retry?.windows[1]?.grant;
+    if (ordinary) ordinary.resolution = "limit";
+    expect(() => restoreLedger(promoted, settled.planFilePath, plan, settled.planSha256)).toThrow("Malformed execution ledger row T1");
+  });
+
+  test("a diverging gate takes a known-limitation ruling only through its limit grant, and never a redo", () => {
+    const ledger = createLedger("local://example-plan.md", plan);
+    for (const row of ledger.items) row.status = "done";
+    const gate = ledger.gates[1] as LedgerItem;
+    failed(ledger, "F2", "g1", "HIGH: the index retains memory after removal");
+    failed(ledger, "F2", "g2", "HIGH: Debug prints the private key", "product", true);
+    failed(ledger, "F2", "g3", "HIGH: Debug prints the password", "product", true);
+    expect(retryWindow(gate)?.stop?.reason).toBe("diverging");
+    expect(() => addFixRow(ledger, "F2", { title: "Redact", acceptance: "redacted", agent: "task", reason: "rejected" })).toThrow(
+      "retry stopped (diverging)",
+    );
+    expect(() => grantRetry(ledger, gate, "redo", "user", 7000, undefined, { resolution: "redesign" })).toThrow("no design to redo");
+    grantRetry(ledger, gate, "Debug output of panel specifications is never logged in production", "user", 7000, undefined, {
+      resolution: "limit",
+      acceptance: "Code quality review; Debug redaction of panel TLS maps is an accepted known limitation",
+    });
+    expect(gate.status).toBe("open");
+    expect(effectiveAcceptance(ledger, gate).ruling?.id).toBe("R1");
+    expect(renderOwnerRulings(ledger)).toContain("- R1 F2: Code quality review; Debug redaction of panel TLS maps");
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).rulings).toEqual(ledger.rulings);
+    const forged = structuredClone(ledger);
+    if (forged.rulings[0]) forged.rulings[0].confirmedAt = 7001;
+    expect(() => restoreLedger(forged, ledger.planFilePath, plan, ledger.planSha256)).toThrow("owner ruling R1");
+    const duplicated = structuredClone(ledger);
+    const [granted] = duplicated.rulings;
+    if (granted) duplicated.rulings.push({ ...granted, id: "R2", acceptance: "Code quality review; nothing is checked" });
+    expect(() => restoreLedger(duplicated, ledger.planFilePath, plan, ledger.planSha256)).toThrow(
+      "F2 holds a known-limitation grant without its one owner ruling",
+    );
+    const withdrawn = structuredClone(ledger);
+    withdrawn.rulings = [];
+    expect(() => restoreLedger(withdrawn, ledger.planFilePath, plan, ledger.planSha256)).toThrow(
+      "F2 holds a known-limitation grant without its one owner ruling",
+    );
+    expect(() => amendAcceptance(ledger, "F2", "anything else", "no limit grant", "user")).toThrow("Owner rulings amend T, D and X rows");
+    failed(ledger, "F2", "g4", "HIGH: Debug prints the short id");
+    failed(ledger, "F2", "g5", "HIGH: Debug prints the session ticket", "product", true);
+    failed(ledger, "F2", "g6", "HIGH: Debug prints the pre-shared key", "product", true);
+    grantRetry(ledger, gate, "Debug output of key material is never logged either", "user", 8000, undefined, {
+      resolution: "limit",
+      acceptance: "Code quality review; Debug redaction of panel TLS maps and key material is an accepted known limitation",
+    });
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, plan, ledger.planSha256).rulings).toHaveLength(2);
+    const reused = structuredClone(ledger);
+    const [earlier, later] = reused.rulings;
+    if (earlier && later) Object.assign(later, { confirmedAt: earlier.confirmedAt, note: earlier.note });
+    expect(() => restoreLedger(reused, ledger.planFilePath, plan, ledger.planSha256)).toThrow(
+      "F2 holds a known-limitation grant without its one owner ruling",
+    );
+  });
+
+  test("a verifier after a product failure and a gate rerun are bound to confirmation scope unless a full pass is forced", () => {
+    const ledger = createLedger("local://example-plan.md", heavyPlan);
+    (ledger.items[0] as LedgerItem).status = "done";
+    const implement = (child: string) => {
+      const row = startRow(ledger, "T2");
+      recordReceipt(row, receiptFor(row, row.attempt as string, child), "implemented");
+      return row;
+    };
+    const row = implement("First");
+    expect(startVerification(ledger, "T2").verification?.scope).toBe("full");
+    noteRetryDispatch(row);
+    recordFailure(ledger, row, {
+      outcomeKey: "verifier",
+      attempt: row.attempt as string,
+      verifyAttempt: row.verification?.attempt as string,
+      toolCallId: "verifier",
+      sessionId: "session",
+      childAgentId: "Verifier",
+      at: Date.now(),
+      failureClass: "product",
+      check: "acceptance",
+      firstError: "expected 1, got 2",
+      signature: "",
+      evidence: "Inspected verifier output",
+    });
+    expect(row.status).toBe("open");
+    implement("Repair");
+    expect(startVerification(ledger, "T2").verification?.scope).toBe("confirmation");
+    expect(startVerification(ledger, "T2", undefined, undefined, true).verification?.scope).toBe("full");
+
+    for (const item of ledger.items) item.status = "done";
+    const gate = ledger.gates[2] as LedgerItem;
+    expect(startRow(ledger, "F3").reviewScope).toBe("full");
+    failed(ledger, "F3", "harness", "runner missing", "harness");
+    expect(startRow(ledger, "F3").reviewScope).toBe("full");
+    failed(ledger, "F3", "product", "scenario 2 returned 404");
+    expect(gate.reviewScope).toBeUndefined();
+    expect(startRow(ledger, "F3").reviewScope).toBe("confirmation");
+    reopenRow(ledger, "F3");
+    expect(startRow(ledger, "F3", undefined, undefined, true).reviewScope).toBe("full");
+    expect(restoreLedger(structuredClone(ledger), ledger.planFilePath, heavyPlan, ledger.planSha256).gates[2]?.reviewScope).toBe("full");
+  });
+
+  test("a verifier keeps confirming after the owner continues or accepts a limitation, and a redo starts with a full pass", () => {
+    for (const [resolution, scope] of [
+      ["continue", "confirmation"],
+      ["limit", "confirmation"],
+      ["redesign", "full"],
+    ] as const) {
+      const ledger = createLedger("local://example-plan.md", heavyPlan);
+      (ledger.items[0] as LedgerItem).status = "done";
+      const row = ledger.items[1] as LedgerItem;
+      const implement = (child: string) => {
+        startRow(ledger, "T2");
+        recordReceipt(row, receiptFor(row, row.attempt as string, child), "implemented");
+      };
+      for (const [key, progress] of [
+        ["v1", false],
+        ["v2", true],
+        ["v3", true],
+      ] as const) {
+        implement(`Implementer${key}`);
+        startVerification(ledger, "T2");
+        noteRetryDispatch(row);
+        recordFailure(ledger, row, {
+          outcomeKey: key,
+          attempt: row.attempt as string,
+          verifyAttempt: row.verification?.attempt as string,
+          toolCallId: key,
+          sessionId: "session",
+          childAgentId: `Verifier${key}`,
+          at: Date.now(),
+          failureClass: "product",
+          check: "acceptance",
+          firstError: `defect ${key}`,
+          signature: "",
+          evidence: "Inspected verifier output",
+          ...(progress ? { progress: true as const } : {}),
+        });
+      }
+      expect(retryWindow(row)?.stop?.reason).toBe("diverging");
+      grantRetry(ledger, row, "241 bytes stay reserved until the accept timeout", "user", 9000, undefined, {
+        resolution,
+        acceptance: "independent result; a half-closed peer may keep 241 bytes until the accept timeout",
+      });
+      expect(row.status).toBe("open");
+      implement("Next");
+      expect(startVerification(ledger, "T2").verification?.scope).toBe(scope);
+    }
+  });
+
+  test("a repair for F2, F3 or F4 is LIGHT whatever tier is asked, while F1 and P1 repairs keep theirs", () => {
+    const content = plan.replace("## Tasks", "Delivery: pr\n\n## Tasks");
+    const ledger = createLedger("local://example-plan.md", content);
+    for (const row of ledger.items) row.status = "done";
+    for (const gate of ledger.gates) startRow(ledger, gate.id);
+    const tiers = ["F1", "F2", "F3", "F4", "P1"].map(
+      (origin) =>
+        addFixRow(ledger, origin, { title: `Fix ${origin}`, acceptance: "observed", agent: "task", reason: "rejected", tier: "HEAVY" })
+          .tier,
+    );
+    expect(tiers).toEqual(["heavy", "light", "light", "light", "heavy"]);
   });
 
   test("event-bound expiry starts on dispatch, keeps unrelated proof and exempts P1 waiting", () => {
@@ -1242,7 +1468,7 @@ describe("Prometheus execution ledger", () => {
       const text = plan.replace("  - Agent: deep-low", `  - Time limit: ${field}\n  - Agent: deep-low`);
       const old = { ...createLedger("local://legacy.md", plan), version: 9, planSha256: planDigest(text) };
       const restored = restoreLedger(old, old.planFilePath, text, old.planSha256);
-      expect(restored.version).toBe(12);
+      expect(restored.version).toBe(13);
       expect(restored.planTimeLimits).toBe(false);
       expect(restored.items[0]?.timeLimitHours).toBe(4);
       expect(restoreLedger(restored, old.planFilePath, text, old.planSha256).items[0]?.timeLimitHours).toBe(4);

@@ -441,6 +441,7 @@ async function scenario(name: string, root: string): Promise<void> {
         ? JSON.stringify({
             gateId: id,
             planSha256: ledger.planSha256,
+            scope: row.reviewScope,
             attempt: row.attempt,
             verdict: "PASS",
             summary: `Verified ${id} from native output`,

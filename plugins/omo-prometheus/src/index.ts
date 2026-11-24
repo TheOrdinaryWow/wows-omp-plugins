@@ -50,8 +50,10 @@ import {
   decide,
   deleteDecision,
   exitEarlyDecision,
+  oneLine,
   parseDecisionSettings,
   releaseDecision,
+  resolveDiverging,
   retryDecision,
   type Settled,
   settle,
@@ -2076,7 +2078,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     action: z
       .enum(["status", "start", "done", "fail", "retry", "verify", "block", "reopen", "await", "fix", "discover", "triage", "amend"])
       .describe(
-        "status shows every row; start, done, fail, block, and reopen change id; await marks a live child waiting on a user-only step; fail authenticates native terminal diagnostics once, exempting only native-proven pre-execution dispatch rejection from retry accounting; retry opens a granted window, with optional timeLimit honored only when the user confirms it in the dialog; verify binds a fresh HEAVY verifier and lists earlier diagnostic paths, replacing cancelled verification directly after native settlement; harness verifier failure retains implementation, product/unknown reopens it; reopen deliberately discards implementation; fix appends X for rejecting F1–F4 or P1; discover records D or deferred O; triage disposes O; amend confirms a T/D/X acceptance ruling",
+        "status shows every row; start, done, fail, block, and reopen change id; await marks a live child waiting on a user-only step; fail authenticates native terminal diagnostics once, exempting only native-proven pre-execution dispatch rejection from retry accounting; retry opens a granted window, with optional timeLimit honored only when the user confirms it in the dialog, and on a diverging row asks the user how it ends; verify binds a fresh HEAVY verifier with its scope and lists earlier diagnostic paths, replacing cancelled verification directly after native settlement; harness verifier failure retains implementation, product/unknown reopens it; reopen deliberately discards implementation; fix appends X for rejecting F1–F4 or P1; discover records D or deferred O; triage disposes O; amend confirms a T/D/X acceptance ruling",
       ),
     id: z
       .string()
@@ -2088,7 +2090,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       .string()
       .optional()
       .describe(
-        "Inspected evidence required for done, fail, block, fix (the origin's rejection), and discover (scope reason). await: the question or user-only step the child waits on. retry: the changed hypothesis/reason for another window; acceptance remains unchanged. triage: TODO id, duplicate reference, wontfix reason, or optional report note. amend: what changed and why. Structured gate/verifier verdicts come from native output, not this text",
+        "Inspected evidence required for done, fail, block, fix (the origin's rejection), and discover (scope reason). await: the question or user-only step the child waits on. retry: the changed hypothesis/reason for another window, with acceptance unchanged; for a diverging row, the remaining finding and its measured consequence. triage: TODO id, duplicate reference, wontfix reason, or optional report note. amend: what changed and why. Structured gate/verifier verdicts come from native output, not this text",
       ),
     childAgentId: z
       .string()
@@ -2104,19 +2106,21 @@ export default function prometheus(pi: ExtensionAPI): void {
       .string()
       .optional()
       .describe(
-        "retry only: <N>h, integer hours 1–72, for this and later windows. Honored only when the user confirms this limit in the dialog; ignored for a setting-granted window. Omit to keep the current approved limit (default 4h)",
+        "retry only: <N>h, integer hours 1–72, for this and later windows. Honored only when the user confirms this limit in the dialog; ignored for a setting-granted window and when resolving a diverging row. Omit to keep the current approved limit (default 4h)",
       ),
     title: z.string().optional().describe("Required for fix and discover: the correction or finding"),
     acceptance: z
       .string()
       .optional()
       .describe(
-        "Required for fix and in-scope discover: the observable check that proves the work. amend: the complete acceptance text now in force for the row, replacing the previous one, not a delta",
+        "Required for fix and in-scope discover: the observable check that proves the work. amend: the complete acceptance text now in force for the row, replacing the previous one, not a delta. retry of a diverging row: the complete acceptance text in force if the owner accepts the remaining finding as a known limitation",
       ),
     scope: z
-      .enum(["in", "out"])
+      .enum(["in", "out", "full"])
       .optional()
-      .describe("Required for discover: in = a defect inside this change's blast radius (new D row); out = outside it (deferred, no row)"),
+      .describe(
+        "discover (required): in = a defect inside this change's blast radius (new D row); out = outside it (deferred, no row). start of a gate or verify: full forces a full pass where the ledger would bind a confirmation pass, as after a reimplementation",
+      ),
     blocksOrigin: z
       .boolean()
       .optional()
@@ -2127,7 +2131,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       .enum(["LIGHT", "HEAVY"])
       .optional()
       .describe(
-        "fix and in-scope discover: HEAVY for auth, security, migrations, concurrency, persistence formats, public API, or data-loss risk (default LIGHT)",
+        "fix and in-scope discover: HEAVY for auth, security, migrations, concurrency, persistence formats, public API, or data-loss risk (default LIGHT). A fix for F2, F3 or F4 is always LIGHT: that gate's rerun checks the repair",
       ),
     agent: z
       .string()
@@ -2166,7 +2170,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     timeLimit?: string;
     title?: string;
     acceptance?: string;
-    scope?: "in" | "out";
+    scope?: "in" | "out" | "full";
     blocksOrigin?: boolean;
     tier?: "LIGHT" | "HEAVY";
     agent?: string;
@@ -2430,6 +2434,81 @@ export default function prometheus(pi: ExtensionAPI): void {
       return refused(error);
     }
   };
+  /** How a diverging row ends is the owner's call: a setting can decline it, never resolve it. */
+  const resolveDivergingRow = async (
+    ctx: ExtensionContext,
+    record: SessionRecord,
+    request: { id: string; note: string; limitation: string | undefined; timeLimit: string | undefined },
+    proposal: { state: string; acceptance: string; history: string; redesign: boolean },
+    decisions: DecisionSettings,
+  ) => {
+    const refused = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
+    const { id, limitation } = request;
+    const ownership = record.ownership;
+    if (!limitation)
+      return refused(
+        `Retry refused: ${id} is diverging, so the owner chooses how it ends. Request it again with, in acceptance, the complete acceptance text in force if the owner accepts the remaining finding as a known limitation, and in evidence that finding with its measured consequence.`,
+      );
+    if (decisions.retry === "decline")
+      return refused(
+        `The atlasRetry setting (decline) declined it without asking. Nothing was recorded and ${id} stays blocked; report it.`,
+      );
+    if (!ctx.hasUI)
+      return refused(
+        `Retry refused: only the user resolves a diverging row, and no dialog is available. ${id} stays blocked; /atlas exit and a revised plan through /prometheus remain available.`,
+      );
+    const answer = await resolveDiverging(
+      ctx.ui,
+      {
+        rowId: id,
+        history: proposal.history,
+        acceptance: proposal.acceptance,
+        limitation,
+        note: request.note,
+        redesign: proposal.redesign,
+      },
+      decisions.retry === "ask-then-decline" ? decisions.timeoutMs : undefined,
+    );
+    if (answer === "timeout")
+      return refused(
+        `The dialog went unanswered for ${Math.round(decisions.timeoutMs / 60_000)} minute(s), so the atlasRetry setting (ask-then-decline) declined it. Nothing was recorded and ${id} stays blocked; report it.`,
+      );
+    if (!answer) return refused(`The user kept ${id} blocked; nothing was recorded.`);
+    if (record.ownership !== ownership) throw new Error("The Atlas attachment changed while awaiting confirmation");
+    return await withExecutionLedger(ctx, record, (ledger) => {
+      const row = ledgerRows(ledger).find((row) => row.id === id);
+      if (!row || JSON.stringify(row.retry) !== proposal.state || effectiveAcceptance(ledger, row).text !== proposal.acceptance)
+        throw new Error("Retry history or acceptance changed while awaiting confirmation; request it again");
+      if (childEvidence.pendingRowChildren(ctx.sessionManager.getSessionId(), ledger.ledgerId, row.id).length)
+        throw new Error("Native work became live while awaiting confirmation");
+      const ruling = grantRetry(ledger, row, request.note, "user", Date.now(), undefined, { resolution: answer, acceptance: limitation });
+      const refresh = atlasTodoRefreshCall(ledger);
+      if (pi.getActiveTools().includes("todo")) pendingTodoRefreshes.set(ctx.sessionManager.getSessionId(), refresh);
+      const gate = row.id.startsWith("F");
+      const next = {
+        limit: `${ruling?.id} records the known limitation as ${id}'s acceptance in force, a deviation the final report lists. Record the accepted finding with discover scope out and triage it. ${gate ? `Then start ${id} again without a fix row for that finding; its child receives the ruling.` : `Then start ${id} again against the acceptance in force; when the last implementation already meets it, say that no code change is expected.`}`,
+        redesign: `Start ${id} again as a reimplementation: name the design that replaces the repaired one and adopt nothing from the earlier attempts. Its verifier runs a full pass.`,
+        continue: gate
+          ? `Record the corrections for the last rejection with fix; ${id} reruns after them.`
+          : `Start ${id} again with the complete defect list of its last failure.`,
+      }[answer];
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${refresh}\n\n${id}: the user resolved the diverging row. ${next} Previous history is preserved. Time limit: ${effectiveTimeLimitHours(row)}h.${request.timeLimit === undefined ? "" : " Requested timeLimit ignored: resolving a diverging row keeps the current limit."}\n\n${ledgerSummary(ledger, id)}`,
+          },
+        ],
+        details: {
+          id: row.id,
+          status: row.status,
+          ...(ruling ? { ruling } : {}),
+          row: ledgerCardRow(ledger, row),
+          progress: ledgerProgress(ledger),
+        },
+      };
+    });
+  };
   /** Like owner rulings, the `atlasRetry` setting settles the grant outside the lock, and it is rechecked before writing. */
   const recordRetryGrant = async (ctx: ExtensionContext, record: SessionRecord, params: LedgerParams) => {
     const refused = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: {} });
@@ -2449,12 +2528,22 @@ export default function prometheus(pi: ExtensionAPI): void {
         return {
           state: JSON.stringify(row.retry),
           automaticGrants: automaticRetryGrants(row),
+          diverging: retryWindow(row)?.stop?.reason === "diverging",
+          redesign: /^[TDX]/.test(row.id),
           acceptance: effectiveAcceptance(ledger, row).text,
           timeLimit: `${effectiveTimeLimitHours(row)}h`,
           history: `${ledgerSummary(ledger, row.id)}\n\nFailure history:\n${row.retry?.windows.flatMap((window, index) => window.failures.map((failure) => `Window ${index + 1}: ${failure.failureClass}${failure.progress ? " (progress: earlier failures proved fixed; not counted)" : ""}; ${failure.check}; ${failure.firstError}\nSignature: ${failure.signature}\n${failure.evidence}${failure.output ? `\n${failure.output.path}` : ""}`)).join("\n\n") || "No failed outcome; elapsed limit reached"}`,
         };
       });
       const decisions = decisionSettings.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_DECISION_SETTINGS;
+      if (proposal.diverging)
+        return await resolveDivergingRow(
+          ctx,
+          record,
+          { id: id as string, note: note as string, limitation: params.acceptance?.trim(), timeLimit },
+          proposal,
+          decisions,
+        );
       const limited = decisions.autoRetryLimit > 0 && proposal.automaticGrants >= decisions.autoRetryLimit;
       const policy = limited ? withoutAutoApproval(decisions.retry) : decisions.retry;
       const settled = await settle(
@@ -2513,7 +2602,7 @@ export default function prometheus(pi: ExtensionAPI): void {
     sourcePath: RUNTIME_SOURCE_PATH,
     label: "Atlas Ledger",
     description:
-      "Read/update the shared approved ledger. Start before task and copy atlas_assignment. Done requires owned final native success plus inspected evidence; HEAVY then needs a fresh independent verifier PASS. Gate/verifier FAIL or INCONCLUSIVE records durable diagnostics; harness verification retains implementation, product/unknown reopens it. verify lists earlier verifier diagnostic paths and replaces a cancelled verifier directly after native settlement; reopen discards implementation. fail records authenticated terminal outcomes once; native-proven pre-execution dispatch rejection consumes no failures, harness reservation or product-work time and preserves the implementation reservation. Execution stops at consecutive identical counted signatures, three counted failures, repeated harness failure, or the approved per-row elapsed limit (default 4h, plan Time limit: <N>h with integer hours 1–72; P1 waiting exempt). Cancel a still-live child at elapsed expiry and observe native settlement. T/D/X elapsed stops retain the implementation attempt: after a retry grant, record its original successfully settled child with done instead of re-dispatching; all evidence checks still apply and recording starts no new clock. For fresh work, reopen to discard it, then start. retry requires a grant; optional timeLimit changes this and later windows only when the user confirms it in the dialog, never by setting. Reopen, amendments and replacement children do not reset budgets. fix creates tiered X from F1–F4 or P1, preserving passed gates; a fresh origin child waits for repairs. discover adds D before gates or deferred O; triage disposes O; amend records T/D/X acceptance rulings. Missing or corrupt state pauses execution; status lists details.",
+      "Read/update the shared approved ledger. Start before task and copy atlas_assignment. Done requires owned final native success plus inspected evidence; HEAVY then needs a fresh independent verifier PASS. Gate/verifier FAIL or INCONCLUSIVE records durable diagnostics; harness verification retains implementation, product/unknown reopens it. A gate start and verify bind a full or confirmation scope, and the task must carry the returned outputSchema; in confirmation scope a FAIL that is not a harness failure and lists at least one finding, all of them new without a severe consequence, is recorded as PASS and its findings are deferred as O. verify lists earlier verifier diagnostic paths and replaces a cancelled verifier directly after native settlement; reopen discards implementation. fail records authenticated terminal outcomes once; native-proven pre-execution dispatch rejection consumes no failures, harness reservation or product-work time and preserves the implementation reservation. Execution stops at consecutive identical counted signatures, three counted failures, the second failure whose child proved the earlier ones fixed and found a different defect (diverging), repeated harness failure, or the approved per-row elapsed limit (default 4h, plan Time limit: <N>h with integer hours 1–72; P1 waiting exempt). Cancel a still-live child at elapsed expiry and observe native settlement. T/D/X elapsed stops retain the implementation attempt: after a retry grant, record its original successfully settled child with done instead of re-dispatching; all evidence checks still apply and recording starts no new clock. For fresh work, reopen to discard it, then start. retry requires a grant; optional timeLimit changes this and later windows only when the user confirms it in the dialog, never by setting. A diverging row takes only the user's answer: accept the remaining finding as a known limitation (retry carries that acceptance text), redo with another design, or continue. Reopen, amendments and replacement children do not reset budgets. fix creates X from F1–F4 or P1, preserving passed gates; a fresh origin child waits for repairs; a fix for F2–F4 is LIGHT. discover adds D before gates or deferred O; triage disposes O; amend records T/D/X acceptance rulings. Missing or corrupt state pauses execution; status lists details.",
     parameters: ledgerParameters,
     ...ledgerCard,
     defaultInactive: true,
@@ -2679,7 +2768,7 @@ export default function prometheus(pi: ExtensionAPI): void {
               content: [
                 {
                   type: "text" as const,
-                  text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.\n\n${ledgerSummary(ledger, fix.id)}`,
+                  text: `${fix.id} records the correction for ${item.id}; ${item.id} reopens once ${item.dependsOn.filter((row) => row.startsWith("X")).join(", ")} are done.${/^F[234]$/.test(item.id) ? ` ${fix.id} is LIGHT whatever tier was requested: ${item.id}'s rerun runs its own checks against the repair, so it gets no separate verifier.` : ""}\n\n${ledgerSummary(ledger, fix.id)}`,
                 },
               ],
               details: {
@@ -2692,7 +2781,11 @@ export default function prometheus(pi: ExtensionAPI): void {
             };
           }
           if (params.action === "start") {
-            startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
+            if (params.scope !== undefined && params.scope !== "full")
+              throw new Error("start takes only scope full; in and out belong to discover");
+            if (params.scope === "full" && !item.id.startsWith("F"))
+              throw new Error(`scope full reruns a gate in full or forces a full verify; it does not apply to starting ${item.id}`);
+            startRow(ledger, item.id, params.agent?.trim() || undefined, availableAgents(), params.scope === "full");
             if (item.id === "F1") {
               // Git runs after the ledger lock is released; an unrecorded baseline is dated by the earliest execution start.
               const starts = ledgerRows(ledger).flatMap((row) => (row.startedAt === undefined || row.id === "F1" ? [] : [row.startedAt]));
@@ -2706,18 +2799,34 @@ export default function prometheus(pi: ExtensionAPI): void {
                 rulings: renderOwnerRulings(ledger),
               };
             }
-            if (item.id.startsWith("F")) schema = gateOutputSchema(ledger, item);
-            // F1 reads its rulings from the compliance bundle; F4 judges fidelity against the plan as the user amended it.
-            if (item.id === "F4") rulings = renderOwnerRulings(ledger);
+            if (item.id.startsWith("F")) {
+              schema = gateOutputSchema(ledger, item);
+              planBinding = `\ngate_scope: ${item.reviewScope}`;
+              // F1 reads its rulings from the compliance bundle.
+              if (item.id !== "F1") rulings = renderOwnerRulings(ledger);
+            }
             const amended = effectiveAcceptance(ledger, item).ruling;
             if (amended) {
               note = `\n${item.id} acceptance was amended by ${amended.id}: give the child the effective acceptance below, not the plan's original text.`;
             }
-            if (/^[TDX]/.test(item.id)) {
-              const preserved =
-                item.retry?.windows.flatMap((window) =>
-                  window.failures.flatMap((failure) => (!failure.verifyAttempt && failure.output ? [failure.output.path] : [])),
+            if (item.id.startsWith("F")) {
+              const earlier =
+                item.retry?.windows.flatMap((window, index) =>
+                  window.failures.flatMap((failure) => (failure.output ? [`window ${index + 1}: ${failure.output.path}`] : [])),
                 ) ?? [];
+              if (earlier.length)
+                note += `\nEarlier ${item.id} outputs, oldest first (give them to the child: the findings a confirmation pass confirms, and the results it may adopt):\n${earlier.join("\n")}`;
+            }
+            if (/^[TDX]/.test(item.id)) {
+              const windows = item.retry?.windows ?? [];
+              const redo = windows.map((window) => window.grant?.resolution).lastIndexOf("redesign");
+              if (redo >= 0 && redo === windows.length - 1)
+                note += `\nThe owner chose to redo ${item.id} with another design: the assignment names the design that replaces the repaired one and adopts nothing from the attempts before that choice.`;
+              const preserved = windows
+                .slice(Math.max(redo, 0))
+                .flatMap((window) =>
+                  window.failures.flatMap((failure) => (!failure.verifyAttempt && failure.output ? [failure.output.path] : [])),
+                );
               if (preserved.length)
                 note += `\nPreserved output of ${item.id}'s earlier attempts (adopt every result nothing since can change; rerun only what failed, was never reached, or a ruling or the new diff affects):\n${preserved.join("\n")}`;
             }
@@ -2730,16 +2839,13 @@ export default function prometheus(pi: ExtensionAPI): void {
             if (item.id === "P1")
               note += `\nDelivery ${ledger.delivery}: use the explicit parent integration branch/head and PR remote head/base, never a native isolation branch. Reuse the existing PR; no product edits. pr hands off without merge. ship waits for current-head repository-required checks/reviews with no unresolved blocking change request; never self-approve. Report in-scope failures for P1-origin X repairs with fresh affected QA, then a fresh P1 child. Missing human approval/access is an external blocker, not a counted product failure.`;
           } else if (params.action === "verify") {
-            startVerification(ledger, item.id, params.agent?.trim() || undefined, availableAgents());
+            if (params.scope !== undefined && params.scope !== "full")
+              throw new Error("verify takes only scope full; in and out belong to discover");
+            startVerification(ledger, item.id, params.agent?.trim() || undefined, availableAgents(), params.scope === "full");
             schema = verifyOutputSchema(ledger, item);
             rulings = renderOwnerRulings(ledger);
             planBinding = `\nVerifier binding for a fresh ${item.verification?.dispatchAgent} child (copy literally): atlas_assignment: ${JSON.stringify({ planSha256: ledger.planSha256, verify: { [item.id]: item.verification?.attempt } })}`;
-            const scope = retryWindow(item)?.failures.some(
-              (failure) => failure.verifyAttempt && failure.failureClass !== "harness" && failure.origin !== "dispatch",
-            )
-              ? "confirmation"
-              : "full";
-            planBinding += `\nverification_scope: ${scope}`;
+            planBinding += `\nverification_scope: ${item.verification?.scope}`;
             const diagnostics =
               item.retry?.windows.flatMap((window) =>
                 window.failures.flatMap((failure) => (failure.verifyAttempt && failure.output ? [failure.output.path] : [])),
@@ -2796,8 +2902,13 @@ export default function prometheus(pi: ExtensionAPI): void {
                     ? parseGateOutput(diagnostic.output, ledger, item)
                     : undefined
                 : undefined;
-            if (params.action === "fail" && verdict?.verdict === "PASS")
-              throw new Error("A structured PASS is not a failed native outcome");
+            const passed = verdict?.verdict === "PASS";
+            if (params.action === "fail" && passed)
+              throw new Error(
+                verdict?.adjudicated
+                  ? `${item.id}'s child stated FAIL in confirmation scope listing only new findings without a severe consequence, which is a PASS with observations; record it with done`
+                  : "A structured PASS is not a failed native outcome",
+              );
             // A woken child carries its attempt on past failed generations that no fail recorded; they still cost budget.
             const chargeSuperseded = async (recording?: string): Promise<boolean> => {
               const superseded = childEvidence.supersededFailures(
@@ -2817,7 +2928,7 @@ export default function prometheus(pi: ExtensionAPI): void {
                 superseded.map(({ failure }) => failure),
               );
             };
-            if (diagnostic && (params.action === "fail" || diagnostic.nativeStatus === "failed" || verdict?.verdict !== "PASS")) {
+            if (diagnostic && (params.action === "fail" || diagnostic.nativeStatus === "failed" || !passed)) {
               const check = verdict?.failure?.check ?? params.check?.trim() ?? (params.action === "fail" ? "" : `${item.id} acceptance`);
               const firstError =
                 verdict?.failure?.firstError ??
@@ -2861,16 +2972,24 @@ export default function prometheus(pi: ExtensionAPI): void {
                 const archived = `${path.join(plan.directory, "evidence", `${receipt.receiptId}.md`)}: ${evidence}`;
                 await store.saveReceipt(plan, receipt, nativeOutput);
                 if (record.ownership !== ownership || ownership?.detached) throw new Error("Atlas exited while child evidence was copied");
-                if (verifying)
-                  recordVerification(ledger, item, {
-                    verdict: "pass",
-                    receipt,
-                    summary: parseVerifyOutput(output, ledger, item).summary,
-                    evidence: archived,
-                  });
+                const verified = verifying ? parseVerifyOutput(output, ledger, item) : undefined;
+                const recorded = verified ?? (item.id.startsWith("F") ? parseGateOutput(output, ledger, item) : undefined);
+                if (verified) recordVerification(ledger, item, { verdict: "pass", receipt, summary: verified.summary, evidence: archived });
                 else recordReceipt(item, receipt, archived);
                 if (item.status === "in_progress")
                   note = `\n${item.id} is HEAVY: its implementation is recorded. Bind a distinct fresh verifier with atlas_ledger verify id=${item.id}.`;
+                if (recorded?.adjudicated) {
+                  const deferred = recorded.findings.map((finding) =>
+                    addDeferredFinding(ledger, {
+                      title: oneLine(finding.summary),
+                      reason: `${childAgentId} first observed it while confirming ${item.id}'s repairs, with no severe consequence: ${finding.summary}`,
+                      origin: item.id,
+                    }),
+                  );
+                  note += `\n${item.id} is recorded as PASS: in confirmation scope ${childAgentId} stated FAIL listing only new findings without a severe consequence. They are deferred as ${deferred.map((finding) => finding.id).join(", ")}; triage each. To repair one in this plan instead, record it as plan work (discover scope in before any gate starts, afterwards reopen the gate and fix) and triage its finding as duplicate.`;
+                } else if (recorded?.findings.length) {
+                  note += `\n${item.id} PASS observations to record with atlas_ledger discover:\n${recorded.findings.map((finding) => `- ${finding.summary}`).join("\n")}`;
+                }
               }
             }
             const completedNow = !wasComplete && isComplete(ledger);

@@ -233,6 +233,7 @@ const RETRY_STOP: Record<NonNullable<NonNullable<LedgerCardRow["retry"]>["stop"]
   attempts: "three counted failures",
   elapsed: "time limit reached",
   harness: "harness failed again",
+  diverging: "repairs keep surfacing new defects",
 };
 
 function retryLine(retry: NonNullable<LedgerCardRow["retry"]>): string {

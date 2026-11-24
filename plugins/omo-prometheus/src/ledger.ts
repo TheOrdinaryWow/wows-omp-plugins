@@ -10,6 +10,8 @@ export type Tier = "light" | "heavy";
 export type Delivery = "direct" | "pr" | "ship";
 /** Observer view of a HEAVY row's verification; derived, never persisted. */
 export type VerificationStatus = "pending" | "running" | "passed" | "failed";
+/** How much a verifier or gate child reviews: the whole work, or an earlier rejection and its repairs. */
+export type ReviewScope = "full" | "confirmation";
 
 /** Independent check of a HEAVY row's recorded implementation by a fresh verifier child. */
 export interface Verification {
@@ -23,6 +25,7 @@ export interface Verification {
   verdict?: "pass" | "fail";
   /** The verifier's own summary. A FAIL summary stays on the reopened row for the next implementation attempt. */
   summary?: string;
+  scope?: ReviewScope;
 }
 export type FailureClass = "product" | "harness" | "unknown";
 
@@ -50,6 +53,12 @@ export interface FailedOutcome {
 /** Who settled an Atlas decision: the user in its dialog, or the plugin setting for that decision without an answer. */
 export type DecidedBy = "user" | "setting";
 
+/**
+ * The owner's answer to a diverging row: keep repairing, redo it with another design, or accept the remaining finding
+ * as a known limitation recorded as an owner ruling.
+ */
+export type RetryResolution = "continue" | "redesign" | "limit";
+
 export interface RetryWindow {
   /** Accepted dispatch starting the current product-work phase; gate reruns and verifiers start fresh clocks. */
   openedAt?: number;
@@ -59,8 +68,8 @@ export interface RetryWindow {
   harnessRepair?: { failureKey: string; attempt?: string };
   /** An implementation reservation with a recorded dispatch rejection, not yet accepted for execution. */
   dispatchReservation?: string;
-  stop?: { reason: "signature" | "attempts" | "elapsed" | "harness"; at: number };
-  grant?: { confirmedAt: number; note: string; decidedBy: DecidedBy };
+  stop?: { reason: "signature" | "attempts" | "elapsed" | "harness" | "diverging"; at: number };
+  grant?: { confirmedAt: number; note: string; decidedBy: DecidedBy; resolution?: RetryResolution };
 }
 
 export interface LedgerItem {
@@ -86,6 +95,8 @@ export interface LedgerItem {
   verification?: Verification;
   /** X rows: the rejecting final gate or P1. D rows: the T or D row whose work surfaced them. */
   origin?: string;
+  /** Gates only. */
+  reviewScope?: ReviewScope;
   /** D rows: why the defect belongs to this plan. */
   reason?: string;
   /** D rows: false waits for the origin; true blocks its acceptance. Absent only for legacy immediate-dispatch rows. */
@@ -125,7 +136,7 @@ export interface DeferredFinding {
 export interface OwnerRuling {
   /** Stable `R1`, `R2`, … in recording order. */
   id: string;
-  /** A T, D or X row. */
+  /** A T, D or X row, or a diverging gate whose remaining finding the owner accepted as a known limitation. */
   rowId: string;
   /** The complete replacement acceptance text now in force for that row. */
   acceptance: string;
@@ -136,7 +147,7 @@ export interface OwnerRuling {
 }
 
 export interface ExecutionLedger {
-  version: 12;
+  version: 13;
   /** Earlier plans did not approve Time limit fields, even if their free text contained them. */
   planTimeLimits: boolean;
   ledgerId: string;
@@ -450,7 +461,7 @@ function buildLedger(
   });
   const delivery = parsed.delivery === "direct" ? undefined : DELIVERY_ROWS[parsed.delivery];
   return {
-    version: 12,
+    version: 13,
     planTimeLimits: !ignoreTimeLimits,
     ledgerId: randomUUID(),
     planFilePath,
@@ -617,7 +628,7 @@ export function renderLedgerSummary(ledger: ExecutionLedger, availableAgents?: r
     const window = retryWindow(item);
     if (window) {
       notes.push(
-        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${progressFailures(window).length}/${PROGRESS_FAILURE_LIMIT} uncounted progress failures; ${window.failures.length} total diagnostics; time limit ${effectiveTimeLimitHours(item)}h; opened ${window.openedAt !== undefined ? new Date(window.openedAt).toISOString() : "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — a retry grant through atlas_ledger retry is required; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
+        `${item.id} retry window ${item.retry?.windows.length}: ${countedFailures(window).length}/3 counted failures; ${progressFailures(window).length}/${PROGRESS_FAILURE_LIMIT} uncounted progress failures; ${window.failures.length} total diagnostics; time limit ${effectiveTimeLimitHours(item)}h; opened ${window.openedAt !== undefined ? new Date(window.openedAt).toISOString() : "not dispatched"}${window.stop ? `; STOP ${window.stop.reason} — ${window.stop.reason === "diverging" ? "each repair surfaced a different defect, so the owner resolves it through atlas_ledger retry: accept the remaining finding as a known limitation, redo with another design, or continue" : "a retry grant through atlas_ledger retry is required"}; retain and inventory unverified changes, delivery remains blocked` : ""}.`,
       );
     }
   }
@@ -682,7 +693,8 @@ function validVerification(value: unknown): boolean {
     (verification.receipt === undefined ||
       (verification.receipt !== null && typeof verification.receipt === "object" && !Array.isArray(verification.receipt))) &&
     (verification.verdict === undefined || verification.verdict === "pass" || verification.verdict === "fail") &&
-    (verification.summary === undefined || typeof verification.summary === "string")
+    (verification.summary === undefined || typeof verification.summary === "string") &&
+    (verification.scope === undefined || verification.scope === "full" || verification.scope === "confirmation")
   );
 }
 /** Product-work clock is checked at host events; P1's passive remote waiting is exempt. */
@@ -707,8 +719,40 @@ export function retryWindow(row: LedgerItem): RetryWindow | undefined {
   return row.retry?.windows.at(-1);
 }
 
-/** Failures that a later child proved fixed while finding a different defect are not counted, at most this many per window. */
-export const PROGRESS_FAILURE_LIMIT = 3;
+/**
+ * A failure whose child proved every earlier one fixed while finding a different defect is not counted. The second
+ * one in a window stops it as diverging: each repair surfaces another defect, and how that ends is the owner's call.
+ */
+export const PROGRESS_FAILURE_LIMIT = 2;
+/** Windows written before version 13 held up to this many progress failures without stopping. */
+const LEGACY_PROGRESS_FAILURES = 3;
+
+/**
+ * A verifier confirms a repair once the row holds an earlier product or unknown verifier failure in its current window,
+ * or in the windows before it that the owner chose to keep repairing or to end with a known limitation: only a redo or
+ * an ordinary retry grant starts over with a full pass.
+ */
+export function verificationScope(row: LedgerItem): ReviewScope {
+  const windows = row.retry?.windows ?? [];
+  let first = windows.length - 1;
+  while (first > 0 && ["continue", "limit"].includes(windows[first]?.grant?.resolution ?? "")) first -= 1;
+  return windows
+    .slice(Math.max(first, 0))
+    .some((window) =>
+      window.failures.some((failure) => failure.verifyAttempt && failure.failureClass !== "harness" && failure.origin !== "dispatch"),
+    )
+    ? "confirmation"
+    : "full";
+}
+
+/** A gate rerun confirms its repairs once any of its windows holds an earlier product or unknown failure. */
+export function gateScope(row: LedgerItem): ReviewScope {
+  return row.retry?.windows.some((window) =>
+    window.failures.some((failure) => failure.failureClass !== "harness" && failure.origin !== "dispatch"),
+  )
+    ? "confirmation"
+    : "full";
+}
 
 export function countedFailures(window: RetryWindow): FailedOutcome[] {
   return window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass !== "harness" && !failure.progress);
@@ -799,7 +843,9 @@ function chargeWindow(row: LedgerItem, failure: FailedOutcome): boolean {
   if (failure.failureClass === "harness") {
     if (window.harnessRepair) window.stop ??= { reason: "harness", at: failure.at };
     else window.harnessRepair = { failureKey: failure.outcomeKey };
-  } else if (!diagnostic.progress) {
+  } else if (diagnostic.progress) {
+    if (progressFailures(window).length >= PROGRESS_FAILURE_LIMIT) window.stop ??= { reason: "diverging", at: failure.at };
+  } else {
     const counted = countedFailures(window);
     if (counted.length >= 2 && counted.at(-2)?.signature === diagnostic.signature) window.stop ??= { reason: "signature", at: failure.at };
     else if (counted.length >= 3) window.stop ??= { reason: "attempts", at: failure.at };
@@ -884,7 +930,10 @@ export function automaticRetryGrants(row: LedgerItem): number {
   return row.retry?.windows.filter((window) => window.grant?.decidedBy === "setting").length ?? 0;
 }
 
-/** Caller must settle the grant (user dialog or `atlasRetry` setting) and recheck the proposal outside/inside its transaction. */
+/**
+ * Caller must settle the grant (user dialog or `atlasRetry` setting) and recheck the proposal outside/inside its
+ * transaction. A diverging row takes only the user's resolution; `limit` records `acceptance` as the ruling in force.
+ */
 export function grantRetry(
   ledger: ExecutionLedger,
   row: LedgerItem,
@@ -892,19 +941,45 @@ export function grantRetry(
   decidedBy: DecidedBy,
   now = Date.now(),
   timeLimit?: string,
-): void {
-  if (!retryWindow(row)?.stop || !note.trim()) throw new Error(`${row.id} requires an exhausted window and a reason for another retry`);
+  diverging?: { resolution: RetryResolution; acceptance?: string },
+): OwnerRuling | undefined {
+  const stop = retryWindow(row)?.stop;
+  if (!stop || !note.trim()) throw new Error(`${row.id} requires an exhausted window and a reason for another retry`);
   if (timeLimit !== undefined && decidedBy !== "user")
     throw new Error("A retry timeLimit requires explicit user confirmation in the dialog");
+  if ((stop.reason === "diverging") !== (diverging !== undefined))
+    throw new Error(
+      diverging
+        ? `${row.id} is not diverging; only a diverging row takes a resolution`
+        : `${row.id} is diverging; its grant needs the owner's resolution`,
+    );
+  if (diverging && decidedBy !== "user") throw new Error(`${row.id} is diverging; only the user resolves it`);
+  if (diverging?.resolution === "redesign" && !/^[TDX]/.test(row.id)) throw new Error(`${row.id} reviews work; it has no design to redo`);
+  const limitation = diverging?.resolution === "limit" ? diverging.acceptance?.trim() : undefined;
+  if (diverging?.resolution === "limit" && !limitation)
+    throw new Error("Accepting a known limitation requires the complete acceptance text it puts in force");
   const timeLimitHours = timeLimit === undefined ? effectiveTimeLimitHours(row) : parseTimeLimit(timeLimit);
-  const retainedAttempt = retryWindow(row)?.stop?.reason === "elapsed" && /^[TDX]/.test(row.id) && row.attempt && !row.receipt;
-  row.retry?.windows.push({ failures: [], timeLimitHours, grant: { confirmedAt: now, note: note.trim(), decidedBy } });
-  const reason = `${decidedBy === "user" ? "Owner confirmed" : "The atlasRetry setting granted"} a new retry window: ${note.trim()}`;
-  if ((row.tier === "heavy" && row.receipt) || retainedAttempt) {
+  const retainedAttempt = stop.reason === "elapsed" && /^[TDX]/.test(row.id) && row.attempt && !row.receipt;
+  row.retry?.windows.push({
+    failures: [],
+    timeLimitHours,
+    grant: { confirmedAt: now, note: note.trim(), decidedBy, ...(diverging ? { resolution: diverging.resolution } : {}) },
+  });
+  const ruling = limitation ? pushRuling(ledger, row.id, limitation, note.trim(), decidedBy, now) : undefined;
+  const granted = diverging
+    ? {
+        continue: "Owner chose to keep repairing in a new retry window",
+        redesign: "Owner chose a redo with another design in a new retry window",
+        limit: `Owner accepted the remaining finding as a known limitation (${ruling?.id}) and opened a new retry window`,
+      }[diverging.resolution]
+    : `${decidedBy === "user" ? "Owner confirmed" : "The atlasRetry setting granted"} a new retry window`;
+  const reason = `${granted}: ${note.trim()}`;
+  if (diverging?.resolution !== "redesign" && ((row.tier === "heavy" && row.receipt) || retainedAttempt)) {
     row.status = "in_progress";
     row.evidence = `${row.evidence ?? ""}\n${reason}`.trim();
     resetVerification(row);
   } else reopenRow(ledger, row.id, reason);
+  return ruling;
 }
 
 /** `version` below nine predates `decidedBy`; the upgrade fills it in afterwards. */
@@ -924,12 +999,18 @@ function validRetry(value: LedgerItem["retry"], version: number, approvedLimit =
       (window.openedAt !== undefined && !Number.isFinite(window.openedAt)) ||
       (window.dispatchReservation !== undefined && !nonEmpty(window.dispatchReservation)) ||
       (index > 0 && (!window.grant || !value.windows[index - 1]?.stop)) ||
+      (window.grant?.resolution !== undefined) !== (value.windows[index - 1]?.stop?.reason === "diverging") ||
       (window.grant !== undefined &&
         (!Number.isFinite(window.grant.confirmedAt) ||
           !nonEmpty(window.grant.note) ||
-          (version >= 9 && !validDecidedBy(window.grant.decidedBy)))) ||
+          (version >= 9 && !validDecidedBy(window.grant.decidedBy)) ||
+          (window.grant.resolution !== undefined &&
+            (version < 13 ||
+              window.grant.decidedBy !== "user" ||
+              !["continue", "redesign", "limit"].includes(window.grant.resolution))))) ||
       (window.stop !== undefined &&
-        (!["signature", "attempts", "elapsed", "harness"].includes(window.stop.reason) || !Number.isFinite(window.stop.at)))
+        (!["signature", "attempts", "elapsed", "harness", ...(version >= 13 ? ["diverging"] : [])].includes(window.stop.reason) ||
+          !Number.isFinite(window.stop.at)))
     )
       return false;
     for (const failure of window.failures) {
@@ -964,7 +1045,7 @@ function validRetry(value: LedgerItem["retry"], version: number, approvedLimit =
         (counted.length >= 3 ||
           repeated ||
           window.failures.filter((failure) => failure.origin !== "dispatch" && failure.failureClass === "harness").length >= 2)) ||
-      progressFailures(window).length > PROGRESS_FAILURE_LIMIT
+      progressFailures(window).length > LEGACY_PROGRESS_FAILURES
     )
       return false;
     return (
@@ -994,7 +1075,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     version !== 9 &&
     version !== 10 &&
     version !== 11 &&
-    version !== 12
+    version !== 12 &&
+    version !== 13
   ) {
     throw new Error("Unsupported execution ledger version");
   }
@@ -1141,7 +1223,7 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
     }
   }
   if (version >= 7) {
-    const amendable = [...taskIds, ...discoveryIds, ...fixIds];
+    const amendable = [...taskIds, ...discoveryIds, ...fixIds, ...(version >= 13 ? gateIds : [])];
     for (const [index, ruling] of saved.rulings.entries()) {
       if (
         !ruling ||
@@ -1155,6 +1237,16 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
       ) {
         throw new Error(`Malformed execution ledger owner ruling R${index + 1}`);
       }
+    }
+    for (const row of rows) {
+      const limits = row.retry?.windows.flatMap((window) => (window.grant?.resolution === "limit" ? [window.grant] : [])) ?? [];
+      const rulings = saved.rulings.filter((ruling) => ruling.rowId === row.id);
+      const settles = (ruling: OwnerRuling, grant: NonNullable<RetryWindow["grant"]>) =>
+        ruling.decidedBy === "user" && ruling.confirmedAt === grant.confirmedAt && ruling.note === grant.note;
+      const stray = gateIds.includes(row.id) ? rulings.find((ruling) => !limits.some((grant) => settles(ruling, grant))) : undefined;
+      if (stray) throw new Error(`Malformed execution ledger owner ruling ${stray.id}`);
+      if (limits.some((grant) => rulings.filter((ruling) => settles(ruling, grant)).length !== 1))
+        throw new Error(`Malformed execution ledger: ${row.id} holds a known-limitation grant without its one owner ruling`);
     }
   }
   if (version === 1) return expected;
@@ -1195,7 +1287,8 @@ export function restoreLedger(data: unknown, planFilePath: string, planContent: 
   // Version eleven makes origin ordering prospective; historical D rows retain their immediate-dispatch contract.
   if (version < 11) for (const row of discoveries) delete row.blocksOrigin;
   // Version twelve adds uncounted progress failures; no earlier failure claimed progress.
-  saved.version = 12;
+  // Version thirteen stops a window at its second progress failure and binds review scopes; earlier windows keep theirs.
+  saved.version = 13;
   return saved;
 }
 
@@ -1211,6 +1304,7 @@ export function reopenRow(ledger: ExecutionLedger, id: string, reason?: string):
   row.attempt = undefined;
   row.startedAt = undefined;
   row.receipt = undefined;
+  row.reviewScope = undefined;
   // Only a verifier's failure summary outlives the attempt; the next implementation child needs it.
   if (row.verification !== undefined) {
     row.verification =
@@ -1247,6 +1341,19 @@ export function checkAmendment(
   return { row, acceptance: text, note: reason };
 }
 
+function pushRuling(
+  ledger: ExecutionLedger,
+  rowId: string,
+  acceptance: string,
+  note: string,
+  decidedBy: DecidedBy,
+  confirmedAt = Date.now(),
+): OwnerRuling {
+  const ruling: OwnerRuling = { id: `R${ledger.rulings.length + 1}`, rowId, acceptance, note, confirmedAt, decidedBy };
+  ledger.rulings.push(ruling);
+  return ruling;
+}
+
 /** Record a settled ruling as the next `R` id. The row's status is untouched; Atlas reopens it afterward. */
 export function amendAcceptance(
   ledger: ExecutionLedger,
@@ -1256,16 +1363,7 @@ export function amendAcceptance(
   decidedBy: DecidedBy,
 ): OwnerRuling {
   const checked = checkAmendment(ledger, id, acceptance, note);
-  const ruling: OwnerRuling = {
-    id: `R${ledger.rulings.length + 1}`,
-    rowId: checked.row.id,
-    acceptance: checked.acceptance,
-    note: checked.note,
-    confirmedAt: Date.now(),
-    decidedBy,
-  };
-  ledger.rulings.push(ruling);
-  return ruling;
+  return pushRuling(ledger, checked.row.id, checked.acceptance, checked.note, decidedBy);
 }
 
 function checkedAgent(agent: string, availableAgents: readonly string[] | undefined, role: string): string {
@@ -1281,7 +1379,11 @@ function checkedTier(tier: string | undefined): Tier {
   return value;
 }
 
-/** Record a gate or delivery correction. Only its origin reopens; other completed proof stays valid. */
+/**
+ * Record a gate or delivery correction. Only its origin reopens; other completed proof stays valid. A repair for F2, F3
+ * or F4 is LIGHT because that gate's rerun runs its own checks against it; F1 only inspects and P1 does not review, so
+ * their repairs keep the requested tier.
+ */
 export function addFixRow(
   ledger: ExecutionLedger,
   gateId: string,
@@ -1298,7 +1400,7 @@ export function addFixRow(
   if (!title || !acceptance || !reason)
     throw new Error("A fix row requires a title, an observable acceptance check, and the origin row's rejection");
   const agent = checkedAgent(fix.agent, availableAgents, "Fix");
-  const tier = checkedTier(fix.tier);
+  const tier = /^F[234]$/.test(gateId) ? "light" : checkedTier(fix.tier);
   const row: LedgerItem = {
     id: `X${ledger.fixes.length + 1}`,
     title,
@@ -1437,7 +1539,13 @@ export function triageFinding(
  * Start a fresh attempt. `chosenAgent` is Atlas's pick for a row whose requested agent and fallbacks are all unspawnable;
  * a row that still resolves keeps the approved plan's agent.
  */
-export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: string, availableAgents?: readonly string[]): LedgerItem {
+export function startRow(
+  ledger: ExecutionLedger,
+  id: string,
+  chosenAgent?: string,
+  availableAgents?: readonly string[],
+  fullScope = false,
+): LedgerItem {
   const rows = ledgerRows(ledger);
   const row = rows.find((item) => item.id === id);
   if (!row) throw new Error(`Unknown ledger row ${id}`);
@@ -1485,6 +1593,7 @@ export function startRow(ledger: ExecutionLedger, id: string, chosenAgent?: stri
   row.startedAt = Date.now();
   const window = retryWindow(row);
   if (window && row.id.startsWith("F")) window.openedAt = undefined;
+  if (row.id.startsWith("F")) row.reviewScope = fullScope ? "full" : gateScope(row);
   row.updatedAt = Math.max(row.startedAt, row.updatedAt + 1);
   row.evidence = undefined;
   return row;
@@ -1507,6 +1616,7 @@ export function startVerification(
   id: string,
   chosenAgent?: string,
   availableAgents?: readonly string[],
+  fullScope = false,
 ): LedgerItem {
   const row = ledgerRows(ledger).find((item) => item.id === id);
   if (!row) throw new Error(`Unknown ledger row ${id}`);
@@ -1529,7 +1639,7 @@ export function startVerification(
     );
   }
   const startedAt = Date.now();
-  row.verification = { attempt: randomUUID(), startedAt, dispatchAgent };
+  row.verification = { attempt: randomUUID(), startedAt, dispatchAgent, scope: fullScope ? "full" : verificationScope(row) };
   const window = retryWindow(row);
   if (window) window.openedAt = undefined;
   row.updatedAt = Math.max(startedAt, row.updatedAt + 1);
