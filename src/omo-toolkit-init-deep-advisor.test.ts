@@ -31,7 +31,7 @@ import { DEFAULT_SETTINGS } from "../plugins/omo-toolkit/src/settings.ts";
 
 const CHILD_ENV = "TOOLKIT_ADVISOR_SCENARIO";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const ENTRY = fileURLToPath(new URL("../plugins/omo-toolkit/src/index.ts", import.meta.url));
+const ENTRY = fileURLToPath(new URL("../plugins/omo-toolkit/src/omo-toolkit.ts", import.meta.url));
 
 async function repository(root: string): Promise<void> {
   await mkdir(join(root, "src"), { recursive: true });

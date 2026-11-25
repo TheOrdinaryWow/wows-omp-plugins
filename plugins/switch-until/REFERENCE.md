@@ -4,7 +4,7 @@ For maintainers and client authors. The [README](README.md) covers use.
 
 ## Files
 
-- `src/index.ts`: the `/switch-until` command, session events, the turn loop, the restore timer.
+- `src/switch-until.ts`: the `/switch-until` command, session events, the turn loop, the restore timer.
 - `src/state.ts`: the saved entry format, rebuilding state from the session branch, and the stop rules.
 - `src/judge.ts`: the judge question, the judge call, and translation.
 - `src/evidence.ts`: builds the judge's text from session messages and plugin state.
@@ -16,7 +16,7 @@ For maintainers and client authors. The [README](README.md) covers use.
 - `src/args.ts`: parser for the headless command form.
 - `src/settings.ts`: settings defaults and validation.
 
-The manifest is `package.json` with `omp.extensions` pointing at `./src/index.ts`. It declares four settings in `omp.settings`. The plugin has no runtime dependencies.
+The manifest is `package.json` with `omp.extensions` pointing at `./src/switch-until.ts`. It declares four settings in `omp.settings`. The plugin has no runtime dependencies.
 
 | Setting | Type | Default | Rule |
 | --- | --- | --- | --- |

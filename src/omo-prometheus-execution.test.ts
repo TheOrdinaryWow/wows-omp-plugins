@@ -92,7 +92,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const { currentTheme } = await import("@oh-my-pi/pi-tui/theme/runtime");
   const { createTestTerminal } = await import("@oh-my-pi/pi-tui/testing/terminal");
   const hostTheme = currentTheme();
-  const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
+  const { default: register } = await import("../plugins/omo-prometheus/src/omo-prometheus.ts");
   let artifacts = join(root, "artifacts");
   await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
   await mkdir(join(root, "sessions"));
@@ -339,7 +339,10 @@ async function scenario(name: string, root: string): Promise<void> {
         { name: "ask", sourceInfo: { source: "builtin" } },
         ...[...tools.values()].map((tool) => ({
           name: tool.name,
-          sourceInfo: { source: "extension", path: fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url)) },
+          sourceInfo: {
+            source: "extension",
+            path: fileURLToPath(new URL("../plugins/omo-prometheus/src/omo-prometheus.ts", import.meta.url)),
+          },
         })),
       ],
       sendMessage(message: { customType?: string; content?: unknown }, options: unknown) {
@@ -1009,7 +1012,9 @@ async function scenario(name: string, root: string): Promise<void> {
     entries.length = 0;
     reference = "local://PLAN.md";
     const { loadLegacyPiModule } = await import("@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat");
-    const loaded = (await loadLegacyPiModule(fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url)))) as {
+    const loaded = (await loadLegacyPiModule(
+      fileURLToPath(new URL("../plugins/omo-prometheus/src/omo-prometheus.ts", import.meta.url)),
+    )) as {
       default: typeof register;
     };
     assert.notEqual(loaded.default, register, "the host reload must use a distinct extension module identity");

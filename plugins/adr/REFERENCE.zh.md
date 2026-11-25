@@ -16,7 +16,7 @@ Read decisions with adr_status (an id gives the full text); change them only thr
 
 ## 工具
 
-`adr_status` 使用读取审批；`adr_manage` 和 `adr_check` 使用写入审批。所有工具声明同一个 `sourcePath`（已加载的 `src/index.ts` 的真实路径），服务契约以 `toolSourcePath` 报告该路径。
+`adr_status` 使用读取审批；`adr_manage` 和 `adr_check` 使用写入审批。所有工具声明同一个 `sourcePath`（已加载的 `src/adr.ts` 的真实路径），服务契约以 `toolSourcePath` 报告该路径。
 
 | 工具 | 输入 |
 | --- | --- |

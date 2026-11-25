@@ -45,7 +45,7 @@ function runFailingJudgeCommand(hasUI: boolean, explicitUrlFile = false): Comman
     const { Settings, withActiveSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
     const { cfgModelRoles } = await import("@oh-my-pi/pi-coding-agent/config/model-settings");
     const { cfgFindEnabled } = await import("@oh-my-pi/pi-coding-agent/tools/settings");
-    const { default: findConsole } = await import("./plugins/find-console/src/index.ts");
+    const { default: findConsole } = await import("./plugins/find-console/src/find-console.ts");
     const settings = Settings.isolated();
     cfgFindEnabled.override(settings, "on");
     cfgModelRoles.override(settings, { judge: "typesafe/fixture-judge" });

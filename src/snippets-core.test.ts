@@ -239,7 +239,7 @@ test("headless input reports invalid settings once per session without expanding
   const { root, cwd } = await fixture();
   await settingsFile(cwd, { trigger: "!", matching: "closed" });
   const script = `
-    import snippets from ${JSON.stringify(new URL("../plugins/snippets/src/index.ts", import.meta.url).href)};
+    import snippets from ${JSON.stringify(new URL("../plugins/snippets/src/snippets.ts", import.meta.url).href)};
     const hooks = new Map();
     const notices = [];
     snippets({

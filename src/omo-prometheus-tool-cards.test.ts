@@ -11,7 +11,6 @@ import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { z } from "zod";
 
 import { runAtlasGit } from "../plugins/omo-prometheus/src/atlas-git.ts";
-import register from "../plugins/omo-prometheus/src/index.ts";
 import {
   addDeferredFinding,
   amendAcceptance,
@@ -21,6 +20,7 @@ import {
   renderLedgerSummary,
   startRow,
 } from "../plugins/omo-prometheus/src/ledger.ts";
+import register from "../plugins/omo-prometheus/src/omo-prometheus.ts";
 import { ledgerCardRow, ledgerProgress, rowSummary } from "../plugins/omo-prometheus/src/tool-cards.ts";
 
 interface RenderOptions {

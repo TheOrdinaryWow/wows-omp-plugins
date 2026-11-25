@@ -11,8 +11,8 @@ import { LoopStore } from "../plugins/omo-ultrawork/src/ulw-loop-store.ts";
 
 const CHILD_ENV = "ULW_LOOP_SDK_SCENARIO";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const ENTRY = fileURLToPath(new URL("../plugins/omo-ultrawork/src/index.ts", import.meta.url));
-const AUDIT_ENTRY = fileURLToPath(new URL("../plugins/audit-goal/src/index.ts", import.meta.url));
+const ENTRY = fileURLToPath(new URL("../plugins/omo-ultrawork/src/omo-ultrawork.ts", import.meta.url));
+const AUDIT_ENTRY = fileURLToPath(new URL("../plugins/audit-goal/src/audit-goal.ts", import.meta.url));
 interface Envelope {
   ok: boolean;
   op: string;

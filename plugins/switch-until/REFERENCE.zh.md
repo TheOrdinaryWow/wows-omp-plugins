@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `src/index.ts`：`/switch-until` 命令、会话事件、轮次循环和恢复定时器。
+- `src/switch-until.ts`：`/switch-until` 命令、会话事件、轮次循环和恢复定时器。
 - `src/state.ts`：保存记录的格式、从会话分支重建状态，以及停止规则。
 - `src/judge.ts`：判定问题、判定调用和翻译。
 - `src/evidence.ts`：从会话消息和插件状态组装判定文本。
@@ -16,7 +16,7 @@
 - `src/args.ts`：无界面命令形式的解析器。
 - `src/settings.ts`：设置的默认值和校验。
 
-清单是 `package.json`，`omp.extensions` 指向 `./src/index.ts`。`omp.settings` 声明了四个设置。插件没有运行时依赖。
+清单是 `package.json`，`omp.extensions` 指向 `./src/switch-until.ts`。`omp.settings` 声明了四个设置。插件没有运行时依赖。
 
 | 设置 | 类型 | 默认值 | 规则 |
 | --- | --- | --- | --- |

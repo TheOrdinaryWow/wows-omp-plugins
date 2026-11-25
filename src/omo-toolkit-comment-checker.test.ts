@@ -20,7 +20,7 @@ import { DEFAULT_SETTINGS, parseToolkitSettings, TOOLKIT_PACKAGE } from "../plug
 
 const CHILD_ENV = "TOOLKIT_CHECKER_SCENARIO";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const ENTRY = fileURLToPath(new URL("../plugins/omo-toolkit/src/index.ts", import.meta.url));
+const ENTRY = fileURLToPath(new URL("../plugins/omo-toolkit/src/omo-toolkit.ts", import.meta.url));
 
 function context(root: string, id = "checker-session"): ExtensionContext {
   return {

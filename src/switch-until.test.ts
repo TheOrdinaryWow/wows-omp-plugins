@@ -12,7 +12,6 @@ import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-ent
 
 import { parseHeadlessArgs } from "../plugins/switch-until/src/args.ts";
 import { buildJudgeState, qualifiesForJudgment } from "../plugins/switch-until/src/evidence.ts";
-import { registerSwitchUntil, type SwitchUntilDependencies } from "../plugins/switch-until/src/index.ts";
 import { DEFAULT_SETTINGS, parseSettings } from "../plugins/switch-until/src/settings.ts";
 import {
   decide,
@@ -23,6 +22,7 @@ import {
   startUntil,
   type UntilEntry,
 } from "../plugins/switch-until/src/state.ts";
+import { registerSwitchUntil, type SwitchUntilDependencies } from "../plugins/switch-until/src/switch-until.ts";
 import { needsTranslation, TranslationCache } from "../plugins/switch-until/src/translation-cache.ts";
 
 const original = {

@@ -21,9 +21,9 @@ const CHILD = "PROMETHEUS_ROADMAP_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const REVISION_A = "a".repeat(64);
 const REVISION_B = "b".repeat(64);
-const PROMETHEUS_ENTRY = fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url));
-const ROADMAP_ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
-const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
+const PROMETHEUS_ENTRY = fileURLToPath(new URL("../plugins/omo-prometheus/src/omo-prometheus.ts", import.meta.url));
+const ROADMAP_ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/roadmap.ts", import.meta.url));
+const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/adr.ts", import.meta.url));
 const content = `# Bound execution
 
 ## Tasks
@@ -78,7 +78,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { prompt } = await import("@oh-my-pi/pi-utils");
   const { z } = await import("zod");
-  const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
+  const { default: register } = await import("../plugins/omo-prometheus/src/omo-prometheus.ts");
   const artifacts = join(root, "artifacts");
   const sessionDir = join(root, "sessions");
   await mkdir(join(artifacts, "local"), { recursive: true });

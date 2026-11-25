@@ -58,7 +58,7 @@ export type Receipt =
  * The service contract reports this path and every adr_* tool declares it: the host otherwise records the unresolved
  * node_modules symlink, while `import.meta.url` is the cached copy's realpath.
  */
-export const TOOL_SOURCE_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
+export const TOOL_SOURCE_PATH = fileURLToPath(new URL("./adr.ts", import.meta.url));
 
 export function toolResult(receipt: Receipt) {
   const text = receipt.ok

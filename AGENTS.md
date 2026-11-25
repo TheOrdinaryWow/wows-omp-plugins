@@ -130,8 +130,12 @@ name segment — `#src/*`, not `#/*`.
    `0.1.0`.
 3. Add content in the conventional directories: `skills/<name>/SKILL.md`,
    `commands/*.md`, `agents/*.md`, `hooks/pre|post/`, `tools/`, `.mcp.json`.
-4. Declare a TypeScript extension entry in `package.json` under `omp.extensions`.
-   Content-only plugins omit `omp.extensions`.
+4. Declare a TypeScript extension entry in `package.json` under `omp.extensions`,
+   named after the plugin: `./src/<name>.ts`, never `index.ts`. OMP names an
+   extension module after its entry file (the parent directory for `index.*`)
+   and disables modules by that name, so every `src/index.ts` showed as `src`
+   in `/status` and disabling one disabled them all. `bun run check-catalog`
+   enforces it. Content-only plugins omit `omp.extensions`.
 5. Write `plugins/<name>/README.md` and `README.zh.md` as described in
    "Writing READMEs" below. Both ship with the plugin.
 6. Add the entry to [.omp-plugin/marketplace.json](file:///./.omp-plugin/marketplace.json)

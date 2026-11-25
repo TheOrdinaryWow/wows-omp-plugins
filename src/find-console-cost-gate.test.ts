@@ -67,7 +67,7 @@ function exerciseCostGate(mode: "capped-main" | "capped-sub" | "no-session" | "r
     const { CostGate } = await import("@oh-my-pi/pi-coding-agent/session/cost-gate");
     const { AgentRegistry } = await import("@oh-my-pi/pi-coding-agent/registry/agent-registry");
     const { translateQuery } = await import("./plugins/find-console/src/translation.ts");
-    const { default: findConsole } = await import("./plugins/find-console/src/index.ts");
+    const { default: findConsole } = await import("./plugins/find-console/src/find-console.ts");
     const settings = Settings.isolated();
     cfgSessionMaxCost.override(settings, mode === "remote-error" ? 0.05 : 1);
     cfgFindEnabled.override(settings, "on");

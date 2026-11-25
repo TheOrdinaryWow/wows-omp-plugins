@@ -12,7 +12,7 @@ const PACKAGE_NAME = "wows-omp-plugin-judge-dispatch";
 const CHILD_SCENARIO_ENV = "JUDGE_DISPATCH_HOST_JUDGE_SCENARIO";
 const CHILD_OUTPUT_MARKER = "JUDGE_DISPATCH_HOST_JUDGE_RESULT:";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const PLUGIN_URL = pathToFileURL(join(dirname(THIS_FILE), "../plugins/judge-dispatch/src/index.ts")).href;
+const PLUGIN_URL = pathToFileURL(join(dirname(THIS_FILE), "../plugins/judge-dispatch/src/judge-dispatch.ts")).href;
 const HOST_KEY = ["host", "typesafe", "key"].join("-");
 
 /** One hook-level action, replayed in order after a session's other fields; each pushes one entry to `steps`. */

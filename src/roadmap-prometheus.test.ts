@@ -14,10 +14,10 @@ import { adrApi } from "./roadmap-fixtures.ts";
 
 const CHILD = "ROADMAP_PROMETHEUS_SDK";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const ROADMAP_ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
+const ROADMAP_ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/roadmap.ts", import.meta.url));
 const ROADMAP_DIR = fileURLToPath(new URL("../plugins/roadmap", import.meta.url));
-const PROMETHEUS_ENTRY = fileURLToPath(new URL("../plugins/omo-prometheus/src/index.ts", import.meta.url));
-const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
+const PROMETHEUS_ENTRY = fileURLToPath(new URL("../plugins/omo-prometheus/src/omo-prometheus.ts", import.meta.url));
+const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/adr.ts", import.meta.url));
 const draft: InitInput = {
   project: { name: "Contract fixture", description: "A verified roadmap event fixture" },
   round: { title: "Launch", goal: "Verify the integration", constraints: [], non_goals: [], principles: [] },
@@ -78,7 +78,7 @@ async function sdk(root: string, name: string): Promise<void> {
   const linkedRoadmap = join(dirname(root), "plugins/node_modules/wows-omp-plugin-roadmap");
   await mkdir(dirname(linkedRoadmap), { recursive: true });
   await symlink(ROADMAP_DIR, linkedRoadmap);
-  const roadmapEntry = join(linkedRoadmap, "src/index.ts");
+  const roadmapEntry = join(linkedRoadmap, "src/roadmap.ts");
   const shadowEntry = join(root, "shadow.ts");
   if (shadow) {
     await writeFile(

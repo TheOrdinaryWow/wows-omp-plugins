@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { type ExtensionAPI, z } from "@oh-my-pi/pi-coding-agent";
 
-import omoToolkit from "../plugins/omo-toolkit/src/index.ts";
+import omoToolkit from "../plugins/omo-toolkit/src/omo-toolkit.ts";
 
 type BeforeAgentStart = (event: { systemPrompt: string[] }) => { systemPrompt: string[] } | undefined;
 

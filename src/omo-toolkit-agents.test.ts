@@ -10,7 +10,7 @@ import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task/read-only-policy";
 import { parseFrontmatter } from "@oh-my-pi/pi-utils";
 
-import { registerToolkitModelRoles } from "../plugins/omo-toolkit/src/index.ts";
+import { registerToolkitModelRoles } from "../plugins/omo-toolkit/src/omo-toolkit.ts";
 
 const pluginRoot = join(import.meta.dir, "../plugins/omo-toolkit");
 const agentDir = join(pluginRoot, "agents");

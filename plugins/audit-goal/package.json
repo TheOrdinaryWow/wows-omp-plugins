@@ -10,7 +10,7 @@
   },
   "omp": {
     "extensions": [
-      "./src/index.ts"
+      "./src/audit-goal.ts"
     ],
     "settings": {
       "intensity": {

@@ -9,7 +9,7 @@ import { stripEscapes } from "@oh-my-pi/pi-tui/text/ansi";
 import { PLAIN_THEME } from "@oh-my-pi/pi-tui/theme/plain";
 import { z } from "zod";
 
-import register from "../plugins/omo-ultrawork/src/index.ts";
+import register from "../plugins/omo-ultrawork/src/omo-ultrawork.ts";
 
 type Renderer = (message: unknown, options: { expanded: boolean }, theme: unknown) => UiNode | undefined;
 

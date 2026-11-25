@@ -23,7 +23,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const { AgentRegistry } = await import("@oh-my-pi/pi-coding-agent/registry/agent-registry");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { z } = await import("zod");
-  const { default: register } = await import("../plugins/omo-ultrawork/src/index.ts");
+  const { default: register } = await import("../plugins/omo-ultrawork/src/omo-ultrawork.ts");
   const cwd = join(root, "workspace");
   await mkdir(cwd, { recursive: true });
   let manager = SessionManager.create(cwd, join(root, "sessions"));

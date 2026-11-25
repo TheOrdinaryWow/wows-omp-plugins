@@ -40,7 +40,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { z } = await import("zod");
   const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
-  const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
+  const { default: register } = await import("../plugins/omo-prometheus/src/omo-prometheus.ts");
   const dir = join(root, "sessions");
   const artifacts = join(root, "artifacts");
   await mkdir(dir);

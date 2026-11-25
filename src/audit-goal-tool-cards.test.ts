@@ -14,7 +14,7 @@ import { PLAIN_THEME } from "@oh-my-pi/pi-tui/theme/plain";
 import type { TspToolProps } from "@oh-my-pi/pi-wire";
 import { z } from "zod";
 
-import auditGoal from "../plugins/audit-goal/src/index.ts";
+import auditGoal from "../plugins/audit-goal/src/audit-goal.ts";
 import type { AuditState } from "../plugins/audit-goal/src/ledger.ts";
 
 const runtimeDir = mkdtempSync(join(tmpdir(), "audit-goal-cards-"));

@@ -668,7 +668,7 @@ describe("roadmap:binding and roadmap:stage answers", () => {
       const { ask, sessionId, events } = contract(cwd);
       if (adr)
         events.on("adr:binding-request", (raw) =>
-          events.emit("adr:binding", { ...(raw as object), v: 1, toolSourcePath: "/plugins/adr/src/index.ts", api: adrApi() }),
+          events.emit("adr:binding", { ...(raw as object), v: 1, toolSourcePath: "/plugins/adr/src/adr.ts", api: adrApi() }),
         );
       const [answer] = ask("roadmap:binding-request", "roadmap:binding", { v: 1, sessionId, requestId: "u1" });
       return (answer as { usable?: unknown } | undefined)?.usable;

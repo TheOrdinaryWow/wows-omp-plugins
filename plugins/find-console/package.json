@@ -10,7 +10,7 @@
   },
   "omp": {
     "extensions": [
-      "./src/index.ts"
+      "./src/find-console.ts"
     ],
     "settings": {
       "uiMenu": {

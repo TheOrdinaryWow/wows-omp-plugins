@@ -28,7 +28,7 @@ import { decision, git, LEGACY_ADR_1, LEGACY_INDEX } from "./adr-fixtures.ts";
 
 const CHILD_ENV = "ADR_EXTENSION_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
+const ENTRY = fileURLToPath(new URL("../plugins/adr/src/adr.ts", import.meta.url));
 const PLUGIN_DIR = fileURLToPath(new URL("../plugins/adr", import.meta.url));
 
 class ScriptedUi implements AdrUi {
@@ -211,7 +211,7 @@ async function acceptance(name: string, root: string): Promise<void> {
     const linked = join(dirname(root), "plugins/node_modules/wows-omp-plugin-adr");
     await mkdir(dirname(linked), { recursive: true });
     await symlink(PLUGIN_DIR, linked);
-    entry = join(linked, "src/index.ts");
+    entry = join(linked, "src/adr.ts");
   }
   if (name === "subagent") {
     await initialize(root, "main");

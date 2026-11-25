@@ -8,7 +8,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { z } from "zod";
 
-import auditGoal from "../plugins/audit-goal/src/index.ts";
+import auditGoal from "../plugins/audit-goal/src/audit-goal.ts";
 import { type AuditState, createConclusion, type RoundRecord } from "../plugins/audit-goal/src/ledger.ts";
 
 const ENTRY = "wows-omp-audit-goal.state";

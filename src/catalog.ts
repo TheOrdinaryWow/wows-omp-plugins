@@ -1,6 +1,8 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
+import { getExtensionNameFromPath } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
+
 export const REPO_ROOT = path.resolve(import.meta.dir, "..");
 export const CATALOG_PATH = path.join(REPO_ROOT, ".omp-plugin", "marketplace.json");
 export const PLUGINS_DIR = path.join(REPO_ROOT, "plugins");
@@ -71,9 +73,19 @@ export async function validateCatalog(): Promise<string[]> {
       if (!(await file.exists())) continue;
       manifestCount += 1;
 
-      const { version } = (await file.json()) as { version?: unknown };
-      if (entry.version && typeof version === "string" && version !== entry.version) {
-        problems.push(`plugin "${entry.name}" version drift: catalog ${entry.version} vs ${manifestFile} ${version}`);
+      const manifest = (await file.json()) as { version?: unknown; omp?: { extensions?: unknown } };
+      if (entry.version && typeof manifest.version === "string" && manifest.version !== entry.version) {
+        problems.push(`plugin "${entry.name}" version drift: catalog ${entry.version} vs ${manifestFile} ${manifest.version}`);
+      }
+      if (manifestFile === "package.json" && Array.isArray(manifest.omp?.extensions)) {
+        for (const extension of manifest.omp.extensions) {
+          const moduleName = typeof extension === "string" ? getExtensionNameFromPath(extension) : undefined;
+          if (moduleName !== entry.name) {
+            problems.push(
+              `plugin "${entry.name}" extension entry ${JSON.stringify(extension)} loads as module "${moduleName}"; name it ./src/${entry.name}.ts`,
+            );
+          }
+        }
       }
     }
 

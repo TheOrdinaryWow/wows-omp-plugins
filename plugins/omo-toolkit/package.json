@@ -10,7 +10,7 @@
   },
   "omp": {
     "extensions": [
-      "./src/index.ts"
+      "./src/omo-toolkit.ts"
     ],
     "settings": {
       "commentChecker": {

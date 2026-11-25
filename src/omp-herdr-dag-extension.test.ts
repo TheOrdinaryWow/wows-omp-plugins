@@ -107,7 +107,7 @@ async function scenario(name: string, root: string): Promise<void> {
   const { currentTheme } = await import("@oh-my-pi/pi-tui/theme/runtime");
   // Pinned dark so the later switch to light changes the colours whatever the runner's terminal background is.
   initTheme({ appearance: "dark" });
-  const { default: register } = await import("../plugins/omp-herdr-dag/src/index.ts");
+  const { default: register } = await import("../plugins/omp-herdr-dag/src/omp-herdr-dag.ts");
   const { readSnapshot, writePane } = await import("../plugins/omp-herdr-dag/src/persisted.ts");
   const { PLAN_EXECUTION_ENTRY } = await import("../plugins/omp-herdr-dag/src/sources/plan-execution.ts");
   const cwd = join(root, "workspace");

@@ -50,8 +50,8 @@ import { adrApi, asFormatOne } from "./roadmap-fixtures.ts";
 
 const CHILD_ENV = "ROADMAP_EXTENSION_CASE";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/index.ts", import.meta.url));
-const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.meta.url));
+const ENTRY = fileURLToPath(new URL("../plugins/roadmap/src/roadmap.ts", import.meta.url));
+const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/adr.ts", import.meta.url));
 /** Native mutations of a managed file are refused by roadmap (docs/roadmap) or the adr plugin (docs/adr). */
 const PROTECTED = /roadmap_stage|adr_manage/;
 const EDIT_MODES = ["hashline", "replace", "patch", "apply_patch", "sloppy"] as const;

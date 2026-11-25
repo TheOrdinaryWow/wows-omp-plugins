@@ -13,7 +13,7 @@ import { DEFAULT_SETTINGS, TOOLKIT_PACKAGE } from "../plugins/omo-toolkit/src/se
 
 const CHILD_ENV = "TOOLKIT_FALLBACK_SCENARIO";
 const THIS_FILE = fileURLToPath(import.meta.url);
-const ENTRY = fileURLToPath(new URL("../plugins/omo-toolkit/src/index.ts", import.meta.url));
+const ENTRY = fileURLToPath(new URL("../plugins/omo-toolkit/src/omo-toolkit.ts", import.meta.url));
 
 function message(model = "source", stopReason: "error" | "stop" = "error", refusal = true): AssistantMessage {
   return {

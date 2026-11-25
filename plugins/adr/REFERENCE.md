@@ -16,7 +16,7 @@ Counts list only nonzero statuses. At most five proposed ADRs are named, in ID o
 
 ## Tools
 
-`adr_status` uses read approval; `adr_manage` and `adr_check` use write approval. Every tool declares the same `sourcePath` (the realpath of the loaded `src/index.ts`), which the service contract reports as `toolSourcePath`.
+`adr_status` uses read approval; `adr_manage` and `adr_check` use write approval. Every tool declares the same `sourcePath` (the realpath of the loaded `src/adr.ts`), which the service contract reports as `toolSourcePath`.
 
 | Tool | Inputs |
 | --- | --- |
