@@ -70,10 +70,8 @@ jobs:
     name: Types and tests (omp ${{ matrix.omp }})
     needs: scope
     if: needs.scope.outputs.tests == 'true'
-    # Boat runs this public repo's jobs only when the run's author and the user who started it
-    # are both on its allow-list (the repository owner). Anyone else's run would be refused and
-    # sit queued forever, so it falls back to a GitHub-hosted runner.
-    runs-on: ${{ (!inputs.ref && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && (github.event.pull_request.user.login || github.repository_owner) == github.repository_owner) && 'boat' || 'ubuntu-latest' }}
+    # Keep the external runner for owner-initiated runs. Contributor PRs and release CI use GitHub-hosted runners.
+    runs-on: ${{ (!inputs.ref && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && (github.event.pull_request.user.login || github.repository_owner) == github.repository_owner) && 'instabox-medium' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:

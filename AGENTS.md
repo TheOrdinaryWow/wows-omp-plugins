@@ -48,15 +48,12 @@ REFERENCE*.md                  plugin-state snapshot envelope shared by plugins
   no test reads those files. Lint still runs on them, because Biome checks the
   banner HTML and CSS. If a test starts reading one, narrow the filter in the
   `scope` job.
-- Only the slow `Types and tests` job in `ci.yml` runs on boat sandboxes
-  (`runs-on: boat`, 4 vCPU / 8 GB) through the boat CI GitHub App; `Decide test
-  scope` and `Lint and catalog` stay on `ubuntu-latest`. Boat's public-repo
-  allow-list holds only the repository owner and refuses any run whose author or
-  starter is someone else, so the test job's `runs-on` expression sends those
-  runs to `ubuntu-latest` instead of leaving them queued. Widen it only together
-  with `boat ci public TheOrdinaryWow --users …`. When `release.yml` calls
-  `ci.yml` (`inputs.ref` set), every job, like `release.yml`'s own, stays on
-  GitHub-hosted runners.
+- The `Types and tests` job in `ci.yml` uses `instabox-medium` (4 vCPU,
+  8 GiB) when the workflow actor, triggering actor, and PR author (if any)
+  are the repository owner. Connect this repository to the InstaBox GitHub
+  App on the InstaBox CI dashboard before using that runner label. Contributor
+  runs, `Decide test scope`, `Lint and catalog`, and CI called by `release.yml`
+  stay on GitHub-hosted runners.
 - `.github/workflows/release.yml` runs release-please on `main`. Versions come
   from Conventional Commits scoped by path: a `feat`/`fix` touching
   `plugins/<name>/` bumps that plugin only. The release PR updates the plugin's
