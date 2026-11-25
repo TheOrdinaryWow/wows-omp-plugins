@@ -1,6 +1,6 @@
 {
   "name": "adr",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Tool-managed MADR architecture decision records",
   "author": {
     "name": "TheOrdinaryWow"
