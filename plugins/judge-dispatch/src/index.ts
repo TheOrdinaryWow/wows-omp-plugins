@@ -3,6 +3,7 @@ import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
   disabledProviderIds,
+  extractExplicitThinkingSelector,
   formatModelStringWithRouting,
   resolveAgentModelSelection,
   resolveConfiguredModelPatterns,
@@ -14,10 +15,7 @@ import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugi
 import { type ChainJudge, journalJudgmentUsage, resolveJudge } from "@oh-my-pi/pi-coding-agent/judgment";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
-import { type AgentDefinition, discoverAgents, isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
-import { MAX_THINKING_SUFFIX_OPTIONS, splitThinkingSuffix } from "@oh-my-pi/pi-tui/overlays/model-selector";
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
-import type { TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
+import { type AgentDefinition, discoverAgents, isReadOnlyAgent, type TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
 import { EscalationMemo, taskResultOutput } from "#src/escalation.ts";
@@ -119,7 +117,7 @@ interface ResolvedPrimary {
   model: Model;
   /** `provider/id[@upstream]`. */
   key: string;
-  thinkingLevel?: ConfiguredThinkingLevel;
+  thinkingLevel?: AgentDefinition["thinkingLevel"];
   explicitThinkingLevel: boolean;
 }
 
@@ -802,7 +800,10 @@ export default function judgeDispatch(pi: ExtensionAPI): void {
         if (thinking?.to !== route.to) return undefined;
         const pattern = event.patterns[primary.index];
         if (pattern === undefined) return undefined;
-        const base = primary.explicitThinkingLevel ? splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS).base : pattern;
+        const base =
+          primary.explicitThinkingLevel && extractExplicitThinkingSelector(pattern) !== undefined
+            ? pattern.slice(0, pattern.lastIndexOf(":"))
+            : pattern;
         model = event.patterns.with(primary.index, `${base}:${thinking.to}`);
       }
       if (!model) return undefined;

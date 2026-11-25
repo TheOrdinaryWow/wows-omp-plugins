@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { truncateToWidth } from "@oh-my-pi/pi-tui";
+import { Ellipsis, truncateToWidth } from "@oh-my-pi/pi-natives";
 
 import { ESCALATE_LINE } from "#src/escalation.ts";
 import type { ParsedTaskRoute, RouteChoice, RouteOutcome } from "#src/routing.ts";
@@ -84,7 +84,7 @@ export function registerLegacyRouteRecords(pi: ExtensionAPI): void {
       messages: event.messages.filter((message) => message.role !== "custom" || message.customType !== LEGACY_ROUTE_MESSAGE),
     }));
     pi.registerMessageRenderer(LEGACY_ROUTE_MESSAGE, (message, _options, theme) => ({
-      render: (width) => [theme.fg("dim", truncateToWidth(singleLine(message.content), Math.max(0, width)))],
+      render: (width) => [theme.fg("dim", truncateToWidth(singleLine(message.content), Math.max(0, width), Ellipsis.Unicode, false, 4))],
       invalidate() {},
     }));
   } catch (error) {

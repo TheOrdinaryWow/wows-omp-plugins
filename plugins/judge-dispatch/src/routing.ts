@@ -1,7 +1,7 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
-import { type ConfiguredThinkingLevel, clampThinkingLevelToCeiling } from "@oh-my-pi/pi-tui/thinking";
+import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task";
 
 /** The judged difficulty of an assignment; `standard` leaves the agent's own model and thinking level in place. */
 export const TASK_DIFFICULTIES = ["routine", "standard", "demanding"] as const;
@@ -33,7 +33,7 @@ export interface RoutingCandidate {
   /** Expanded model selectors the agent spawns with, in attempt order. */
   patterns: readonly string[];
   /** The agent definition's own thinking level, which applies when its model selector carries none. */
-  thinkingLevel?: ConfiguredThinkingLevel;
+  thinkingLevel?: AgentDefinition["thinkingLevel"];
 }
 
 export interface ParsedTaskRoute {
@@ -182,7 +182,7 @@ export function hasTier(tiers: ModelTiers, agent: string): boolean {
  */
 export function thinkingStep(
   model: Model | undefined,
-  baseline: ConfiguredThinkingLevel | undefined,
+  baseline: AgentDefinition["thinkingLevel"],
   difficulty: TaskDifficulty,
   ceiling: Effort | undefined,
 ): ThinkingStep | undefined {
@@ -194,8 +194,10 @@ export function thinkingStep(
   const ladder = THINKING_EFFORTS.filter((level) => supported.includes(level));
   const target = ladder[ladder.indexOf(from) + (difficulty === "demanding" ? 1 : -1)];
   if (target === undefined) return undefined;
-  const to = clampThinkingLevelToCeiling(model, target, ceiling) ?? target;
-  if (ceiling !== undefined && THINKING_EFFORTS.indexOf(to) > THINKING_EFFORTS.indexOf(ceiling)) return undefined;
+  const maxIndex = ceiling === undefined ? THINKING_EFFORTS.length : THINKING_EFFORTS.indexOf(ceiling);
+  const to =
+    THINKING_EFFORTS.indexOf(target) <= maxIndex ? target : ladder.findLast((level) => THINKING_EFFORTS.indexOf(level) <= maxIndex);
+  if (to === undefined) return undefined;
   const moved = THINKING_EFFORTS.indexOf(to) - THINKING_EFFORTS.indexOf(from);
   if (difficulty === "demanding" ? moved <= 0 : moved >= 0) return undefined;
   return { from, to };
@@ -408,7 +410,7 @@ interface PendingSpawnBase {
 export type PendingSpawnRoute =
   | (PendingSpawnBase & { kind: "tier"; patterns: string[] })
   /** Give the primary selector this thinking level, recomputed at spawn from the agent's own `thinkingLevel`. */
-  | (PendingSpawnBase & { kind: "thinking"; to: Effort; thinkingLevel?: ConfiguredThinkingLevel });
+  | (PendingSpawnBase & { kind: "thinking"; to: Effort; thinkingLevel?: AgentDefinition["thinkingLevel"] });
 
 const SPAWN_SUFFIX_PATTERN = /-(?:[2-9]|[1-9]\d+)$/;
 

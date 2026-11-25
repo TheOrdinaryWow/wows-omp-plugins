@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
+import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task";
 import { formatTaskResultSummary } from "@oh-my-pi/pi-coding-agent/task/result-summary";
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 import { EscalationMemo, taskResultOutput } from "../plugins/judge-dispatch/src/escalation.ts";
 import {
@@ -157,7 +157,7 @@ test("candidate serialization exposes only compact agent metadata, never models"
     readOnly: true,
     hasSpawnGrant: false,
     patterns: ["openai/gpt-fast:low"],
-    thinkingLevel: "medium" as ConfiguredThinkingLevel,
+    thinkingLevel: "medium" as AgentDefinition["thinkingLevel"],
   });
 
   expect(serialized).toEqual({
@@ -311,7 +311,7 @@ describe("thinking steps", () => {
     ({ provider: "openai", id: "fixture", reasoning: true, thinking: { mode: "effort", efforts } }) as unknown as Model;
   // Host thinking levels are a const enum; the fixtures use their string values.
   const step = (target: Model | undefined, baseline: string | undefined, difficulty: TaskDifficulty, ceiling?: string) =>
-    thinkingStep(target, baseline as ConfiguredThinkingLevel | undefined, difficulty, ceiling as Effort | undefined) as
+    thinkingStep(target, baseline as AgentDefinition["thinkingLevel"], difficulty, ceiling as Effort | undefined) as
       | { from: string; to: string }
       | undefined;
   const ladder = model(["minimal", "low", "medium", "high"]);

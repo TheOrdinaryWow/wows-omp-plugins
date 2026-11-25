@@ -17,6 +17,7 @@
 
 * Recognize both live task-agent roster formats without treating unknown policy as an empty list.
 * Preserve workflow-owned reviewer roles, approved Prometheus execution routes, and read-only agent capabilities when judging task calls.
+* Load on OMP 19.2.0 without importing the previous terminal UI API. OMP 19.1.1 remains supported.
 
 ## [0.9.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/judge-dispatch@0.9.3...judge-dispatch@0.9.4) (2026-11-23)
 
