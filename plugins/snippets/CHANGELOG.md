@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/snippets@0.2.6...snippets@0.2.7) (2026-11-25)
+
+
+### Bug Fixes
+
+* port every plugin to OMP 19.2.0 and raise the supported floor ([f0eabb0](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/f0eabb04badfdb0560903dea45b534ca2e97e75d))
+
 ## [0.2.6](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/snippets@0.2.5...snippets@0.2.6) (2026-11-23)
 
 

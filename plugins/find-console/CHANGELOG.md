@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.3.2...find-console@0.3.3) (2026-11-25)
+
+
+### Bug Fixes
+
+* port every plugin to OMP 19.2.0 and raise the supported floor ([f0eabb0](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/f0eabb04badfdb0560903dea45b534ca2e97e75d))
+
 ## [0.3.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/find-console@0.3.1...find-console@0.3.2) (2026-11-23)
 
 

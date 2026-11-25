@@ -8,6 +8,14 @@
 - Align debugging and Git guidance with observed evidence, user-owned decisions, and previously authorized commit cadence.
 - Inject an agent selection protocol into the main agent's system prompt when the `task` roster lists omo-toolkit agents: domain-to-agent lanes, `deep-low` as the default, and handling of `ESCALATE: deep-high` and `ESCALATE: parent` results by re-dispatching with the same task `name`.
 
+## [0.8.5](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.8.4...omo-toolkit@0.8.5) (2026-11-25)
+
+
+### Bug Fixes
+
+* **omo-toolkit:** check resolve edits after background bash settles ([dcda6da](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/dcda6dada4600813e923fea55e25b05905b02357))
+* port every plugin to OMP 19.2.0 and raise the supported floor ([f0eabb0](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/f0eabb04badfdb0560903dea45b534ca2e97e75d))
+
 ## [0.8.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omo-toolkit@0.8.3...omo-toolkit@0.8.4) (2026-11-23)
 
 
