@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/switch-until@0.2.2...switch-until@0.2.3) (2026-11-25)
+
+
+### Bug Fixes
+
+* port every plugin to OMP 19.2.0 and raise the supported floor ([f0eabb0](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/f0eabb04badfdb0560903dea45b534ca2e97e75d))
+* **switch-until:** disarm prewalk while claiming the session model ([eca26b5](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/eca26b5801c6fbbfcdd47e68a4813d79946d4743))
+
 ## [0.2.2](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/switch-until@0.2.1...switch-until@0.2.2) (2026-11-23)
 
 

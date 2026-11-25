@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.5](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.4...omp-herdr-dag@0.7.5) (2026-11-25)
+
+
+### Bug Fixes
+
+* port every plugin to OMP 19.2.0 and raise the supported floor ([f0eabb0](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/f0eabb04badfdb0560903dea45b534ca2e97e75d))
+
 ## [0.7.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.3...omp-herdr-dag@0.7.4) (2026-11-23)
 
 

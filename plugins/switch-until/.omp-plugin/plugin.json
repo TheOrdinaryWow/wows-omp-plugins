@@ -1,6 +1,6 @@
 {
   "name": "switch-until",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Switch the session model until a goal is met, then switch back",
   "author": {
     "name": "TheOrdinaryWow"
