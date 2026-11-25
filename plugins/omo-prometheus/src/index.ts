@@ -16,6 +16,7 @@ import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { createRoot } from "@oh-my-pi/pi-tui";
+import { isRecord } from "@oh-my-pi/pi-utils";
 
 import { copyPlanReviews, PlanReviews, planReviewBindings, readPlanReviews } from "#src/plan-reviews.ts";
 
@@ -3690,10 +3691,12 @@ export default function prometheus(pi: ExtensionAPI): void {
   // Observation-only: archive native reviewer outcomes without adding a result-rewriting hook.
   pi.on("tool_execution_end", async (event, ctx) => {
     if (event.toolName === "ask" && !event.isError) {
-      // A form the timeout submitted, or one without named controls, returns without an answer from the user.
-      const details = (event.result as { details?: { answers?: unknown; timedOut?: unknown } } | undefined)?.details;
-      if (Array.isArray(details?.answers) && details.answers.length > 0 && details.timedOut !== true)
-        awaitingUser.delete(ctx.sessionManager.getSessionId());
+      // A form the timeout submitted, one without named controls, or one submitted with every field empty returns no answer from the user.
+      const details = isRecord(event.result) && isRecord(event.result.details) ? event.result.details : undefined;
+      const answered =
+        Array.isArray(details?.answers) &&
+        details.answers.some((row) => isRecord(row) && typeof row.answer === "string" && row.answer.trim() !== "");
+      if (answered && details?.timedOut !== true) awaitingUser.delete(ctx.sessionManager.getSessionId());
     }
     if (event.toolName === "task" && provenanceBlockReason("task") === undefined) {
       await planReviews.observeResult(ctx.sessionManager.getSessionId(), event.toolCallId, event.result);

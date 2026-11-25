@@ -2365,6 +2365,12 @@ async function scenario(name: string, root: string): Promise<void> {
       hook("tool_execution_end", { toolName: "ask", toolCallId: `ask-${sequence++}`, result: { content: [], details }, isError: false });
     await askEnded({ answers: [] });
     await askEnded({ answers: [answer], timedOut: true });
+    await askEnded({
+      answers: [
+        { ...answer, answer: "" },
+        { name: "note", question: "Anything else?", answer: "  " },
+      ],
+    });
     assert.equal(await asked(), undefined, "a form nobody answered keeps the mark");
     await askEnded({ answers: [answer] });
     assert.match((await asked()) ?? "", /T3 \(in progress\)/, "the user's answer ends the mark");
