@@ -1,7 +1,7 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
-import { type ConfiguredThinkingLevel, clampThinkingLevelToCeiling } from "@oh-my-pi/pi-tui/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/utils/render-utils";
 
 /** The judged difficulty of an assignment; `standard` leaves the agent's own model and thinking level in place. */
 export const TASK_DIFFICULTIES = ["routine", "standard", "demanding"] as const;
@@ -194,8 +194,10 @@ export function thinkingStep(
   const ladder = THINKING_EFFORTS.filter((level) => supported.includes(level));
   const target = ladder[ladder.indexOf(from) + (difficulty === "demanding" ? 1 : -1)];
   if (target === undefined) return undefined;
-  const to = clampThinkingLevelToCeiling(model, target, ceiling) ?? target;
-  if (ceiling !== undefined && THINKING_EFFORTS.indexOf(to) > THINKING_EFFORTS.indexOf(ceiling)) return undefined;
+  const maxIndex = ceiling === undefined ? THINKING_EFFORTS.length - 1 : THINKING_EFFORTS.indexOf(ceiling);
+  const to =
+    THINKING_EFFORTS.indexOf(target) <= maxIndex ? target : supported.findLast((level) => THINKING_EFFORTS.indexOf(level) <= maxIndex);
+  if (to === undefined) return undefined;
   const moved = THINKING_EFFORTS.indexOf(to) - THINKING_EFFORTS.indexOf(from);
   if (difficulty === "demanding" ? moved <= 0 : moved >= 0) return undefined;
   return { from, to };

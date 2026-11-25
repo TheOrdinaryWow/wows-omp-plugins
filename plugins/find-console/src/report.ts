@@ -1,4 +1,4 @@
-import type { FindHit, FindLexicalMatch, FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindHit, FindLexicalMatch, FindRange, FindToolDetails } from "@oh-my-pi/pi-coding-agent/tools/details/find";
 
 export type HitScope = "whole-file" | "ranges";
 export type PreviewMode = "full-file" | "snippet";

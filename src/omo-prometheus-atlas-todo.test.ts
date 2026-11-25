@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/details/todo";
 
 import { atlasTodoPhases, atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "../plugins/omo-prometheus/src/atlas-todo.ts";
 import { addDiscoveredRow, addFixRow, createLedger, startRow } from "../plugins/omo-prometheus/src/ledger.ts";

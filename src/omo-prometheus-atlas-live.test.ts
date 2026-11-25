@@ -1,16 +1,13 @@
-import { beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 
-import { initTheme, type TUI, theme } from "@oh-my-pi/pi-tui";
+import { createTestTerminal } from "@oh-my-pi/pi-tui/testing/terminal";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
 
 import { AtlasLive } from "../plugins/omo-prometheus/src/atlas-live.ts";
 import { AtlasPlanView } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
 import { ChildEvidence } from "../plugins/omo-prometheus/src/evidence.ts";
 import { createLedger, startRow } from "../plugins/omo-prometheus/src/ledger.ts";
-
-beforeAll(async () => {
-  await initTheme();
-});
 
 const content = `# A plan
 
@@ -174,18 +171,19 @@ test("terminal child lifecycle clears progress without claiming row completion",
 
 test("plan inspector retains the selected row id and body scroll on live refresh and switches to derived activity", () => {
   const { detail, live } = setup();
-  const tui = { requestRender() {}, terminal: { rows: 30 } } as unknown as TUI;
   const view = new AtlasPlanView(
     detail,
     "active",
-    theme,
-    tui,
     async () => "",
     () => {},
     live,
+    () => ({ columns: 100, rows: 30 }),
   );
-  view.handleInput("\x1b[B");
-  view.handleInput("\x1b[6~");
+  const node = view.view();
+  const term = createTestTerminal(() => ({ dock: node }), { columns: 100, rows: 30, theme: loadThemeSync("dark") });
+  term.focus(node);
+  term.press("down");
+  term.press("pageDown");
   const reordered = {
     ...detail,
     rows: [detail.rows[1], detail.rows[0], ...detail.rows.slice(2)].filter((row): row is NonNullable<typeof row> => row !== undefined),
@@ -193,11 +191,13 @@ test("plan inspector retains the selected row id and body scroll on live refresh
   };
   live.updateDetail(reordered);
   view.updateDetail(reordered);
-  const text = Bun.stripANSI(view.render(100).join("\n"));
-  expect(text).toContain("F1  Plan compliance review");
-  expect(text).not.toContain("T1  Produce result\n\n");
-  view.handleInput("\t");
-  expect(Bun.stripANSI(view.render(100).join("\n"))).toContain("[derived]");
+  term.render();
+  const text = term.screen().join("\n");
+  expect(text).toContain("❯ F1 Plan compliance review");
+  expect(text).not.toContain("T1  Produce result");
+  term.press("tab");
+  expect(term.screen().join("\n")).toMatch(/done {2}T1 {2}derived/);
+  term.dispose();
   view.dispose();
   live.dispose();
 });

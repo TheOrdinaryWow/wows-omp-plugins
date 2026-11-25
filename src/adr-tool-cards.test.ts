@@ -1,10 +1,12 @@
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { initTheme, type NativeChild, type NativeNode, theme } from "@oh-my-pi/pi-tui";
-import type { NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
+import { isUiNode, setNativeRenderingForTest, type UiNode } from "@oh-my-pi/pi-tui";
+import { renderBlock } from "@oh-my-pi/pi-tui/term/render";
+import { stripEscapes } from "@oh-my-pi/pi-tui/text/ansi";
+import { PLAIN_THEME } from "@oh-my-pi/pi-tui/theme/plain";
 import { z } from "zod";
 
 import { registerMessageTitles } from "../plugins/adr/src/cards.ts";
@@ -12,26 +14,21 @@ import { createMany, initialize } from "../plugins/adr/src/operations.ts";
 import { registerTools } from "../plugins/adr/src/tools.ts";
 import { cleanupFixtures, decision, repoFixture } from "./adr-fixtures.ts";
 
-beforeAll(async () => {
-  await initTheme();
-});
 afterEach(cleanupFixtures);
 
 type Result = { content: { type: string; text: string }[]; details?: unknown; isError?: boolean };
 type Tool = {
   name: string;
   execute: (id: string, params: object, signal: undefined, update: undefined, ctx: ExtensionContext) => Promise<Result>;
-  describeCall: (args: unknown, options: { expanded: boolean }) => NativeToolView;
-  describeResult: (result: Result, options: { expanded: boolean }, args?: unknown) => NativeToolView;
+  renderCall: (args: unknown, options: { expanded: boolean }, theme: unknown) => unknown;
+  renderResult: (result: Result, options: { expanded: boolean }, theme: unknown, args?: unknown) => unknown;
   mergeCallAndResult?: boolean;
-  renderCall?: unknown;
-  renderResult?: unknown;
 };
 type Renderer = (
   message: { role: "custom"; customType: string; content: string; display: boolean; timestamp: number },
   options: { expanded: boolean },
-  t: typeof theme,
-) => { describe: () => NativeNode; render: (width: number) => string[] };
+  theme: unknown,
+) => unknown;
 
 function harness() {
   const tools = new Map<string, Tool>();
@@ -67,99 +64,100 @@ async function run(tool: Tool, root: string, params: object): Promise<Result> {
   return tool.execute("call", params, undefined, undefined, ctx);
 }
 
-function walk(children: readonly NativeChild[] | undefined, out: NativeNode[] = []): NativeNode[] {
-  for (const child of children ?? []) {
-    if (!child || typeof child !== "object" || !("k" in child)) continue;
-    out.push(child);
-    walk(child.c, out);
-  }
-  return out;
+function node(output: unknown): UiNode {
+  if (!isUiNode(output)) throw new Error("renderer returned no node");
+  return output;
 }
 
-/** Every string a terminal would draw from the view's head and body. */
-function visible(view: NativeToolView): string {
-  const strings: string[] = [];
-  const collect = (value: unknown): void => {
-    if (typeof value === "string") strings.push(value);
-    else if (Array.isArray(value)) value.forEach(collect);
-    else if (value && typeof value === "object") Object.values(value).forEach(collect);
-  };
-  collect([view.tool, view.head, view.body]);
-  return strings.join("\n");
+function walk(root: UiNode): UiNode[] {
+  return [root, ...root.children().flatMap(walk)];
 }
 
-function kinds(view: NativeToolView): string[] {
-  return walk(view.body).map((node) => node.k);
+/** What a plain terminal paints, without escapes. */
+function painted(output: unknown, width = 100): string {
+  return renderBlock(node(output), width, { theme: PLAIN_THEME })
+    .rows.map((row) => stripEscapes(row).trimEnd())
+    .join("\n");
 }
 
-/** One prop of a node, read through a guard. */
-function prop(node: NativeNode | undefined, key: string): unknown {
-  const props: unknown = node?.p;
-  return props && typeof props === "object" && key in props ? (props as Record<string, unknown>)[key] : undefined;
-}
-
-function record(view: NativeToolView): NativeNode | undefined {
-  return walk(view.body).find((node) => node.k === "section" && prop(node, "collapsible") === true);
-}
+const kinds = (output: unknown) => walk(node(output)).map((child) => child.kind);
+const prop = (child: UiNode | undefined, key: string) => (child?.props() as Record<string, unknown> | undefined)?.[key];
+const record = (output: unknown) => walk(node(output)).find((child) => child.kind === "section" && prop(child, "collapsible") === true);
+/** The style of the head's title span: the card's tone. */
+const tone = (output: unknown) =>
+  (
+    prop(
+      walk(node(output)).find((child) => child.key() === "target"),
+      "spans",
+    ) as { s?: string }[]
+  )[0]?.s;
 
 const collapsed = { expanded: false };
 
 describe("adr tool cards", () => {
-  test("every tool has native views and keeps the plain-terminal default", () => {
+  test("every tool draws its call and result as nodes, merged into one card", () => {
     const { tools } = harness();
     expect([...tools.keys()].sort()).toEqual(["adr_check", "adr_manage", "adr_status"]);
     for (const tool of tools.values()) {
-      expect(typeof tool.describeCall).toBe("function");
-      expect(typeof tool.describeResult).toBe("function");
       expect(tool.mergeCallAndResult).toBe(true);
-      expect(tool.renderCall).toBeUndefined();
-      expect(tool.renderResult).toBeUndefined();
+      expect(isUiNode(tool.renderCall({}, collapsed, PLAIN_THEME))).toBe(true);
+      expect(isUiNode(tool.renderResult({ content: [] }, collapsed, PLAIN_THEME, {}))).toBe(true);
     }
   });
 
-  test("partial streaming args never throw and give readable targets", () => {
+  test("partial streaming args never throw and give readable heads", () => {
     const { tool } = harness();
     const manage = tool("adr_manage");
     for (const args of [undefined, {}, { action: "set_status" }, { action: "set_status", id: "ADR-00" }, { action: 5, id: null }]) {
-      expect(() => manage.describeCall(args, collapsed)).not.toThrow();
-      expect(() => tool("adr_status").describeCall(args, collapsed)).not.toThrow();
-      expect(() => tool("adr_check").describeCall(args, collapsed)).not.toThrow();
+      expect(() => painted(manage.renderCall(args, collapsed, PLAIN_THEME))).not.toThrow();
+      expect(() => painted(tool("adr_status").renderCall(args, collapsed, PLAIN_THEME))).not.toThrow();
+      expect(() => painted(tool("adr_check").renderCall(args, collapsed, PLAIN_THEME))).not.toThrow();
     }
-    expect(manage.describeCall({ action: "set_status", status: "accepted", id: "ADR-0004", i: "Accepting" }, collapsed).tool?.target).toBe(
-      "accept ADR-0004",
+    expect(
+      painted(manage.renderCall({ action: "set_status", status: "accepted", id: "ADR-0004", i: "Accepting" }, collapsed, PLAIN_THEME)),
+    ).toBe("ADR accept ADR-0004");
+    expect(painted(manage.renderCall({ action: "create", title: "Use Postgres", i: "Creating" }, collapsed, PLAIN_THEME))).toContain(
+      "Use Postgres",
     );
-    expect(visible(manage.describeCall({ action: "create", title: "Use Postgres", i: "Creating" }, collapsed))).toContain("Use Postgres");
-    expect(visible(manage.describeCall({ action: "note", id: "ADR-0002", i: "Noting intent" }, collapsed))).not.toContain("Noting intent");
-    expect(tool("adr_status").describeCall({ id: "ADR-0001" }, collapsed).tool?.target).toBe("ADR-0001");
-    expect(tool("adr_check").describeCall({ fix: true }, collapsed).tool?.target).toContain("fix");
+    expect(painted(manage.renderCall({ action: "note", id: "ADR-0002", i: "Noting intent" }, collapsed, PLAIN_THEME))).not.toContain(
+      "Noting intent",
+    );
+    expect(painted(tool("adr_status").renderCall({ id: "ADR-0001" }, collapsed, PLAIN_THEME))).toBe("ADR ADR-0001");
+    expect(painted(tool("adr_check").renderCall({ fix: true }, collapsed, PLAIN_THEME))).toContain("fix");
   });
 
   test("adr_status lists ADRs as a table with toned statuses and shows one ADR with a foldable record", async () => {
     const { tool } = harness();
     const status = tool("adr_status");
     const root = await repo();
-    const listed = status.describeResult(await run(status, root, {}), collapsed, {});
+    const listed = status.renderResult(await run(status, root, {}), collapsed, PLAIN_THEME, {});
     expect(kinds(listed)).toContain("table");
-    expect(visible(listed)).toContain("ADR-0001");
-    expect(visible(listed)).toContain("Keep a read model");
-    const table = walk(listed.body).find((node) => node.k === "table");
-    expect(JSON.stringify(table)).toContain('"s":"warning"');
-    expect(listed.tone).toBeUndefined();
+    expect(painted(listed)).toMatch(/^ADR list +2 proposed/);
+    expect(painted(listed)).toContain("ADR-0001");
+    expect(painted(listed)).toContain("Keep a read model");
+    expect(
+      JSON.stringify(
+        walk(node(listed))
+          .find((child) => child.kind === "table")
+          ?.props(),
+      ),
+    ).toContain('"s":"warning"');
+    expect(tone(listed)).toBe("toolTitle strong");
 
     const args = { id: "ADR-0001" };
     const shown = await run(status, root, args);
-    const folded = status.describeResult(shown, collapsed, args);
-    expect(folded.tool?.target).toBe("ADR-0001");
+    const folded = status.renderResult(shown, collapsed, PLAIN_THEME, args);
+    expect(painted(folded)).toMatch(/^ADR ADR-0001 \[proposed\]/);
     expect(kinds(folded)).toContain("kv");
-    expect(visible(folded)).toContain("proposed");
-    expect(visible(folded)).toContain("Adopt event sourcing");
+    expect(painted(folded)).toContain("Adopt event sourcing");
     const section = record(folded);
     expect(prop(section, "collapsed")).toBe(true);
-    expect(walk(section?.c).some((node) => node.k === "md" && String(prop(node, "text")).includes("event sourcing"))).toBe(true);
-    expect(JSON.stringify(folded.body)).not.toContain("<!--");
-    const open = status.describeResult(shown, { expanded: true }, args);
+    expect(section?.children().some((child) => child.kind === "md" && String(prop(child, "text")).includes("event sourcing"))).toBe(true);
+    expect(painted(folded)).not.toContain("event sourcing, because");
+    expect(JSON.stringify(walk(node(folded)).map((child) => child.props()))).not.toContain("<!--");
+    const open = status.renderResult(shown, { expanded: true }, PLAIN_THEME, args);
     expect(prop(record(open), "collapsed")).toBe(false);
-    expect(status.describeResult(shown, { expanded: true }, args)).toBe(open);
+    expect(painted(open)).toContain("audits replay history");
   });
 
   test("adr_status shows parse warnings and an unknown id as an error", async () => {
@@ -167,14 +165,14 @@ describe("adr tool cards", () => {
     const status = tool("adr_status");
     const root = await repo();
     await writeFile(join(root, "docs/adr/0003-broken.md"), "not an adr\n");
-    const listed = status.describeResult(await run(status, root, {}), collapsed, {});
-    expect(visible(listed)).toContain("0003-broken.md");
-    expect(JSON.stringify(listed.body)).toContain("warning");
+    const listed = painted(status.renderResult(await run(status, root, {}), collapsed, PLAIN_THEME, {}));
+    expect(listed).toContain("0003-broken.md");
+    expect(listed).toMatch(/Warning/);
 
-    const missing = status.describeResult(await run(status, root, { id: "ADR-0099" }), collapsed, { id: "ADR-0099" });
-    expect(missing.tone).toBe("error");
-    expect(visible(missing)).toContain("ADR-0099 is unknown");
-    expect(visible(missing)).toContain("Call adr_status for ADR ids.");
+    const missing = status.renderResult(await run(status, root, { id: "ADR-0099" }), collapsed, PLAIN_THEME, { id: "ADR-0099" });
+    expect(tone(missing)).toBe("error strong");
+    expect(painted(missing)).toContain("ADR-0099 is unknown");
+    expect(painted(missing)).toContain("Call adr_status for ADR ids.");
   });
 
   test("adr_manage shows the action, summary and changed files; refusals show reason and hints", async () => {
@@ -182,55 +180,104 @@ describe("adr tool cards", () => {
     const manage = tool("adr_manage");
     const root = await repo();
     const args = { action: "set_status", id: "ADR-0001", status: "accepted" };
-    const accepted = manage.describeResult(await run(manage, root, args), collapsed, args);
-    expect(accepted.tool?.target).toBe("accept ADR-0001");
-    expect(accepted.tone).toBeUndefined();
-    expect(visible(accepted)).toContain("ADR-0001: set_status recorded.");
-    expect(visible(accepted)).toContain("docs/adr/README.md");
+    const accepted = manage.renderResult(await run(manage, root, args), collapsed, PLAIN_THEME, args);
+    expect(painted(accepted)).toMatch(/^ADR accept ADR-0001 \[ADR-0001\] \d+ files?/);
+    expect(tone(accepted)).toBe("toolTitle strong");
+    expect(painted(accepted)).toContain("ADR-0001: set_status recorded.");
+    expect(painted(accepted)).toContain("README.md  docs/adr");
     expect(kinds(accepted)).toContain("list");
 
     const create = { action: "create", title: "Shard tenants", sections: decision.sections };
-    const created = manage.describeResult(await run(manage, root, create), collapsed, create);
-    expect(visible(created)).toContain("Created ADR-0003.");
-    expect(created.tool?.badges?.map((badge) => badge.text)).toEqual(["ADR-0003"]);
+    const created = manage.renderResult(await run(manage, root, create), collapsed, PLAIN_THEME, create);
+    expect(painted(created)).toContain("Created ADR-0003.");
+    expect(
+      walk(node(created))
+        .filter((child) => child.kind === "badge")
+        .map((badge) => prop(badge, "text")),
+    ).toEqual(["ADR-0003"]);
 
     const refusedArgs = { action: "set_status", id: "ADR-0042", status: "accepted" };
     const refused = await run(manage, root, refusedArgs);
     expect(refused.isError).toBe(true);
-    const view = manage.describeResult(refused, collapsed, refusedArgs);
-    expect(view.tone).toBe("error");
-    expect(visible(view)).toContain("ADR-0042");
+    const view = manage.renderResult(refused, collapsed, PLAIN_THEME, refusedArgs);
+    expect(tone(view)).toBe("error strong");
+    expect(painted(view)).toContain("ADR-0042");
   });
 
   test("adr_check: a clean run is a short success line, failures list diagnostics", async () => {
     const { tool } = harness();
     const check = tool("adr_check");
     const root = await repo();
-    const clean = check.describeResult(await run(check, root, {}), collapsed, {});
-    expect(clean.tone).toBe("success");
-    expect(visible(clean)).toContain("ADR check passed");
+    const clean = check.renderResult(await run(check, root, {}), collapsed, PLAIN_THEME, {});
+    expect(tone(clean)).toBe("success strong");
+    expect(painted(clean)).toContain("ADR check passed");
     expect(kinds(clean)).not.toContain("list");
 
     await writeFile(join(root, "docs/adr/0003-broken.md"), "not an adr\n");
     const failed = await run(check, root, {});
     expect(failed.isError).toBe(true);
-    const view = check.describeResult(failed, collapsed, {});
-    expect(view.tone).toBe("error");
-    const rows = walk(view.body).filter((node) => node.k === "item");
+    const view = check.renderResult(failed, collapsed, PLAIN_THEME, {});
+    expect(tone(view)).toBe("error strong");
+    const rows = walk(node(view)).filter((child) => child.kind === "item");
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => prop(row, "tone") === "error")).toBe(true);
-    expect(visible(view)).toContain("0003-broken.md");
-    expect(view.tool?.meta?.join(" ")).toMatch(/\d+ errors?/);
+    expect(painted(view)).toContain("0003-broken.md");
+    expect(painted(view)).toMatch(/^ADR check +\d+ errors?/);
+  });
+
+  test("in Tern the host draws the title and target, so the hooks lead with the facts it lacks", async () => {
+    const { tool } = harness();
+    const status = tool("adr_status");
+    const root = await repo();
+    const args = { id: "ADR-0001" };
+    const shown = await run(status, root, args);
+    const listed = await run(status, root, {});
+    await writeFile(join(root, "docs/adr/0003-broken.md"), "not an adr\n");
+    const failed = await run(tool("adr_check"), root, {});
+    setNativeRenderingForTest(true);
+    try {
+      // A call carries nothing beyond the host's head: the label and the args summary.
+      for (const name of ["adr_status", "adr_manage", "adr_check"])
+        expect(tool(name).renderCall({ id: "ADR-0001", action: "note" }, collapsed, PLAIN_THEME)).toBeUndefined();
+      const folded = node(status.renderResult(shown, collapsed, PLAIN_THEME, args));
+      expect(walk(folded).some((child) => child.key() === "head" || child.key() === "target")).toBe(false);
+      const badge = walk(folded).find((child) => child.kind === "badge");
+      expect(badge?.props()).toMatchObject({ text: "proposed", tone: "warning" });
+      expect(folded.children()[0]?.key()).toBe("facts");
+      expect(kinds(folded)).toContain("kv");
+      expect(prop(record(folded), "collapsed")).toBe(true);
+      expect(painted(folded)).toMatch(/^\[proposed\]/);
+
+      const list = status.renderResult(listed, collapsed, PLAIN_THEME, {});
+      expect(kinds(list)).toContain("table");
+      expect(painted(list)).toMatch(/^2 proposed/);
+
+      const check = node(tool("adr_check").renderResult(failed, collapsed, PLAIN_THEME, {}));
+      const meta = walk(check).find((child) => child.key() === "meta");
+      expect(prop(meta, "spans")).toEqual([expect.objectContaining({ s: "error" })]);
+      expect(painted(check)).toMatch(/^\d+ errors?/);
+
+      // A failure without facts still says it failed.
+      const boom = status.renderResult({ content: [{ type: "text", text: "boom" }], isError: true }, collapsed, PLAIN_THEME, {});
+      expect(painted(boom)).toBe("[error]\n\nboom");
+    } finally {
+      setNativeRenderingForTest(false);
+    }
+    expect(painted(status.renderResult(shown, collapsed, PLAIN_THEME, args))).toMatch(/^ADR ADR-0001 \[proposed\]/);
   });
 
   test("results without receipt details fall back to the text as markdown", () => {
     const { tool } = harness();
     for (const name of ["adr_status", "adr_manage", "adr_check"]) {
-      const view = tool(name).describeResult({ content: [{ type: "text", text: "Older **result**" }] }, collapsed, {});
-      expect(walk(view.body).find((node) => node.k === "md")?.p).toEqual({ text: "Older **result**" });
-      const failed = tool(name).describeResult({ content: [{ type: "text", text: "boom" }], isError: true }, collapsed, {});
-      expect(failed.tone).toBe("error");
-      expect(visible(failed)).toContain("boom");
+      const view = tool(name).renderResult({ content: [{ type: "text", text: "Older **result**" }] }, collapsed, PLAIN_THEME, {});
+      expect(
+        walk(node(view))
+          .find((child) => child.kind === "md")
+          ?.props(),
+      ).toEqual({ text: "Older **result**" });
+      const failed = tool(name).renderResult({ content: [{ type: "text", text: "boom" }], isError: true }, collapsed, PLAIN_THEME, {});
+      expect(tone(failed)).toBe("error strong");
+      expect(painted(failed)).toContain("boom");
     }
   });
 });
@@ -250,12 +297,11 @@ describe("adr message titles", () => {
       display: true,
       timestamp: 0,
     };
-    const component = render(message, collapsed, theme);
-    const head = JSON.stringify(prop(component.describe(), "head"));
-    expect(head).toContain("ADR check");
-    expect(head).not.toContain("wows-omp-adr");
-    const lines = component.render(80).join("\n");
-    expect(lines).toContain("ADR check");
+    const card = node(render(message, collapsed, PLAIN_THEME));
+    expect(card.kind).toBe("card");
+    expect(JSON.stringify(prop(card, "head"))).toContain("ADR check");
+    const lines = painted(card, 80);
+    expect(lines).toMatch(/ADR check/);
     expect(lines).toContain("ADR check passed.");
     expect(lines).not.toContain("wows-omp-adr");
     expect(message.customType).toBe("wows-omp-adr.check");

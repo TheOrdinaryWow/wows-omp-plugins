@@ -1,9 +1,9 @@
-import { compact, kv, node, span, text } from "@oh-my-pi/pi-tui";
-import { OwnerMemo } from "@oh-my-pi/pi-tui/native/memo";
-import type { NativeChild } from "@oh-my-pi/pi-tui/native/node";
-import type { NativeToolView, RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
+import type { ToolRenderResultOptions } from "@oh-my-pi/pi-coding-agent";
+import { type JSXNode, nativeRendering, type UiNode } from "@oh-my-pi/pi-tui";
+import type { TspCardStatus } from "@oh-my-pi/pi-wire";
 
 import { modelTextNodes } from "./model-text.ts";
+import { h, kv, span } from "./tsp.ts";
 
 type Args = { action?: unknown; mode?: unknown };
 interface Result {
@@ -11,7 +11,7 @@ interface Result {
   details?: unknown;
   isError?: boolean;
 }
-const memo = new OwnerMemo<NativeToolView>();
+
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
@@ -23,11 +23,27 @@ function date(value: unknown): string {
   const time = new Date(value);
   return Number.isFinite(time.getTime()) ? time.toISOString() : "Unknown";
 }
-function head(args?: Args): NonNullable<NativeToolView["tool"]> {
-  const target = compact([word(args?.action), word(args?.mode)]).join(" ");
-  return { title: "Init Deep", ...(target ? { target, targetKind: "text" } : {}) };
+/**
+ * Tern frames the body under its tool card head (the tool's label); the terminal's custom-tool box draws no head,
+ * so there the body sits under an inline head naming the action.
+ */
+function card(args: Args | undefined, status: TspCardStatus, body: readonly JSXNode[]): UiNode | undefined {
+  if (nativeRendering()) return body.length > 0 ? h("col", {}, ...body) : undefined;
+  const shown = [word(args?.action), word(args?.mode)].filter(Boolean).join(" ");
+  return h(
+    "tool",
+    {
+      name: "toolkit_init_deep",
+      title: "Init Deep",
+      frame: "inline",
+      status,
+      ...(shown ? { target: shown, targetKind: "text" as const } : {}),
+    },
+    ...body,
+  );
 }
-function describe(result: Result, expanded: boolean, args?: Args): NativeToolView {
+
+function view(result: Result, expanded: boolean, args?: Args): UiNode | undefined {
   const source = result.content.flatMap((part) => (part.type === "text" && part.text ? [part.text] : [])).join("\n\n");
   let details = object(result.details);
   // Older saved calls may have only the same JSON in their text content.
@@ -80,30 +96,29 @@ function describe(result: Result, expanded: boolean, args?: Args): NativeToolVie
           : "Snapshot available; drift is evaluated by the advisor",
     ]);
   }
-  return {
-    tool: head(args),
-    tone: result.isError ? "error" : undefined,
-    body: compact<NativeChild>([
-      result.isError
-        ? text(source.split("\n")[0]?.slice(0, 500) || "Init-deep failed")
-        : fields.length
-          ? kv(fields)
-          : text("Snapshot details unavailable"),
-      expanded && source
-        ? node("section", { head: [span("Model text", "muted")], collapsible: true, collapsed: true }, modelTextNodes(source), "model-text")
-        : undefined,
-    ]),
-  };
+  return card(args, result.isError ? "error" : "done", [
+    result.isError
+      ? h("text", { text: source.split("\n")[0]?.slice(0, 500) || "Init-deep failed", wrap: "word" })
+      : fields.length
+        ? kv(fields)
+        : h("text", { text: "Snapshot details unavailable" }),
+    // Tern folds the receipt; the terminal cannot unfold a section, so it shows it open once the card is expanded.
+    expanded && source
+      ? h(
+          "section",
+          { key: "model-text", head: [span("Model text", "muted")], collapsible: true, collapsed: nativeRendering() },
+          ...modelTextNodes(source),
+        )
+      : undefined,
+  ]);
 }
 
 export const initDeepCard = {
-  describeCall(args?: Args): NativeToolView {
-    return { tool: head(args) };
+  renderCall(args?: Args): UiNode | undefined {
+    return card(args, "running", []);
   },
-  describeResult(result: Result, options: RenderResultOptions, args?: Args): NativeToolView {
-    return memo.get(result.content, [result.details, result.isError, options.expanded, args?.action, args?.mode], () =>
-      describe(result, options.expanded, args),
-    );
+  renderResult(result: Result, options: ToolRenderResultOptions, _theme: unknown, args?: Args): UiNode | undefined {
+    return view(result, options.expanded, args);
   },
   mergeCallAndResult: true,
 };

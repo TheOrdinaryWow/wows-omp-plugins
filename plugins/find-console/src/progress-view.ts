@@ -1,39 +1,13 @@
-import {
-  type Component,
-  col,
-  elapsed,
-  isNativeRendering,
-  item,
-  keyed,
-  list,
-  matchesKey,
-  type NativeNode,
-  type NativeUiEvent,
-  row as nativeRow,
-  node,
-  padding,
-  renderProgressBar,
-  span,
-  type Theme,
-  type TUI,
-  text,
-  truncateToWidth,
-  visibleWidth,
-} from "@oh-my-pi/pi-tui";
-import { bottomBorder, divider, rawKeyHint, row, topBorder } from "@oh-my-pi/pi-tui/chrome";
-import { actionBar, actionButton } from "@oh-my-pi/pi-tui/native/overlay";
+import { type JSXNode, type KeyEvent, nativeRendering, signal, type UiNode, untrack } from "@oh-my-pi/pi-tui";
 
 import type { FindProgressController } from "#src/controller.ts";
-import { spread } from "#src/view.ts";
+import { h, span } from "#src/tsp.ts";
 
-/** A centered panel over the transcript: the search is a short wait, not a page of its own. */
-export const PROGRESS_OVERLAY = {
-  overlay: true,
-  overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "80%" },
-} as const;
+/** A panel over the transcript: the search is a short wait, not a page of its own. */
+export const PROGRESS_OVERLAY = { overlay: true } as const;
 
-/** Spinner cadence of the host's loaders. */
-const FRAME_MS = 80;
+/** Waits shorter than this keep a static status; longer ones earn an animated indicator. */
+const ANIMATE_AFTER_MS = 1000;
 
 /** One progress message a phase recognizes: its capture, after `prefix`, becomes the phase's live fact. */
 interface PhaseMessage {
@@ -77,56 +51,40 @@ const PHASES: readonly Phase[] = [
 
 type PhaseState = "done" | "active" | "pending" | "skipped";
 
-const LABEL_WIDTH = Math.max(...PHASES.map((phase) => phase.label.length));
-
-function clock(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
+/** Theme symbols of one width per state, so the phase labels line up. */
+const PHASE_ICONS: Readonly<Record<PhaseState, string>> = {
+  done: "status.success",
+  active: "status.running",
+  pending: "status.shadowed",
+  skipped: "status.disabled",
+};
 
 /** Search progress: the query, the cascade's phases with live counts, elapsed time and cancellation. */
-export class FindProgress implements Component {
-  readonly nativeOverlay: NonNullable<Component["nativeOverlay"]>;
+export class FindProgress {
   readonly #started = Date.now();
   readonly #details = new Map<number, string>();
   readonly #warnings = new Set<number>();
   readonly #seen = new Set<number>();
+  readonly #revision = signal(0);
   #phase = 0;
   /** Completed share of the running phase, from its `done/total` fact. */
   #fraction: number | undefined;
   #note: string | undefined;
-  #frame = 0;
   #animate = false;
   #timer: NodeJS.Timeout | undefined;
-  #memo: { key: string; lines: readonly string[] } | undefined;
-  #native: NativeNode | undefined;
 
-  constructor(
-    readonly controller: FindProgressController,
-    readonly theme: Theme,
-    readonly tui: TUI,
-  ) {
-    this.nativeOverlay = { role: "omp.overlay.find-console.search", size: "md", anchor: "center", head: `Find: ${controller.query}` };
+  constructor(readonly controller: FindProgressController) {
     for (const message of controller.messages) this.#ingest(message);
     controller.onChange = () => {
       const latest = controller.messages.at(-1);
       if (latest !== undefined && !controller.cancelled) this.#ingest(latest);
-      this.#native = undefined;
-      tui.requestRender();
+      this.#revision.update((revision) => revision + 1);
     };
-    // Short searches keep a static status; only a wait lasting a second earns an animated indicator.
-    // Native motion is terminal-clocked after this single transition; TUI loaders then advance at host cadence.
-    this.#timer = setInterval(() => {
-      if (Date.now() - this.#started < 1000) return;
-      if (!this.#animate) {
-        this.#animate = true;
-        this.#native = undefined;
-        tui.requestRender();
-      }
-      if (isNativeRendering()) return;
-      this.#frame++;
-      tui.requestRender();
-    }, FRAME_MS);
+    // Short searches keep a static status; the spinner and elapsed time then run on the terminal's clock.
+    this.#timer = setTimeout(() => {
+      this.#animate = true;
+      this.#revision.update((revision) => revision + 1);
+    }, ANIMATE_AFTER_MS);
   }
 
   #ingest(message: string): void {
@@ -156,142 +114,96 @@ export class FindProgress implements Component {
   }
 
   dispose(): void {
-    clearInterval(this.#timer);
+    clearTimeout(this.#timer);
     this.#timer = undefined;
   }
 
-  handleInput(key: string): void {
-    if (matchesKey(key, "escape") || matchesKey(key, "ctrl+c")) this.controller.cancel();
+  key(key: KeyEvent): boolean {
+    if (key.kind === "release" || (key.id !== "escape" && key.id !== "ctrl+c")) return false;
+    this.controller.cancel();
+    return true;
   }
 
-  handleNativeEvent(event: NativeUiEvent): void {
-    if (event.type === "action" && event.act === "cancel") this.controller.cancel();
+  /** The root node: the panel itself in a terminal, the panel inside its own sheet in Tern. */
+  view(): UiNode {
+    const native = nativeRendering();
+    const panel = h(
+      "col",
+      {
+        gap: native ? "md" : "none",
+        onKey: (key) => this.key(key),
+        onAction: (act) => {
+          if (act === "cancel") this.controller.cancel();
+        },
+      },
+      () => {
+        this.#revision();
+        return untrack(() => this.#panel());
+      },
+    );
+    if (!native) return panel;
+    return h(
+      "overlay",
+      { size: "md", anchor: "center", modal: true, head: `Find: ${this.controller.query}`, role: "omp.overlay.find-console.search" },
+      panel,
+    );
   }
 
-  invalidate(): void {
-    this.#memo = undefined;
-    this.#native = undefined;
-  }
-
-  render(width: number): readonly string[] {
-    const age = Date.now() - this.#started;
-    const key = `${width}:${this.#frame}:${clock(age)}:${this.controller.messages.length}:${this.controller.messages.at(-1)}:${this.controller.cancelled}`;
-    if (this.#memo?.key !== key) this.#memo = { key, lines: this.#rows(width, age) };
-    return this.#memo.lines;
-  }
-
-  #rows(width: number, age: number): string[] {
-    const t = this.theme;
-    const c = this.controller;
-    const inner = Math.max(1, width - 4);
-    const frames = t.spinnerFrames;
-    const spinner = c.cancelled
-      ? t.fg("warning", t.status.aborted)
-      : t.fg("accent", this.#animate ? (frames[this.#frame % frames.length] ?? "") : "·");
-    const glyphs = { done: t.status.success, skipped: "–", pending: "·" };
-    const glyphWidth = Math.max(visibleWidth(spinner), ...Object.values(glyphs).map(visibleWidth));
-    const phases = PHASES.map((phase, index) => {
-      const state = this.#state(index);
-      const glyph =
-        state === "active"
-          ? spinner
-          : state === "done"
-            ? t.fg("success", glyphs.done)
-            : t.fg("dim", state === "skipped" ? glyphs.skipped : glyphs.pending);
-      const label = phase.label.padEnd(LABEL_WIDTH);
-      const styled = state === "active" ? t.bold(label) : state === "done" ? t.fg("muted", label) : t.fg("dim", label);
-      const fraction = state === "active" && phase.bar ? this.#fraction : undefined;
-      const bar =
-        fraction !== undefined
-          ? `${renderProgressBar(fraction, 12, {
-              style: {
-                filled: t.symbol("progress.filled"),
-                empty: t.symbol("progress.empty"),
-                styleFilled: (cells) => t.fg("accent", cells),
-                styleEmpty: (cells) => t.fg("dim", cells),
-              },
-            })} `
-          : "";
-      const detail = this.#details.get(index);
-      const tone = this.#warnings.has(index) ? "warning" : state === "active" ? "muted" : "dim";
-      const fact = `${bar}${detail ? t.fg(tone, detail) : ""}`;
-      return row(truncateToWidth(`${glyph}${padding(glyphWidth - visibleWidth(glyph))} ${styled}  ${fact}`, inner), width);
-    });
-    const footer = c.cancelled
-      ? t.fg("warning", "Cancelling; waiting for in-flight judge requests")
-      : `${rawKeyHint("escape", "cancel search")}${t.fg("dim", "   no search deadline")}`;
-    return [
-      topBorder(width, c.cancelled ? "Find · cancelling" : "Find · searching"),
-      row(truncateToWidth(`${spinner} ${t.bold(c.query)}`, inner), width),
-      divider(width),
-      ...phases,
-      ...(this.#note ? [row(truncateToWidth(t.fg("muted", this.#note), inner), width)] : []),
-      divider(width),
-      row(spread(footer, t.fg("muted", `${clock(age)} elapsed`), inner), width),
-      bottomBorder(width),
-    ];
-  }
-
-  describe(): NativeNode {
-    if (this.#native) return this.#native;
+  #panel(): JSXNode[] {
     const c = this.controller;
     const current = PHASES[this.#phase];
-    const phases = list(
-      PHASES.map((phase, index) => {
-        const state = this.#state(index);
-        return item(phase.id, {
-          label: phase.label,
-          ...(this.#details.has(index) ? { detail: this.#details.get(index) } : {}),
-          ...(state === "done" ? { icon: this.#warnings.has(index) ? "warning" : "check" } : state === "active" ? { icon: "pending" } : {}),
-          tone:
-            state === "done"
-              ? this.#warnings.has(index)
-                ? "warning"
-                : "success"
-              : state === "active"
-                ? c.cancelled
-                  ? "warning"
-                  : "accent"
-                : "muted",
-        });
-      }),
-      { role: "omp.find-console.phases" },
-      "phases",
-    );
-    const children: NativeNode[] = [
-      keyed(
-        nativeRow(
-          [
-            this.#animate && !c.cancelled
-              ? node("spinner", { style: "dots", label: [span(current?.label ?? "Searching", "strong")] })
-              : text([span(c.cancelled ? "Cancelling search…" : (current?.label ?? "Searching"), c.cancelled ? "warning" : "strong")]),
-            node("spacer", { grow: 1 }),
-            elapsed(Date.now() - this.#started),
-          ],
-          { gap: "md", align: "center" },
-        ),
-        "status",
+    const status = c.cancelled ? "Cancelling search…" : (current?.label ?? "Searching");
+    return [
+      h("rule", { key: "title", label: [span("Find", "strong"), span(c.cancelled ? " · cancelling" : " · searching", "muted")] }),
+      h(
+        "row",
+        { key: "status", gap: "md", align: "center" },
+        this.#animate && !c.cancelled
+          ? h("spinner", { key: "spinner", style: "dots", label: [span(status, "strong")] })
+          : h("text", { key: "label", spans: [span(status, c.cancelled ? "warning" : "strong")] }),
+        h("text", { key: "query", spans: [span(c.query, "muted")], grow: 1, shrink: 1, truncate: "end", lines: 1 }),
+        h("elapsed", {
+          key: "elapsed",
+          age: Date.now() - this.#started,
+          format: "clock",
+          ...(c.cancelled ? { stopped: Date.now() - this.#started } : {}),
+        }),
       ),
-      phases,
-    ];
-    if (current?.bar && this.#fraction !== undefined)
-      children.push(
-        keyed(
-          node("progress", { value: this.#fraction, tone: "accent", label: `${this.#details.get(this.#phase)}${current.bar.unit}` }),
-          "fraction",
-        ),
-      );
-    if (this.#note) children.push(keyed(text(this.#note, { tone: "muted", wrap: "word" }), "note"));
-    children.push(
+      h(
+        "list",
+        { key: "phases", selected: current?.id ?? null },
+        PHASES.map((phase, index) => {
+          const state = this.#state(index);
+          const warned = this.#warnings.has(index);
+          const detail = this.#details.get(index);
+          return h("item", {
+            key: phase.id,
+            label: phase.label,
+            ...(detail ? { detail: warned ? [span(detail, "warning")] : detail } : {}),
+            icon: warned && state === "done" ? "status.warning" : c.cancelled && state === "active" ? "status.aborted" : PHASE_ICONS[state],
+            tone: state === "done" ? (warned ? "warning" : "success") : state === "active" ? (c.cancelled ? "warning" : "accent") : "muted",
+          });
+        }),
+      ),
+      current?.bar &&
+        this.#fraction !== undefined &&
+        h("progress", {
+          key: "fraction",
+          value: this.#fraction,
+          tone: "accent",
+          label: `${this.#details.get(this.#phase)}${current.bar.unit}`,
+        }),
+      this.#note && h("text", { key: "note", spans: [span(this.#note, "muted")], wrap: "word" }),
+      h("rule", { key: "foot-rule" }),
       c.cancelled
-        ? keyed(text("Waiting for in-flight judge requests to stop.", { tone: "warning", wrap: "word" }), "cancelling")
-        : actionBar([
-            actionButton("Cancel search", "cancel", { keys: "escape", tone: "error" }),
-            null,
-            text("No search deadline", { tone: "muted" }),
-          ]),
-    );
-    this.#native = col(children, { gap: "md" });
-    return this.#native;
+        ? h("text", { key: "cancelling", spans: [span("Waiting for in-flight judge requests to stop.", "warning")], wrap: "word" })
+        : h(
+            "row",
+            { key: "actions", gap: "sm", align: "center" },
+            h("button", { key: "cancel", text: "Cancel search", keys: ["escape"], variant: "danger", actions: { click: "cancel" } }),
+            h("spacer", { grow: 1, size: "none" }),
+            h("text", { spans: [span("No search deadline", "muted")] }),
+          ),
+    ];
   }
 }

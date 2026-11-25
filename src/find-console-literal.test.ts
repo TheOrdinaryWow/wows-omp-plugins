@@ -1,7 +1,13 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { initTheme, type NativeNode, type TUI, theme } from "@oh-my-pi/pi-tui";
+import { initTheme } from "@oh-my-pi/pi-coding-agent";
+import { createRoot, setNativeRenderingForTest, type UiEvent, type UiNode } from "@oh-my-pi/pi-tui";
+import { bubbleEvent, pathTo } from "@oh-my-pi/pi-tui/dispatch";
+import { staticEnvironment } from "@oh-my-pi/pi-tui/term/paint";
+import { describeTree } from "@oh-my-pi/pi-tui/testing/corpus";
+import { createTestTerminal } from "@oh-my-pi/pi-tui/testing/terminal";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
 
 import { FindConsole } from "../plugins/find-console/src/console.ts";
 import { FindResultsController } from "../plugins/find-console/src/controller.ts";
@@ -150,18 +156,41 @@ const reader = {
   }),
   invalidate() {},
 } as unknown as PreviewReader;
-const tui = { terminal: { rows: 36 }, requestRender() {} } as unknown as TUI;
+const screen = { size: () => ({ columns: 120, rows: 36 }) };
+const theme = loadThemeSync("dark");
 
-function nativeNodes(root: NativeNode): NativeNode[] {
-  const nodes = [root];
-  for (const child of root.c ?? []) if ("k" in child) nodes.push(...nativeNodes(child));
-  return nodes;
+/** A node as Tern receives it, flattened depth-first. */
+interface Described {
+  k: string;
+  key?: string;
+  p?: Record<string, unknown> & { marks?: unknown[] };
+  c?: Described[];
 }
 
-const plain = (lines: readonly string[]) => lines.map((line) => Bun.stripANSI(line).trimEnd()).join("\n");
+function described(node: UiNode): Described[] {
+  const flat = (entry: Described): Described[] => [entry, ...(entry.c ?? []).flatMap(flat)];
+  return flat(describeTree(node, staticEnvironment(theme)) as Described);
+}
 
-beforeAll(async () => {
-  await initTheme();
+/** The live node at `keys` below `root` (each step a child's key). */
+function nodeAt(root: UiNode, ...keys: string[]): UiNode {
+  const find = (node: UiNode, key: string): UiNode | undefined => {
+    for (const child of node.children()) {
+      if (child.key() === key) return child;
+      const nested = find(child, key);
+      if (nested) return nested;
+    }
+    return undefined;
+  };
+  return keys.reduce((node, key) => {
+    const next = find(node, key);
+    if (!next) throw new Error(`missing node ${key}`);
+    return next;
+  }, root);
+}
+
+beforeAll(() => {
+  initTheme();
 });
 
 describe("literal keyword fallback when every judge request failed", () => {
@@ -211,54 +240,66 @@ describe("literal keyword fallback when every judge request failed", () => {
 
   test("the terminal console renders a literal group without scores, and keys select and open its rows", async () => {
     const controller = new FindResultsController(literalReport(), reader, true);
-    const view = new FindConsole(controller, theme, tui);
     const actions: string[] = [];
     controller.onAction = (result) => actions.push(`${result.action} ${controller.selectedReference}`);
-    await Promise.resolve();
-    view.handleInput("\x1b[B");
-    await Promise.resolve();
-    const frame = plain(view.render(120));
-    expect(frame).toContain("Find · 0 hits · 2 literal matches");
-    expect(frame).toContain("No ranked hits.");
-    expect(frame).toContain("Literal matches (unranked)");
-    expect(frame).toContain("release-please-config.json:3");
-    expect(frame).toContain("unranked literal match");
-    expect(frame).toContain("literal 2/2");
-    expect(frame).not.toMatch(/0\.00/);
-    expect(frame).toContain("release-please-config.json line 3");
-    view.handleInput("o");
-    view.handleInput("\r");
-    expect(actions).toEqual(["open release-please-config.json:3-3", "insert release-please-config.json:3-3"]);
+    const root = createRoot(() => new FindConsole(controller, screen).view());
+    const term = createTestTerminal(() => ({ layer: root }), { columns: 120, rows: 36 });
+    try {
+      term.focus(root);
+      await Promise.resolve();
+      term.press("down");
+      await Promise.resolve();
+      term.render();
+      const frame = term.screen().join("\n");
+      expect(frame).toContain("Find · 0 hits · 2 literal matches");
+      expect(frame).toContain("No ranked hits.");
+      expect(frame).toContain("Literal matches (unranked)");
+      expect(frame).toContain("❯ release-please-config.json:3");
+      expect(frame).toContain("[unranked literal match]");
+      expect(frame).toContain("literal 2/2");
+      expect(frame).not.toMatch(/0\.00/);
+      expect(frame).toContain("release-please-config.json line 3");
+      term.press("o");
+      term.press("enter");
+      expect(actions).toEqual(["open release-please-config.json:3-3", "insert release-please-config.json:3-3"]);
+    } finally {
+      term.dispose();
+    }
   });
 
   test("the Tern surface lists literal matches in their own list, and a click selects that row's source", async () => {
     const controller = new FindResultsController(literalReport(), reader, true);
-    const view = new FindConsole(controller, theme, tui);
+    setNativeRenderingForTest(true);
+    let sheet: UiNode;
+    try {
+      sheet = createRoot(() => new FindConsole(controller, screen).view());
+    } finally {
+      setNativeRenderingForTest(false);
+    }
     await Promise.resolve();
-    const describe = () => nativeNodes(view.describe());
-    const literal = describe().find((node) => node.k === "list" && node.p?.role === "omp.find-console.literal");
-    const items = (literal?.c ?? []).filter((child): child is NativeNode => "k" in child && child.k === "item");
-    expect(items.map((node) => (node.k === "item" ? [node.p?.label, node.p?.detail, node.p?.tone] : []))).toEqual([
+    const literal = described(sheet).find((node) => node.k === "list" && node.key === "literal");
+    const items = (literal?.c ?? []).filter((child) => child.k === "item");
+    expect(items.map((node) => [node.p?.label, node.p?.detail, node.p?.tone])).toEqual([
       ["index.ts:12", "const versions = bump(manifest);", "muted"],
       ["release-please-config.json:3", '"versioning": "default"', "muted"],
     ]);
-    expect(literal?.k === "list" ? literal.p?.selected : undefined).toBe("literal-0");
-    const nodes = describe();
-    expect(nodes.some((node) => node.k === "list" && node.p?.role === "omp.find-console.hits")).toBe(false);
-    expect(nodes.some((node) => node.k === "list" && node.p?.role === "omp.find-console.ranges")).toBe(false);
-    expect(nodes.some((node) => node.k === "progress")).toBe(false);
+    expect(literal?.p?.selected).toBe("literal-0");
+    const nodes = described(sheet);
+    expect(nodes.some((node) => node.k === "list" && node.key === "hit")).toBe(false);
+    expect(nodes.some((node) => node.k === "list" && node.key === "range")).toBe(false);
     expect(nodes.some((node) => node.k === "badge" && node.p?.text === "unranked literal match")).toBe(true);
-    view.handleNativeEvent({ type: "select", key: "split/sidebar/literal", item: "literal-1" });
+    const send = (target: UiNode, event: UiEvent) => expect(bubbleEvent(pathTo([sheet], target), event)).toBe(true);
+    send(nodeAt(sheet, "literal", "literal-1"), { type: "select", key: "literal", item: "literal-1" });
     await Promise.resolve();
     expect(controller.selectedReference).toBe("release-please-config.json:3-3");
-    const marks = describe()
+    const marks = described(sheet)
       .filter((node) => node.k === "code")
-      .flatMap((node) => (node.k === "code" ? (node.p?.marks ?? []) : []));
+      .flatMap((node) => node.p?.marks ?? []);
     expect(marks).toEqual([{ line: 3, tone: "accent" }]);
     const actions: string[] = [];
     controller.onAction = (result) => actions.push(result.action);
-    view.handleNativeEvent({ type: "activate", key: "split/sidebar/literal", item: "literal-1" });
-    view.handleNativeEvent({ type: "action", key: "actions/open", act: "open", mods: [] });
+    send(nodeAt(sheet, "literal", "literal-1"), { type: "activate", key: "literal", item: "literal-1" });
+    send(nodeAt(sheet, "actions", "open"), { type: "action", key: "actions/open", act: "open", mods: [] });
     expect(actions).toEqual(["insert", "open"]);
   });
 });

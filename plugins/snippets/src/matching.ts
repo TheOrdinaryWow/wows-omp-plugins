@@ -1,4 +1,4 @@
-import { maskNonProse } from "@oh-my-pi/pi-tui/prompt/markdown-prose";
+import { maskNonProse } from "@oh-my-pi/pi-coding-agent/modes/view-model/prompt/markdown-prose";
 
 import type { SnippetSettings } from "#src/settings.ts";
 import type { SnippetEntry } from "#src/store.ts";

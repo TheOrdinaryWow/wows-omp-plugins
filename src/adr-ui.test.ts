@@ -1,13 +1,13 @@
-import { beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 
-import { initTheme, type TUI, theme } from "@oh-my-pi/pi-tui";
+// Registers the terminal look of the host's bare sheet, which frames nothing itself.
+import "@oh-my-pi/pi-coding-agent/ui/styles/overlays/bare-sheet";
+import type { UiNode } from "@oh-my-pi/pi-tui";
+import { createTestTerminal } from "@oh-my-pi/pi-tui/testing/terminal";
 
 import type { AdrRecord } from "../plugins/adr/src/documents.ts";
+import { h } from "../plugins/adr/src/tsp.ts";
 import { type AdrUiContext, createTuiUi, HeadlessUi, type MenuEntry } from "../plugins/adr/src/ui.ts";
-
-beforeAll(async () => {
-  await initTheme();
-});
 
 function entry(id: string, status: AdrRecord["status"], extra: Partial<AdrRecord> = {}): MenuEntry {
   return {
@@ -29,19 +29,25 @@ function entry(id: string, status: AdrRecord["status"], extra: Partial<AdrRecord
   };
 }
 
-type Mounted = { handleInput(key: string): void; render(width: number): readonly string[] };
+type Factory = (
+  host: { size(): { columns: number; rows: number } },
+  theme: unknown,
+  keybindings: unknown,
+  done: (value: unknown) => void,
+) => UiNode;
 
 /**
  * Answers each select with the first option matching the next pattern; undefined answers act like Escape.
- * Each `custom` call mounts the component and feeds it the next key list. `custom` throws when no keys are queued,
- * which is how the dialog tests prove the fullscreen surface is never used.
+ * Each `custom` call mounts the view in a terminal and presses the next list of key ids. `custom` throws when no keys
+ * are queued, which is how the dialog tests prove the fullscreen surface is never used.
  */
 function scripted(answers: Array<RegExp | undefined>, mode = "tui", keys: string[][] = []) {
   const titles: string[] = [];
   const options: string[][] = [];
   const viewed: string[] = [];
   const frames: string[] = [];
-  const tui = { requestRender() {}, terminal: { rows: 24 } } as unknown as TUI;
+  /** Each mounted view, and whether it was already disposed when the terminal let go of it. */
+  const views: Array<{ view: UiNode; disposedAtUnmount: boolean }> = [];
   const ui = {
     async select(title: string, labels: string[]) {
       titles.push(title);
@@ -57,17 +63,25 @@ function scripted(answers: Array<RegExp | undefined>, mode = "tui", keys: string
       return "typed";
     },
     notify() {},
-    custom(factory: (tui: TUI, th: typeof theme, keybindings: unknown, done: (value: unknown) => void) => Mounted) {
+    custom(factory: Factory, options: { overlay?: boolean; fullscreen?: boolean }) {
       const script = keys.shift();
       if (!script) throw new Error("custom must not be called");
+      expect(options).toEqual({ overlay: true, fullscreen: true });
       const { promise, resolve } = Promise.withResolvers<unknown>();
-      const component = factory(tui, theme, undefined, resolve);
-      frames.push(Bun.stripANSI(component.render(80).join("\n")));
-      for (const key of script) component.handleInput(key);
+      const view = factory({ size: () => ({ columns: 80, rows: 24 }) }, undefined, undefined, resolve);
+      const term = createTestTerminal(() => ({ layer: h("overlay", { size: "full", role: "omp.sheet.bare" }, view) }), {
+        columns: 80,
+        rows: 24,
+      });
+      term.focus(view);
+      frames.push(term.screen().join("\n"));
+      for (const key of script) term.press(key);
+      term.dispose();
+      views.push({ view, disposedAtUnmount: view.disposed });
       return promise;
     },
   };
-  return { ctx: { hasUI: true, mode, ui } as unknown as AdrUiContext, titles, options, viewed, frames };
+  return { ctx: { hasUI: true, mode, ui } as unknown as AdrUiContext, titles, options, viewed, frames, views };
 }
 
 const pi = { sendMessage() {} };
@@ -130,7 +144,7 @@ test("inline keeps the dialogs in the terminal, and fullscreen falls back to the
 
 test("fullscreen opens the console, keeps its filter across re-opens, and Enter asks for the decision", async () => {
   // Tab moves to Proposed; Enter on ADR-0002 opens the decision dialog, whose Back re-mounts the console.
-  const run = scripted([/^← Back$/, /^Reject$/], "tui", [["\t", "\r"], ["\r"], ["\x1b"]]);
+  const run = scripted([/^← Back$/, /^Reject$/], "tui", [["tab", "enter"], ["enter"], ["escape"]]);
   const ui = createTuiUi(run.ctx, pi, "fullscreen");
   expect(ui.console).toBe(true);
   expect(await ui.menu(entries)).toEqual({ action: "reject", id: "ADR-0002" });
@@ -141,19 +155,31 @@ test("fullscreen opens the console, keeps its filter across re-opens, and Enter 
   // The caller re-opens on the ADR it acted on with the result line; Esc closes.
   expect(await ui.menu(entries, { selectedId: "ADR-0002", message: { text: "ADR-0002 rejected.", level: "info" } })).toBeUndefined();
   expect(run.frames[2]).toMatch(/ADR-0002 rejected\./);
-  const shortcut = scripted([], "tui", [["S"]]);
+  const shortcut = scripted([], "tui", [["shift+s"]]);
   expect(await createTuiUi(shortcut.ctx, pi, "fullscreen").menu(entries)).toEqual({ action: "supersede", id: "ADR-0001" });
-  const global = scripted([], "tui", [["F"]]);
+  const global = scripted([], "tui", [["shift+f"]]);
   expect(await createTuiUi(global.ctx, pi, "fullscreen").menu(entries)).toEqual({ action: "check-fix" });
 });
 
 test("the fullscreen preview writes on Shift+W and declines on Esc", async () => {
   const files = [{ path: "docs/adr/README.md", content: "# Decisions\n\nIndex." }];
-  const write = scripted([], "tui", [["W"]]);
+  const write = scripted([], "tui", [["shift+w"]]);
   expect(await createTuiUi(write.ctx, pi, "fullscreen").previewConfirm({ title: "Initialize ADR management", files })).toBe(true);
   expect(write.frames[0]).toMatch(/Decisions/);
-  const cancel = scripted([], "tui", [["\x1b"]]);
+  const cancel = scripted([], "tui", [["escape"]]);
   expect(await createTuiUi(cancel.ctx, pi, "fullscreen").previewConfirm({ title: "Initialize ADR management", files })).toBe(false);
+});
+
+test("each console and preview view is disposed once its dialog settles", async () => {
+  const run = scripted([/^← Back$/], "tui", [["enter"], ["escape"]]);
+  expect(await createTuiUi(run.ctx, pi, "fullscreen").menu(entries)).toBeUndefined();
+  const preview = scripted([], "tui", [["escape"]]);
+  await createTuiUi(preview.ctx, pi, "fullscreen").previewConfirm({ title: "Init", files: [] });
+  const views = [...run.views, ...preview.views];
+  expect(views).toHaveLength(3);
+  // The terminal leaving the view does not end it; the settled dialog does.
+  expect(views.map(({ disposedAtUnmount }) => disposedAtUnmount)).toEqual([false, false, false]);
+  expect(views.map(({ view }) => view.disposed)).toEqual([true, true, true]);
 });
 
 test("without a UI there are no dialogs and notices become displayed messages", async () => {

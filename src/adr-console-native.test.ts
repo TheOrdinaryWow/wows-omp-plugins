@@ -1,18 +1,21 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { initTheme, type NativeChild, type NativeNode, type TUI, theme } from "@oh-my-pi/pi-tui";
+import { setNativeRenderingForTest, signal, type UiNode } from "@oh-my-pi/pi-tui";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
 
 import { AdrConsole, AdrPreview, type ConsoleEntry, type ConsoleResult, type ConsoleState } from "../plugins/adr/src/console.ts";
 import type { AdrRecord } from "../plugins/adr/src/documents.ts";
 import { createMany } from "../plugins/adr/src/operations.ts";
 import { cleanupFixtures, decision, repoFixture } from "./adr-fixtures.ts";
 
-beforeAll(async () => {
-  await initTheme();
+// The views pick Tern's layout when they are built while the surface renders natively.
+beforeEach(() => setNativeRenderingForTest(true));
+afterEach(async () => {
+  setNativeRenderingForTest(false);
+  await cleanupFixtures();
 });
-afterEach(cleanupFixtures);
 
-const tui = { requestRender() {}, terminal: { rows: 24 } } as unknown as TUI;
+const host = { size: () => ({ columns: 100, rows: 24 }) };
 
 function entry(id: string, status: AdrRecord["status"], offered: ConsoleEntry["offered"], title = `Decision ${id}`): ConsoleEntry {
   return {
@@ -50,103 +53,102 @@ const entries = [
 
 function mount(state: ConsoleState = { query: "" }, list = entries) {
   const results: Array<{ result: ConsoleResult; state: ConsoleState }> = [];
-  const component = new AdrConsole(list, state, theme, tui, (result, next) => results.push({ result, state: next }));
-  return { component, results };
+  const view = new AdrConsole(list, state, host, (result, next) => results.push({ result, state: next }));
+  return { view, results };
 }
 
-function isNode(child: NativeChild): child is NativeNode {
-  return "k" in child;
+/** Every node of the current tree, depth first. */
+function nodes(root: UiNode): UiNode[] {
+  return [root, ...root.children().flatMap(nodes)];
 }
 
-/** Every described node, depth first. */
-function nodes(root: NativeNode): NativeNode[] {
-  return [root, ...(root.c ?? []).filter(isNode).flatMap(nodes)];
-}
-
-const byKey = (root: NativeNode, key: string) => nodes(root).find((candidate) => candidate.key === key);
-const props = (found: NativeNode | undefined) => (found?.p ?? {}) as Record<string, unknown>;
-const listItems = (root: NativeNode, key: string) => (byKey(root, key)?.c ?? []).filter(isNode);
-const acts = (root: NativeNode) =>
+const byKey = (root: UiNode, key: string) => nodes(root).find((node) => node.key() === key);
+const props = (node: UiNode | undefined) => (node?.props() ?? {}) as Record<string, unknown>;
+const items = (root: UiNode, key: string) => byKey(root, key)?.children() ?? [];
+const acts = (root: UiNode) =>
   nodes(root)
-    .map((candidate) => (props(candidate).actions as { click?: string } | undefined)?.click)
-    .filter((act) => act && act !== "select");
-const markdown = (root: NativeNode) =>
+    .filter((node) => node.kind === "button")
+    .map((node) => (props(node).actions as { click?: string } | undefined)?.click);
+const texts = (root: UiNode) =>
   nodes(root)
-    .filter((candidate) => candidate.k === "md" || candidate.k === "code")
-    .map((candidate) => String(props(candidate).text));
+    .filter((node) => node.kind === "md" || node.kind === "code")
+    .map((node) => String(props(node).text));
+const key = (id: string, text?: string) => ({ id, kind: "press" as const, raw: text ?? "", ...(text ? { text } : {}) });
 
-test("the console is a large glass sheet listing ADRs with status tones and the selected decision", () => {
-  const { component } = mount();
-  expect(component.nativeOverlay).toMatchObject({ role: "omp.overlay.adr.console", size: "lg" });
-  expect(component.nativeOverlay).toBe(component.nativeOverlay);
-  const root = component.describe();
-  expect(listItems(root, "adrs").map((row) => row.key)).toEqual(["ADR-0001", "ADR-0002", "ADR-0003"]);
-  expect(props(byKey(root, "adrs")).selected).toBe("ADR-0001");
-  // Items are single truncating lines: the title alone, the status as a toned icon.
-  const rows = listItems(root, "adrs").map((row) => props(row));
-  expect(rows.map((row) => row.tone)).toEqual(["success", "warning", "muted"]);
-  expect(rows.map((row) => [row.label, row.detail])).toEqual([
-    ["Decision ADR-0001", undefined],
-    ["Decision ADR-0002", undefined],
-    ["Cache reads", undefined],
-  ]);
-  expect(props(byKey(root, "filter")).active).toBe("all");
-  expect(markdown(root).join("\n")).toMatch(/Why ADR-0001/);
+function press(view: { root: UiNode }, id: string, text?: string): boolean {
+  return view.root.handlers.onKey?.(key(id, text)) ?? false;
+}
+
+function act(view: { root: UiNode }, act: string): void {
+  view.root.handlers.onAction?.(act, { type: "action", key: act, act, mods: [] });
+}
+
+function select(view: { root: UiNode }, list: string, item: string, kind: "select" | "activate" = "select"): void {
+  const node = byKey(view.root, list);
+  if (kind === "select") node?.handlers.onSelect?.(item, { type: "select", key: list, item });
+  else node?.handlers.onActivate?.(item, { type: "activate", key: list, item });
+}
+
+test("the console is a large modal sheet listing ADRs with status tones and the selected decision", () => {
+  const { view } = mount();
+  expect(view.root.kind).toBe("overlay");
+  expect(props(view.root)).toMatchObject({
+    role: "omp.overlay.adr.console",
+    size: "lg",
+    modal: true,
+    head: "ADR · 1 proposed, 1 accepted, 1 superseded",
+  });
+  const list = items(view.root, "adrs");
+  expect(list.map((row) => row.key())).toEqual(["ADR-0001", "ADR-0002", "ADR-0003"]);
+  expect(props(byKey(view.root, "adrs")).selected).toBe("ADR-0001");
+  expect(list.map((row) => props(row).tone)).toEqual(["success", "warning", "muted"]);
+  expect(list.map((row) => props(row).icon)).toEqual(["check", "clock", "forward"]);
+  expect(props(byKey(view.root, "filter")).active).toBe("all");
+  expect(texts(view.root).join("\n")).toMatch(/Why ADR-0001/);
   // Offered decisions only, plus the global tools and close.
-  expect(acts(root)).toEqual(expect.arrayContaining(["new", "check", "check-fix", "close", "decide", "reject", "supersede"]));
-  expect(acts(root)).not.toContain("accept");
+  expect(acts(view.root)).toEqual(expect.arrayContaining(["new", "check", "check-fix", "close", "decide", "reject", "supersede"]));
+  expect(acts(view.root)).not.toContain("accept");
 });
 
-test("describe keeps the same tree while nothing changes and rebuilds after a change", () => {
-  const { component } = mount();
-  const first = component.describe();
-  expect(component.describe()).toBe(first);
-  component.handleInput("\x1b[B");
-  const second = component.describe();
-  expect(second).not.toBe(first);
-  expect(props(byKey(second, "adrs")).selected).toBe("ADR-0002");
-  component.handleInput("\x1b[6~");
-  const scrolled = component.describe();
-  expect(scrolled).not.toBe(second);
-  // Tern moves the scroller above the node carrying the request, so it rides on the body scroller's content.
-  expect(nodes(byKey(scrolled, "body-scroll") as NativeNode)[1]?.scroll).toMatchObject({ by: "page-down" });
-  expect(nodes(scrolled).filter((node) => node.scroll)).toHaveLength(1);
-  expect(byKey(scrolled, "body-scroll")?.key).toBe(byKey(second, "body-scroll")?.key);
-  expect(component.describe()).toBe(scrolled);
-});
-
-test("console and preview recompute their fixed sheet extent on terminal resize", () => {
-  const terminal = { rows: 24 };
-  const resizingTui = { requestRender() {}, terminal } as unknown as TUI;
-  const components = [
-    new AdrConsole(entries, { query: "" }, theme, resizingTui, () => {}),
-    new AdrPreview("Write these", [], theme, resizingTui, () => {}),
-  ];
-  for (const component of components) {
-    terminal.rows = 24;
-    const first = component.describe();
-    expect(props(first).min).toEqual(props(first).max);
-    expect(component.describe()).toBe(first);
-    terminal.rows = 70;
-    const resized = component.describe();
-    expect(resized).not.toBe(first);
-    expect(props(resized).min).toEqual(props(resized).max);
-    expect(props(resized).min).not.toEqual(props(first).min);
-    expect(component.describe()).toBe(resized);
+test("the sheet's line extent is fixed from the terminal height and follows a resize", () => {
+  const size = signal({ columns: 100, rows: 24 });
+  const resizing = { size: () => size() };
+  for (const view of [new AdrConsole(entries, { query: "" }, resizing, () => {}), new AdrPreview("Write these", [], resizing, () => {})]) {
+    size.set({ columns: 100, rows: 24 });
+    const screen = view.root.children()[0];
+    expect(props(screen).min).toEqual({ h: "16lines" });
+    expect(props(screen).max).toEqual({ h: "16lines" });
+    size.set({ columns: 100, rows: 70 });
+    expect(props(screen).min).toEqual({ h: "62lines" });
+    expect(props(screen).max).toEqual({ h: "62lines" });
   }
 });
 
-test("native clicks produce the same results as the keys", () => {
+test("PgDn forwards a scroll request on the body scroller's content", () => {
+  const { view } = mount();
+  expect(press(view, "down")).toBe(true);
+  expect(props(byKey(view.root, "adrs")).selected).toBe("ADR-0002");
+  press(view, "pageDown");
+  const scroller = byKey(view.root, "body-scroll");
+  expect(scroller?.kind).toBe("list");
+  const content = scroller?.children()[0];
+  expect(content?.scroll()).toMatchObject({ by: "page-down", n: 1 });
+  expect(nodes(view.root).filter((node) => node.scroll())).toHaveLength(1);
+  press(view, "pageDown");
+  expect(byKey(view.root, "body-scroll")?.children()[0]?.scroll()).toMatchObject({ by: "page-down", n: 2 });
+});
+
+test("clicks produce the same results as the keys", () => {
   const keyed = mount();
-  keyed.component.handleInput("\x1b[B");
-  keyed.component.handleInput("\r");
-  keyed.component.handleInput("A");
-  keyed.component.handleInput("O");
+  press(keyed.view, "down");
+  press(keyed.view, "enter");
+  press(keyed.view, "shift+a", "A");
+  press(keyed.view, "shift+o", "O");
   const clicked = mount();
-  clicked.component.handleNativeEvent({ type: "select", key: "split/sidebar/adrs", item: "ADR-0002" });
-  clicked.component.handleNativeEvent({ type: "action", key: "decisions/decide", act: "decide", mods: [] });
-  clicked.component.handleNativeEvent({ type: "action", key: "decisions/accept", act: "accept", mods: [] });
-  clicked.component.handleNativeEvent({ type: "action", key: "head/tools/new", act: "new", mods: [] });
+  select(clicked.view, "adrs", "ADR-0002");
+  act(clicked.view, "decide");
+  act(clicked.view, "accept");
+  act(clicked.view, "new");
   expect(clicked.results).toEqual(keyed.results);
   expect(clicked.results.map(({ result }) => result)).toEqual([
     { kind: "decide", id: "ADR-0002" },
@@ -155,27 +157,26 @@ test("native clicks produce the same results as the keys", () => {
   ]);
 
   const activated = mount();
-  activated.component.handleNativeEvent({ type: "activate", key: "split/sidebar/adrs", item: "ADR-0003" });
+  select(activated.view, "adrs", "ADR-0003", "activate");
   expect(activated.results.map(({ result }) => result)).toEqual([{ kind: "decide", id: "ADR-0003" }]);
 });
 
 test("filter tabs narrow the list, refused decisions explain why, and close follows Esc", () => {
-  const { component, results } = mount({ query: "cache" });
-  component.handleNativeEvent({ type: "action", key: "decisions/accept", act: "accept", mods: [] });
-  const refused = component.describe();
-  expect(props(byKey(refused, "message")).tone).toBe("error");
+  const { view, results } = mount({ query: "cache" });
+  act(view, "accept");
+  const message = byKey(view.root, "message");
+  expect((props(message).spans as TspSpan[])[0]).toMatchObject({ t: "Accept is not available for ADR-0003 (superseded)", s: "error" });
   expect(results).toEqual([]);
 
-  component.handleNativeEvent({ type: "select", key: "head/filter", item: "superseded" });
-  const filtered = component.describe();
-  expect(byKey(filtered, "message")).toBeUndefined();
-  expect(props(byKey(filtered, "filter")).active).toBe("superseded");
-  expect(listItems(filtered, "adrs").map((row) => row.key)).toEqual(["ADR-0003"]);
+  select(view, "filter", "superseded");
+  expect(byKey(view.root, "message")).toBeUndefined();
+  expect(props(byKey(view.root, "filter")).active).toBe("superseded");
+  expect(items(view.root, "adrs").map((row) => row.key())).toEqual(["ADR-0003"]);
 
   // The first close clears the search, as Esc does; the second closes with the filter kept.
-  component.handleNativeEvent({ type: "action", key: "head/tools/esc-close", act: "close", mods: [] });
+  act(view, "close");
   expect(results).toEqual([]);
-  component.handleNativeEvent({ type: "action", key: "head/tools/esc-close", act: "close", mods: [] });
+  act(view, "close");
   expect(results).toEqual([{ result: { kind: "close" }, state: { filter: "superseded", query: "", selectedId: "ADR-0003" } }]);
 });
 
@@ -185,32 +186,24 @@ test("the preview lists Write, the files and Cancel, shows the selected file, an
     { path: "docs/adr/index.json", content: '{"a":1}\n' },
   ];
   const results: boolean[] = [];
-  const preview = new AdrPreview("Write these", files, theme, tui, (write) => results.push(write));
-  expect(preview.nativeOverlay).toMatchObject({ role: "omp.overlay.adr.preview", size: "lg" });
-  const root = preview.describe();
-  expect(preview.describe()).toBe(root);
-  expect(listItems(root, "rows")).toHaveLength(4);
-  expect(props(byKey(root, "rows")).selected).toBe("r1");
-  expect(markdown(root)).toEqual(["status: proposed", "# Cache\n\nBody."]);
+  const view = new AdrPreview("Write these", files, host, (write) => results.push(write));
+  expect(props(view.root)).toMatchObject({ role: "omp.overlay.adr.preview", size: "lg", head: "ADR · write preview" });
+  expect(items(view.root, "rows").map((row) => row.key())).toEqual(["r0", "r1", "r2", "r3"]);
+  expect(props(byKey(view.root, "rows")).selected).toBe("r1");
+  expect(texts(view.root)).toEqual(["status: proposed", "# Cache\n\nBody."]);
 
-  preview.handleNativeEvent({ type: "select", key: "split/sidebar/rows", item: "r2" });
-  const second = preview.describe();
-  expect(second).not.toBe(root);
-  expect(markdown(second)).toEqual(['{"a":1}']);
-  preview.handleInput("\x1b[6~");
-  const scrolled = preview.describe();
-  expect(nodes(byKey(scrolled, "body-scroll") as NativeNode)[1]?.scroll).toMatchObject({ by: "page-down" });
-  expect(nodes(scrolled).filter((node) => node.scroll)).toHaveLength(1);
-  expect(byKey(scrolled, "body-scroll")?.key).toBe(byKey(second, "body-scroll")?.key);
-  expect(preview.describe()).toBe(scrolled);
+  select(view, "rows", "r2");
+  expect(texts(view.root)).toEqual(['{"a":1}']);
+  press(view, "pageDown");
+  expect(byKey(view.root, "body-scroll")?.children()[0]?.scroll()).toMatchObject({ by: "page-down" });
 
   // Activating a file only explains, as Enter does; Cancel and Write resolve.
-  preview.handleNativeEvent({ type: "activate", key: "split/sidebar/rows", item: "r1" });
+  select(view, "rows", "r1", "activate");
   expect(results).toEqual([]);
-  expect(byKey(preview.describe(), "message")).toBeDefined();
-  preview.handleNativeEvent({ type: "activate", key: "split/sidebar/rows", item: "r3" });
-  preview.handleNativeEvent({ type: "action", key: "actions/write", act: "write", mods: [] });
-  preview.handleNativeEvent({ type: "action", key: "actions/cancel", act: "cancel", mods: [] });
+  expect(byKey(view.root, "message")).toBeDefined();
+  select(view, "rows", "r3", "activate");
+  act(view, "write");
+  act(view, "cancel");
   expect(results).toEqual([false, true, false]);
 });
 
@@ -218,11 +211,11 @@ test("the preview shows written files without the managed-by comment or generate
   const root = await repoFixture();
   const { files } = await createMany(root, "main", [decision], { initialize: true, dryRun: true });
   expect(files.some((file) => file.content.includes("<!--"))).toBe(true);
-  const preview = new AdrPreview("Write these", files, theme, tui, () => {});
+  const view = new AdrPreview("Write these", files, host, () => {});
   for (const item of files.map((_, index) => `r${index + 1}`)) {
-    preview.handleNativeEvent({ type: "select", key: "split/sidebar/rows", item });
-    const shown = markdown(preview.describe());
-    expect(shown.join("\n")).not.toContain("<!--");
-    expect(shown.join("\n")).toMatch(/^# /m);
+    select(view, "rows", item);
+    const shown = texts(view.root).join("\n");
+    expect(shown).not.toContain("<!--");
+    expect(shown).toMatch(/^# /m);
   }
 });

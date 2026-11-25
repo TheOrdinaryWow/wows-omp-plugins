@@ -17,7 +17,7 @@
 omp plugin install adr@wows-omp-plugins
 ```
 
-需要 OMP 19.1.1 或更高版本，并且要在 Git 仓库里使用（本地 `git init` 就够了，不需要远程仓库）。不在 Git 仓库中时，命令会拒绝运行。安装后开一个新会话。
+需要 OMP 19.2.0 或更高版本，并且要在 Git 仓库里使用（本地 `git init` 就够了，不需要远程仓库）。不在 Git 仓库中时，命令会拒绝运行。安装后开一个新会话。
 
 ## 快速上手
 
@@ -71,12 +71,12 @@ omp plugin install adr@wows-omp-plugins
 
 ### `/adr` 控制台
 
-`/adr` 会占满终端：左边是带状态标记的 ADR 列表，右边是选中那条的完整内容。
+`/adr` 会占满终端：左边是按状态着色的 ADR 列表，右边是选中那条的完整内容，下方是它可用操作的按钮，按钮上标着对应按键。
 
 | 按键 | 操作 |
 | --- | --- |
 | 上、下、Home、End | 选择 ADR。 |
-| PgUp、PgDn、鼠标滚轮 | 滚动决策内容。在列表上滚动滚轮会移动选择。 |
+| PgUp、PgDn | 滚动决策内容。 |
 | Tab、Shift+Tab | 在“全部”和各个状态之间切换，并显示数量。 |
 | 小写字母、数字 | 搜索 ID、标题和状态。用 Backspace 修改搜索内容。 |
 | Enter | 选择对当前 ADR 做什么。 |
@@ -91,7 +91,7 @@ omp plugin install adr@wows-omp-plugins
 
 `/adr init` 的预览也是同样的布局，左边是文件列表。按 Shift+W 写入，按 Esc 放弃。
 
-在 [Tern](https://docs.stencil.so/tern/) 中，控制台和预览以原生面板打开，按钮提供同样的操作，代理的 ADR 工具调用也会显示成易读的卡片。
+在 [Tern](https://docs.stencil.so/tern/) 中，控制台和预览以原生面板打开，按钮可以直接点击。代理的 ADR 工具调用在终端和 Tern 里都会显示成易读的卡片。
 
 ### 代理做了什么
 

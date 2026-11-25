@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/details/todo";
+import type { UiNode } from "@oh-my-pi/pi-tui";
 import { prompt as hostPrompt } from "@oh-my-pi/pi-utils";
 
 import { type ExecutionLedger, type LedgerItem, ledgerRows } from "../plugins/omo-prometheus/src/ledger.ts";
@@ -86,10 +87,11 @@ async function scenario(name: string, root: string): Promise<void> {
   const appliedRoles: Array<{ role: string; model: string }> = [];
   const { InternalUrlRouter } = await import("@oh-my-pi/pi-coding-agent/internal-urls");
   const { loadOverallPlanReference } = await import("@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff");
-  const tuiModule = await import("@oh-my-pi/pi-tui");
-  await tuiModule.initTheme();
-  // `theme` is a live binding assigned by initTheme; read it afterwards, not at destructuring time.
-  const hostTheme = tuiModule.theme;
+  const { initTheme } = await import("@oh-my-pi/pi-coding-agent");
+  initTheme();
+  const { currentTheme } = await import("@oh-my-pi/pi-tui/theme/runtime");
+  const { createTestTerminal } = await import("@oh-my-pi/pi-tui/testing/terminal");
+  const hostTheme = currentTheme();
   const { default: register } = await import("../plugins/omo-prometheus/src/index.ts");
   let artifacts = join(root, "artifacts");
   await mkdir(join(artifacts, "local", "prometheus"), { recursive: true });
@@ -112,7 +114,10 @@ async function scenario(name: string, root: string): Promise<void> {
   let sessionId = "integrity-session";
   const notices: string[] = [];
   const menuRenders: string[] = [];
-  let menuKey = "\x1b";
+  /** Each console view the factory built; once the console settles its nodes must be disposed. */
+  const menuNodes: UiNode[] = [];
+  /** The key the next console receives, as the terminal reports it. */
+  let menuKey: { id: string; text?: string } = { id: "escape" };
   const selections: Array<{ title: string; options: string[] }> = [];
   let pickOption = (options: string[]): string | undefined => options[0];
   const inputAnswers: Array<string | undefined> = [];
@@ -252,17 +257,23 @@ async function scenario(name: string, root: string): Promise<void> {
       input: async () => inputAnswers.shift(),
       custom: async (
         factory: (
-          tui: unknown,
+          ui: { requestRender(): void; size(): { columns: number; rows: number } },
           theme: unknown,
           keys: unknown,
           done: (result: unknown) => void,
-        ) => { render(width: number): readonly string[]; handleInput(key: string): void },
-      ) =>
-        await new Promise<unknown>((resolve) => {
-          const component = factory({ requestRender() {} }, hostTheme, {}, resolve);
-          menuRenders.push(Bun.stripANSI(component.render(120).join("\n")));
-          component.handleInput(menuKey);
-        }),
+        ) => UiNode,
+      ) => {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        const size = { columns: 120, rows: 40 };
+        const node = factory({ requestRender() {}, size: () => size }, hostTheme, {}, resolve);
+        const term = createTestTerminal(() => ({ dock: node }), { ...size, theme: hostTheme });
+        term.focus(node);
+        menuNodes.push(node);
+        menuRenders.push(term.screen().join("\n"));
+        term.press(menuKey.id, menuKey.text === undefined ? undefined : { text: menuKey.text });
+        term.dispose();
+        return await promise;
+      },
     },
   } as unknown as ExtensionContext;
   let activeTools = ["task", "read", "write", "atlas_ledger", "atlas_release"];
@@ -621,6 +632,26 @@ async function scenario(name: string, root: string): Promise<void> {
     await utimes(invalid, new Date(2_000), new Date(2_000));
     nativePlanPath = "local:/integrity-plan.md";
     assert.equal((await propose("absent"))?.block, true);
+    return;
+  }
+  if (name === "branch-settings") {
+    await mkdir(join(root, ".omp"), { recursive: true });
+    await writeFile(
+      join(root, ".omp", "plugin-overrides.json"),
+      JSON.stringify({ settings: { "wows-omp-plugin-omo-prometheus": { reviewRoundLimit: 1 } } }),
+    );
+    await hook("session_start");
+    // A rewind or /branch continues the same entries under a new session id, then emits session_branch.
+    sessionId = "branched-session";
+    await hook("session_branch");
+    const review = () =>
+      dispatchTask({
+        agent: "momus",
+        task: `absolute_plan_path: ${sourcePlanFile}\nreview_round: r${sequence++}\nreview_kind: routine`,
+      });
+    interactive = false;
+    assert.equal(await review(), undefined);
+    assert.match((await review())?.reason ?? "", /limit of 1 rounds and no user is available/);
     return;
   }
   if (name === "tier-judge-fallback") {
@@ -1945,9 +1976,10 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(complete("Foreign"), null);
     assert.match(menuRenders.at(-1) ?? "", /Current work/);
     assert.doesNotMatch(menuRenders.at(-1) ?? "", /Foreign work/);
-    menuKey = "\r";
+    menuKey = { id: "enter" };
     await commands.get("atlas")?.("", ctx);
     assert.equal(reference, `atlas://${current.id}/plan.md`);
+    assert(menuNodes.length > 0 && menuNodes.every((node) => node.disposed), "a settled /atlas menu keeps live nodes");
     return;
   }
 
@@ -1968,7 +2000,7 @@ async function scenario(name: string, root: string): Promise<void> {
     const kickoffs = () => sent.filter(({ message }) => message.customType === "wows-omp-omo-prometheus.atlas-start");
     // Enter in a session that already has a conversation asks where to run, then starts on its own.
     entries.push({ type: "message", message: { role: "user", content: "earlier question" } });
-    menuKey = "\r";
+    menuKey = { id: "enter" };
     await commands.get("atlas")?.("", ctx);
     assert.deepEqual(selections.at(-1)?.options, ["Start in a new session", "Start in this session", "Cancel"]);
     assert.match(sessionId, /^fresh-/);
@@ -1991,7 +2023,7 @@ async function scenario(name: string, root: string): Promise<void> {
     };
     await writeSession("older-worker", 1_000_000);
     await writeSession("newer-worker", 2_000_000);
-    menuKey = "R";
+    menuKey = { id: "shift+r", text: "R" };
     await commands.get("atlas")?.("", ctx);
     const choices = selections.at(-1)?.options ?? [];
     assert.equal(choices.length, 2);
@@ -3039,6 +3071,35 @@ async function scenario(name: string, root: string): Promise<void> {
     assert.equal(reference, "local://explicit-unrelated-plan.md");
     return;
   }
+  if (name === "branch-reference") {
+    await finish("T1");
+    const firstEntries = entries.slice();
+    const firstReference = reference;
+    sessionId = "second-session";
+    entries.length = 0;
+    await hook("session_switch", { reason: "new" });
+    // Loading host-dependent storage stays inside the isolated child process.
+    const { AtlasStore } = await import("../plugins/omo-prometheus/src/atlas-store.ts");
+    const second = await new AtlasStore(sessionManager.getSessionDir()).create({
+      name: "second",
+      content: plan,
+      cwd: root,
+      sourcePlanPath: "local://second-plan.md",
+      sourceSessionId: "approved-origin",
+      proposedByToolCallId: "second-native",
+      availableAgents: ["task", "reviewer"],
+    });
+    await commands.get("atlas")?.("second", ctx);
+    assert.equal(reference, `atlas://${second.id}/plan.md`);
+    // Rewinding to where the first plan ran continues its entries in a new session, then emits session_branch.
+    sessionId = "rewound-session";
+    entries.splice(0, entries.length, ...firstEntries);
+    await hook("session_branch");
+    ok(await call({ action: "status" }));
+    assert.equal(reference, firstReference);
+    assert.equal((await row("T1")).status, "done");
+    return;
+  }
   if (name === "exact-commands") {
     assert(!tools.has("prometheus_ledger") && !tools.has("prometheus_release"));
     const approvedReference = reference;
@@ -3058,12 +3119,13 @@ async function scenario(name: string, root: string): Promise<void> {
     // While active, bare /atlas opens only the running plan's read-only view; Esc closes it and Atlas stays.
     confirmAnswer = false;
     const rendersBefore = menuRenders.length;
-    menuKey = "\x1b";
+    menuKey = { id: "escape" };
     await commands.get("atlas")?.("", ctx);
     assert.equal(menuRenders.length, rendersBefore + 1);
     const activeView = menuRenders.at(-1) ?? "";
     assert.match(activeView, /Active in this session/);
-    assert.match(activeView, /exit Atlas/);
+    assert.match(activeView, /Exit Atlas/);
+    assert(menuNodes.at(-1)?.disposed, "a closed plan view keeps live nodes");
     assert.doesNotMatch(activeView, /\bstart\b|resume|rename|delete/);
     ok(await call({ action: "status" }));
     await commands.get("atlas")?.("exit", ctx);
@@ -3071,13 +3133,13 @@ async function scenario(name: string, root: string): Promise<void> {
     ok(await call({ action: "status" }));
     confirmAnswer = true;
     // Shift+X in the view exits the same way /atlas exit does.
-    menuKey = "X";
+    menuKey = { id: "shift+x", text: "X" };
     await commands.get("atlas")?.("", ctx);
     assert.deepEqual(confirmTitles, ["Exit Atlas early?", "Exit Atlas early?"]);
     refused(await call({ action: "status" }));
     await commands.get("atlas")?.("exit", ctx);
     assert.match(notices.at(-1) ?? "", /not active/);
-    menuKey = "\x1b";
+    menuKey = { id: "escape" };
     await commands.get("atlas")?.("", ctx);
     assert.match(menuRenders.at(-1) ?? "", /integrity/);
     refused(await call({ action: "status" }));
@@ -4183,7 +4245,9 @@ if (process.env[CHILD_ENV]) {
       "planning-bash-abort",
       "planning-bash-switch",
       "tier-judge-fallback",
+      "branch-reference",
       "review-round-limit",
+      "branch-settings",
       "review-artifacts",
       "steps-governance",
       "heavy-verify",

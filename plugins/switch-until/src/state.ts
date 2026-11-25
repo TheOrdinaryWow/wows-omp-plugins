@@ -1,10 +1,12 @@
+import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/utils/render-utils";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
 import type { UntilSettings } from "#src/settings.ts";
 
 export const ENTRY_TYPE = "switch-until";
+const CLI_THINKING_LEVELS: readonly ConfiguredThinkingLevel[] = ["off", ...THINKING_EFFORTS, "auto"];
 const END_REASONS = ["met", "cancel", "foreign-change", "limit"] as const;
 type EndReason = (typeof END_REASONS)[number];
 type LimitReason = "turn-limit" | "time-limit";

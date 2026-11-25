@@ -69,7 +69,7 @@ trigger 不能包含空白字符，也不能包含以下字符：`/ ! @ ^ # : $ 
 
 补充规则：
 
-- 只在正文区域匹配。文本先经过 `@oh-my-pi/pi-tui/prompt/markdown-prose` 的 `maskNonProse` 处理，它会在保持长度不变的前提下把行内代码、围栏代码块以及 XML 或 HTML 片段替换为空白。只有落在正文中的匹配才会展开。
+- 只在正文区域匹配。文本先经过 `@oh-my-pi/pi-coding-agent/modes/view-model/prompt/markdown-prose` 的 `maskNonProse` 处理，它会在保持长度不变的前提下把行内代码、围栏代码块以及 XML 或 HTML 片段替换为空白。只有落在正文中的匹配才会展开。
 - 去掉首尾空白后以 shell 或 Python 标记（`!`、`$`）开头的文本会整体跳过展开。
 - 展开只做一遍，正文不会再次展开。
 - 每次展开在状态文件中记一次使用。
@@ -93,19 +93,19 @@ trigger 不能包含空白字符，也不能包含以下字符：`/ ! @ ^ # : $ 
 
 展开在扩展的 `input` 事件（`pi.on("input", ...)`）中进行，返回 `{ text }`。它适用于 `interactive` 和 `rpc` 来源，来源为 `extension` 的文本从不展开。
 
-存储会在会话启动、每次 `input` 事件以及每次控制台修改后重新加载。每次重新加载后，以及 `session_start` 和 `session_switch` 时，都会重新注册高亮。
+存储会在会话启动、每次 `input` 事件以及每次控制台修改后重新加载。每次重新加载后，以及 `session_start` 和 `session_switch` 时，都会更新要高亮的词。
 
-高亮通过 `@oh-my-pi/pi-tui/prompt/magic-keywords` 中的 `setMagicKeywords` 注册，与 `@oh-my-pi/pi-coding-agent/modes/magic-keywords` 中 `MAGIC_KEYWORDS` 提供的宿主关键词并列。片段触发词使用色相 `190` 和 `290`。
+高亮是一个输入框装饰器（`ctx.ui.composer.addDecorator`）：交互式 TUI 有输入框时挂载一次，`session_shutdown` 时移除；RPC、ACP 和无界面会话没有输入框，也就没有高亮。它用 `@oh-my-pi/pi-coding-agent/session/magic-keywords` 的 `magicKeywordRanges` 找出作为正文出现的有效触发词，因此边界与宿主魔法关键词一致。终端里片段触发词显示色相 `190` 到 `290` 的静态渐变，Tern 中显示强调色。
 
 ## 控制台、表单和对话框
 
-控制台和表单都是插件组件。Tern 使用原生版本，终端使用分栏控制台和带边框的表单。
+控制台和表单各是一棵 pi-tui 节点树，终端负责绘制，Tern 原生显示。
 
-- 宿主支持 `picker` 时，Tern 中的控制台是原生 `picker` 面板，预览位于列表下方。不支持的宿主使用通用原生布局。终端保留分栏视图。
-- 表单是 `SnippetForm`，原生浮层角色为 `omp.overlay.snippets.form`。它输出草稿：`key`、`scope`、`description` 和 `body`。只有获得焦点的文本字段是可编辑的输入框，因此光标跟随键盘。
+- 控制台是一个 `picker`，和宿主自己的选择器一样显示在编辑器的位置。终端把它画成带边框的面板：顶部是“全部”“全局”“工作区”标签和搜索框，然后是列表、列表下方的预览、按键提示以及结果和问题行。较长的正文按终端高度显示能放下的部分，PgUp 和 PgDn 滚动。Tern 显示原生 picker 面板，预览里是完整正文。
+- 表单是 `SnippetForm` 浮层。Tern 得到角色为 `omp.overlay.snippets.form` 的 `overlay` 面板，终端绘制带边框的卡片。它输出草稿：`key`、`scope`、`description` 和 `body`。按键交给表单，由表单编辑获得焦点的字段；Tern 的编辑按字段送达。
 - 保存时，命令用 `formatSnippetSource(description, body)` 格式化草稿，并通过 `store.write` 写入。修改 key 时先用 `store.rename` 重命名并保留状态，正文有变化再写入。
 - 没有自定义 UI（`ctx.mode` 不是 `tui`，或没有 `ctx.ui.custom`）时，同样的草稿来自 `ctx.ui.input`、`ctx.ui.select`（仅新建时选择范围）和 `ctx.ui.editor`（正文）。任何路径都不会显示 frontmatter。
-- 在终端表单中，Enter 在 Key、Scope、Description 字段上跳到下一个字段，在 Body 中换行，焦点在 Save 或 Cancel 上时按下它。Left、Right 或 Space 切换 Scope。key 无效时保存，光标会回到 Key 并显示原因。在 Tern 中点击字段即可编辑。
+- 在表单中，Enter 在 Key、Scope、Description 字段上跳到下一个字段，在 Body 中换行，焦点在 Save 或 Cancel 上时按下它。Left、Right 或 Space 切换 Scope。key 无效时保存，光标会回到 Key 并显示原因。在 Tern 中点击字段即可编辑。
 - 在 Tern 控制台中，搜索框和 All、Global、Workspace 标签位于顶部，预览位于列表下方，操作栏提供所有操作及其快捷键。
 
 ## 不使用终端界面时

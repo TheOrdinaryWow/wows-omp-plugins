@@ -1,10 +1,10 @@
-import type { NativeChild } from "@oh-my-pi/pi-tui";
-import { compact, kv, md, node, span, text } from "@oh-my-pi/pi-tui";
-import { OwnerMemo } from "@oh-my-pi/pi-tui/native/memo";
-import type { NativeToolHead, NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
+import type { ToolRenderResultOptions } from "@oh-my-pi/pi-coding-agent";
+import { type JSXNode, nativeRendering, type UiNode } from "@oh-my-pi/pi-tui";
+import type { TspCardStatus, TspText, TspTone } from "@oh-my-pi/pi-wire";
 
 import { type AuditState, type ConclusionEvidence, limitLabel, type RoundRecord, remainingFindings } from "#src/ledger.ts";
 import { modelTextNodes } from "#src/model-text.ts";
+import { h, kv, span } from "#src/tsp.ts";
 
 /** Structured `audit_round` result details; the text content stays the model-facing receipt. */
 export interface RoundCardDetails {
@@ -68,6 +68,7 @@ interface RoundArgs {
   conclusion?: unknown;
 }
 
+const TOOL = "audit_round";
 const TITLE = "Audit Round";
 
 function callTarget(args: RoundArgs | undefined): string | undefined {
@@ -78,13 +79,38 @@ function callTarget(args: RoundArgs | undefined): string | undefined {
   return op;
 }
 
-function head(args: RoundArgs | undefined, note?: string): NativeToolHead {
-  const target = callTarget(args);
-  return { title: TITLE, ...(target ? { target } : {}), ...(note ? { note } : {}) };
+interface CardHead {
+  target?: string;
+  note?: string;
+  status: TspCardStatus;
+  tone?: TspTone;
 }
 
-export function describeRoundCall(args: RoundArgs | undefined): NativeToolView {
-  return { tool: head(args) };
+/**
+ * Tern frames the body under its generic tool card head (the tool's label and an args summary); the terminal's
+ * custom-tool box draws no head, so there the body sits under an inline head naming the operation and its state.
+ * In Tern a first `facts` row keeps what that generic head lacks: the outcome note in its tone.
+ */
+function card(head: CardHead, body: readonly JSXNode[]): UiNode | undefined {
+  if (nativeRendering()) {
+    const facts = head.note
+      ? h("row", { key: "facts", gap: "sm" }, h("badge", { text: head.note, tone: head.tone ?? VERDICT_TONE[head.note] ?? "accent" }))
+      : undefined;
+    return facts || body.length > 0 ? h("col", {}, facts, ...body) : undefined;
+  }
+  return h(
+    "tool",
+    {
+      name: TOOL,
+      title: TITLE,
+      frame: "inline",
+      status: head.status,
+      ...(head.target ? { target: head.target, targetKind: "text" as const } : {}),
+      ...(head.note ? { note: head.note } : {}),
+      ...(head.tone ? { tone: head.tone } : {}),
+    },
+    ...body,
+  );
 }
 
 type ResultLike = { content?: readonly { type: string; text?: string }[]; details?: unknown; isError?: boolean };
@@ -104,9 +130,9 @@ function counts(c: { critical: number; major: number; minor: number; picky: numb
   return `critical ${c.critical} · major ${c.major} · minor ${c.minor} · picky ${c.picky}`;
 }
 
-const VERDICT_TONE: Record<string, string> = { "threshold-ready": "success", "cap-reached": "warning" };
+const VERDICT_TONE: Record<string, TspTone> = { "threshold-ready": "success", "cap-reached": "warning" };
 
-function stateValue(details: RoundCardDetails) {
+function stateValue(details: RoundCardDetails): TspText {
   if (details.conclusion) {
     const tone = details.conclusion.kind === "threshold-convergence" ? "success" : "warning";
     return [span(details.conclusion.kind, `${tone} strong`)];
@@ -116,28 +142,25 @@ function stateValue(details: RoundCardDetails) {
   return [span(details.ended ? "ended" : "in progress", "muted")];
 }
 
-function factSection(label: string, source: string, key: string): NativeChild {
-  return node("section", { head: [span(label, "muted")] }, [md(source)], key);
+function factSection(label: string, source: string, key: string): UiNode {
+  return h("section", { key, head: [span(label, "muted")] }, h("md", { text: source }));
 }
 
 /** Only facts belonging to this change; the full ledger stays in the folded receipt. */
-function operationFacts(details: RoundCardDetails): NativeChild[] {
+function operationFacts(details: RoundCardDetails): JSXNode[] {
   const round = details.op === "record" ? details.round : undefined;
   const conclusion = details.op === "conclude" || details.op === "extend" ? details.conclusion : undefined;
-  return compact<NativeChild>([
+  return [
     round?.coverage ? factSection("Coverage", round.coverage, "coverage") : undefined,
     round?.checks ? factSection("Checks", round.checks, "checks") : undefined,
     ...(round?.findings ?? []).map((finding) =>
-      node(
+      h(
         "section",
-        { head: [span(finding.id, "strong"), span(` · ${finding.severity} · ${finding.status}`, "muted")] },
-        compact([
-          md(finding.summary),
-          kv([["Origin", finding.origin]]),
-          factSection("Evidence", finding.evidence, "evidence"),
-          finding.resolution ? factSection("Resolution", finding.resolution, "resolution") : undefined,
-        ]),
-        `finding-${finding.id}`,
+        { key: `finding-${finding.id}`, head: [span(finding.id, "strong"), span(` · ${finding.severity} · ${finding.status}`, "muted")] },
+        h("md", { text: finding.summary }),
+        kv([["Origin", finding.origin]]),
+        factSection("Evidence", finding.evidence, "evidence"),
+        finding.resolution ? factSection("Resolution", finding.resolution, "resolution") : undefined,
       ),
     ),
     ...(round?.resolutions ?? []).map((resolution, index) =>
@@ -148,7 +171,7 @@ function operationFacts(details: RoundCardDetails): NativeChild[] {
     ...(conclusion?.evidence ?? []).map((evidence, index) =>
       factSection(`Round ${evidence.round} observation`, evidence.observation, `observation-${index}`),
     ),
-  ]);
+  ];
 }
 
 /** A refusal's reason, not its subsequent instructions or multi-round ledger. */
@@ -161,45 +184,57 @@ function summary(source: string): string {
   return line.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? line;
 }
 
-const memo = new OwnerMemo<NativeToolView>();
-
-export function describeRoundResult(result: ResultLike, args: RoundArgs | undefined, expanded: boolean): NativeToolView {
-  return memo.get(result, [result.details, result.isError, expanded, callTarget(args)], () => {
-    const body = resultText(result);
-    const receipt =
-      expanded && body
-        ? node("section", { head: [span("Model text", "muted")], collapsible: true, collapsed: true }, modelTextNodes(body), "model-text")
-        : undefined;
-    if (result.isError || !isCardDetails(result.details)) {
-      return {
-        tool: head(args, result.isError ? "refused" : undefined),
-        tone: result.isError ? "error" : undefined,
-        body: compact([text(summary(body) || (result.isError ? "Audit operation refused." : "Audit operation completed.")), receipt]),
-        preview: "none",
-      };
-    }
-    const d = result.details;
-    const open = d.open.critical + d.open.major + d.open.minor + d.open.picky;
-    const round = d.op === "record" ? d.round : undefined;
-    return {
-      tool: head(args ?? { op: d.op }, d.verdict),
-      tone: d.capPending ? "warning" : d.conclusion?.kind === "threshold-convergence" ? "success" : undefined,
-      body: compact<NativeChild>([
-        kv([
-          ["Round", `${d.round?.round ?? d.rounds} of ${d.roundLimit}`],
-          ["Auditors", round?.auditorModels.join(", ")],
-          ["Found", round ? counts(round) : undefined],
-          ["Rejected", round?.rejected !== undefined ? String(round.rejected) : undefined],
-          ["Loop-induced", round?.loopInduced !== undefined ? String(round.loopInduced) : undefined],
-          ["Resolved earlier findings", round?.resolutions ? String(round.resolutions.length) : undefined],
-          ["Open", open > 0 ? [span(counts(d.open), "warning")] : [span("none", "success")]],
-          ["State", stateValue(d)],
-          ["Intensity", d.intensity],
-        ]),
-        ...(expanded ? operationFacts(d) : []),
-        receipt,
-      ]),
-      preview: "none",
-    };
-  });
+/** The full receipt, folded in Tern; the terminal cannot unfold a section, so it shows it open once the card is expanded. */
+function receipt(body: string): UiNode {
+  return h(
+    "section",
+    { key: "model-text", head: [span("Model text", "muted")], collapsible: true, collapsed: nativeRendering() },
+    ...modelTextNodes(body),
+  );
 }
+
+function renderResult(result: ResultLike, args: RoundArgs | undefined, expanded: boolean): UiNode | undefined {
+  const body = resultText(result);
+  const folded = expanded && body ? receipt(body) : undefined;
+  if (result.isError || !isCardDetails(result.details)) {
+    return card(
+      {
+        target: callTarget(args),
+        status: result.isError ? "error" : "done",
+        ...(result.isError ? { note: "refused", tone: "error" } : {}),
+      },
+      [
+        h("text", { text: summary(body) || (result.isError ? "Audit operation refused." : "Audit operation completed."), wrap: "word" }),
+        folded,
+      ],
+    );
+  }
+  const d = result.details;
+  const open = d.open.critical + d.open.major + d.open.minor + d.open.picky;
+  const round = d.op === "record" ? d.round : undefined;
+  const tone: TspTone | undefined = d.capPending ? "warning" : d.conclusion?.kind === "threshold-convergence" ? "success" : undefined;
+  const note = d.verdict ?? (d.capPending ? "round limit reached" : d.conclusion?.kind);
+  return card({ target: callTarget(args ?? { op: d.op }), status: "done", ...(note ? { note } : {}), ...(tone ? { tone } : {}) }, [
+    kv([
+      ["Round", `${d.round?.round ?? d.rounds} of ${d.roundLimit}`],
+      ["Auditors", round?.auditorModels.join(", ")],
+      ["Found", round ? counts(round) : undefined],
+      ["Rejected", round?.rejected !== undefined ? String(round.rejected) : undefined],
+      ["Loop-induced", round?.loopInduced !== undefined ? String(round.loopInduced) : undefined],
+      ["Resolved earlier findings", round?.resolutions ? String(round.resolutions.length) : undefined],
+      ["Open", open > 0 ? [span(counts(d.open), "warning")] : [span("none", "success")]],
+      ["State", stateValue(d)],
+      ["Intensity", d.intensity],
+    ]),
+    ...(expanded ? operationFacts(d) : []),
+    folded,
+  ]);
+}
+
+/** `audit_round` render hooks: once a result exists only the result draws. */
+export const roundCard = {
+  renderCall: (args: RoundArgs | undefined) => card({ target: callTarget(args), status: "running" }, []),
+  renderResult: (result: ResultLike, options: ToolRenderResultOptions, _theme: unknown, args?: RoundArgs) =>
+    renderResult(result, args, options.expanded),
+  mergeCallAndResult: true,
+};

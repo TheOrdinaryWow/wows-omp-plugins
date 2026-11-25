@@ -40,7 +40,7 @@ REFERENCE*.md                  plugin-state snapshot envelope shared by plugins
 
 - `.github/workflows/ci.yml` runs lint, the catalog check, type check, and tests
   on every push and PR. Types and tests run twice: against the omp version in
-  `bun.lock` and against 19.1.1, the oldest host the plugins support. Raise
+  `bun.lock` and against 19.2.0, the oldest host the plugins support. Raise
   that matrix entry only together with the documented floor. Types and tests
   are skipped for the release PR, for its `chore: release main` merge, and for
   changes that touch only `README*.md`, `REFERENCE*.md`, `CHANGELOG.md`,
@@ -74,7 +74,7 @@ REFERENCE*.md                  plugin-state snapshot envelope shared by plugins
 ## Host version floor
 
 The plugins track the latest omp release and keep working on every release
-from the floor (the oldest omp every plugin supports, currently 19.1.1) up to
+from the floor (the oldest omp every plugin supports, currently 19.2.0) up to
 it. That range is held by code that is correct on all of them, never by
 workarounds. Decided by the maintainer:
 
@@ -273,12 +273,12 @@ It derives its legal agent set from the live `task` tool description and reads
 its settings on every call from `ctx.cwd` (never `process.cwd()`), because plugin
 settings are project-scoped and several sessions can share one process.
 
-Its runtime floor, like every plugin's, is omp 19.1.1; CI also tests the locked
+Its runtime floor, like every plugin's, is omp 19.2.0; CI also tests the locked
 dev dependency, which may track a newer release, so it covers both ends. The SDK harness uses
 `CreateAgentSessionOptions.cacheWarming`, introduced in 18.3.5, to prevent
 background provider requests during isolated tests. Before relying on a new host
 API, type-check a throwaway copy against the floor
-(`bun add -d @oh-my-pi/pi-coding-agent@19.1.1`). If the floor lacks an API,
+(`bun add -d @oh-my-pi/pi-coding-agent@19.2.0`). If the floor lacks an API,
 raise the floor (see "Host version floor") instead of adding a shim.
 
 Judging goes through OMP's `judge` role (`resolveJudge`); the plugin keeps no
@@ -329,18 +329,19 @@ Every user-facing surface a plugin adds (commands, dialogs, widgets, status
 lines, notices) must work in all three places omp runs, and a change to one is
 verified in each it can reach, naming any that were not:
 
-- **Terminal TUI** (`ctx.mode === "tui"`): `render()` output and host dialogs.
+- **Terminal TUI** (`ctx.mode === "tui"`): pi-tui node trees painted by the
+  host's terminal painters, and host dialogs.
 - **Non-TUI hosts.** In RPC/ACP `ctx.mode` is `"rpc"` and `hasUI` is true, but
-  `ui.custom` returns undefined and component widgets are dropped; `select`,
+  `ui.custom` returns undefined and widget factories are dropped; `select`,
   `confirm`, `input` and `editor` still work. With `hasUI` false there is no
   dialog at all: offer a command form (`/atlas exit`) and report through a
   display message (`commandNotice`), and refuse instead of assuming consent.
-- **Tern**, through `describe()` (next section).
+- **Tern**: the same node trees, drawn natively (next section).
 
 Prefer host dialogs (`select`, `confirm`, `input`, `editor`, `askDialog`): the
 host renders each of them natively in all three, so they need no per-mode code.
-A custom component is TUI-only unless it also implements the Tern surface, and
-it always needs a host-dialog fallback when `ctx.mode !== "tui"`.
+A `ctx.ui.custom` view draws in the TUI and in Tern, and it always needs a
+host-dialog fallback when `ctx.mode !== "tui"`.
 
 What goes into a host dialog matters. `confirm(title, message)` is
 `select(`${title}\n${message}`, ["Yes", "No"])`: the TUI paints every message
@@ -351,41 +352,80 @@ criteria, failure history) behind a "review details" option that opens a
 read-only `editor`, and use `select` options whose labels name the
 consequence; option descriptions render muted with inline markdown.
 
-## Tern native rendering
+## Building views with pi-tui
 
-Tern's own documentation is at <https://docs.stencil.so/tern/index.html>;
-consult it when writing or changing a Tern integration.
+Since omp 19.2.0, `@oh-my-pi/pi-tui` is a reactive tree of Tern Surface
+Protocol nodes: one tree is painted as rows by the terminal and drawn natively
+by Tern. The old component library (`Component`, `render()`, `describe()`,
+`nativeOverlay`, `handleNativeEvent`, `chrome`, `native/*`) is gone. The host's
+guide is `omp://extensions.md` ("Rendering extension points", "Migrating from
+pi-tui"); the kinds and their props are `TspProps` in `@oh-my-pi/pi-wire`
+`src/tsp.ts`. Tern's own documentation is at
+<https://docs.stencil.so/tern/index.html>. Verified by hand on omp 19.2.0 and
+Tern 0.9.31:
 
-In Tern, omp speaks the Tern Surface Protocol and asks each component for
-`describe(cx)` instead of `render()`; a component without it shows up as raw
-TUI rows. The adr, roadmap and omo-prometheus consoles therefore keep
-`render()` for plain terminals and add `describe()`, `nativeOverlay`
-(`size: "lg"`, role `omp.overlay.<plugin>.<view>`, a glass sheet like the
-host's plan review) and `handleNativeEvent`, whose clicks run the same code as
-the matching keys. Verified by hand on Tern 0.9.5:
-
-- `leafKey`, `rootToggleExpanded` and other `native/node` values are type-only
-  at the `@oh-my-pi/pi-tui` root (`export type *`); import them from
-  `@oh-my-pi/pi-tui/native/node`.
+- No JSX in plugin code. The extension loader does not rewrite the runtime
+  import that `@jsxImportSource @oh-my-pi/pi-tui` compiles to: compiled omp
+  refuses to load the plugin ("Cannot find package '@oh-my-pi/pi-tui'") and
+  npm omp builds nodes from a second pi-tui copy that the host does not
+  recognise. Plugins build nodes with `h()`, `span()` and `kv()` from their own
+  `src/tsp.ts`, byte-identical in every plugin (copy
+  `plugins/roadmap/src/tsp.ts`).
+- Every runtime import of a host module must be in the host's bundled module
+  map: the keys matching `"(@oh-my-pi/[^"]+)":[A-Za-z_$][\w$]*[,}]` in
+  `node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js` (compiled omp ships the
+  same keys). Outside it, npm omp loads a second copy from disk and compiled
+  omp fails. `import type` is exempt.
+  Plugins never import host views, painters or widgets (`pi-coding-agent/ui/*`,
+  the view components under `modes/view-model/*`, `pi-tui/term/*`) or reuse
+  host roles such as `omp.form.field`: host style modules restyle those once
+  they load. Bundled non-UI helpers are fine, such as `maskNonProse` from
+  `modes/view-model/prompt/markdown-prose`, which snippets shares with the
+  composer.
+- A console is `ctx.ui.custom(factory, { overlay: true, fullscreen? })`
+  returning one root node. Keys reach its `onKey` as `key.id` (`up`,
+  `pageDown`, `shift+a`); clicks reach `onSelect`, `onActivate` and
+  `onAction`, which run the same code as the matching keys. When
+  `nativeRendering()` is true at factory time the root is an `overlay`
+  (`size: "lg"`, `modal`, `head`, role `omp.overlay.<plugin>.<view>`), which
+  Tern draws as a glass sheet; otherwise it is the screen itself, which the
+  host mounts without a frame. Without `overlay` the view replaces the
+  composer, as the snippets console does.
+- A `picker` root is the exception: Tern draws a picker only as its own sheet
+  and shows an empty one when it sits inside an `overlay`. The snippets
+  console, `/atlas` and the `/switch-until` model picker return the bare
+  `picker` and mount it without `overlay` in Tern, as the host's model picker
+  does.
+- Terminal painters do not scroll: a `list` `max` cuts the tail and `reveal`
+  is ignored, so terminal views window their lists around the selection and
+  page long bodies themselves. Tern scrolls a `list` with `max`, honours
+  `reveal`, and takes a `scroll` request on the list's content.
+- A `size: "lg"` sheet is as tall as its content, so a console whose views
+  differ in length changes size and pushes its actions off-screen. The
+  consoles give their root `col` equal `min.h`/`max.h` of
+  `max(16, ui.size().rows - 8)` lines, let only the pane row grow
+  (`grow: 1, shrink: 1, basis: 0, min: { h: 0 }`) and scroll each pane in a
+  `list` with a `max`.
 - A list `item` is one line: label, then a dim inline `detail` that truncates
   in a 32ch sidebar. Put status in tone and icon, extra facts in the `title`
   tooltip, and file names before their directories.
-- An editor-replacing `ctx.ui.custom` gets no sheet; `/atlas` mounts as a
-  fullscreen overlay when `isNativeRendering()` is true.
-- A `size: "lg"` sheet is 960px wide but as tall as its content, so a console
-  whose views differ in length changes size and pushes its actions off-screen.
-  The consoles give their root `col` equal `min.h`/`max.h` of
-  `max(16, terminal rows - 8)` lines (rows in the memo key), let only the pane
-  row grow (`grow: 1, shrink: 1, basis: 0, min: { h: 0 }`), and scroll each
-  pane in a `list` with a `max`: a `col` with `max.h` only clips, and a list
-  is the only plain node Tern scrolls. Its text cannot be selected. A
-  `NativeNode.scroll` request goes on the list's content, not the list: Tern
-  moves the scroller above the node that carries it. A huge `basis` on the
-  root does not size the sheet.
-- To look at it, run `tern serve --control /tmp/t.sock --out DIR`, then drive
-  it with `tern ctl --control /tmp/t.sock type|key|click X Y|shot NAME`; shot
-  PNGs are at twice the click coordinates. `PI_TUI_TSP_RECORD=file.jsonl omp`
-  records every frame.
+- Tool render hooks return nodes. The terminal draws no head for an extension
+  tool's card, while Tern draws its generic head (label and arguments), so the
+  hooks draw their own head line only while `nativeRendering()` is false and
+  in Tern keep just the facts that generic head lacks. The host calls the
+  hooks inside a reactive computation, so a card redraws when Tern attaches.
+  An extension tool that overrides a built-in by name and has hooks keeps the
+  built-in's view in Tern when its hooks return `undefined` there, as
+  omp-herdr-dag's `todo` does.
+- Tests paint with `renderBlock` (`@oh-my-pi/pi-tui/term/render`), read the
+  native tree with `describeTree` (`testing/corpus`) and drive keys with
+  `createTestTerminal` (`testing/terminal`).
+- To look at Tern, run `tern serve --control /tmp/t.sock --out DIR`, start omp
+  by typing the path of a launcher script (`tern ctl ... type` takes exactly
+  one argument), then drive it with
+  `tern ctl --control /tmp/t.sock type|key|click X Y|shot NAME`; shot PNGs are
+  at twice the click coordinates. `PI_TUI_TSP_RECORD=file.jsonl omp` records
+  every frame.
 
 On macOS `TMPDIR` is under the `/var` symlink, so Atlas refuses the temporary
 session directories in `src/omo-prometheus-execution.test.ts`; run the suite

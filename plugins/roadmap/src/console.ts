@@ -1,52 +1,19 @@
 import { relative } from "node:path";
 
-import {
-  type Component,
-  code,
-  col,
-  getMarkdownTheme,
-  item,
-  type KeyId,
-  keyed,
-  kv,
-  Markdown,
-  matchesKey,
-  md,
-  type NativeChild,
-  type NativeNode,
-  type NativeUiEvent,
-  node,
-  padding,
-  routeSgrMouseInput,
-  row as rowNode,
-  type SgrMouseEvent,
-  span,
-  type Theme,
-  type TUI,
-  text as textNode,
-  truncateToWidth,
-  visibleWidth,
-  wrapTextWithAnsi,
-} from "@oh-my-pi/pi-tui";
-import {
-  bottomBorder,
-  dividerSplit,
-  editorKey,
-  rawKeyHint,
-  renderSegmentTrack,
-  row,
-  splitBodyWidth,
-  splitRow,
-  topBorder,
-} from "@oh-my-pi/pi-tui/chrome";
-import { leafKey } from "@oh-my-pi/pi-tui/native/node";
-import { actionBar, actionButton, actionHint, hintsRow, itemIndex, type NativeHint, selectList } from "@oh-my-pi/pi-tui/native/overlay";
+import type { ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
+import { type KeyEvent, nativeRendering, signal, type UiNode } from "@oh-my-pi/pi-tui";
+import { renderBlock } from "@oh-my-pi/pi-tui/term/render";
+import { truncate, visibleWidth, wrap } from "@oh-my-pi/pi-tui/text/width";
+import type { Theme } from "@oh-my-pi/pi-tui/theme/contract";
+import { currentTheme } from "@oh-my-pi/pi-tui/theme/runtime";
+import type { TspSpan, TspText, TspTone } from "@oh-my-pi/pi-wire";
 
 import { type AtlasStagePlan, type StageCoverage, stageCoverage } from "#src/atlas.ts";
 import { type Model, overdue, type RoundDoc, type StageDoc, type StageStatus, type TodoItem, today } from "#src/documents.ts";
 import { planLabel } from "#src/handoff.ts";
 import type { StageOrder } from "#src/settings.ts";
 import { byId, orderStages, plannedRoundCounts, roundActual, schedule, stageReadiness } from "#src/state.ts";
+import { h, kv, span } from "#src/tsp.ts";
 import type { PreviewFile } from "#src/ui.ts";
 
 export type ConsoleSection = "stages" | "rounds" | "todos";
@@ -96,13 +63,11 @@ export interface PreviewRequest {
   files: PreviewFile[];
 }
 
+/** What a view reads from the host: the terminal size, reactively. */
+export type ConsoleHost = Pick<ExtensionUiHost, "size">;
+
 const SECTIONS: readonly ConsoleSection[] = ["stages", "rounds", "todos"];
 const SECTION_LABELS: Readonly<Record<ConsoleSection, string>> = { stages: "Stages", rounds: "Rounds", todos: "Open TODOs" };
-/** Rows per wheel notch, as in the host's fullscreen plan review. */
-const WHEEL_ROWS = 3;
-const LABEL_WIDTH = 10;
-/** Below this many columns the frame cannot hold both panes; lines are clipped instead of overflowing. */
-const MIN_FRAME_WIDTH = 24;
 
 // Tern sizes lg sheets by content, so fix the root's line extent from terminal height; only a list with max scrolls.
 const SHEET_MARGIN_LINES = 8;
@@ -110,50 +75,34 @@ const SHEET_MIN_LINES = 16;
 const FILL = { grow: 1, shrink: 1, basis: 0, min: { h: 0 } } as const;
 const SCROLLER = { ...FILL, max: { lines: 10_000 } } as const;
 
-function sheetRoot(rows: number) {
-  const lines = Math.max(SHEET_MIN_LINES, rows - SHEET_MARGIN_LINES);
-  const h = `${lines}lines` as const;
-  return { gap: "md", min: { h }, max: { h } } as const;
-}
-
-function scroller(key: string, children: NativeChild[]): NativeNode {
-  return node("list", SCROLLER, [col(children, { gap: "md" })], key);
-}
-
-type Entry =
-  | { kind: "stage"; id: string; title: string; stage: StageDoc }
-  | { kind: "round"; id: string; title: string; round: RoundDoc }
-  | { kind: "todo"; id: string; title: string; todo: TodoItem; round: string };
-
-/** Theme colors a detail run may take; native spans read the same names as semantic tokens (`bold` as `strong`). */
-type Ink = "accent" | "success" | "warning" | "error" | "muted" | "dim" | "bold";
-/** One run of styled text, painted with the theme for the terminal and sent as a span to Tern. */
-type Run = string | { readonly t: string; readonly ink: Ink };
-type Rich = string | readonly Run[];
-/** A native text span (`TspSpan`): `s` holds the semantic tokens. */
-type Span = { t: string; s?: string };
-type Tone = NonNullable<NonNullable<NativeNode["p"]>["tone"]>;
+type Rich = string | readonly TspSpan[];
 
 /** A keyed command the console offers: one key hint in the terminal, one button in Tern. */
 interface Command {
   act: string;
-  key: KeyId;
+  key: string;
   label: string;
   tone?: "accent" | "error";
 }
 
-function ink(t: string, color: Ink): Run {
-  return { t, ink: color };
+/** One sidebar row. */
+interface Row {
+  label: TspSpan[];
+  detail?: TspText;
+  value?: TspText;
+  tone?: TspTone;
+  title?: string;
 }
 
-function paint(theme: Theme, value: Rich): string {
-  if (typeof value === "string") return value;
-  return value.map((run) => (typeof run === "string" ? run : run.ink === "bold" ? theme.bold(run.t) : theme.fg(run.ink, run.t))).join("");
+/** The selected item's detail: a heading and the groups below it. */
+interface DetailView {
+  key: string;
+  heading: string;
+  groups: UiNode[];
 }
 
-function spans(value: Rich): Span[] {
-  if (typeof value === "string") return [span(value)];
-  return value.map((run) => (typeof run === "string" ? span(run) : span(run.t, run.ink === "bold" ? "strong" : run.ink)));
+function spansOf(value: Rich): TspSpan[] {
+  return typeof value === "string" ? [span(value)] : [...value];
 }
 
 function plural(count: number, noun: string): string {
@@ -164,424 +113,416 @@ function singleLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function statusRun(theme: Theme, status: StageStatus): Run {
-  if (status === "closed") return ink(theme.status.success, "success");
-  if (status === "active") return ink(theme.status.running, "accent");
-  if (status === "dropped") return ink(theme.status.disabled, "muted");
-  return ink(theme.status.pending, "dim");
+function glyph(theme: Theme, key: string, style: string): TspSpan {
+  return span(theme.symbols.symbol(key), style);
 }
 
-function todoRun(theme: Theme, item: TodoItem): Run {
-  if (item.severity === "high") return ink(theme.status.warning, "error");
-  if (item.severity === "low") return ink(theme.status.info, "dim");
-  return ink(theme.status.info, "warning");
+function statusSpan(theme: Theme, status: StageStatus): TspSpan {
+  if (status === "closed") return glyph(theme, "status.success", "success");
+  if (status === "active") return glyph(theme, "status.running", "accent");
+  if (status === "dropped") return glyph(theme, "status.disabled", "muted");
+  return glyph(theme, "status.pending", "dim");
 }
 
-const STATUS_TONES: Readonly<Record<StageStatus, Tone>> = { closed: "success", active: "accent", dropped: "muted", planned: "pending" };
-
-function hintLines(hints: readonly string[], width: number): string[] {
-  const lines: string[] = [];
-  let line = "";
-  for (const hint of hints) {
-    const next = line ? `${line}   ${hint}` : hint;
-    if (line && visibleWidth(next) > width) {
-      lines.push(truncateToWidth(line, width));
-      line = hint;
-    } else {
-      line = next;
-    }
-  }
-  if (line) lines.push(truncateToWidth(line, width));
-  return lines;
+function todoSpan(theme: Theme, item: TodoItem): TspSpan {
+  if (item.severity === "high") return glyph(theme, "status.warning", "error");
+  if (item.severity === "low") return glyph(theme, "status.info", "dim");
+  return glyph(theme, "status.info", "warning");
 }
 
-/** Keeps the end of a path, which names the file, when the sidebar is too narrow for all of it. */
-function truncateStart(text: string, width: number): string {
-  if (visibleWidth(text) <= width) return text;
-  if (width <= 1) return truncateToWidth(text, width);
-  const chars = [...text];
-  let tail = "";
-  for (let index = chars.length - 1; index >= 0; index--) {
-    const next = `${chars[index]}${tail}`;
-    if (visibleWidth(next) > width - 1) break;
-    tail = next;
-  }
-  return `…${tail}`;
+/** Key ids as hints show them: `shift+x` as ⇧X, `pageDown` as PgDn. */
+function keyLabel(id: string): string {
+  const names: Readonly<Record<string, string>> = {
+    enter: "Enter",
+    escape: "Esc",
+    tab: "Tab",
+    space: "Space",
+    backspace: "Backspace",
+    pageUp: "PgUp",
+    pageDown: "PgDn",
+    up: "↑",
+    down: "↓",
+    home: "Home",
+    end: "End",
+  };
+  const parts = id.split("+");
+  const key = parts.at(-1) ?? id;
+  const name = names[key] ?? key.toUpperCase();
+  return parts.includes("shift") ? `⇧${name}` : name;
 }
 
-/** What a detail pane is written into: terminal rows ({@link DetailLines}) or native nodes ({@link NativeDetail}). */
-interface DetailSink {
-  heading(text: string): void;
-  blank(): void;
-  /** A bold line opening a group of rows. */
-  subheading(text: string): void;
-  text(value: Rich): void;
-  field(label: string, value: Rich): void;
-  /** One row per value: lists name items whose detail is elsewhere. The label shows on the first. */
-  list(label: string, values: readonly Rich[]): void;
-  section(title: string, body: string | undefined): void;
+/** One hint: its key and what it does, kept on one line. */
+function hint(keys: string, label: string): TspSpan[] {
+  return [span(keys, "accent"), span(`\u00a0${label.replace(/ /g, "\u00a0")}`, "muted")];
 }
 
-/** Field rows with a hanging indent, wrapped paragraphs and Markdown sections for a detail pane. */
-class DetailLines implements DetailSink {
-  readonly lines: string[] = [];
-
-  constructor(
-    readonly theme: Theme,
-    readonly width: number,
-    readonly markdown: (text: string, width: number) => readonly string[],
-  ) {}
-
-  heading(text: string): void {
-    this.lines.push(...wrapTextWithAnsi(this.theme.bold(this.theme.fg("accent", text)), this.width));
-  }
-
-  blank(): void {
-    this.lines.push("");
-  }
-
-  subheading(text: string): void {
-    this.lines.push(this.theme.bold(text));
-  }
-
-  text(value: Rich): void {
-    for (const paragraph of paint(this.theme, value).split("\n")) this.lines.push(...wrapTextWithAnsi(paragraph, this.width));
-  }
-
-  field(label: string, value: Rich): void {
-    const painted = paint(this.theme, value);
-    if (this.width < 30) {
-      this.lines.push(...wrapTextWithAnsi(`${this.theme.fg("muted", label.padEnd(LABEL_WIDTH))}${painted}`, this.width));
-      return;
-    }
-    const wrapped = wrapTextWithAnsi(painted, this.width - LABEL_WIDTH);
-    for (const [index, line] of wrapped.entries())
-      this.lines.push(`${index ? padding(LABEL_WIDTH) : this.theme.fg("muted", label.padEnd(LABEL_WIDTH))}${line}`);
-  }
-
-  /** Each row is cut to the pane. */
-  list(label: string, values: readonly Rich[]): void {
-    values.forEach((value, index) => {
-      const head = index ? padding(LABEL_WIDTH) : this.theme.fg("muted", label.padEnd(LABEL_WIDTH));
-      this.lines.push(truncateToWidth(`${head}${paint(this.theme, value)}`, this.width));
-    });
-  }
-
-  section(title: string, body: string | undefined): void {
-    if (!body?.trim()) return;
-    this.lines.push("", this.theme.bold(title));
-    this.lines.push(...this.markdown(body.trim(), this.width));
-  }
-}
-
-/** The same detail as native nodes: consecutive fields and lists form one `kv` grid, sections render as Markdown. */
-class NativeDetail implements DetailSink {
-  readonly #nodes: NativeNode[] = [];
-  #pairs: [string, Span[]][] = [];
+/** The detail of one item as groups: consecutive fields and lists form one `kv` grid, sections render as Markdown. */
+class Detail {
+  readonly groups: UiNode[] = [];
+  #pairs: [string, TspSpan[]][] = [];
 
   #flush(): void {
     const grid = kv(this.#pairs);
-    if (grid) this.#nodes.push(keyed(grid, `kv${this.#nodes.length}`));
+    if (grid) this.groups.push(grid);
     this.#pairs = [];
   }
 
-  #push(described: NativeNode): void {
+  #push(node: UiNode): void {
     this.#flush();
-    this.#nodes.push(keyed(described, `n${this.#nodes.length}`));
+    this.groups.push(node);
   }
 
-  heading(text: string): void {
-    this.#push(textNode([span(text, "accent strong")], { wrap: "word" }));
-  }
-
-  /** Native layout spaces the groups itself. */
-  blank(): void {}
-
+  /** A bold line opening a group of rows. */
   subheading(text: string): void {
-    this.#push(textNode([span(text, "strong")]));
+    this.#push(h("text", { spans: [span(text, "strong")], wrap: "word" }));
   }
 
   text(value: Rich): void {
-    this.#push(textNode(spans(value), { wrap: "word" }));
+    this.#push(h("text", { spans: spansOf(value), wrap: "word" }));
   }
 
   field(label: string, value: Rich): void {
-    this.#pairs.push([label, spans(value)]);
+    this.#pairs.push([label, spansOf(value)]);
   }
 
+  /** One row per value: lists name items whose detail is elsewhere. The label shows on the first. */
   list(label: string, values: readonly Rich[]): void {
     values.forEach((value, index) => {
-      this.#pairs.push([index ? "" : label, spans(value)]);
+      this.#pairs.push([index ? "" : label, spansOf(value)]);
     });
   }
 
   section(title: string, body: string | undefined): void {
     if (!body?.trim()) return;
-    this.#push(col([textNode([span(title, "strong")]), md(body.trim())], { gap: "xs" }));
+    this.#push(h("col", {}, h("text", { spans: [span(title, "strong")] }), h("md", { text: body.trim() })));
   }
 
-  nodes(): NativeNode[] {
+  markdown(source: string): void {
+    this.#push(h("md", { text: source }));
+  }
+
+  code(source: string, options: { path?: string; lang?: string }): void {
+    this.#push(h("code", { text: source, ...options, wrap: true }));
+  }
+
+  done(): UiNode[] {
     this.#flush();
-    return this.#nodes;
+    return this.groups;
   }
 }
 
 /**
- * Fullscreen two-pane frame shared by the console and the preview: title bar, header rows, a selectable sidebar,
- * an independently scrolling detail pane, one message row and wrapped key hints. In Tern the same panes are
- * described natively inside a large glass sheet: the sidebar as a selectable list, the detail beside it, the
- * message and the key commands as buttons below.
+ * The two-pane screen shared by the console and the preview: header rows, a selectable sidebar, the selected item's
+ * detail, one message line and the keys. The terminal fills the screen and pages the detail; Tern gets the same panes
+ * in a large sheet, scrolling natively, with the keyed commands as buttons.
  */
-abstract class SplitPane implements Component {
+abstract class SplitPane {
+  /** Bumped on every change; the screen rebuilds from it. */
+  readonly revision = signal(0);
   protected selected = 0;
   protected message: ConsoleMessage | undefined;
-  #scroll = 0;
-  #scrollMax = Number.MAX_SAFE_INTEGER;
-  #bodyRows = 1;
-  /** Last frame's geometry: mouse reports hit-test against what was painted. */
-  #bodyTop = 0;
-  #dividerCol = 0;
-  readonly #markdown = new Map<string, Markdown>();
-  #nativeOverlay: { head: string; props: NonNullable<Component["nativeOverlay"]> } | undefined;
-  #nativeRoot: NativeNode | undefined;
-  #nativeSignature: string | undefined;
+  /** Bumped on every change but a page step, so the painted detail is reused while paging. */
+  #content = 0;
+  /** The first detail row the terminal shows, and the rows a page step moves and the pane shows. */
+  #offset = 0;
+  #viewRows = 1;
+  /** The terminal detail as last painted, reused while content, width and theme stay. */
+  #painted: { content: number; width: number; theme: Theme; rows: readonly string[] } | undefined;
+  /** Tern's forwarded detail scrolling. */
+  #scroll: { by: "page-up" | "page-down"; n: number } | undefined;
 
-  constructor(
-    readonly theme: Theme,
-    readonly tui: TUI,
-  ) {}
+  constructor(readonly theme: Theme) {}
 
   protected abstract count(): number;
   protected abstract title(): string;
-  /** Rows between the title bar and the split, at most `width` columns each once truncated. */
-  protected abstract header(width: number): string[];
-  protected abstract sidebarRow(index: number, width: number): string;
+  /** Rows above the panes, with the number of terminal rows they take at `width` (Tern ignores it). */
+  protected abstract header(native: boolean, width: number): { nodes: UiNode[]; rows: number };
+  /** A one-line row above the sidebar list (the search), if any. */
+  protected sidebarHead(): TspText | undefined {
+    return undefined;
+  }
+  /** Sidebar rows; `native` adds the tooltips only Tern shows. */
+  protected abstract rows(native: boolean): Row[];
   protected abstract emptySidebar(): string;
-  protected abstract body(width: number): string[];
-  protected abstract hints(): string[];
-  /** Keys other than mouse reports and the shared navigation keys. */
-  protected abstract handleKey(key: string): void;
+  protected abstract detail(): DetailView;
+  /** The keyed commands that apply now; `primary` names what Enter does on the selected row. */
+  protected abstract commands(): Command[];
+  /** The terminal hint strip. */
+  protected abstract hints(): TspSpan[][];
+  /** The close button. */
+  protected abstract closeCommand(): Command;
+  /** Keys besides the shared navigation; true when the key was used. */
+  protected abstract handleKey(key: KeyEvent): boolean;
   /** `omp.overlay.roadmap.<view>`: the role Tern styles the sheet by. */
   protected abstract nativeRole(): string;
-  /** Every state describe() reads beyond the selection and the message, so an unchanged frame reuses its node. */
-  protected abstract nativeSignature(): string;
-  /** Nodes above the split. */
-  protected abstract describeTop(): NativeChild[];
-  /** Sidebar items, keyed `i<index>` like the rows they stand for. */
-  protected abstract describeItems(): NativeNode[];
-  /** Nodes above the sidebar list. */
-  protected describeSidebarTop(): NativeChild[] {
-    return [];
-  }
-  /** The selected item's detail, keyed by its identity so a new item starts at its top. */
-  protected abstract describeBody(): NativeNode;
-  /** Buttons below the panes; `null` end-aligns what follows. */
-  protected abstract describeActions(): (NativeNode | null)[];
-  protected abstract nativeHints(): (NativeHint | undefined)[];
   /** What Enter does on the selected row; a double click on a row does the same. */
   protected abstract activate(): void;
   /** A button's action, routed to the code path of the key it shows. */
   protected abstract handleAction(act: string): void;
-  /** Selections on described lists other than the sidebar. */
+  /** Selections on lists other than the sidebar (the section tabs). */
   protected handleSelect(_list: string, _item: string): void {}
+
+  protected changed(): void {
+    this.#content++;
+    this.revision.update((value) => value + 1);
+  }
 
   protected select(index: number): void {
     const next = Math.max(0, Math.min(this.count() - 1, index));
     if (next === this.selected) return;
     this.selected = next;
-    this.#scroll = 0;
-    this.#scrollMax = Number.MAX_SAFE_INTEGER;
+    this.#offset = 0;
   }
 
   /** Jumps to `index` even when it equals the current row, so a changed list starts at the top of its detail. */
   protected reset(index: number): void {
     this.selected = Math.max(0, Math.min(this.count() - 1, index));
-    this.#scroll = 0;
-    this.#scrollMax = Number.MAX_SAFE_INTEGER;
+    this.#offset = 0;
   }
 
-  protected markdown(text: string, width: number): readonly string[] {
-    let component = this.#markdown.get(text);
-    if (!component) {
-      component = new Markdown(text, 0, 0, getMarkdownTheme());
-      this.#markdown.set(text, component);
-    }
-    return component.render(width);
+  /** Moves the terminal detail by a page less one row, within its painted rows; Tern scrolls its own pane. */
+  #page(by: "page-up" | "page-down"): void {
+    const step = Math.max(1, this.#viewRows - 1) * (by === "page-down" ? 1 : -1);
+    const last = Math.max(0, (this.#painted?.rows.length ?? 0) - this.#viewRows);
+    this.#offset = Math.max(0, Math.min(last, this.#offset + step));
+    this.#scroll = { by, n: (this.#scroll?.n ?? 0) + 1 };
+    this.revision.update((value) => value + 1);
   }
 
-  protected detail(width: number): DetailLines {
-    return new DetailLines(this.theme, width, (text, at) => this.markdown(text, at));
+  /** The detail painted at `width` in `theme`, painted again only after a change other than a page step. */
+  #detailRows(content: UiNode, width: number, theme: Theme): readonly string[] {
+    const painted = this.#painted;
+    if (painted?.content === this.#content && painted.width === width && painted.theme === theme) return painted.rows;
+    const rows = renderBlock(content, width, { theme }).rows;
+    this.#painted = { content: this.#content, width, theme, rows };
+    return rows;
   }
 
-  #scrollBy(delta: number): void {
-    this.#scroll = Math.max(0, Math.min(this.#scrollMax, this.#scroll + delta));
-  }
-
-  /** Wheel over the sidebar moves the selection, over the detail scrolls it; every other report is swallowed. */
-  #handleMouse(event: SgrMouseEvent): void {
-    if (event.wheel === null) return;
-    const line = event.row - this.#bodyTop;
-    if (line < 0 || line >= this.#bodyRows) return;
-    if (event.col < this.#dividerCol) this.select(this.selected + event.wheel);
-    else if (event.col > this.#dividerCol) this.#scrollBy(event.wheel * WHEEL_ROWS);
-  }
-
-  handleInput(key: string): void {
-    // Checked before anything else: pointer motion must not clear the message or act as a key.
-    if (
-      routeSgrMouseInput(key, (event) => {
-        this.#handleMouse(event);
-        return true;
-      })
-    ) {
-      this.tui.requestRender();
-      return;
-    }
+  /** A key on the screen; any used key clears the last message first. */
+  input(key: KeyEvent): boolean {
+    if (key.kind === "release") return false;
+    const previous = this.message;
     this.message = undefined;
-    if (matchesKey(key, "up")) this.select(this.selected - 1);
-    else if (matchesKey(key, "down")) this.select(this.selected + 1);
-    else if (matchesKey(key, "home")) this.select(0);
-    else if (matchesKey(key, "end")) this.select(this.count() - 1);
-    else if (matchesKey(key, "pageDown")) this.#scrollBy(Math.max(1, this.#bodyRows - 2));
-    else if (matchesKey(key, "pageUp")) this.#scrollBy(-Math.max(1, this.#bodyRows - 2));
-    else this.handleKey(key);
-    this.tui.requestRender();
+    let used = true;
+    if (key.id === "up") this.select(this.selected - 1);
+    else if (key.id === "down") this.select(this.selected + 1);
+    else if (key.id === "home") this.select(0);
+    else if (key.id === "end") this.select(this.count() - 1);
+    else if (key.id === "pageDown" || key.id === "pageUp") {
+      this.#page(key.id === "pageDown" ? "page-down" : "page-up");
+      return true;
+    } else used = this.handleKey(key);
+    if (!used) {
+      this.message = previous;
+      return false;
+    }
+    this.changed();
+    return true;
   }
 
-  /** Shared hints for the navigation keys this frame handles. */
-  protected navigationHints(item: string): string[] {
-    return [
-      this.theme.fg("dim", `${editorKey("tui.select.up")}/${editorKey("tui.select.down")}`) + this.theme.fg("muted", ` ${item}`),
-      this.theme.fg("dim", "PgDn/wheel") + this.theme.fg("muted", " scroll"),
-    ];
+  /** A list selection or activation: a sidebar row selects it (activation also runs Enter), a tab switches to it. */
+  pick(keypath: string, item: string, activate: boolean): void {
+    this.message = undefined;
+    const list = keypath.slice(keypath.lastIndexOf("/") + 1);
+    if (list === "items") {
+      const index = /^i\d+$/.test(item) ? Number(item.slice(1)) : -1;
+      if (index >= 0 && index < this.count()) {
+        this.select(index);
+        if (activate) this.activate();
+      }
+    } else this.handleSelect(list, item);
+    this.changed();
   }
 
-  /** The large glass sheet Tern wraps the view in, titled like the frame. */
-  get nativeOverlay(): NonNullable<Component["nativeOverlay"]> {
-    const head = this.title();
-    if (this.#nativeOverlay?.head !== head)
-      this.#nativeOverlay = { head, props: { role: this.nativeRole(), size: "lg", anchor: "center", head } };
-    return this.#nativeOverlay.props;
+  /** A button. */
+  act(act: string): void {
+    this.message = undefined;
+    this.handleAction(act);
+    this.changed();
   }
 
-  describe(): NativeNode {
-    const rows = this.tui.terminal?.rows ?? (process.stdout.rows || 40);
-    const signature = [rows, this.selected, this.message?.level ?? "", this.message?.text ?? "", this.nativeSignature()].join("\u0000");
-    if (this.#nativeRoot && signature === this.#nativeSignature) return this.#nativeRoot;
-    const sidebar = node(
+  /** The screen: a terminal view filling `host.size()`, or with `native` the Tern sheet around the same panes. */
+  view(host: ConsoleHost, native = nativeRendering()): UiNode {
+    const lines = (): `${number}lines` => `${Math.max(SHEET_MIN_LINES, host.size().rows - SHEET_MARGIN_LINES)}lines`;
+    const screen = h(
       "col",
-      { max: { w: "40ch" }, shrink: 0, gap: "sm", min: { h: 0 } },
-      [
-        ...this.describeSidebarTop(),
-        selectList("items", this.describeItems(), {
-          ...SCROLLER,
-          selected: this.count() ? `i${this.selected}` : null,
-          empty: [span(this.emptySidebar(), "dim")],
-        }),
-      ],
-      "sidebar",
+      {
+        onKey: (key) => this.input(key),
+        onSelect: (item, event) => this.pick(event.key, item, false),
+        onActivate: (item, event) => this.pick(event.key, item, true),
+        onAction: (act) => this.act(act),
+        ...(native ? { gap: "md", min: () => ({ h: lines() }), max: () => ({ h: lines() }) } : {}),
+      },
+      () => {
+        this.revision();
+        return native ? this.#native() : this.#terminal(host);
+      },
     );
-    const detail = this.describeBody();
-    const body = node("col", FILL, [scroller(`scroll-${detail.key ?? "detail"}`, [detail])], "body");
-    const children: NativeChild[] = [
-      ...this.describeTop(),
-      keyed(rowNode([sidebar, body], { ...FILL, gap: "lg", align: "stretch" }), "split"),
-    ];
-    if (this.message)
-      children.push(
-        keyed(
-          textNode([span(singleLine(this.message.text), this.message.level === "error" ? "error" : "info")], { wrap: "word" }),
-          "message",
-        ),
-      );
-    children.push(actionBar(this.describeActions()), hintsRow(this.nativeHints()));
-    this.#nativeSignature = signature;
-    // The sheet is the frame: a borderless column, titled by `nativeOverlay`.
-    this.#nativeRoot = col(children, sheetRoot(rows));
-    return this.#nativeRoot;
+    if (!native) return screen;
+    return h(
+      "overlay",
+      {
+        role: this.nativeRole(),
+        size: "lg",
+        anchor: "center",
+        modal: true,
+        head: () => {
+          this.revision();
+          return this.title();
+        },
+      },
+      screen,
+    );
   }
 
-  /** Pointer actions run what the keys run: a row click selects it, a double click is Enter, a button its key. */
-  handleNativeEvent(event: NativeUiEvent): void {
-    if (event.type === "action") {
-      this.message = undefined;
-      this.handleAction(event.act);
-      return;
-    }
-    if (event.type !== "select" && event.type !== "activate") return;
-    this.message = undefined;
-    const list = leafKey(event.key);
-    if (list !== "items") {
-      this.handleSelect(list, event.item);
-      return;
-    }
-    const index = itemIndex(event.item, "i");
-    if (index < 0 || index >= this.count()) return;
-    this.select(index);
-    if (event.type === "activate") this.activate();
+  #message(truncate: boolean): UiNode | undefined {
+    if (!this.message) return undefined;
+    const spans = [span(singleLine(this.message.text), this.message.level === "error" ? "error" : "accent")];
+    return h("text", { key: "message", spans, ...(truncate ? { truncate: "end" as const } : { wrap: "word" as const }) });
   }
 
-  render(width: number): readonly string[] {
-    const t = this.theme;
-    const height = Math.max(12, this.tui.terminal?.rows || process.stdout.rows || 40);
-    const frameWidth = Math.max(width, MIN_FRAME_WIDTH);
-    const inner = frameWidth - 4;
-    let sidebarWidth = Math.max(18, Math.min(52, Math.floor(frameWidth * 0.36)));
-    if (splitBodyWidth(frameWidth, sidebarWidth) < 16) sidebarWidth = Math.max(4, Math.floor((frameWidth - 7) / 2));
-    const bodyWidth = Math.max(1, splitBodyWidth(frameWidth, sidebarWidth));
-    const header = this.header(inner);
-    // Short terminals keep most rows for the panes: hints get at most a third, dropped from the end.
-    const hints = hintLines(this.hints(), inner).slice(0, Math.max(1, Math.floor((height - header.length - 5) / 3)));
-    const message = this.message
-      ? t.fg(this.message.level === "error" ? "error" : "warning", truncateToWidth(singleLine(this.message.text), inner))
-      : "";
+  #items(native: boolean, from: number, to: number): UiNode {
+    const rows = this.rows(native);
+    return h(
+      "list",
+      {
+        key: "items",
+        selected: this.count() ? `i${this.selected}` : null,
+        empty: [span(this.emptySidebar(), "dim")],
+        ...(native ? SCROLLER : {}),
+      },
+      rows.slice(from, to).map((row, offset) => {
+        const index = from + offset;
+        return h("item", {
+          key: `i${index}`,
+          label: row.label,
+          ...(row.detail ? { detail: row.detail } : {}),
+          ...(row.value ? { value: row.value } : {}),
+          ...(row.tone ? { tone: row.tone } : {}),
+          ...(row.title ? { title: row.title } : {}),
+          ...(native && index === this.selected ? { reveal: "nearest" as const } : {}),
+        });
+      }),
+    );
+  }
 
-    // Title, header, split rule, body, closing rule, message, hints and bottom border fill the terminal.
-    this.#bodyRows = Math.max(3, height - header.length - hints.length - 5);
-    this.#bodyTop = 1 + header.length + 1;
-    this.#dividerCol = sidebarWidth + 3;
-    const body = this.body(bodyWidth);
-    this.#scrollMax = Math.max(0, body.length - this.#bodyRows);
-    this.#scroll = Math.min(this.#scroll, this.#scrollMax);
-    const shown = body.slice(this.#scroll, this.#scroll + this.#bodyRows);
-    // The notice replaces the last visible line, so that line counts as hidden too.
-    const more = body.length - this.#scroll - shown.length + 1;
-    if (more > 1 && shown.length) shown[shown.length - 1] = t.fg("dim", `+${more} more lines; PgDn/wheel to scroll`);
+  #terminal(host: ConsoleHost): UiNode[] {
+    const { columns, rows } = host.size();
+    const width = Math.max(1, columns);
+    const header = this.header(false, width);
+    const hints = this.hints().flatMap((parts, index) => (index ? [span("   "), ...parts] : parts));
+    const hintRows = Math.min(
+      wrap(hints.map((part) => part.t).join(""), width).length,
+      Math.max(1, Math.floor((rows - header.rows - 5) / 3)),
+    );
+    const message = this.#message(true);
+    // Header, the two rules around the panes, the message and the hints leave the rest of the screen to the panes.
+    const bodyRows = Math.max(3, rows - header.rows - 2 - (message ? 1 : 0) - hintRows);
+    let sidebarWidth = Math.max(18, Math.min(52, Math.floor(width * 0.36)));
+    if (width - sidebarWidth - 2 < 16) sidebarWidth = Math.max(4, Math.floor((width - 2) / 2));
+    const detailWidth = Math.max(1, width - sidebarWidth - 2);
 
+    const head = this.sidebarHead();
+    const listRows = Math.max(1, bodyRows - (head ? 1 : 0));
     const total = this.count();
-    let sidebar: string[];
-    if (!total) sidebar = wrapTextWithAnsi(t.fg("dim", this.emptySidebar()), sidebarWidth);
-    else {
-      const start = Math.max(0, Math.min(this.selected - Math.floor(this.#bodyRows / 2), total - this.#bodyRows));
-      sidebar = Array.from({ length: Math.min(this.#bodyRows, total - start) }, (_, offset) =>
-        truncateToWidth(this.sidebarRow(start + offset, sidebarWidth), sidebarWidth),
-      );
-    }
-
-    const box = t.boxRound;
-    const splitOpen = t.fg(
-      "border",
-      box.teeRight +
-        box.horizontal.repeat(sidebarWidth + 2) +
-        box.teeDown +
-        box.horizontal.repeat(Math.max(0, frameWidth - sidebarWidth - 5)) +
-        box.teeLeft,
+    const from = Math.max(0, Math.min(this.selected - Math.floor(listRows / 2), total - listRows));
+    const to = Math.min(total, from + listRows);
+    // An empty list explains itself across as many rows as it needs.
+    const empty = total ? undefined : wrap(this.emptySidebar(), Math.max(1, sidebarWidth));
+    const shown = empty ? empty.length : to - from;
+    const sidebar = h(
+      "col",
+      { key: "sidebar", basis: sidebarWidth, grow: 0, shrink: 0 },
+      head ? h("text", { key: "search", spans: spansOf(head), truncate: "end" }) : undefined,
+      empty ? h("text", { key: "items", spans: [span(this.emptySidebar(), "dim")], wrap: "word" }) : this.#items(false, from, to),
+      listRows > shown ? h("text", { text: Array.from({ length: listRows - shown }, () => " ").join("\n") }) : undefined,
     );
-    const lines = [
-      topBorder(frameWidth, this.title()),
-      ...header.map((line) => row(truncateToWidth(line, inner), frameWidth)),
-      splitOpen,
-      ...Array.from({ length: this.#bodyRows }, (_, index) =>
-        splitRow(sidebar[index] ?? "", truncateToWidth(shown[index] ?? "", bodyWidth), frameWidth, sidebarWidth),
-      ),
-      dividerSplit(frameWidth, sidebarWidth),
-      row(message, frameWidth),
-      ...hints.map((line) => row(line, frameWidth)),
-      bottomBorder(frameWidth),
-    ];
-    return frameWidth === width ? lines : lines.map((line) => truncateToWidth(line, Math.max(0, width)));
+
+    const detail = this.detail();
+    const content = h("col", { gap: "sm" }, detail.groups);
+    const viewRows = Math.max(1, bodyRows - 1);
+    this.#viewRows = viewRows;
+    // Painted once per content, width and theme, then cut to the page: no node scrolls in the terminal.
+    const page = h("canvas", {
+      key: detail.key,
+      paint: (width) => {
+        const theme = currentTheme();
+        const rows = this.#detailRows(content, width, theme);
+        const offset = Math.min(this.#offset, Math.max(0, rows.length - viewRows));
+        const shown = rows.slice(offset, offset + viewRows);
+        const below = rows.length - offset - viewRows;
+        if (below > 0) shown[viewRows - 1] = theme.style("dim", truncate(`… ${below + 1} more lines; PgDn scrolls`, width));
+        return shown;
+      },
+    });
+    const body = h(
+      "col",
+      { key: "body", basis: detailWidth, grow: 0, shrink: 1 },
+      h("text", { key: "heading", spans: [span(detail.heading, "accent strong")], truncate: "end" }),
+      page,
+    );
+    return [
+      ...header.nodes,
+      h("rule", { key: "top" }),
+      h("row", { key: "split", gap: "md" }, sidebar, body),
+      h("rule", { key: "bottom" }),
+      message,
+      h("text", { key: "hints", spans: hints, wrap: "word", lines: hintRows }),
+    ].filter((node): node is UiNode => node !== undefined);
+  }
+
+  #native(): UiNode[] {
+    const head = this.sidebarHead();
+    const sidebar = h(
+      "col",
+      { key: "sidebar", max: { w: "40ch" }, shrink: 0, gap: "sm", min: { h: 0 } },
+      head ? h("text", { key: "search", spans: spansOf(head) }) : undefined,
+      this.#items(true, 0, this.count()),
+    );
+    const detail = this.detail();
+    const content = h(
+      "col",
+      { key: detail.key, gap: "md", scroll: this.#scroll },
+      h("text", { key: "heading", spans: [span(detail.heading, "accent strong")], wrap: "word" }),
+      detail.groups,
+    );
+    const body = h("col", { key: "body", ...FILL }, h("list", { key: `scroll-${detail.key}`, ...SCROLLER }, content));
+    const close = this.closeCommand();
+    const actions = h(
+      "row",
+      { key: "actions", gap: "sm", wrap: true },
+      this.commands().map((command) => this.#button(command)),
+      h("spacer", { grow: 1 }),
+      this.#button(close),
+    );
+    return [
+      ...this.header(true, 0).nodes,
+      h("row", { key: "split", ...FILL, gap: "lg", align: "stretch" }, sidebar, body),
+      this.#message(false),
+      actions,
+    ].filter((node): node is UiNode => node !== undefined);
+  }
+
+  #button(command: Command): UiNode {
+    return h("button", {
+      key: command.act,
+      text: `${command.label.charAt(0).toUpperCase()}${command.label.slice(1)}`,
+      keys: command.key.split("+"),
+      actions: { click: command.act },
+      ...(command.tone === "accent" ? { variant: "primary" as const } : command.tone === "error" ? { variant: "danger" as const } : {}),
+    });
+  }
+
+  /** Hints for the navigation keys every pane shares. */
+  protected navigationHints(item: string): TspSpan[][] {
+    return [hint("↑/↓", item), hint("PgUp/PgDn", "scroll")];
   }
 }
+
+type Entry =
+  | { kind: "stage"; id: string; title: string; stage: StageDoc }
+  | { kind: "round"; id: string; title: string; round: RoundDoc }
+  | { kind: "todo"; id: string; title: string; todo: TodoItem; round: string };
 
 /**
  * The fullscreen `/roadmap` console: the Stages of one round (the active round unless Enter on a round chose another),
@@ -608,13 +549,12 @@ export class RoadmapConsole extends SplitPane {
     readonly model: Model,
     state: ConsoleState,
     theme: Theme,
-    tui: TUI,
     readonly done: (choice: ConsoleChoice | undefined) => void,
     readonly plans?: StagePlans,
     /** Told the new order whenever Shift+O switches it, so later lists in the session follow it. */
     readonly onOrder?: (order: StageOrder) => void,
   ) {
-    super(theme, tui);
+    super(theme);
     this.#on = state.on ?? today();
     this.#order = state.order ?? "dependency";
     this.#active = model.rounds.find((round) => round.status === "active");
@@ -814,30 +754,37 @@ export class RoadmapConsole extends SplitPane {
     else this.message = { text: "This repository already uses roadmap format 2", level: "info" };
   }
 
-  protected handleKey(key: string): void {
-    if (matchesKey(key, "escape")) this.#escape();
-    else if (matchesKey(key, "tab") || matchesKey(key, "shift+tab")) {
-      const step = matchesKey(key, "tab") ? 1 : SECTIONS.length - 1;
+  /** Shift+letter commands, by the letter. */
+  static readonly #SHORTCUTS: Readonly<Record<string, string>> = {
+    C: "check",
+    X: "close-stage",
+    R: "close-round",
+    N: "new-round",
+    P: "plan-round",
+    E: "revise",
+    D: "drop",
+    T: "retarget",
+    U: "upgrade",
+    O: "order",
+  };
+
+  protected handleKey(key: KeyEvent): boolean {
+    const shortcut = /^shift\+([a-z])$/.exec(key.id)?.[1]?.toUpperCase();
+    if (key.id === "escape") this.#escape();
+    else if (key.id === "tab" || key.id === "shift+tab") {
+      const step = key.id === "tab" ? 1 : SECTIONS.length - 1;
       this.#switchTo(SECTIONS[(SECTIONS.indexOf(this.#section) + step) % SECTIONS.length] as ConsoleSection);
-    } else if (matchesKey(key, "enter")) this.#primary();
-    else if (key === "C" || matchesKey(key, "shift+c")) this.handleAction("check");
-    else if (key === "X" || matchesKey(key, "shift+x")) this.handleAction("close-stage");
-    else if (key === "R" || matchesKey(key, "shift+r")) this.handleAction("close-round");
-    else if (key === "N" || matchesKey(key, "shift+n")) this.handleAction("new-round");
-    else if (key === "P" || matchesKey(key, "shift+p")) this.handleAction("plan-round");
-    else if (key === "E" || matchesKey(key, "shift+e")) this.handleAction("revise");
-    else if (key === "D" || matchesKey(key, "shift+d")) this.handleAction("drop");
-    else if (key === "T" || matchesKey(key, "shift+t")) this.handleAction("retarget");
-    else if (key === "U" || matchesKey(key, "shift+u")) this.handleAction("upgrade");
-    else if (key === "O" || matchesKey(key, "shift+o")) this.handleAction("order");
-    else if (matchesKey(key, "backspace")) {
-      if (!this.#query) return;
+    } else if (key.id === "enter") this.#primary();
+    else if (shortcut && RoadmapConsole.#SHORTCUTS[shortcut]) this.handleAction(RoadmapConsole.#SHORTCUTS[shortcut] as string);
+    else if (key.id === "backspace") {
+      if (!this.#query) return true;
       this.#query = [...this.#query].slice(0, -1).join("");
       this.#refilter(this.#current()?.id);
-    } else if ([...key].length === 1 && !/[\p{Cc}]/u.test(key)) {
-      this.#query += key;
+    } else if (key.text && [...key.text].length === 1 && !/[\p{Cc}]/u.test(key.text)) {
+      this.#query += key.text;
       this.#refilter(this.#current()?.id);
-    }
+    } else return false;
+    return true;
   }
 
   protected handleAction(act: string): void {
@@ -873,23 +820,23 @@ export class RoadmapConsole extends SplitPane {
     return `Roadmap · ${this.model.index.title}`;
   }
 
-  #summary(): Run[] {
+  #summary(): TspSpan[] {
     const round = this.#active;
     const planned = this.model.rounds.filter((candidate) => candidate.status === "planned").length;
     const open = this.#entries.todos.length;
-    let parts: Run[][];
+    let parts: TspSpan[][];
     if (round) {
       const stages = this.#activeStages();
       const settled = stages.filter((stage) => stage.status === "closed" || stage.status === "dropped").length;
       const late = stages.filter((stage) => overdue(stage, this.#on)).length;
       const dates = schedule(round, roundActual(round), this.#on);
       parts = [
-        [statusRun(this.theme, round.status), " ", ink(`${round.id} ${round.title}`, "bold")],
-        [`${settled}/${plural(stages.length, "stage")} settled`],
-        [plural(open, "open TODO")],
-        ...(dates ? [[dates]] : []),
-        ...(late ? [[ink(plural(late, "overdue stage"), "warning")]] : []),
-        ...(planned ? [[plural(planned, "planned round")]] : []),
+        [statusSpan(this.theme, round.status), span(" "), span(`${round.id} ${round.title}`, "strong")],
+        [span(`${settled}/${plural(stages.length, "stage")} settled`)],
+        [span(plural(open, "open TODO"))],
+        ...(dates ? [[span(dates)]] : []),
+        ...(late ? [[span(plural(late, "overdue stage"), "warning")]] : []),
+        ...(planned ? [[span(plural(planned, "planned round"))]] : []),
       ];
     } else {
       const last = this.model.rounds
@@ -897,14 +844,14 @@ export class RoadmapConsole extends SplitPane {
         .sort(byId)
         .at(-1);
       parts = [
-        [last ? `No active round (last: ${last.id} ${last.title}, ${last.status})` : planned ? "No active round" : "No rounds yet"],
-        ...(planned ? [[plural(planned, "planned round")]] : []),
-        ...(open ? [[plural(open, "open TODO")]] : []),
+        [span(last ? `No active round (last: ${last.id} ${last.title}, ${last.status})` : planned ? "No active round" : "No rounds yet")],
+        ...(planned ? [[span(plural(planned, "planned round"))]] : []),
+        ...(open ? [[span(plural(open, "open TODO"))]] : []),
       ];
     }
-    const runs = parts.flatMap((part, index) => (index ? [" · ", ...part] : part));
-    if (this.model.index.format === 1) runs.push(ink(" · format 1", "dim"));
-    return runs;
+    const spans = parts.flatMap((part, index) => (index ? [span(" · ", "dim"), ...part] : part));
+    if (this.model.index.format === 1) spans.push(span(" · format 1", "dim"));
+    return spans;
   }
 
   /** Section labels with their sizes; Stages names its round once Enter on another round chose it. */
@@ -916,19 +863,37 @@ export class RoadmapConsole extends SplitPane {
     return `${label} ${this.#entries[section].length}`;
   }
 
-  #search(): Run[] {
-    return this.#query
-      ? [`Search: ${this.#query}`, ink(`  ${this.#visible.length}/${this.#entries[this.#section].length}`, "dim")]
-      : [ink("Type to search", "dim")];
+  protected header(native: boolean, width: number): { nodes: UiNode[]; rows: number } {
+    const summary = this.#summary();
+    const tabs = h("tabs", {
+      key: "sections",
+      items: SECTIONS.map((section) => ({ id: section, label: this.#sectionLabel(section) })),
+      active: this.#section,
+      actions: { click: "select" },
+    });
+    if (native) return { nodes: [h("text", { key: "summary", spans: summary, wrap: "word" }), tabs], rows: 0 };
+    // Long round titles wrap onto a second row rather than hiding the counts.
+    const summaryRows = Math.min(2, wrap(summary.map((part) => part.t).join(""), width).length);
+    return {
+      nodes: [
+        h("text", {
+          key: "title",
+          spans: [span("Roadmap", "accent strong"), span(` · ${this.model.index.title}`, "strong")],
+          truncate: "end",
+        }),
+        h("text", { key: "summary", spans: summary, wrap: "word", lines: summaryRows }),
+        tabs,
+      ],
+      rows: 2 + summaryRows,
+    };
   }
 
-  protected header(width: number): string[] {
-    const tabs = renderSegmentTrack(
-      SECTIONS.map((section) => ({ label: this.#sectionLabel(section) })),
-      SECTIONS.indexOf(this.#section),
-    );
-    // Long round titles wrap onto a second row rather than hiding the counts.
-    return [...wrapTextWithAnsi(paint(this.theme, this.#summary()), width).slice(0, 2), `${tabs}  ${paint(this.theme, this.#search())}`];
+  protected override sidebarHead(): TspText {
+    const all = this.#entries[this.#section].length;
+    const position = this.#visible.length > 1 ? [span(`  ${this.selected + 1}/${this.#visible.length}`, "dim")] : [];
+    return this.#query
+      ? [span("Search: "), span(this.#query, "strong"), span(`  ${this.#visible.length}/${all} match`, "dim")]
+      : [span("Type to search", "dim"), ...position];
   }
 
   protected emptySidebar(): string {
@@ -941,284 +906,14 @@ export class RoadmapConsole extends SplitPane {
     return "No open TODOs";
   }
 
-  #markRun(entry: Entry): Run {
-    if (entry.kind === "stage") return statusRun(this.theme, entry.stage.status);
-    if (entry.kind === "round") return statusRun(this.theme, entry.round.status);
-    return todoRun(this.theme, entry.todo);
+  #mark(entry: Entry): TspSpan {
+    if (entry.kind === "stage") return statusSpan(this.theme, entry.stage.status);
+    if (entry.kind === "round") return statusSpan(this.theme, entry.round.status);
+    return todoSpan(this.theme, entry.todo);
   }
 
   #late(entry: Entry): boolean {
     return entry.kind === "stage" ? overdue(entry.stage, this.#on) : entry.kind === "round" ? overdue(entry.round, this.#on) : false;
-  }
-
-  protected sidebarRow(index: number, width: number): string {
-    const t = this.theme;
-    const entry = this.#visible[index] as Entry;
-    const isSelected = index === this.selected;
-    const cursorWidth = visibleWidth(t.nav.cursor) + 1;
-    const cursor = isSelected ? t.fg("accent", `${t.nav.cursor} `) : padding(cursorWidth);
-    // Preset glyphs differ in cell width (unicode ✔ vs ascii [ok]); pad them to one column.
-    const markWidth = Math.max(1, ...this.#visible.map((candidate) => visibleWidth(paint(t, [this.#markRun(candidate)]))));
-    const mark = paint(t, [this.#markRun(entry)]);
-    const idWidth = Math.max(0, ...this.#visible.map((candidate) => candidate.id.length));
-    const prefix = `${cursor}${mark}${padding(markWidth - visibleWidth(mark))} ${t.fg("muted", entry.id.padEnd(idWidth))} `;
-    const tail = this.#late(entry) ? ` ${t.fg("warning", t.status.warning)}` : "";
-    const titleWidth = Math.max(1, width - visibleWidth(prefix) - visibleWidth(tail));
-    const title = t.fg(isSelected ? "accent" : "text", truncateToWidth(singleLine(entry.title), titleWidth));
-    return `${prefix}${title}${tail}`;
-  }
-
-  /** The keyed commands that apply to the current item, in hint order; the first is Enter when an item is selected. */
-  #commands(): Command[] {
-    const entry = this.#current();
-    const round = this.#active;
-    const planned = entry?.kind === "round" && entry.round.status === "planned" ? entry.id : undefined;
-    const revisable =
-      entry?.kind === "round" && (entry.round.status === "active" || entry.round.status === "planned") ? entry.id : undefined;
-    const enter = entry?.kind === "todo" ? "go to target" : entry?.kind === "stage" ? "its round" : "its stages";
-    return [
-      ...(entry ? [{ act: "primary", key: "enter", label: enter } as const] : []),
-      ...(entry?.kind === "stage" && entry.stage.status === "active"
-        ? [{ act: "close-stage", key: "shift+x", label: "close stage" } as const]
-        : []),
-      ...(revisable ? [{ act: "revise", key: "shift+e", label: `revise ${revisable}` } as const] : []),
-      ...(planned ? [{ act: "drop", key: "shift+d", label: `drop ${planned}`, tone: "error" } as const] : []),
-      ...(this.#retargetable() ? [{ act: "retarget", key: "shift+t", label: "target date" } as const] : []),
-      ...(round && this.#roundSettled()
-        ? [{ act: "close-round", key: "shift+r", label: `close ${round.id}`, tone: "accent" } as const]
-        : []),
-      ...(!round
-        ? [
-            {
-              act: "new-round",
-              key: "shift+n",
-              label: this.#nextPlanned ? `activate ${this.#nextPlanned.id}` : "new round",
-              tone: "accent",
-            } as const,
-          ]
-        : []),
-      { act: "plan-round", key: "shift+p", label: "plan a round" },
-      ...(this.model.index.format === 1 ? [{ act: "upgrade", key: "shift+u", label: "upgrade to format 2" } as const] : []),
-      { act: "order", key: "shift+o", label: `order: ${this.#order}` },
-      { act: "check", key: "shift+c", label: "check" },
-    ];
-  }
-
-  protected hints(): string[] {
-    const commands = this.#commands();
-    const [first, ...rest] = commands;
-    const primary = first?.act === "primary" ? [first] : [];
-    const others = first?.act === "primary" ? rest : commands;
-    return [
-      ...this.navigationHints("select"),
-      ...primary.map((command) => rawKeyHint(command.key, command.label)),
-      rawKeyHint("tab", "section"),
-      ...others.map((command) => rawKeyHint(command.key, command.label)),
-      rawKeyHint("escape", this.#query ? "clear search" : "close"),
-    ];
-  }
-
-  protected body(width: number): string[] {
-    const entry = this.#current();
-    if (!entry) return [this.theme.fg("dim", "Nothing selected")];
-    const detail = this.detail(width);
-    this.#detail(detail, entry);
-    return detail.lines;
-  }
-
-  #detail(detail: DetailSink, entry: Entry): void {
-    if (entry.kind === "stage") this.#stageDetail(detail, entry.stage);
-    else if (entry.kind === "round") this.#roundDetail(detail, entry.round);
-    else this.#todoDetail(detail, entry.todo, entry.round);
-  }
-
-  #stageLine(stage: StageDoc): Run[] {
-    return [statusRun(this.theme, stage.status), ` ${stage.id} ${singleLine(stage.title)}`];
-  }
-
-  #openTodos(target: string): Run[][] {
-    return this.#entries.todos.flatMap((entry) =>
-      entry.kind === "todo" && entry.todo.target === target
-        ? [
-            [
-              todoRun(this.theme, entry.todo),
-              ` ${entry.id} ${singleLine(entry.title)}`,
-              ink(` · ${entry.todo.severity ?? "normal"}`, "dim"),
-            ],
-          ]
-        : [],
-    );
-  }
-
-  #stagePlans(stage: string): readonly AtlasStagePlan[] | undefined {
-    if (!this.#plans.has(stage)) this.#plans.set(stage, this.plans?.(stage));
-    return this.#plans.get(stage);
-  }
-
-  #stageDetail(detail: DetailSink, stage: StageDoc): void {
-    const t = this.theme;
-    detail.heading(`${stage.id} — ${stage.title}`);
-    detail.blank();
-    const readiness = stageReadiness(this.model, stage);
-    const ready = readiness.startable
-      ? [ink(" · ready to start", "success")]
-      : readiness.blockedBy.length
-        ? [ink(` · blocked by ${readiness.blockedBy.join(", ")}`, "warning")]
-        : [];
-    detail.field("Status", [statusRun(t, stage.status), ` ${stage.status}`, ...ready]);
-    const round = this.model.rounds.find((candidate) => candidate.id === stage.round);
-    detail.field("Round", round ? `${round.id} ${singleLine(round.title)} [${round.status}]` : stage.round);
-    if (stage.target) detail.field("Target", [stage.target, ...(overdue(stage, this.#on) ? [ink(" · overdue", "warning")] : [])]);
-    detail.field(
-      "Dates",
-      [`created ${stage.created}`, stage.started ? `started ${stage.started}` : "", stage.closed ? `${stage.status} ${stage.closed}` : ""]
-        .filter(Boolean)
-        .join(" · "),
-    );
-    const dependencies = stage.depends_on.map((id): Rich => {
-      const other = this.model.stages.find((candidate) => candidate.id === id);
-      return other ? this.#stageLine(other) : id;
-    });
-    detail.list("Depends", dependencies.length ? dependencies : [t.format.dash]);
-    if (stage.follows) detail.field("Follows", stage.follows);
-    const adrs = (this.model.adrs?.records ?? [])
-      .filter((record) => record.stage === stage.id)
-      .sort(byId)
-      .map((record) => [
-        `${record.id} ${singleLine(record.title)}`,
-        ink(` · ${record.status}`, record.status === "proposed" ? "warning" : "dim"),
-      ]);
-    if (adrs.length) detail.list("ADRs", adrs);
-    const todos = this.#openTodos(stage.id);
-    detail.list("TODOs", todos.length ? todos : [[ink("none open", "dim")]]);
-    detail.field("File", [ink(this.model.repo ? relative(this.model.repo.repoRoot, stage.path) : stage.path, "dim")]);
-    this.#plansDetail(detail, stage);
-    detail.section("Objective", stage.objective);
-    detail.section("In scope", stage.scope_in);
-    detail.section("Out of scope", stage.scope_out);
-    detail.section("Done criteria", stage.done_criteria);
-    detail.section("Design constraints", stage.design_constraints);
-    detail.section("Risks", stage.risks);
-    detail.section("Amendments", stage.amendments);
-    detail.section("Free-work log", stage.free_work_log);
-    detail.section("Outcome", stage.outcome);
-  }
-
-  /** The same Atlas plan coverage the stage's status report lists; nothing without an answer from omo-prometheus. */
-  #plansDetail(detail: DetailSink, stage: StageDoc): void {
-    const plans = this.#stagePlans(stage.id);
-    if (!plans) return;
-    const t = this.theme;
-    detail.blank();
-    detail.subheading("Atlas plans");
-    let coverage: StageCoverage;
-    try {
-      coverage = stageCoverage(stage, plans);
-    } catch (error) {
-      detail.text([ink(`Coverage unavailable: ${error instanceof Error ? error.message : String(error)}`, "error")]);
-      return;
-    }
-    if (!plans.length) detail.text([ink("No Atlas plan is bound to this stage yet", "dim")]);
-    for (const plan of plans) {
-      const mark = plan.status === "complete" ? ink(t.status.success, "success") : ink(t.status.running, "accent");
-      const declared = plan.criteria ? plan.criteria.join(", ") : "coverage undeclared";
-      const drift = coverage.drifted.includes(plan) ? [ink(" · drift", "warning")] : [];
-      detail.text([mark, ` ${planLabel(plan)}`, ink(` · ${plan.status} · ${plan.done}/${plan.total} rows · ${declared}`, "dim"), ...drift]);
-    }
-    for (const entry of coverage.criteria) {
-      detail.field(entry.id, [
-        entry.complete.length
-          ? ink(`covered by complete ${entry.complete.map(planLabel).join(", ")}`, "success")
-          : entry.unfinished.length
-            ? ink(`only by unfinished ${entry.unfinished.map(planLabel).join(", ")}`, "warning")
-            : ink("uncovered", "error"),
-      ]);
-    }
-    if (coverage.undeclared.length)
-      detail.text([ink(`Coverage undeclared by ${coverage.undeclared.map(planLabel).join(", ")}; check their scope`, "warning")]);
-    if (coverage.drifted.length)
-      detail.text([
-        ink(
-          `Drift: ${coverage.drifted.map(planLabel).join(", ")} approved before the objective, scope, criteria or design constraints changed`,
-          "warning",
-        ),
-      ]);
-  }
-
-  #roundDetail(detail: DetailSink, round: RoundDoc): void {
-    const t = this.theme;
-    detail.heading(`${round.id} — ${round.title}`);
-    detail.blank();
-    detail.field("Status", [
-      statusRun(t, round.status),
-      ` ${round.status}`,
-      ...(round === this.#nextPlanned ? [ink(" · next to activate", "dim")] : []),
-    ]);
-    if (round.target) detail.field("Target", [round.target, ...(overdue(round, this.#on) ? [ink(" · overdue", "warning")] : [])]);
-    const actual = roundActual(round);
-    if (actual) detail.field("Dates", actual);
-    detail.field("File", [ink(this.model.repo ? relative(this.model.repo.repoRoot, round.path) : round.path, "dim")]);
-    const stages = orderStages(
-      this.model.stages.filter((stage) => stage.round === round.id),
-      this.#order,
-    );
-    const settled = stages.filter((stage) => stage.status === "closed" || stage.status === "dropped").length;
-    detail.field("Stages", stages.length ? `${settled}/${stages.length} settled` : [ink("none yet", "dim")]);
-    detail.list(
-      "",
-      stages.map((stage) => [...this.#stageLine(stage), ...(overdue(stage, this.#on) ? [ink(" · overdue", "warning")] : [])]),
-    );
-    const { openTodos } = plannedRoundCounts(this.model, round.id);
-    detail.field("TODOs", openTodos ? `${openTodos} open` : [ink("none open", "dim")]);
-    detail.section("Goal", round.goal);
-    detail.section("Constraints", round.constraints);
-    detail.section("Non-goals", round.non_goals);
-    detail.section("Principles", round.principles);
-    detail.section("Known limitations", round.known_limitations);
-    detail.section("Outcome", round.outcome);
-  }
-
-  #todoDetail(detail: DetailSink, item: TodoItem, round: string): void {
-    detail.heading(`${item.id} — ${item.title}`);
-    detail.blank();
-    detail.field("Status", [todoRun(this.theme, item), ` ${item.status} · ${item.severity ?? "normal"} severity`]);
-    const owner = this.model.rounds.find((candidate) => candidate.id === round);
-    detail.field("Round", owner ? `${owner.id} ${singleLine(owner.title)} [${owner.status}]` : round);
-    if (item.target) {
-      const stage = this.model.stages.find((candidate) => candidate.id === item.target);
-      detail.field("Target", stage ? [...this.#stageLine(stage), ink(` · ${stage.round}`, "dim")] : item.target);
-    }
-    if (item.trigger) detail.field("Trigger", singleLine(item.trigger));
-    if (item.source) detail.field("Source", singleLine(item.source));
-    if (item.carried_from) detail.field("Carried", `from ${item.carried_from}`);
-    if (item.reference) detail.field("Reference", singleLine(item.reference));
-    detail.section("Details", item.body);
-  }
-
-  protected nativeRole(): string {
-    return "omp.overlay.roadmap.console";
-  }
-
-  protected nativeSignature(): string {
-    return [this.#section, this.#query, this.#stageRound ?? "", this.#order].join("\u0000");
-  }
-
-  protected describeTop(): NativeChild[] {
-    const tabs = node(
-      "tabs",
-      {
-        items: SECTIONS.map((section) => ({ id: section, label: this.#sectionLabel(section) })),
-        active: this.#section,
-        actions: { click: "select" },
-      },
-      undefined,
-      "sections",
-    );
-    return [keyed(textNode(spans(this.#summary()), { wrap: "word" }), "summary"), tabs];
-  }
-
-  protected override describeSidebarTop(): NativeChild[] {
-    return [keyed(textNode(spans(this.#search())), "search")];
   }
 
   /** Atlas plan coverage of a stage's done criteria; nothing without an answer from omo-prometheus. */
@@ -1270,57 +965,254 @@ export class RoadmapConsole extends SplitPane {
   }
 
   /**
-   * Native items are one line that truncates at the end: the label is the status glyph, an overdue mark, the id and
-   * the title, the row tone carries the status, and the rest rides in the tooltip.
+   * One line per item: the status glyph, the id and the title, an overdue mark at the end; the active item takes the
+   * accent and a dropped one is muted. The rest rides in the tooltip.
    */
-  protected describeItems(): NativeNode[] {
-    return this.#visible.map((entry, index) =>
-      item(`i${index}`, {
-        label: spans([
-          this.#markRun(entry),
-          ...(this.#late(entry) ? [" ", ink(this.theme.status.warning, "warning")] : []),
-          " ",
-          ink(entry.id, "muted"),
-          ` ${singleLine(entry.title)}`,
-        ]),
-        title: [`${entry.id} ${singleLine(entry.title)}`, ...this.#itemNotes(entry)].join(" · "),
-        tone:
-          entry.kind === "stage"
-            ? STATUS_TONES[entry.stage.status]
-            : entry.kind === "round"
-              ? STATUS_TONES[entry.round.status]
-              : entry.todo.severity === "high"
-                ? "error"
-                : entry.todo.severity === "low"
-                  ? "muted"
-                  : "warning",
-      }),
-    );
+  protected rows(native: boolean): Row[] {
+    // Preset glyphs differ in cell width (unicode ✔ vs ascii [+]); pad them to one column.
+    const markWidth = Math.max(1, ...this.#visible.map((entry) => visibleWidth(this.#mark(entry).t)));
+    const idWidth = Math.max(0, ...this.#visible.map((entry) => entry.id.length));
+    return this.#visible.map((entry) => {
+      const mark = this.#mark(entry);
+      const status = entry.kind === "stage" ? entry.stage.status : entry.kind === "round" ? entry.round.status : undefined;
+      return {
+        label: [
+          mark,
+          span(" ".repeat(markWidth - visibleWidth(mark.t) + 1)),
+          span(entry.id.padEnd(idWidth), "muted"),
+          span(` ${singleLine(entry.title)}`),
+        ],
+        ...(this.#late(entry) ? { value: [glyph(this.theme, "status.warning", "warning")] } : {}),
+        ...(status === "active" ? { tone: "accent" as const } : status === "dropped" ? { tone: "muted" as const } : {}),
+        ...(native ? { title: [`${entry.id} ${singleLine(entry.title)}`, ...this.#itemNotes(entry)].join(" · ") } : {}),
+      };
+    });
   }
 
-  protected describeBody(): NativeNode {
+  /** The keyed commands that apply to the current item; the first is Enter when an item is selected. */
+  protected commands(): Command[] {
     const entry = this.#current();
-    if (!entry) return keyed(textNode([span("Nothing selected", "dim")]), "detail");
-    const detail = new NativeDetail();
-    this.#detail(detail, entry);
-    return keyed(col(detail.nodes(), { gap: "md" }), `detail-${entry.kind}-${entry.id}`);
-  }
-
-  protected describeActions(): (NativeNode | null)[] {
+    const round = this.#active;
+    const planned = entry?.kind === "round" && entry.round.status === "planned" ? entry.id : undefined;
+    const revisable =
+      entry?.kind === "round" && (entry.round.status === "active" || entry.round.status === "planned") ? entry.id : undefined;
+    const enter = entry?.kind === "todo" ? "go to target" : entry?.kind === "stage" ? "its round" : "its stages";
     return [
-      ...this.#commands().map((command) =>
-        actionButton(`${command.label.charAt(0).toUpperCase()}${command.label.slice(1)}`, command.act, {
-          keys: command.key,
-          ...(command.tone ? { tone: command.tone } : {}),
-        }),
-      ),
-      null,
-      actionButton(this.#query ? "Clear search" : "Close", "close", { keys: "escape" }),
+      ...(entry ? [{ act: "primary", key: "enter", label: enter }] : []),
+      ...(entry?.kind === "stage" && entry.stage.status === "active" ? [{ act: "close-stage", key: "shift+x", label: "close stage" }] : []),
+      ...(revisable ? [{ act: "revise", key: "shift+e", label: `revise ${revisable}` }] : []),
+      ...(planned ? [{ act: "drop", key: "shift+d", label: `drop ${planned}`, tone: "error" as const }] : []),
+      ...(this.#retargetable() ? [{ act: "retarget", key: "shift+t", label: "target date" }] : []),
+      ...(round && this.#roundSettled()
+        ? [{ act: "close-round", key: "shift+r", label: `close ${round.id}`, tone: "accent" as const }]
+        : []),
+      ...(!round
+        ? [
+            {
+              act: "new-round",
+              key: "shift+n",
+              label: this.#nextPlanned ? `activate ${this.#nextPlanned.id}` : "new round",
+              tone: "accent" as const,
+            },
+          ]
+        : []),
+      { act: "plan-round", key: "shift+p", label: "plan a round" },
+      ...(this.model.index.format === 1 ? [{ act: "upgrade", key: "shift+u", label: "upgrade to format 2" }] : []),
+      { act: "order", key: "shift+o", label: `order: ${this.#order}` },
+      { act: "check", key: "shift+c", label: "check" },
     ];
   }
 
-  protected nativeHints(): (NativeHint | undefined)[] {
-    return [actionHint(["tui.select.up", "tui.select.down"], "select"), { keys: ["tab", "shift+tab"], label: "section" }];
+  protected closeCommand(): Command {
+    return { act: "close", key: "escape", label: this.#query ? "clear search" : "close" };
+  }
+
+  protected hints(): TspSpan[][] {
+    const commands = this.commands();
+    const [first, ...rest] = commands;
+    const primary = first?.act === "primary" ? [first] : [];
+    const others = first?.act === "primary" ? rest : commands;
+    const close = this.closeCommand();
+    return [
+      ...this.navigationHints("select"),
+      ...primary.map((command) => hint(keyLabel(command.key), command.label)),
+      hint("Tab", "section"),
+      ...others.map((command) => hint(keyLabel(command.key), command.label)),
+      hint(keyLabel(close.key), close.label),
+    ];
+  }
+
+  protected detail(): DetailView {
+    const entry = this.#current();
+    if (!entry) return { key: "detail", heading: "Nothing selected", groups: [] };
+    const detail = new Detail();
+    if (entry.kind === "stage") this.#stageDetail(detail, entry.stage);
+    else if (entry.kind === "round") this.#roundDetail(detail, entry.round);
+    else this.#todoDetail(detail, entry.todo, entry.round);
+    return { key: `detail-${entry.kind}-${entry.id}`, heading: `${entry.id} — ${entry.title}`, groups: detail.done() };
+  }
+
+  #stageLine(stage: StageDoc): TspSpan[] {
+    return [statusSpan(this.theme, stage.status), span(` ${stage.id} ${singleLine(stage.title)}`)];
+  }
+
+  #openTodos(target: string): TspSpan[][] {
+    return this.#entries.todos.flatMap((entry) =>
+      entry.kind === "todo" && entry.todo.target === target
+        ? [
+            [
+              todoSpan(this.theme, entry.todo),
+              span(` ${entry.id} ${singleLine(entry.title)}`),
+              span(` · ${entry.todo.severity ?? "normal"}`, "dim"),
+            ],
+          ]
+        : [],
+    );
+  }
+
+  #stagePlans(stage: string): readonly AtlasStagePlan[] | undefined {
+    if (!this.#plans.has(stage)) this.#plans.set(stage, this.plans?.(stage));
+    return this.#plans.get(stage);
+  }
+
+  #stageDetail(detail: Detail, stage: StageDoc): void {
+    const readiness = stageReadiness(this.model, stage);
+    const ready = readiness.startable
+      ? [span(" · ready to start", "success")]
+      : readiness.blockedBy.length
+        ? [span(` · blocked by ${readiness.blockedBy.join(", ")}`, "warning")]
+        : [];
+    detail.field("Status", [statusSpan(this.theme, stage.status), span(` ${stage.status}`), ...ready]);
+    const round = this.model.rounds.find((candidate) => candidate.id === stage.round);
+    detail.field("Round", round ? `${round.id} ${singleLine(round.title)} [${round.status}]` : stage.round);
+    if (stage.target) detail.field("Target", [span(stage.target), ...(overdue(stage, this.#on) ? [span(" · overdue", "warning")] : [])]);
+    detail.field(
+      "Dates",
+      [`created ${stage.created}`, stage.started ? `started ${stage.started}` : "", stage.closed ? `${stage.status} ${stage.closed}` : ""]
+        .filter(Boolean)
+        .join(" · "),
+    );
+    const dependencies = stage.depends_on.map((id): Rich => {
+      const other = this.model.stages.find((candidate) => candidate.id === id);
+      return other ? this.#stageLine(other) : id;
+    });
+    detail.list("Depends", dependencies.length ? dependencies : [this.theme.symbols.symbol("format.dash")]);
+    if (stage.follows) detail.field("Follows", stage.follows);
+    const adrs = (this.model.adrs?.records ?? [])
+      .filter((record) => record.stage === stage.id)
+      .sort(byId)
+      .map((record) => [
+        span(`${record.id} ${singleLine(record.title)}`),
+        span(` · ${record.status}`, record.status === "proposed" ? "warning" : "dim"),
+      ]);
+    if (adrs.length) detail.list("ADRs", adrs);
+    const todos = this.#openTodos(stage.id);
+    detail.list("TODOs", todos.length ? todos : [[span("none open", "dim")]]);
+    detail.field("File", [span(this.model.repo ? relative(this.model.repo.repoRoot, stage.path) : stage.path, "dim")]);
+    this.#plansDetail(detail, stage);
+    detail.section("Objective", stage.objective);
+    detail.section("In scope", stage.scope_in);
+    detail.section("Out of scope", stage.scope_out);
+    detail.section("Done criteria", stage.done_criteria);
+    detail.section("Design constraints", stage.design_constraints);
+    detail.section("Risks", stage.risks);
+    detail.section("Amendments", stage.amendments);
+    detail.section("Free-work log", stage.free_work_log);
+    detail.section("Outcome", stage.outcome);
+  }
+
+  /** The same Atlas plan coverage the stage's status report lists; nothing without an answer from omo-prometheus. */
+  #plansDetail(detail: Detail, stage: StageDoc): void {
+    const plans = this.#stagePlans(stage.id);
+    if (!plans) return;
+    detail.subheading("Atlas plans");
+    let coverage: StageCoverage;
+    try {
+      coverage = stageCoverage(stage, plans);
+    } catch (error) {
+      detail.text([span(`Coverage unavailable: ${error instanceof Error ? error.message : String(error)}`, "error")]);
+      return;
+    }
+    if (!plans.length) detail.text([span("No Atlas plan is bound to this stage yet", "dim")]);
+    for (const plan of plans) {
+      const mark =
+        plan.status === "complete" ? glyph(this.theme, "status.success", "success") : glyph(this.theme, "status.running", "accent");
+      const declared = plan.criteria ? plan.criteria.join(", ") : "coverage undeclared";
+      const drift = coverage.drifted.includes(plan) ? [span(" · drift", "warning")] : [];
+      detail.text([
+        mark,
+        span(` ${planLabel(plan)}`),
+        span(` · ${plan.status} · ${plan.done}/${plan.total} rows · ${declared}`, "dim"),
+        ...drift,
+      ]);
+    }
+    for (const entry of coverage.criteria) {
+      detail.field(entry.id, [
+        entry.complete.length
+          ? span(`covered by complete ${entry.complete.map(planLabel).join(", ")}`, "success")
+          : entry.unfinished.length
+            ? span(`only by unfinished ${entry.unfinished.map(planLabel).join(", ")}`, "warning")
+            : span("uncovered", "error"),
+      ]);
+    }
+    if (coverage.undeclared.length)
+      detail.text([span(`Coverage undeclared by ${coverage.undeclared.map(planLabel).join(", ")}; check their scope`, "warning")]);
+    if (coverage.drifted.length)
+      detail.text([
+        span(
+          `Drift: ${coverage.drifted.map(planLabel).join(", ")} approved before the objective, scope, criteria or design constraints changed`,
+          "warning",
+        ),
+      ]);
+  }
+
+  #roundDetail(detail: Detail, round: RoundDoc): void {
+    detail.field("Status", [
+      statusSpan(this.theme, round.status),
+      span(` ${round.status}`),
+      ...(round === this.#nextPlanned ? [span(" · next to activate", "dim")] : []),
+    ]);
+    if (round.target) detail.field("Target", [span(round.target), ...(overdue(round, this.#on) ? [span(" · overdue", "warning")] : [])]);
+    const actual = roundActual(round);
+    if (actual) detail.field("Dates", actual);
+    detail.field("File", [span(this.model.repo ? relative(this.model.repo.repoRoot, round.path) : round.path, "dim")]);
+    const stages = orderStages(
+      this.model.stages.filter((stage) => stage.round === round.id),
+      this.#order,
+    );
+    const settled = stages.filter((stage) => stage.status === "closed" || stage.status === "dropped").length;
+    detail.field("Stages", stages.length ? `${settled}/${stages.length} settled` : [span("none yet", "dim")]);
+    detail.list(
+      "",
+      stages.map((stage) => [...this.#stageLine(stage), ...(overdue(stage, this.#on) ? [span(" · overdue", "warning")] : [])]),
+    );
+    const { openTodos } = plannedRoundCounts(this.model, round.id);
+    detail.field("TODOs", openTodos ? `${openTodos} open` : [span("none open", "dim")]);
+    detail.section("Goal", round.goal);
+    detail.section("Constraints", round.constraints);
+    detail.section("Non-goals", round.non_goals);
+    detail.section("Principles", round.principles);
+    detail.section("Known limitations", round.known_limitations);
+    detail.section("Outcome", round.outcome);
+  }
+
+  #todoDetail(detail: Detail, item: TodoItem, round: string): void {
+    detail.field("Status", [todoSpan(this.theme, item), span(` ${item.status} · ${item.severity ?? "normal"} severity`)]);
+    const owner = this.model.rounds.find((candidate) => candidate.id === round);
+    detail.field("Round", owner ? `${owner.id} ${singleLine(owner.title)} [${owner.status}]` : round);
+    if (item.target) {
+      const stage = this.model.stages.find((candidate) => candidate.id === item.target);
+      detail.field("Target", stage ? [...this.#stageLine(stage), span(` · ${stage.round}`, "dim")] : item.target);
+    }
+    if (item.trigger) detail.field("Trigger", singleLine(item.trigger));
+    if (item.source) detail.field("Source", singleLine(item.source));
+    if (item.carried_from) detail.field("Carried", `from ${item.carried_from}`);
+    if (item.reference) detail.field("Reference", singleLine(item.reference));
+    detail.section("Details", item.body);
+  }
+
+  protected nativeRole(): string {
+    return "omp.overlay.roadmap.console";
   }
 }
 
@@ -1331,7 +1223,7 @@ function splitFrontmatter(content: string): { frontmatter: string; body: string 
 }
 
 /**
- * Fullscreen write preview: the write and cancel actions around the repo-relative file list on the left, the selected
+ * Fullscreen write preview: the write and cancel rows around the repo-relative file list on the left, the selected
  * file on the right. Resolves true to write every file and false to write nothing.
  */
 export class PreviewView extends SplitPane {
@@ -1342,10 +1234,9 @@ export class PreviewView extends SplitPane {
   constructor(
     readonly preview: PreviewRequest,
     theme: Theme,
-    tui: TUI,
     readonly done: (answer: boolean) => void,
   ) {
-    super(theme, tui);
+    super(theme);
     this.#paths = preview.files.map((file) => relative(preview.root, file.path));
   }
 
@@ -1361,6 +1252,12 @@ export class PreviewView extends SplitPane {
     return index >= 0 && index < this.preview.files.length ? index : undefined;
   }
 
+  /** Whether the selected row is a Markdown file, which shows rendered unless Space asked for the raw text. */
+  #onMarkdown(): boolean {
+    const index = this.#file();
+    return index !== undefined && /\.md$/i.test(this.preview.files[index]?.path ?? "");
+  }
+
   /** Enter: the Write row writes, the Cancel row cancels, a file row explains. */
   #enter(): void {
     if (this.selected === 0) this.#answer(true);
@@ -1368,17 +1265,20 @@ export class PreviewView extends SplitPane {
     else this.message = { text: "Shift+W or the Write row writes every file; Esc cancels", level: "info" };
   }
 
-  protected handleKey(key: string): void {
-    if (matchesKey(key, "escape")) this.#answer(false);
-    else if (key === "W" || matchesKey(key, "shift+w")) this.#answer(true);
-    else if (matchesKey(key, "enter")) this.#enter();
-    else if ((matchesKey(key, "space") || key === " ") && this.#file() !== undefined) this.#raw = !this.#raw;
+  protected handleKey(key: KeyEvent): boolean {
+    if (key.id === "escape") this.#answer(false);
+    else if (key.id === "shift+w") this.#answer(true);
+    else if (key.id === "enter") this.#enter();
+    else if (key.id === "space") {
+      if (this.#onMarkdown()) this.#raw = !this.#raw;
+    } else return false;
+    return true;
   }
 
   protected handleAction(act: string): void {
     if (act === "write") this.#answer(true);
     else if (act === "cancel") this.#answer(false);
-    else if (act === "raw" && this.#file() !== undefined) this.#raw = !this.#raw;
+    else if (act === "raw" && this.#onMarkdown()) this.#raw = !this.#raw;
   }
 
   protected activate(): void {
@@ -1397,8 +1297,16 @@ export class PreviewView extends SplitPane {
     return singleLine(this.preview.title.split("\n")[0] ?? "");
   }
 
-  protected header(): string[] {
-    return [this.theme.bold(this.#headline())];
+  protected header(native: boolean, width: number): { nodes: UiNode[]; rows: number } {
+    const headline = h("text", {
+      key: "headline",
+      spans: [span(this.#headline(), "strong")],
+      wrap: "word",
+      ...(native ? {} : { lines: 2 }),
+    });
+    if (native) return { nodes: [headline], rows: 0 };
+    const title = h("text", { key: "title", spans: [span(this.title(), "accent strong")], truncate: "end" });
+    return { nodes: [title, headline], rows: 1 + Math.min(2, wrap(this.#headline(), width).length) };
   }
 
   protected emptySidebar(): string {
@@ -1413,142 +1321,80 @@ export class PreviewView extends SplitPane {
     return (this.preview.files[index]?.content ?? "").split("\n").length;
   }
 
-  protected sidebarRow(index: number, width: number): string {
-    const t = this.theme;
-    const isSelected = index === this.selected;
-    const cursor = isSelected ? t.fg("accent", `${t.nav.cursor} `) : padding(visibleWidth(t.nav.cursor) + 1);
-    const marks = [t.fg("success", t.status.success), t.fg("error", t.status.error)];
-    const markWidth = Math.max(...marks.map((mark) => visibleWidth(mark)));
-    const style = (text: string): string => t.fg(isSelected ? "accent" : "text", text);
-    if (index === 0) return `${cursor}${marks[0]}${padding(markWidth - visibleWidth(marks[0] as string))} ${style(this.#writeLabel())}`;
-    if (index === this.count() - 1)
-      return `${cursor}${marks[1]}${padding(markWidth - visibleWidth(marks[1] as string))} ${style("Cancel")}`;
-    const prefix = `${cursor}${padding(markWidth + 1)}`;
-    return `${prefix}${style(truncateStart(this.#paths[index - 1] ?? "", Math.max(1, width - visibleWidth(prefix))))}`;
-  }
-
-  protected hints(): string[] {
-    const onFile = this.#file() !== undefined;
+  /** The file name leads, so a long path cannot truncate it away; the directory follows and gives way first. */
+  protected rows(): Row[] {
     return [
-      ...this.navigationHints("file"),
-      ...(this.selected === 0 ? [rawKeyHint("enter", "write")] : this.selected === this.count() - 1 ? [rawKeyHint("enter", "cancel")] : []),
-      rawKeyHint("shift+w", "write all"),
-      ...(onFile ? [rawKeyHint("space", this.#raw ? "rendered" : "raw text")] : []),
-      rawKeyHint("escape", "cancel"),
-    ];
-  }
-
-  protected body(width: number): string[] {
-    const t = this.theme;
-    const detail = this.detail(width);
-    const index = this.#file();
-    if (index === undefined) {
-      if (this.selected === 0) {
-        detail.text(this.preview.title);
-        detail.blank();
-        detail.lines.push(t.bold("Files"));
-        this.#paths.forEach((path, at) => {
-          detail.lines.push(...wrapTextWithAnsi(`${path}${t.fg("dim", ` · ${plural(this.#lines(at), "line")}`)}`, width));
-        });
-        detail.blank();
-        detail.lines.push(...wrapTextWithAnsi(t.fg("dim", "Enter or Shift+W writes every file. Esc cancels and writes nothing."), width));
-      } else detail.lines.push(...wrapTextWithAnsi(t.fg("dim", "Enter cancels: nothing is written."), width));
-      return detail.lines;
-    }
-    const file = this.preview.files[index] as PreviewFile;
-    detail.heading(this.#paths[index] ?? file.path);
-    detail.lines.push(t.fg("dim", this.#raw ? "Raw text" : "Rendered; Space shows the raw text"));
-    detail.blank();
-    if (this.#raw || !/\.md$/i.test(file.path)) {
-      for (const line of file.content.replace(/\n$/, "").split("\n")) detail.lines.push(...wrapTextWithAnsi(line, width));
-      return detail.lines;
-    }
-    const { frontmatter, body } = splitFrontmatter(file.content);
-    for (const line of frontmatter ? frontmatter.split(/\r?\n/) : []) detail.lines.push(...wrapTextWithAnsi(t.fg("dim", line), width));
-    if (frontmatter) detail.blank();
-    // The managed-file comment renders as nothing; drop the blank rows it leaves before the title.
-    const rendered = body.trim() ? this.markdown(body.trim(), width) : [];
-    detail.lines.push(
-      ...rendered.slice(
-        Math.max(
-          0,
-          rendered.findIndex((line) => Bun.stripANSI(line).trim() !== ""),
-        ),
-      ),
-    );
-    return detail.lines;
-  }
-
-  protected nativeRole(): string {
-    return "omp.overlay.roadmap.preview";
-  }
-
-  protected nativeSignature(): string {
-    return String(this.#raw);
-  }
-
-  protected describeTop(): NativeChild[] {
-    return [keyed(textNode([span(this.#headline(), "strong")], { wrap: "word" }), "headline")];
-  }
-
-  protected describeItems(): NativeNode[] {
-    const t = this.theme;
-    return [
-      item("i0", { label: [span(t.status.success, "success"), span(` ${this.#writeLabel()}`)], tone: "success" }),
-      // The file name first: a long path would truncate it away; the directory follows dim and gives way first.
-      ...this.#paths.map((path, at) => {
+      { label: [glyph(this.theme, "status.success", "success"), span(` ${this.#writeLabel()}`)], tone: "success" },
+      ...this.#paths.map((path, at): Row => {
         const slash = path.lastIndexOf("/");
-        return item(`i${at + 1}`, {
+        return {
           label: [span(path.slice(slash + 1), "path")],
           ...(slash > 0 ? { detail: [span(path.slice(0, slash), "dim")] } : {}),
           title: `${path} · ${plural(this.#lines(at), "line")}`,
-        });
+        };
       }),
-      item(`i${this.count() - 1}`, { label: [span(t.status.error, "error"), span(" Cancel")], tone: "error" }),
+      { label: [glyph(this.theme, "status.error", "error"), span(" Cancel")], tone: "error" },
+    ];
+  }
+
+  protected commands(): Command[] {
+    return [
+      { act: "write", key: "shift+w", label: this.#writeLabel(), tone: "accent" },
+      ...(this.#onMarkdown() ? [{ act: "raw", key: "space", label: this.#raw ? "rendered" : "raw text" }] : []),
+    ];
+  }
+
+  protected closeCommand(): Command {
+    return { act: "cancel", key: "escape", label: "cancel" };
+  }
+
+  protected hints(): TspSpan[][] {
+    const last = this.count() - 1;
+    return [
+      ...this.navigationHints("file"),
+      ...(this.selected === 0 ? [hint("Enter", "write")] : this.selected === last ? [hint("Enter", "cancel")] : []),
+      hint("⇧W", "write all"),
+      ...(this.#onMarkdown() ? [hint("Space", this.#raw ? "rendered" : "raw text")] : []),
+      hint("Esc", "cancel"),
     ];
   }
 
   /** The Write row lists what is written; a file shows as Markdown (frontmatter as YAML) or, raw or not Markdown, as code. */
-  protected describeBody(): NativeNode {
+  protected detail(): DetailView {
+    const detail = new Detail();
     const index = this.#file();
     if (index === undefined) {
-      if (this.selected !== 0) return keyed(textNode([span("Cancel writes nothing.", "dim")], { wrap: "word" }), "detail-cancel");
-      const files = kv(this.#paths.map((path, at) => [path, [span(plural(this.#lines(at), "line"), "dim")]] as const));
-      return keyed(
-        col(
-          [
-            textNode(this.preview.title, { wrap: "word" }),
-            ...(files ? [files] : []),
-            textNode([span("Write writes every file. Cancel writes nothing.", "dim")], { wrap: "word" }),
-          ],
-          { gap: "md" },
-        ),
-        "detail-write",
+      if (this.selected !== 0) {
+        detail.text([span("Enter cancels: nothing is written.", "dim")]);
+        return { key: "detail-cancel", heading: "Cancel", groups: detail.done() };
+      }
+      detail.text(this.preview.title);
+      detail.subheading("Files");
+      detail.text(
+        this.#paths.flatMap((path, at) => [
+          ...(at ? [span("\n")] : []),
+          span(path, "path"),
+          span(` · ${plural(this.#lines(at), "line")}`, "dim"),
+        ]),
       );
+      detail.text([span("Enter or Shift+W writes every file. Esc cancels and writes nothing.", "dim")]);
+      return { key: "detail-write", heading: this.#writeLabel(), groups: detail.done() };
     }
     const file = this.preview.files[index] as PreviewFile;
-    const path = this.#paths[index] ?? file.path;
-    const children: NativeNode[] = [textNode([span(path, "accent strong path")], { wrap: "char" })];
-    if (this.#raw || !/\.md$/i.test(file.path)) children.push(code(file.content.replace(/\n$/, ""), { path: file.path, wrap: true }));
+    const markdown = this.#onMarkdown();
+    if (markdown) detail.text([span(this.#raw ? "Raw text; Space shows it rendered" : "Rendered; Space shows the raw text", "dim")]);
+    if (this.#raw || !markdown) detail.code(file.content.replace(/\n$/, ""), { path: file.path });
     else {
       const { frontmatter, body } = splitFrontmatter(file.content);
-      if (frontmatter) children.push(code(frontmatter, { lang: "yaml" }));
-      if (body.trim()) children.push(md(body.trim()));
+      if (frontmatter) detail.code(frontmatter, { lang: "yaml" });
+      // Comment-only lines (the managed-file marker) render as nothing or literally.
+      const shown = body.replace(/^[ \t]*<!--[^\n]*-->[ \t]*(?:\n|$)/gm, "").trim();
+      if (shown) detail.markdown(shown);
     }
-    return keyed(col(children, { gap: "md" }), `detail-file${index}`);
+    return { key: `detail-file${index}`, heading: this.#paths[index] ?? file.path, groups: detail.done() };
   }
 
-  protected describeActions(): (NativeNode | null)[] {
-    const onMarkdown = this.#file() !== undefined && /\.md$/i.test(this.preview.files[this.#file() as number]?.path ?? "");
-    return [
-      actionButton(this.#writeLabel(), "write", { keys: "shift+w", tone: "accent" }),
-      ...(onMarkdown ? [actionButton(this.#raw ? "Rendered" : "Raw text", "raw", { keys: "space" })] : []),
-      null,
-      actionButton("Cancel", "cancel", { keys: "escape" }),
-    ];
-  }
-
-  protected nativeHints(): (NativeHint | undefined)[] {
-    return [actionHint(["tui.select.up", "tui.select.down"], "file"), actionHint("tui.select.confirm", "write or cancel on its row")];
+  protected nativeRole(): string {
+    return "omp.overlay.roadmap.preview";
   }
 }

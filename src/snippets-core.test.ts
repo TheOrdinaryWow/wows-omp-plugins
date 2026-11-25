@@ -3,8 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
+import type { ComposerDecorator, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { containsMagicKeyword } from "@oh-my-pi/pi-coding-agent/session/magic-keywords";
 
+import { SnippetHighlights, snippetDecorations } from "../plugins/snippets/src/highlight.ts";
 import { expandSnippets, triggerWord } from "../plugins/snippets/src/matching.ts";
 import { readSnippetSettings, type SnippetSettings } from "../plugins/snippets/src/settings.ts";
 import { formatSnippetSource, parseSnippetSource } from "../plugins/snippets/src/snippet.ts";
@@ -93,6 +95,40 @@ describe("snippet shortcut matching", () => {
       expect(expandSnippets(input, [entry()], closed)).toEqual({ text: input, used: [] });
     }
     expect(expandSnippets("e.g.", [entry("g")], closed).text).toBe("e.g.");
+  });
+
+  test("the composer glows trigger words standing as prose, not escaped, embedded or in code", () => {
+    const text = ".kyc. and \\.kyc. and x.kyc. and `.kyc.` and .sig.";
+    const ranges = snippetDecorations(text, [".kyc.", ".sig."]);
+    expect(ranges.map(({ from, to }) => text.slice(from, to))).toEqual([".kyc.", ".sig."]);
+    expect(ranges[0]).toMatchObject({ from: 0, to: 5, s: "accent" });
+    expect(ranges[0]?.gradient?.stops.length).toBeGreaterThan(1);
+    expect(snippetDecorations(text, [])).toEqual([]);
+  });
+
+  test("highlights attach one decorator to the TUI composer, follow the live words, and skip clients without one", () => {
+    const decorators: ComposerDecorator[] = [];
+    let removed = 0;
+    const composer = {
+      addDecorator(decorator: ComposerDecorator) {
+        decorators.push(decorator);
+        return () => removed++;
+      },
+    };
+    const ctx = (ui: object, hasUI = true) => ({ hasUI, ui }) as unknown as ExtensionContext;
+    const highlights = new SnippetHighlights();
+    highlights.update(ctx({ composer }), [".kyc."]);
+    highlights.update(ctx({ composer }), [".sig."]);
+    expect(decorators).toHaveLength(1);
+    expect(decorators[0]?.(".kyc. .sig.").map(({ from }) => from)).toEqual([6]);
+    highlights.detach();
+    expect(removed).toBe(1);
+    const headless = new SnippetHighlights();
+    headless.update(ctx({}), [".kyc."]);
+    headless.update(ctx({ composer }, false), [".kyc."]);
+    expect(decorators).toHaveLength(1);
+    headless.detach();
+    expect(removed).toBe(1);
   });
 
   test("open boundaries reject key prefixes, paths, identifiers and calls", () => {

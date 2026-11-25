@@ -34,7 +34,7 @@ import {
 } from "#src/ledger.ts";
 import { registerMessageTitle } from "#src/message-title.ts";
 import { PluginStatePublisher, pluginStatePath } from "#src/plugin-state.ts";
-import { describeRoundCall, describeRoundResult, roundCardDetails } from "#src/round-card.ts";
+import { roundCard, roundCardDetails } from "#src/round-card.ts";
 
 const PLUGIN_NAME = "audit-goal";
 const PACKAGE_NAME = "wows-omp-plugin-audit-goal";
@@ -668,8 +668,7 @@ export default function auditGoal(pi: ExtensionAPI): void {
     defaultInactive: true,
     loadMode: "essential",
     approval: "read",
-    describeCall: (args) => describeRoundCall(args),
-    describeResult: (result, options, args) => describeRoundResult(result, args, options.expanded),
+    ...roundCard,
     execute: async (_toolCallId, params: RoundParams, _signal, _onUpdate, ctx) => {
       if (invalidStates.has(ctx.sessionManager.getSessionId()))
         return textResult("Audit ledger is invalid or could not be saved. Do not complete or dispatch; use /goal drop explicitly.", true);

@@ -17,7 +17,7 @@ An architecture decision record (ADR) is a short document explaining one design 
 omp plugin install adr@wows-omp-plugins
 ```
 
-You need OMP 19.1.1 or newer and a Git repository (a local `git init` is enough; no remote needed). Outside a Git repository the commands refuse to run. Start a new session after installing.
+You need OMP 19.2.0 or newer and a Git repository (a local `git init` is enough; no remote needed). Outside a Git repository the commands refuse to run. Start a new session after installing.
 
 ## Quick start
 
@@ -71,12 +71,12 @@ All commands run in the main session and complete subcommands and ADR IDs.
 
 ### The `/adr` console
 
-`/adr` fills the terminal: ADRs on the left with a status mark, the selected one in full on the right.
+`/adr` fills the terminal: ADRs on the left, colored by status, the selected one in full on the right, and buttons for its actions, with their keys, underneath.
 
 | Key | Action |
 | --- | --- |
 | Up, Down, Home, End | Select an ADR. |
-| PgUp, PgDn, mouse wheel | Scroll the decision text. The wheel over the list moves the selection. |
+| PgUp, PgDn | Scroll the decision text. |
 | Tab, Shift+Tab | Switch between All and each status, with counts. |
 | Lowercase letters, digits | Search IDs, titles and statuses. Backspace edits the search. |
 | Enter | Choose what to do with the selected ADR. |
@@ -91,7 +91,7 @@ After accepting, rejecting, deprecating, adding a note or running the check, the
 
 The `/adr init` preview looks the same, with the files on the left. Shift+W writes them, Esc declines.
 
-In [Tern](https://docs.stencil.so/tern/), the console and the preview open as native sheets with buttons for the same actions, and the agent's ADR tool calls show as readable cards.
+In [Tern](https://docs.stencil.so/tern/), the console and the preview open as native sheets whose buttons you can click. The agent's ADR tool calls show as readable cards in the terminal and in Tern.
 
 ### What the agent does
 

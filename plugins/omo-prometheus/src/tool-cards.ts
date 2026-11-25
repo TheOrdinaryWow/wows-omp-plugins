@@ -1,13 +1,12 @@
 /**
- * Native Tern cards for the plugin's tools and titles for its displayed messages. Plain terminals keep the host's
- * default tool rendering: these tools define no renderCall/renderResult, so only the TSP describe hooks change.
+ * Cards for the plugin's tools and titles for its displayed messages. The terminal's tool box draws no head, so there
+ * the render hooks draw a head row above the body; Tern draws the host's own tool head, so there they return the body.
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { code, compact, item, kv, list, md, node, span, text } from "@oh-my-pi/pi-tui";
-import { CustomMessageComponent } from "@oh-my-pi/pi-tui/chat/custom-message";
-import { OwnerMemo } from "@oh-my-pi/pi-tui/native/memo";
-import type { NativeChild, NativeNode } from "@oh-my-pi/pi-tui/native/node";
-import type { NativeToolHead, NativeToolView, RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
+import { type JSXNode, nativeRendering, type UiNode } from "@oh-my-pi/pi-tui";
+import type { TspTone } from "@oh-my-pi/pi-wire";
+
+import { h, kv, span } from "#src/tsp.ts";
 
 import {
   countedFailures,
@@ -26,13 +25,31 @@ import {
 } from "./ledger.ts";
 import { modelTextNodes } from "./model-text.ts";
 
-type Tone = NonNullable<NativeToolView["tone"]>;
+type Tone = TspTone;
 
-/** The result shape the describe hooks receive; text blocks carry what the model reads. */
+/** The result shape the render hooks receive; text blocks carry what the model reads. */
 interface CardResult {
   content: ReadonlyArray<{ type: string; text?: string }>;
   details?: unknown;
   isError?: boolean;
+}
+
+interface CardOptions {
+  expanded: boolean;
+}
+
+/** What a card's head row names: the tool, what the call acts on, short facts and state badges. */
+interface CardHead {
+  title: string;
+  target?: string;
+  meta?: readonly string[];
+  badges?: readonly { text: string; tone?: Tone }[];
+}
+
+interface CardView {
+  head: CardHead;
+  tone?: Tone;
+  body?: readonly JSXNode[];
 }
 
 /** One ledger row as a result card shows it. Fields after `verification` are absent in results from older versions. */
@@ -157,20 +174,43 @@ function resultText(result: CardResult): string {
     .trim();
 }
 
-function head(title: string, target?: string, extra: Omit<NativeToolHead, "title" | "target" | "targetKind"> = {}): NativeToolHead {
-  return { title, ...(target ? { target, targetKind: "text" as const } : {}), ...extra };
+/** Values that are set, for joining optional facts. */
+function present<T>(values: readonly (T | undefined | false | null | "")[]): T[] {
+  return values.filter((value): value is T => value !== undefined && value !== false && value !== null && value !== "");
+}
+
+function head(title: string, target?: string, extra: Omit<CardHead, "title" | "target"> = {}): CardHead {
+  return { title, ...(target ? { target } : {}), ...extra };
 }
 
 /** The text as Markdown, in the error tone for a failed call; for results without card details. */
-function textView(title: string, target: string | undefined, result: CardResult, fallback: string): NativeToolView {
-  return { tool: head(title, target), tone: result.isError ? "error" : undefined, body: [md(resultText(result) || fallback)] };
+function textView(title: string, target: string | undefined, result: CardResult, fallback: string): CardView {
+  return {
+    head: head(title, target),
+    tone: result.isError ? "error" : undefined,
+    body: [h("md", { text: resultText(result) || fallback })],
+  };
 }
 
-const memo = new OwnerMemo<NativeToolView>();
-
-/** One view per result content, rebuilt only when its inputs change. */
-function memoized(result: CardResult, deps: readonly unknown[], build: () => NativeToolView): NativeToolView {
-  return memo.get(result.content, [result.details, result.isError, ...deps], build);
+/**
+ * The card's node: a head row, then the body. In a terminal the head row names the tool and its target; in Tern the
+ * host's own tool head already does, so the row keeps only the badges and facts, and a card with neither and no body
+ * draws nothing. Read on every hook call, so the card follows Tern attaching or detaching. A failed call reads in the
+ * error tone.
+ */
+function card(view: CardView): UiNode | undefined {
+  const body = view.body ?? [];
+  const { title, target, meta, badges } = view.head;
+  const native = nativeRendering();
+  const facts = [
+    ...(badges ?? []).map((badge) => h("badge", { text: badge.text, tone: badge.tone })),
+    meta?.length ? h("text", { spans: [span(meta.join(" · "), "muted")] }) : undefined,
+  ].filter((node) => node !== undefined);
+  if (native && !facts.length && !body.length) return undefined;
+  const titleStyle = view.tone === "error" ? "error strong" : "toolTitle strong";
+  const name = native ? undefined : h("text", { spans: [span(title, titleStyle), ...(target ? [span(` ${target}`, "accent")] : [])] });
+  const row = name || facts.length ? h("row", { key: "head", gap: "sm", align: "center", wrap: true }, name, ...facts) : undefined;
+  return h("col", { gap: "sm", tone: view.tone }, row, ...body);
 }
 
 // ── atlas_ledger ──────────────────────────────────────────────────────────
@@ -196,35 +236,33 @@ function ledgerTarget(args: PartialArgs | undefined): string | undefined {
   if (!action) return undefined;
   const scope = action === "discover" ? str(args?.scope) : undefined;
   const disposition = action === "triage" ? str(args?.disposition) : undefined;
-  return compact([action, scope, str(args?.id), disposition]).join(" ");
+  return present([action, scope, str(args?.id), disposition]).join(" ");
 }
 
-function rowItem(row: LedgerCardRow): NativeNode {
+function rowItem(row: LedgerCardRow): UiNode {
   const state = rowState(row);
-  const facts = compact([row.agent, row.tier === "heavy" ? "HEAVY" : undefined]).join(" · ");
-  return item(row.id, {
+  const facts = present([row.agent, row.tier === "heavy" ? "HEAVY" : undefined]).join(" · ");
+  return h("item", {
+    key: row.id,
     label: [span(row.id, "strong"), span(" "), span(row.title)],
     detail: [span(state.word, state.tone), ...(facts ? [span(` · ${facts}`, "muted")] : [])],
   });
 }
 
-function progressBar(progress: LedgerCardProgress): NativeNode {
-  return node("progress", {
+function progressBar(progress: LedgerCardProgress): UiNode {
+  return h("progress", {
     value: progress.total ? progress.done / progress.total : 0,
     label: `${progress.done}/${progress.total} rows done`,
   });
 }
 
 /** A recorded owner ruling: the acceptance now in force for its row and the user's reason, marked as a plan deviation. */
-function rulingSection(ruling: OwnerRuling): NativeNode {
-  return node(
+function rulingSection(ruling: OwnerRuling): UiNode {
+  return h(
     "section",
-    { head: [span(ruling.id, "strong"), span(` amends ${ruling.rowId} acceptance`, "warning")] },
-    compact<NativeChild>([
-      md(ruling.acceptance),
-      str(ruling.note) ? text([span("Note ", "muted"), span(ruling.note)], { wrap: "word" }) : undefined,
-    ]),
-    "ruling",
+    { key: "ruling", head: [span(ruling.id, "strong"), span(` amends ${ruling.rowId} acceptance`, "warning")] },
+    h("md", { text: ruling.acceptance }),
+    str(ruling.note) ? h("text", { spans: [span("Note ", "muted"), span(ruling.note)], wrap: "word" }) : undefined,
   );
 }
 
@@ -237,7 +275,7 @@ const RETRY_STOP: Record<NonNullable<NonNullable<LedgerCardRow["retry"]>["stop"]
 };
 
 function retryLine(retry: NonNullable<LedgerCardRow["retry"]>): string {
-  return compact([
+  return present([
     `window ${retry.window}`,
     `${retry.counted}/3 counted failures`,
     `${retry.diagnostics} ${retry.diagnostics === 1 ? "diagnostic" : "diagnostics"}`,
@@ -245,13 +283,13 @@ function retryLine(retry: NonNullable<LedgerCardRow["retry"]>): string {
   ]).join(" · ");
 }
 
-function factSection(label: string, source: string, key: string): NativeNode {
-  return node("section", { head: [span(label, "muted")] }, [md(source)], key);
+function factSection(label: string, source: string, key: string): UiNode {
+  return h("section", { key, head: [span(label, "muted")] }, h("md", { text: source }));
 }
 
 /** What an expanded row change adds: that row's acceptance and evidence, its clock and retries, and what can run next. */
-function rowFacts(row: LedgerCardRow | undefined, progress: LedgerCardProgress, ruling: OwnerRuling | undefined): NativeChild[] {
-  return compact<NativeChild>([
+function rowFacts(row: LedgerCardRow | undefined, progress: LedgerCardProgress, ruling: OwnerRuling | undefined): JSXNode[] {
+  return [
     // An amend card already shows the ruled acceptance in its ruling section.
     row?.acceptance && !ruling
       ? factSection(row.amendedBy ? `Acceptance (amended by ${row.amendedBy})` : "Acceptance", row.acceptance, "acceptance")
@@ -262,10 +300,18 @@ function rowFacts(row: LedgerCardRow | undefined, progress: LedgerCardProgress, 
       ["Retry", row?.retry ? retryLine(row.retry) : undefined],
       ["Next", progress.next ? progress.next.join(", ") || "none" : undefined],
     ]),
-  ]);
+  ];
 }
 
-function describeLedgerResult(result: CardResult, expanded: boolean, args: PartialArgs | undefined): NativeToolView {
+function modelTextSection(source: string): UiNode {
+  return h(
+    "section",
+    { key: "model-text", head: [span("Model text", "muted")], collapsible: true, collapsed: true },
+    ...modelTextNodes(source),
+  );
+}
+
+function ledgerResult(result: CardResult, expanded: boolean, args: PartialArgs | undefined): CardView {
   const target = ledgerTarget(args);
   if (result.isError) return textView(LEDGER_TITLE, target, result, "Ledger operation refused.");
   const details = result.details as StoredDetails | undefined;
@@ -273,8 +319,15 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
     // status: the whole plan; its text repeats the same table with proofs.
     const progress = ledgerProgress(details.ledger);
     return {
-      tool: head(LEDGER_TITLE, target ?? "status", { meta: [`${progress.done}/${progress.total} done`] }),
-      body: [progressBar(progress), list(cardRows(details.ledger).map((row) => rowItem(rowSummary(row))))],
+      head: head(LEDGER_TITLE, target ?? "status", { meta: [`${progress.done}/${progress.total} done`] }),
+      body: [
+        progressBar(progress),
+        h(
+          "list",
+          {},
+          cardRows(details.ledger).map((row) => rowItem(rowSummary(row))),
+        ),
+      ],
     };
   }
   const progress = details?.progress;
@@ -287,52 +340,43 @@ function describeLedgerResult(result: CardResult, expanded: boolean, args: Parti
   const state = changed ? rowState(changed) : undefined;
   const guidance = resultText(result);
   return {
-    tool: head(LEDGER_TITLE, target, {
+    head: head(LEDGER_TITLE, target, {
       meta: [`${progress.done}/${progress.total} done`],
-      ...(state || ruling
-        ? {
-            badges: compact([
-              ruling ? { text: ruling.id, tone: "warning" as const } : undefined,
-              state ? { text: state.word, tone: state.tone } : undefined,
-            ]),
-          }
-        : {}),
+      badges: present([
+        ruling ? { text: ruling.id, tone: "warning" as const } : undefined,
+        state ? { text: state.word, tone: state.tone } : undefined,
+      ]),
     }),
     tone: state?.tone === "warning" ? "warning" : undefined,
-    body: compact<NativeChild>([
-      list([
+    body: [
+      h(
+        "list",
+        {},
         changed
           ? rowItem(changed)
-          : item(finding?.id ?? "", {
+          : h("item", {
+              key: finding?.id ?? "",
               label: [span(finding?.id ?? "", "strong"), span(" "), span(finding?.title ?? "")],
               detail: finding?.disposition
                 ? [span(`triaged: ${finding.disposition}`, "success")]
                 : [span("deferred, needs triage", "warning")],
             }),
-      ]),
+      ),
       ruling ? rulingSection(ruling) : undefined,
       progressBar(progress),
       ...(expanded ? rowFacts(changed, progress, ruling) : []),
       // The text the model reads repeats the whole plan on every call: folded, for checking what it was told.
-      expanded && guidance
-        ? node(
-            "section",
-            { head: [span("Model text", "muted")], collapsible: true, collapsed: true },
-            modelTextNodes(guidance),
-            "model-text",
-          )
-        : undefined,
-    ]),
-    preview: "none",
+      expanded && guidance ? modelTextSection(guidance) : undefined,
+    ],
   };
 }
 
 export const ledgerCard = {
-  describeCall(args: PartialArgs | undefined): NativeToolView {
-    return { tool: head(LEDGER_TITLE, ledgerTarget(args)) };
+  renderCall(args: PartialArgs | undefined): UiNode | undefined {
+    return card({ head: head(LEDGER_TITLE, ledgerTarget(args)) });
   },
-  describeResult(result: CardResult, options: RenderResultOptions, args?: PartialArgs): NativeToolView {
-    return memoized(result, [options.expanded, ledgerTarget(args)], () => describeLedgerResult(result, options.expanded, args));
+  renderResult(result: CardResult, options: CardOptions, _theme?: unknown, args?: PartialArgs): UiNode | undefined {
+    return card(ledgerResult(result, options.expanded, args));
   },
   mergeCallAndResult: true,
 };
@@ -345,7 +389,7 @@ function gitPaths(args: PartialArgs | undefined): string[] {
   return Array.isArray(args?.paths) ? args.paths.flatMap((path) => str(path) ?? []) : [];
 }
 
-function gitHead(args: PartialArgs | undefined, commit?: GitCardDetails["commit"]): NativeToolHead {
+function gitHead(args: PartialArgs | undefined, commit?: GitCardDetails["commit"]): CardHead {
   const action = str(args?.action);
   const paths = gitPaths(args);
   if (action === "commit") {
@@ -353,42 +397,51 @@ function gitHead(args: PartialArgs | undefined, commit?: GitCardDetails["commit"
       meta: paths.length ? [paths.length === 1 ? "1 file" : `${paths.length} files`] : undefined,
     });
   }
-  const target = compact([action, str(args?.revision), args?.staged === true && "staged", args?.stat === true && "stat"]).join(" ");
+  const target = present([action, str(args?.revision), args?.staged === true && "staged", args?.stat === true && "stat"]).join(" ");
   return head(GIT_TITLE, target || undefined, { meta: paths.length ? [`in ${paths.join(", ")}`] : undefined });
 }
 
-function describeGitResult(result: CardResult, args: PartialArgs | undefined): NativeToolView {
+function gitResult(result: CardResult, args: PartialArgs | undefined): CardView {
   // Git aligns columns with leading spaces (`--stat`), so only line ends are trimmed.
   const output = result.content
     .flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : []))
     .join("\n\n")
     .replace(/^\n+|\s+$/g, "");
   if (result.isError)
-    return { tool: gitHead(args), tone: "error", body: [text([span(output || "Git refused.", "error")], { wrap: "word" })] };
+    return { head: gitHead(args), tone: "error", body: [h("text", { spans: [span(output || "Git refused.", "error")], wrap: "word" })] };
   const commit = (result.details as StoredDetails | undefined)?.commit;
   if (typeof commit?.sha === "string" && typeof commit.subject === "string") {
     const paths = gitPaths(args);
     return {
-      tool: gitHead(args, commit),
+      head: gitHead(args, commit),
       tone: "success",
-      body: compact([
-        text([span(commit.subject, "strong")], { wrap: "word" }),
-        paths.length ? list(paths.map((path) => item(path, { label: path }))) : undefined,
-      ]),
+      body: [
+        h("text", { spans: [span(commit.subject, "strong")], wrap: "word" }),
+        paths.length
+          ? h(
+              "list",
+              {},
+              paths.map((path) => h("item", { key: path, label: path })),
+            )
+          : undefined,
+      ],
     };
   }
   const action = str(args?.action);
   const patch = (action === "diff" || action === "show") && args?.stat !== true;
-  return { tool: gitHead(args), body: [code(output || "(no output)", patch ? { lang: "diff" } : {})] };
+  return { head: gitHead(args), body: [h("code", { text: output || "(no output)", ...(patch ? { lang: "diff" } : {}) })] };
 }
 
 export const gitCard = {
-  describeCall(args: PartialArgs | undefined): NativeToolView {
+  renderCall(args: PartialArgs | undefined): UiNode | undefined {
     const message = str(args?.action) === "commit" ? str(args?.message)?.split("\n")[0] : undefined;
-    return { tool: gitHead(args), body: message ? [text([span(message, "muted")], { wrap: "word" })] : undefined };
+    return card({
+      head: gitHead(args),
+      body: message ? [h("text", { spans: [span(message, "muted")], wrap: "word" })] : undefined,
+    });
   },
-  describeResult(result: CardResult, _options: RenderResultOptions, args?: PartialArgs): NativeToolView {
-    return memoized(result, [args], () => describeGitResult(result, args));
+  renderResult(result: CardResult, _options: CardOptions, _theme?: unknown, args?: PartialArgs): UiNode | undefined {
+    return card(gitResult(result, args));
   },
   mergeCallAndResult: true,
 };
@@ -413,7 +466,7 @@ function refusalReason(result: CardResult): string {
   return first.replace(/\s*\(.*$/s, "").replace(/\.$/, "") || "Release refused";
 }
 
-function describeReleaseRefusal(result: CardResult, expanded: boolean): NativeToolView {
+function releaseRefusal(result: CardResult, expanded: boolean): CardView {
   const details = result.details as (StoredDetails & ReleaseCardDetails) | undefined;
   const unfinished = Array.isArray(details?.unfinished) ? details.unfinished.filter((row) => typeof row?.id === "string") : [];
   const findings = Array.isArray(details?.findings) ? details.findings.filter((finding) => typeof finding?.id === "string") : [];
@@ -423,17 +476,20 @@ function describeReleaseRefusal(result: CardResult, expanded: boolean): NativeTo
   const full = resultText(result);
   const reason = refusalReason(result);
   return {
-    tool: head(RELEASE_TITLE, "refused", {
-      meta: compact([progress ? `${progress.done}/${progress.total} done` : undefined, untriaged ? `${untriaged} untriaged` : undefined]),
+    head: head(RELEASE_TITLE, "refused", {
+      meta: present([progress ? `${progress.done}/${progress.total} done` : undefined, untriaged ? `${untriaged} untriaged` : undefined]),
     }),
     tone: "error",
-    body: compact<NativeChild>([
-      text([span(reason, "error")], { wrap: "word" }),
-      unfinished.length ? list(unfinished.map(rowItem)) : undefined,
+    body: [
+      h("text", { key: "reason", spans: [span(reason, "error")], wrap: "word" }),
+      unfinished.length ? h("list", {}, unfinished.map(rowItem)) : undefined,
       findings.length
-        ? list(
+        ? h(
+            "list",
+            {},
             findings.map((finding) =>
-              item(finding.id, {
+              h("item", {
+                key: finding.id,
                 label: [span(finding.id, "strong"), span(" "), span(finding.title)],
                 detail: [span("needs triage", "warning")],
               }),
@@ -442,22 +498,20 @@ function describeReleaseRefusal(result: CardResult, expanded: boolean): NativeTo
         : undefined,
       progress ? progressBar(progress) : undefined,
       // The text the model reads also carries the whole ledger: folded, for checking what it was told.
-      expanded && full && full !== reason
-        ? node("section", { head: [span("Model text", "muted")], collapsible: true, collapsed: true }, modelTextNodes(full), "model-text")
-        : undefined,
-    ]),
+      expanded && full && full !== reason ? modelTextSection(full) : undefined,
+    ],
   };
 }
 
 export const releaseCard = {
-  describeCall(args: PartialArgs | undefined): NativeToolView {
+  renderCall(args: PartialArgs | undefined): UiNode | undefined {
     const reason = str(args?.reason);
-    return { tool: head(RELEASE_TITLE), body: reason ? [text([span(reason, "muted")], { wrap: "word" })] : undefined };
+    return card({ head: head(RELEASE_TITLE), body: reason ? [h("text", { spans: [span(reason, "muted")], wrap: "word" })] : undefined });
   },
-  describeResult(result: CardResult, options: RenderResultOptions): NativeToolView {
-    return memoized(result, [options.expanded], () =>
+  renderResult(result: CardResult, options: CardOptions): UiNode | undefined {
+    return card(
       result.isError
-        ? describeReleaseRefusal(result, options.expanded)
+        ? releaseRefusal(result, options.expanded)
         : { ...textView(RELEASE_TITLE, "released", result, "Atlas released."), tone: "success" },
     );
   },
@@ -466,28 +520,35 @@ export const releaseCard = {
 
 const ACTIVATE_TITLE = "Prometheus Activate";
 
+function activateResult(result: CardResult): CardView {
+  if (result.isError) return textView(ACTIVATE_TITLE, "refused", result, "Activation refused.");
+  if ((result.details as { activated?: unknown } | undefined)?.activated === false)
+    return textView(ACTIVATE_TITLE, "standard planning", result, "Standard planning kept.");
+  return { ...textView(ACTIVATE_TITLE, "activated", result, "Prometheus activated."), tone: "success" };
+}
+
 export const activateCard = {
-  describeCall(): NativeToolView {
-    return { tool: head(ACTIVATE_TITLE) };
+  renderCall(): UiNode | undefined {
+    return card({ head: head(ACTIVATE_TITLE) });
   },
-  describeResult(result: CardResult, _options: RenderResultOptions): NativeToolView {
-    return memoized(result, [], () => {
-      if (result.isError) return textView(ACTIVATE_TITLE, "refused", result, "Activation refused.");
-      if ((result.details as { activated?: unknown } | undefined)?.activated === false)
-        return textView(ACTIVATE_TITLE, "standard planning", result, "Standard planning kept.");
-      return { ...textView(ACTIVATE_TITLE, "activated", result, "Prometheus activated."), tone: "success" };
-    });
+  renderResult(result: CardResult): UiNode | undefined {
+    return card(activateResult(result));
   },
   mergeCallAndResult: true,
 };
 
 // ── message titles ────────────────────────────────────────────────────────
 
-/** Shows a displayed message in the host's own frame, labelled with a product title instead of its persisted customType. */
+/** The text a displayed message carries: its string content, or its text blocks. */
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((block) => (block?.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("\n\n");
+}
+
+/** Shows a displayed message as a card labelled with a product title instead of its persisted customType. */
 export function registerMessageTitle(pi: ExtensionAPI, customType: string, title: string): void {
-  pi.registerMessageRenderer(customType, (message, options) => {
-    const component = new CustomMessageComponent({ ...message, customType: title });
-    component.setExpanded(options.expanded);
-    return component;
-  });
+  pi.registerMessageRenderer(customType, (message) =>
+    h("card", { head: [span(title, "strong accent")] }, h("md", { text: messageText(message.content) })),
+  );
 }

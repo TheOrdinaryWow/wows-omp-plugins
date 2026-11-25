@@ -11,11 +11,10 @@ const ADR_ENTRY = fileURLToPath(new URL("../plugins/adr/src/index.ts", import.me
 
 async function hostCheck(root: string): Promise<void> {
   // Host paths are initialized at import time, after the child has its isolated HOME.
-  const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+  const { createAgentSession, initTheme, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
-  const { initTheme } = await import("@oh-my-pi/pi-tui");
-  await initTheme();
+  initTheme();
   const { session, extensionsResult } = await createAgentSession({
     cwd: root,
     agentDir: join(root, "agent"),

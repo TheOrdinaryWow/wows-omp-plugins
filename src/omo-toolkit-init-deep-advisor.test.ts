@@ -267,8 +267,8 @@ async function scenario(name: string, root: string): Promise<void> {
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
-  const { initTheme } = await import("@oh-my-pi/pi-tui");
-  await initTheme();
+  const { initTheme } = await import("@oh-my-pi/pi-coding-agent");
+  initTheme();
   const paths = advisorPaths(repo);
   const declined = Promise.withResolvers<void>();
   let selectorCalls = 0;

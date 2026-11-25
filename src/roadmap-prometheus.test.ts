@@ -54,14 +54,13 @@ async function sdk(root: string, name: string): Promise<void> {
   const proposal = name.startsWith("proposal");
   const shadow = name === "proposal-shadow";
   // Host state and extension factories must initialize inside the HOME-isolated child.
-  const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+  const { createAgentSession, initTheme, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { cfgCycleOrder } = await import("@oh-my-pi/pi-coding-agent/config/model-settings");
   const { resolveLocalUrlToPath } = await import("@oh-my-pi/pi-coding-agent/internal-urls/local-protocol");
   const { proposeDispatchDetails } = await import("@oh-my-pi/pi-coding-agent/tools/resolve");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
-  const { initTheme } = await import("@oh-my-pi/pi-tui");
-  await initTheme();
+  initTheme();
   const git = discoverRepo(root);
   assert(git);
   const initialized = await initProject(
@@ -164,8 +163,8 @@ async function sdk(root: string, name: string): Promise<void> {
       const direct = session.getToolByName("propose");
       assert(direct);
       const provenance = extensionsResult.runtime.getAllTools().find((tool) => tool.name === "propose")?.sourceInfo;
-      assert.equal(provenance?.source, name === "proposal-no-bash" ? "builtin" : "extension");
-      if (provenance?.source === "extension") assert.equal(provenance.path, shadow ? shadowEntry : "<extension:propose>");
+      assert.equal(provenance?.source, shadow ? "extension" : "builtin");
+      if (shadow) assert.equal(provenance?.path, shadowEntry);
       if (!shadow) {
         await assert.rejects(() => direct.execute("sdk-proposal-failed", { title: "absent" }));
         assert.equal(await marker.exists(), false);

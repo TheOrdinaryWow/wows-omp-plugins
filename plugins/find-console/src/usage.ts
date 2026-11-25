@@ -1,5 +1,5 @@
 import type { JudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
-import type { FindStats } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindStats } from "@oh-my-pi/pi-coding-agent/tools/details/find";
 
 /** Failed or split native attempts can bill without returning a judgment result. */
 export function trackJudgmentUsage(journal?: (usage: JudgmentUsage) => void) {

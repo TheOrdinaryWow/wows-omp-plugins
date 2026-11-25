@@ -6,7 +6,7 @@
  * OMP adaptation: typed refusal correlation and a single safe hint; no refusal-evasion instructions.
  */
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { splitThinkingSuffix } from "@oh-my-pi/pi-tui/overlays/model-selector";
+import { splitThinkingSuffix } from "@oh-my-pi/pi-coding-agent/config/model-selector";
 
 import { parseListedAgents } from "#src/selection-protocol.ts";
 import type { ToolkitSettingsReader } from "#src/settings.ts";

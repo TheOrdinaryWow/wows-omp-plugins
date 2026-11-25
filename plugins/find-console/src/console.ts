@@ -1,67 +1,38 @@
-import {
-  type Component,
-  code,
-  col,
-  getLanguageFromPath,
-  item,
-  kbd,
-  keyed,
-  matchesKey,
-  type NativeChild,
-  type NativeNode,
-  type NativeUiEvent,
-  row as nativeRow,
-  node,
-  routeSgrMouseInput,
-  type SgrMouseEvent,
-  span,
-  type Theme,
-  type TUI,
-  text,
-  truncateToWidth,
-  wrapTextWithAnsi,
-} from "@oh-my-pi/pi-tui";
-import { bottomBorder, divider, dividerSplit, rawKeyHint, row, splitBodyWidth, splitRow, topBorder } from "@oh-my-pi/pi-tui/chrome";
-import { leafKey, type NativeScroll } from "@oh-my-pi/pi-tui/native/node";
-import { actionBar, actionButton, escCloseButton, hintsRow, itemIndex, selectList } from "@oh-my-pi/pi-tui/native/overlay";
+import type { ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
+import { getLanguageFromPath } from "@oh-my-pi/pi-coding-agent/utils/lang-from-path";
+import { type JSXNode, type KeyEvent, nativeRendering, type ScrollRequest, signal, type UiNode, untrack } from "@oh-my-pi/pi-tui";
+import { truncate, wrap } from "@oh-my-pi/pi-tui/text/width";
+import type { TspSpan, TspText } from "@oh-my-pi/pi-wire";
 
 import type { ConsoleAction, FindResultsController } from "#src/controller.ts";
 import type { PreviewSource } from "#src/preview.ts";
 import { bestRanges, countLabel, LITERAL_GROUP, scoreGauge } from "#src/results.ts";
+import { h, span } from "#src/tsp.ts";
 import {
   anchorTop,
   cacheTone,
   clampTop,
-  gauge,
-  hintLines,
-  hitList,
-  type ListRow,
+  codeMarks,
   listTop,
   rangeLabel,
   type SourceWindow,
-  type Strength,
   sourceChunks,
-  sourceRows,
   splitPath,
-  spread,
   strength,
   UNRANKED,
   WHOLE_FILE,
   WINDOW_RANGES,
-  wholeFileBadge,
 } from "#src/view.ts";
 
-export const FULLSCREEN = {
-  overlay: true,
-  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true },
-} as const;
+export const FULLSCREEN = { overlay: true, fullscreen: true } as const;
+export const HALF_SCREEN = { overlay: true } as const;
 
 /** Below this width the list stacks above the preview instead of beside it. */
 const SPLIT_MIN_WIDTH = 96;
 /** A stacked preview shorter than this is hidden, leaving the list. */
 const STACKED_PREVIEW_MIN_ROWS = 6;
-/** Rows per wheel notch over the preview, as in the host's fullscreen plan review. */
-const WHEEL_ROWS = 3;
+/** The shortest terminal frame the console lays out. */
+const MIN_ROWS = 12;
 /**
  * Height of the native source scroller in text lines, loaded or not: a fixed extent keeps the centered
  * sheet from jumping between hits and keeps the whole sheet inside the window (so revealing a range
@@ -70,83 +41,186 @@ const WHEEL_ROWS = 3;
 const NATIVE_SOURCE_ROWS = 16;
 /** The same extent as the list's own scroll cap: a Tern list row is two text lines tall. */
 const NATIVE_SCROLLER_LIST_ROWS = NATIVE_SOURCE_ROWS / 2;
+/** Rows a native sidebar list shows before it scrolls. */
+const NATIVE_LIST_ROWS = 6;
 /** Horizontal excerpt budget leaves room for the line-number gutter and a visible ellipsis in the native split pane. */
 const NATIVE_SOURCE_COLUMNS = 64;
 
-const NATIVE_HINTS = hintsRow([
-  { keys: ["up", "down"], label: "hit" },
-  { keys: ["left", "right"], label: "range" },
-  { keys: ["pageUp", "pageDown"], label: "scroll preview" },
-  { keys: ["r"], label: "search within results" },
-  { keys: ["h"], label: "recent searches" },
-  { keys: ["escape"], label: "close" },
-]);
+type ListName = "hit" | "literal" | "range";
 
-/** A rendered screen area, in frame rows and columns. */
-interface Region {
-  top: number;
+/** A part of the view and the terminal rows it takes (`rows` is unused natively, where the sheet scrolls). */
+interface Part {
+  node: JSXNode;
   rows: number;
-  left: number;
-  right: number;
 }
 
-function inside(region: Region | undefined, event: SgrMouseEvent): region is Region {
-  return (
-    region !== undefined &&
-    event.row >= region.top &&
-    event.row < region.top + region.rows &&
-    event.col >= region.left &&
-    event.col < region.right
-  );
+/** Blank terminal rows that hold a pane at its height while its content is shorter. */
+function filler(rows: number): UiNode | undefined {
+  return rows > 0 ? h("text", { text: "\n".repeat(rows - 1), wrap: "none" }) : undefined;
+}
+
+/** Terminal rows `text` wraps to at `width`, at most `limit`. */
+function wrappedRows(text: string, width: number, limit: number): number {
+  return Math.max(1, Math.min(limit, wrap(text, Math.max(1, width)).length));
 }
 
 /**
- * The `/find` results console. In a terminal it is a fullscreen (or half-screen) frame with the hit list
- * beside (or, when narrow, above) the selected hit's source; in Tern it is a large glass sheet with the
- * same parts. The source is the full file (`full-file`) or a window around the active range (`snippet`),
- * scrolled to the active refined range, with only refined ranges highlighted. Keys, mouse and native
- * clicks all run the controller's actions.
+ * The `/find` results console: the hit list beside (or, in a narrow terminal, above) the selected hit's
+ * source, with the run's facts and actions under them. One node tree serves the terminal, where it fills
+ * the screen (or its lower half), and Tern, where it is a large sheet. The source is the full file
+ * (`full-file`) or a window around the active range (`snippet`), scrolled to the active refined range,
+ * with only refined ranges marked. Keys, clicks and native events all run the controller's actions.
  */
-export class FindConsole implements Component {
-  readonly nativeOverlay: NonNullable<Component["nativeOverlay"]>;
-  #revision = 0;
-  #memo: { key: string; lines: readonly string[] } | undefined;
-  #native: { revision: number; node: NativeNode } | undefined;
-  /** First visible source line, and the hit range it was last anchored on. */
+export class FindConsole {
+  readonly #revision = signal(0);
+  /** First visible source line in the terminal, and the hit range it was last anchored on. */
   #top = 1;
   #anchor = "";
   #codeRows = 10;
-  #listTop = 0;
-  #list: { region: Region; rows: ListRow[] } | undefined;
-  #source: Region | undefined;
+  /** First shown row of each terminal list window. */
+  readonly #tops = new Map<ListName, number>();
   /** Native reveal bookkeeping: bumped per anchor change; the scroller of `#mounted` was added at `#mountedFocus`. */
   #focus = 0;
   #nativeAnchor = "";
   #mounted: string | undefined;
   #mountedFocus = 0;
   /** PgUp/PgDn forwarded to the native scroller. */
-  #nativeScroll: NativeScroll | undefined;
+  #nativeScroll: ScrollRequest | undefined;
   /** Native block texts of the loaded source, tab-expanded and clipped, by line span. */
   #blocks: { source: PreviewSource; texts: Map<string, { text: string; clipped: boolean }> } | undefined;
 
   constructor(
     readonly controller: FindResultsController,
-    readonly theme: Theme,
-    readonly tui: TUI,
+    readonly ui: Pick<ExtensionUiHost, "size">,
     readonly halfScreen = false,
   ) {
-    this.nativeOverlay = {
-      role: "omp.overlay.find-console.results",
-      size: "lg",
-      anchor: "center",
-      head: `Find: ${controller.queryLabel}`,
-    };
     controller.onChange = () => this.#changed();
   }
 
   #changed(): void {
-    this.#revision++;
-    this.tui.requestRender();
+    this.#revision.update((revision) => revision + 1);
+  }
+
+  /** The root node: the screen itself in a terminal, the screen inside its own sheet in Tern. */
+  view(): UiNode {
+    const native = nativeRendering();
+    const screen = h(
+      "col",
+      {
+        gap: native ? "sm" : "none",
+        ...(native
+          ? {
+              min: () => ({ h: `${this.#sheetRows()}lines` as const }),
+              max: () => ({ h: `${this.#sheetRows()}lines` as const }),
+            }
+          : {}),
+        onKey: (key) => this.key(key),
+        onSelect: (item) => this.pick(item, false),
+        onActivate: (item) => this.pick(item, true),
+        onAction: (act) => this.action(act),
+      },
+      () => {
+        this.#revision();
+        const size = this.ui.size();
+        return untrack(() => this.#screen(size.columns, size.rows, native));
+      },
+    );
+    if (!native) return screen;
+    return h(
+      "overlay",
+      { size: "lg", anchor: "center", modal: true, head: `Find: ${this.controller.queryLabel}`, role: "omp.overlay.find-console.results" },
+      screen,
+    );
+  }
+
+  #sheetRows(): number {
+    return Math.max(16, this.ui.size().rows - 8);
+  }
+
+  /** Keys run the controller's actions; returns whether the key was taken. */
+  key(key: KeyEvent): boolean {
+    if (key.kind === "release") return false;
+    const { actions, state } = this.controller;
+    switch (key.id) {
+      case "escape":
+      case "ctrl+c":
+        actions.close();
+        return true;
+      case "up":
+        this.controller.select(state.selected - 1);
+        return true;
+      case "down":
+        this.controller.select(state.selected + 1);
+        return true;
+      case "home":
+        this.controller.select(0);
+        return true;
+      case "end":
+        this.controller.select(this.controller.entries.length - 1);
+        return true;
+      case "left":
+      case "shift+tab":
+        actions.previousRange();
+        return true;
+      case "right":
+      case "tab":
+        actions.nextRange();
+        return true;
+      case "pageUp":
+        this.#page(-1);
+        return true;
+      case "pageDown":
+        this.#page(1);
+        return true;
+      case "space":
+        actions.toggleMarked();
+        return true;
+      case "enter":
+      case "i":
+        actions.insert();
+        return true;
+      case "s":
+        actions.send();
+        return true;
+      case "o":
+        actions.open();
+        return true;
+      case "r":
+        actions.refine();
+        return true;
+      case "h":
+        actions.history();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** A click on a list row selects its hit, literal match or range; a double click (activate) also inserts it. */
+  pick(item: string, activate: boolean): void {
+    const separator = item.lastIndexOf("-");
+    const list = item.slice(0, separator);
+    const index = Number(item.slice(separator + 1));
+    if (!Number.isInteger(index) || index < 0) return;
+    if (list === "hit") this.controller.select(index);
+    else if (list === "literal") this.controller.select(this.controller.report.hits.length + index);
+    else if (list === "range") this.#chooseRange(index);
+    else return;
+    if (activate) this.controller.actions.insert();
+  }
+
+  /** Buttons act like their keys. */
+  action(act: string): void {
+    const { actions } = this.controller;
+    if (act === "close") actions.close();
+    else if (act === "insert") actions.insert();
+    else if (act === "send") actions.send();
+    else if (act === "open") actions.open();
+    else if (act === "refine") actions.refine();
+    else if (act === "history") actions.history();
+    else if (act === "mark") actions.toggleMarked();
+    else if (act === "next-range") actions.nextRange();
+    else if (act === "previous-range") actions.previousRange();
   }
 
   #chooseRange(index: number): void {
@@ -154,148 +228,91 @@ export class FindConsole implements Component {
     if (delta) this.controller.cycleRange(delta);
   }
 
-  #scroll(lines: number): void {
-    this.#top = clampTop(this.#top + lines, this.#codeRows, this.controller.previewLines);
+  #page(delta: 1 | -1): void {
+    this.#nativeScroll = { by: delta > 0 ? "page-down" : "page-up", n: (this.#nativeScroll?.n ?? 0) + 1 };
+    this.#top = clampTop(this.#top + delta * Math.max(1, this.#codeRows - 2), this.#codeRows, this.controller.previewLines);
     this.#changed();
   }
 
-  #page(delta: 1 | -1): void {
-    this.#nativeScroll = { by: delta > 0 ? "page-down" : "page-up", n: (this.#nativeScroll?.n ?? 0) + 1 };
-    this.#scroll(delta * Math.max(1, this.#codeRows - 2));
+  #screen(columns: number, terminalRows: number, native: boolean): JSXNode[] {
+    const width = Math.max(20, columns);
+    const height = Math.max(MIN_ROWS, this.halfScreen ? Math.floor(terminalRows / 2) : terminalRows);
+    const head = this.#head(width, native);
+    let foot = this.#foot(width, native);
+    const chrome = (parts: readonly Part[]) => parts.reduce((sum, part) => sum + part.rows, 0);
+    // Short terminals keep three body rows: the reasons line goes first.
+    if (!native && height - chrome(head) - chrome(foot) < 3) foot = this.#foot(width, native, false);
+    const bodyRows = Math.max(3, height - chrome(head) - chrome(foot));
+    const body = native || width >= SPLIT_MIN_WIDTH ? this.#split(width, bodyRows, native) : this.#stacked(width, bodyRows);
+    return [...head.map((part) => part.node), body, ...foot.map((part) => part.node)];
   }
 
-  handleInput(key: string): void {
-    if (routeSgrMouseInput(key, (event) => this.#mouse(event))) return;
-    const { actions, state } = this.controller;
-    if (matchesKey(key, "escape") || matchesKey(key, "ctrl+c")) actions.close();
-    else if (matchesKey(key, "up")) this.controller.select(state.selected - 1);
-    else if (matchesKey(key, "down")) this.controller.select(state.selected + 1);
-    else if (matchesKey(key, "home")) this.controller.select(0);
-    else if (matchesKey(key, "end")) this.controller.select(this.controller.entries.length - 1);
-    else if (matchesKey(key, "shift+tab") || matchesKey(key, "left")) actions.previousRange();
-    else if (matchesKey(key, "tab") || matchesKey(key, "right")) actions.nextRange();
-    else if (matchesKey(key, "pageUp")) this.#page(-1);
-    else if (matchesKey(key, "pageDown")) this.#page(1);
-    else if (matchesKey(key, "space")) actions.toggleMarked();
-    else if (matchesKey(key, "enter") || key === "i") actions.insert();
-    else if (key === "s") actions.send();
-    else if (key === "o") actions.open();
-    else if (key === "r") actions.refine();
-    else if (key === "h") actions.history();
-  }
-
-  /** Wheel over the list moves the selection and over the source scrolls it; a click on a list row selects its hit and range. */
-  #mouse(event: SgrMouseEvent): boolean {
-    if (this.halfScreen) event = { ...event, row: event.row - Math.ceil((this.tui.terminal?.rows || 40) / 2) };
-    const list = this.#list;
-    if (event.wheel !== null) {
-      if (inside(list?.region, event)) this.controller.select(this.controller.state.selected + event.wheel);
-      else if (inside(this.#source, event)) this.#scroll(event.wheel * WHEEL_ROWS);
-    } else if (event.leftClick && list && inside(list.region, event)) {
-      const target = list.rows[event.row - list.region.top];
-      if (target?.hit !== undefined) {
-        this.controller.select(target.hit);
-        if (target.range !== undefined) this.#chooseRange(target.range);
-      }
-    }
-    return true;
-  }
-
-  invalidate(): void {
-    this.#memo = undefined;
-    this.#native = undefined;
-  }
-
-  render(width: number): readonly string[] {
-    const terminalRows = this.tui.terminal?.rows || process.stdout.rows || 40;
-    const height = Math.max(9, this.halfScreen ? Math.floor(terminalRows / 2) : terminalRows);
-    const key = `${width}x${height}:${this.#revision}`;
-    if (this.#memo?.key !== key) this.#memo = { key, lines: this.#frame(width, height) };
-    return this.#memo.lines;
-  }
-
-  #frame(width: number, height: number): string[] {
-    const t = this.theme;
-    const c = this.controller;
-    const inner = Math.max(1, width - 4);
-    const split = width >= SPLIT_MIN_WIDTH;
-    const header = this.#header(inner);
-    let warning = c.warning ? wrapTextWithAnsi(t.fg("warning", `${t.status.warning} ${c.warning}`), inner).slice(0, 2) : [];
-    const status = c.message ? t.fg("warning", `${t.status.warning} ${c.message}`) : this.#status();
-    let reasons = this.#reasons();
-    let hints = hintLines(this.#hints(), inner);
-    // Top border, the header, the rule over the body, the rule under it, status, bottom border.
-    const chrome = () => 5 + header.length + warning.length + (reasons ? 1 : 0) + hints.length;
-    // Short terminals keep three body rows: the reasons go first, then wrapped hint and warning lines.
-    const minimum = 3;
-    if (height - chrome() < minimum) reasons = undefined;
-    if (height - chrome() < minimum) hints = hints.slice(0, 1);
-    if (height - chrome() < minimum) warning = warning.slice(0, 1);
-    const bodyRows = Math.max(minimum, height - chrome());
-
-    const marked = c.state.marked.length;
-    const literal = c.report.lexicalFallback.length;
-    const title = `Find · ${countLabel(c.report.hits.length, "hit")}${literal ? ` · ${countLabel(literal, "literal match", "literal matches")}` : ""}${marked ? ` · ${marked} marked` : ""}`;
-    const lines = [topBorder(width, title), ...header.map((line) => row(line, width)), ...warning.map((line) => row(line, width))];
-    const bodyTop = lines.length + 1;
-    if (split) {
-      const sidebarWidth = Math.max(30, Math.min(52, Math.floor(width * 0.36)));
-      const bodyWidth = splitBodyWidth(width, sidebarWidth);
-      const list = this.#listRows(sidebarWidth, bodyRows, false, { top: bodyTop, rows: bodyRows, left: 0, right: sidebarWidth + 3 });
-      const source = this.#sourceRows(bodyWidth, bodyRows);
-      this.#source = { top: bodyTop, rows: bodyRows, left: sidebarWidth + 4, right: width };
-      const box = t.boxRound;
-      lines.push(
-        t.fg(
-          "border",
-          box.teeRight +
-            box.horizontal.repeat(sidebarWidth + 2) +
-            box.teeDown +
-            box.horizontal.repeat(Math.max(0, width - sidebarWidth - 5)) +
-            box.teeLeft,
-        ),
-        ...Array.from({ length: bodyRows }, (_, index) => splitRow(list[index] ?? "", source[index] ?? "", width, sidebarWidth)),
-        dividerSplit(width, sidebarWidth),
-      );
-    } else {
-      const compact = hitList(t, c.entries, c.state, inner, true).rows.length;
-      let listRows = Math.min(compact, Math.max(2, Math.floor(bodyRows * 0.4)));
-      if (bodyRows >= STACKED_PREVIEW_MIN_ROWS + 3) listRows = Math.min(listRows, bodyRows - STACKED_PREVIEW_MIN_ROWS - 1);
-      let previewRows = bodyRows - listRows - 1;
-      if (previewRows < STACKED_PREVIEW_MIN_ROWS) {
-        listRows = bodyRows;
-        previewRows = 0;
-      }
-      const list = this.#listRows(inner, listRows, true, { top: bodyTop, rows: listRows, left: 0, right: width });
-      lines.push(divider(width), ...Array.from({ length: listRows }, (_, index) => row(list[index] ?? "", width)));
-      if (previewRows) {
-        const source = this.#sourceRows(inner, previewRows);
-        this.#source = { top: bodyTop + listRows + 1, rows: previewRows, left: 0, right: width };
-        lines.push(divider(width), ...Array.from({ length: previewRows }, (_, index) => row(source[index] ?? "", width)));
-      } else this.#source = undefined;
-      lines.push(divider(width));
-    }
-    lines.push(row(truncateToWidth(status, inner), width));
-    if (reasons) lines.push(row(truncateToWidth(reasons, inner), width));
-    lines.push(...hints.map((line) => row(line, width)), bottomBorder(width));
-    return lines;
-  }
-
-  /** The query as typed and the scope, with the coverage flush right; then how it was searched, when that differs. */
-  #header(width: number): string[] {
-    const t = this.theme;
+  /** The counts in the top rule, the query and scope with the coverage, how it was searched, and the coverage warning. */
+  #head(width: number, native: boolean): Part[] {
     const c = this.controller;
     const { report } = c;
-    const coverage =
-      report.coverage === "complete"
-        ? t.fg("success", `${t.status.success} complete coverage`)
-        : report.coverage === "partial"
-          ? t.fg("warning", `${t.status.warning} partial coverage`)
-          : t.fg("error", `${t.status.error} coverage unavailable`);
-    const lines = [spread(`${t.bold(c.queryLabel)}${t.fg("muted", ` in ${report.scopePath ?? "."}`)}`, coverage, width)];
-    const notes = this.#queryNotes().map(({ label, value, tone }) => `${t.fg(tone ?? "muted", label)}${value ? t.fg("text", value) : ""}`);
-    if (notes.length) lines.push(truncateToWidth(notes.join(t.fg("dim", "  ·  ")), width));
-    return lines;
+    const marked = c.state.marked.length;
+    const literal = report.lexicalFallback.length;
+    const parts: Part[] = [
+      {
+        node: h("rule", {
+          key: "title",
+          label: [
+            span("Find", "strong"),
+            span(` · ${countLabel(report.hits.length, "hit")}`),
+            ...(literal ? [span(` · ${countLabel(literal, "literal match", "literal matches")}`, "warning")] : []),
+            ...(marked ? [span(` · ${marked} marked`, "accent")] : []),
+          ],
+        }),
+        rows: 1,
+      },
+      {
+        node: h(
+          "row",
+          { key: "query", gap: "md", align: "center" },
+          h("text", {
+            spans: [span(c.queryLabel, "strong"), span(" in ", "muted"), span(report.scopePath ?? ".", "path")],
+            grow: 1,
+            truncate: "end",
+            lines: 1,
+          }),
+          report.coverage === "complete"
+            ? h("badge", { text: "complete coverage", tone: "success" })
+            : report.coverage === "partial"
+              ? h("badge", { text: "partial coverage", tone: "warning" })
+              : h("badge", { text: "coverage unavailable", tone: "error" }),
+        ),
+        rows: 1,
+      },
+    ];
+    const notes = this.#queryNotes();
+    if (notes.length)
+      parts.push({
+        node: h("text", {
+          key: "notes",
+          spans: notes.flatMap((note, index) => [
+            ...(index ? [span("  ·  ", "dim")] : []),
+            span(note.label, note.tone ?? "muted"),
+            ...(note.value ? [span(note.value, "strong")] : []),
+          ]),
+          ...(native ? { wrap: "word" as const } : { truncate: "end" as const, lines: 1 }),
+          ...(report.translation && "model" in report.translation ? { title: `Translated by ${report.translation.model}` } : {}),
+        }),
+        rows: 1,
+      });
+    if (c.warning)
+      parts.push({
+        node: h("text", {
+          key: "coverage",
+          spans: [span(c.warning, "warning")],
+          wrap: "word",
+          lines: 2,
+          ...(report.stats.failures.length ? { title: report.stats.failures.join("\n") } : {}),
+        }),
+        rows: wrappedRows(c.warning, width, 2),
+      });
+    parts.push({ node: h("rule", { key: "head-rule" }), rows: 1 });
+    return parts;
   }
 
   /** What the search actually ran: the English query it searched as, the results it searched within, or why it was not translated. */
@@ -313,379 +330,493 @@ export class FindConsole implements Component {
     return notes;
   }
 
-  /** Where the answers came from, what they cost, then the run's counts: three separate facts. */
-  #status(): string {
-    const t = this.theme;
+  /** A rule, where the answers came from with the cost and counts, the last message, why actions are unavailable, and the actions. */
+  #foot(width: number, native: boolean, withReasons = true): Part[] {
     const c = this.controller;
-    const gap = t.fg("dim", "  ·  ");
-    return `${t.fg(cacheTone(c.report.cache), c.cacheLabel)}${gap}${t.fg("muted", "cost ")}${t.fg("text", c.costLabel)}${gap}${t.fg("muted", c.runStats)}`;
-  }
-
-  #listRows(width: number, rows: number, compact: boolean, region: Region): string[] {
-    const list = hitList(this.theme, this.controller.entries, this.controller.state, width, compact);
-    this.#listTop = listTop(this.#listTop, list.rows.length, rows, list.selected);
-    const shown = list.rows.slice(this.#listTop, this.#listTop + rows);
-    this.#list = { region, rows: shown };
-    return shown.map((line) => line.text);
-  }
-
-  /** The selected hit's head, its facts, a rule, then its highlighted source scrolled to the active range. */
-  #sourceRows(width: number, rows: number): string[] {
-    const t = this.theme;
-    const c = this.controller;
-    const hit = c.selectedHit;
-    if (!hit) return [t.fg("dim", "No hit selected.")];
-    const active = c.activeRange;
-    const source = c.preview;
-    const { name, dir } = splitPath(hit.rel);
-    const whole = hit.scope === "whole-file";
-    const count = bestRanges(hit).length;
-    const ranked = c.report.hits.length;
-    const where = t.fg(
-      "dim",
-      hit.literal ? `literal ${c.state.selected - ranked + 1}/${c.entries.length - ranked}` : `hit ${c.state.selected + 1}/${ranked}`,
-    );
-    const position =
-      whole || hit.literal
-        ? where
-        : `${t.fg("muted", "range ")}${t.fg("accent", `${count ? c.state.range + 1 : 0}/${count}`)}${t.fg("dim", " · ")}${where}`;
-    const label = whole ? ` ${wholeFileBadge(t)}` : active ? t.fg("muted", rangeLabel(active)) : "";
-    const head = spread(`${t.bold(t.fg("accent", name))}${label}`, position, width);
-    const score = active?.p ?? hit.contentScore;
-    const facts = [
-      hit.literal ? t.fg("warning", UNRANKED) : `${gauge(t, score)} ${t.fg(strength(score), score.toFixed(2))}`,
-      hit.literal ? "" : t.fg("dim", `${hit.linesSeen} lines judged`),
-      hit.refineFailed ? t.fg("warning", WINDOW_RANGES) : "",
-      hit.truncated ? t.fg("warning", "partial file") : "",
-      source?.truncated ? t.fg("warning", "first 4 MiB") : "",
-      dir ? t.fg("dim", `${dir}/`) : "",
-    ].filter(Boolean);
-    const codeRows = Math.max(1, rows - 3);
-    this.#codeRows = codeRows;
-    let body: string[];
-    let shown = "";
-    if (!source) body = [t.fg("muted", "Loading preview…")];
-    else if (source.error) body = wrapTextWithAnsi(t.fg("error", `${t.status.error} Preview unavailable: ${source.error}`), width);
-    else if (active && active.start > source.lines.length)
-      body = wrapTextWithAnsi(t.fg("warning", `${t.status.warning} The judged range is no longer present in this file.`), width);
-    else {
-      const window = c.previewLines;
-      const anchor = `${c.state.selected}\n${hit.rel}\n${c.state.range}`;
-      if (this.#anchor !== anchor) {
-        this.#anchor = anchor;
-        this.#top = anchorTop(active, codeRows, window);
-      }
-      this.#top = clampTop(this.#top, codeRows, window);
-      body = sourceRows(t, hit.rel, window, active, window.highlight, this.#top, codeRows, width);
-      const mode = window.lines.length < source.lines.length ? " · snippet" : " · full file";
-      if (body.length) shown = t.fg("dim", `lines ${this.#top}-${this.#top + body.length - 1} of ${source.lines.length}${mode}`);
-      else body = [t.fg("dim", "This file is empty.")];
-    }
-    return [head, spread(facts.join(t.fg("dim", " · ")), shown, width), t.fg("borderMuted", "─".repeat(width)), ...body];
-  }
-
-  /** Key hints; an unavailable action is struck through and its reason shown on the line below. */
-  #hints(): string[] {
-    const t = this.theme;
-    const c = this.controller;
-    const marked = c.state.marked.length;
-    const hint = (keys: Parameters<typeof rawKeyHint>[0], label: string, action?: ConsoleAction) =>
-      action && c.actionReason(action) ? t.fg("dim", t.strikethrough(`${rawKeyHint(keys, label)}`)) : rawKeyHint(keys, label);
-    return [
-      rawKeyHint(["up", "down"], "hit"),
-      rawKeyHint(["left", "right"], "range"),
-      rawKeyHint(["pageUp", "pageDown"], "scroll"),
-      rawKeyHint("space", c.state.marked.includes(c.state.selected) ? "unmark" : "mark"),
-      hint("enter", "insert", "insert"),
-      hint("s", marked ? `send ${marked} marked` : "send", "send"),
-      hint("o", "open", "open"),
-      hint("r", "search within results", "refine"),
-      hint("h", "recent searches", "history"),
-      rawKeyHint("escape", "close"),
+    const parts: Part[] = [
+      { node: h("rule", { key: "foot-rule" }), rows: 1 },
+      {
+        node: h(
+          "row",
+          { key: "stats", gap: "md", align: "center" },
+          h("badge", { text: c.cacheLabel, tone: cacheTone(c.report.cache), title: "Where the judge's answers came from" }),
+          h("text", { spans: [span("cost ", "muted"), span(c.costLabel, "num")], title: "Judge and translation cost of this search" }),
+          h("text", { spans: [span(c.runStats, "muted")], grow: 1, truncate: "end", lines: 1, title: c.stats }),
+        ),
+        rows: 1,
+      },
     ];
-  }
-
-  #reasons(): string | undefined {
-    const t = this.theme;
+    if (c.message)
+      parts.push({
+        node: h("text", { key: "message", spans: [span(c.message, "warning")], wrap: "word", lines: 2 }),
+        rows: wrappedRows(c.message, width, 2),
+      });
     const reasons = (["insert", "open", "refine", "history"] as const).flatMap((action) => {
-      const reason = this.controller.actionReason(action);
+      const reason = c.actionReason(action);
       return reason ? [reason] : [];
     });
-    return reasons.length ? t.fg("muted", `${t.status.disabled} ${reasons.join(" ")}`) : undefined;
+    if (reasons.length && withReasons && !native)
+      parts.push({
+        node: h("text", { key: "reasons", spans: [span(reasons.join(" "), "muted")], truncate: "end", lines: 1 }),
+        rows: 1,
+      });
+    parts.push({ node: this.#actions(), rows: 2 });
+    return parts;
   }
 
-  describe(): NativeNode {
-    if (this.#native?.revision === this.#revision) return this.#native.node;
+  /** Action buttons in two rows; an unavailable one is dimmed and names why in its tooltip. */
+  #actions(): UiNode {
+    const c = this.controller;
+    const marked = c.state.marked.length;
+    const button = (text: string, act: string, key: string, primary = false) => {
+      const reason = act === "mark" || act === "close" || act === "send" ? undefined : c.actionReason(act as ConsoleAction);
+      return h("button", {
+        key: act,
+        text,
+        keys: [key],
+        actions: { click: act },
+        ...(primary ? { variant: "primary" as const } : {}),
+        ...(reason ? { disabled: reason } : {}),
+      });
+    };
+    return h(
+      "col",
+      { key: "actions", gap: "none" },
+      h(
+        "row",
+        { key: "primary", gap: "sm", align: "center" },
+        button("Insert reference", "insert", "enter", true),
+        button(marked ? `Send ${marked} marked` : "Send to agent", "send", "s"),
+        button(c.state.marked.includes(c.state.selected) ? "Unmark" : "Mark", "mark", "space"),
+        button("Open in editor", "open", "o"),
+      ),
+      h(
+        "row",
+        { key: "secondary", gap: "sm", align: "center" },
+        button("Search within results", "refine", "r"),
+        button("Recent searches", "history", "h"),
+        h("spacer", { grow: 1, size: "none" }),
+        button("Close", "close", "escape"),
+      ),
+    );
+  }
+
+  /** The lists beside the preview: a sidebar of `rows` terminal rows (natively a fixed-width column). */
+  #split(width: number, rows: number, native: boolean): UiNode {
+    const sidebarWidth = Math.max(30, Math.min(52, Math.floor(width * 0.36)));
+    const previewWidth = Math.max(10, width - sidebarWidth - 2);
+    const sidebar = this.#lists(native ? undefined : rows, true);
+    const preview = this.#preview(previewWidth, native ? undefined : rows);
+    return h(
+      "row",
+      {
+        key: "split",
+        gap: "md",
+        align: "start",
+        ...(native ? { grow: 1, shrink: 1, basis: 0, min: { h: 0 } } : {}),
+      },
+      h(
+        "col",
+        native
+          ? { key: "sidebar", gap: "none", shrink: 0, min: { w: "32ch" }, max: { w: "32ch" } }
+          : { key: "sidebar", gap: "none", shrink: 0, basis: sidebarWidth },
+        sidebar.node,
+        native ? undefined : filler(rows - sidebar.rows),
+      ),
+      h(
+        "col",
+        { key: "preview", gap: native ? "sm" : "none", grow: 1, shrink: 1, basis: 0, min: { w: 0 } },
+        preview.node,
+        native ? undefined : filler(rows - preview.rows),
+      ),
+    );
+  }
+
+  /** A narrow terminal: the hit list over a rule over the preview, or, when too short for both, the lists with the selected hit's ranges. */
+  #stacked(width: number, rows: number): UiNode {
+    const entries = this.controller.entries.length + (this.controller.report.lexicalFallback.length ? 2 : 0) + 1;
+    let listRows = Math.min(entries, Math.max(2, Math.floor(rows * 0.4)));
+    if (rows >= STACKED_PREVIEW_MIN_ROWS + 3) listRows = Math.min(listRows, rows - STACKED_PREVIEW_MIN_ROWS - 1);
+    let previewRows = rows - listRows - 1;
+    if (previewRows < STACKED_PREVIEW_MIN_ROWS) {
+      listRows = rows;
+      previewRows = 0;
+    }
+    const list = this.#lists(listRows, previewRows === 0 && listRows >= 5);
+    const preview = previewRows ? this.#preview(width, previewRows) : undefined;
+    return h(
+      "col",
+      { key: "stacked", gap: "none" },
+      h("col", { key: "sidebar", gap: "none" }, list.node, filler(listRows - list.rows)),
+      preview && h("rule", { key: "preview-rule" }),
+      preview && h("col", { key: "preview", gap: "none" }, preview.node, filler(previewRows - preview.rows)),
+    );
+  }
+
+  /**
+   * The hits (marked ones carry a pin, whole-file ones a tag), the unranked literal matches, then, with
+   * `ranges`, the selected hit's refined ranges. In a terminal each list shows a window of `rows` that
+   * follows the selection; natively each list scrolls.
+   */
+  #lists(rows: number | undefined, ranges: boolean): Part {
     const c = this.controller;
     const { report } = c;
+    const ranked = report.hits.length;
+    const literal = report.lexicalFallback.length;
     const hit = c.selectedHit;
-    const coverage =
-      report.coverage === "complete"
-        ? node("badge", { text: "complete coverage", tone: "success" })
-        : report.coverage === "partial"
-          ? node("badge", { text: "partial coverage", tone: "warning" })
-          : node("badge", { text: "coverage unavailable", tone: "error" });
-    const children: NativeChild[] = [
-      keyed(
-        nativeRow(
-          [
-            text(
-              [
-                span(countLabel(report.hits.length, "hit"), "strong"),
-                ...(report.lexicalFallback.length
-                  ? [span(` · ${countLabel(report.lexicalFallback.length, "literal match", "literal matches")}`, "warning")]
-                  : []),
-                span(" in ", "muted"),
-                span(report.scopePath ?? ".", "path"),
-                ...(c.state.marked.length ? [span(` · ${c.state.marked.length} marked`, "accent")] : []),
-              ],
-              { grow: 1, truncate: "end", lines: 1 },
-            ),
-            coverage,
-            escCloseButton(),
-          ],
-          { gap: "md", align: "center" },
-        ),
-        "head",
-      ),
-    ];
-    const notes = this.#queryNotes();
-    if (notes.length)
-      children.push(
-        keyed(
-          text(
-            notes.flatMap((note, index) => [
-              ...(index ? [span(" · ", "dim")] : []),
-              span(note.label, note.tone ?? "muted"),
-              ...(note.value ? [span(note.value, "strong")] : []),
-            ]),
-            {
-              wrap: "word",
-              role: "omp.find-console.query",
-              ...(report.translation && "model" in report.translation ? { title: `Translated by ${report.translation.model}` } : {}),
-            },
-          ),
-          "query",
+    const rangeList = ranges && hit && !hit.literal && hit.scope === "ranges" ? bestRanges(hit) : undefined;
+    const whole = ranges && hit && !hit.literal && hit.scope === "whole-file";
+    // Section heads and the blank row between sections, then the rows left for list items.
+    const sections = 1 + (literal ? 1 : 0) + (rangeList || whole ? 1 : 0);
+    let left = rows === undefined ? 0 : rows - (sections - 1) - sections;
+    let rangeRows = 0;
+    let hitRows = 0;
+    let literalRows = 0;
+    if (rows !== undefined) {
+      if (rangeList?.length) rangeRows = Math.min(rangeList.length, Math.max(1, Math.floor(left * 0.4)));
+      left -= rangeRows;
+      if (ranked && literal) {
+        literalRows = Math.min(literal, Math.max(1, left - Math.min(ranked, Math.ceil(left / 2))));
+        hitRows = Math.max(1, Math.min(ranked, left - literalRows));
+      } else if (ranked) hitRows = Math.max(1, Math.min(ranked, left));
+      else literalRows = Math.max(1, Math.min(literal, left));
+    }
+    const nodes: JSXNode[] = [];
+    let used = sections - 1;
+    if (ranked) {
+      const list = this.#list(
+        "hit",
+        report.hits.map((entry, index) => {
+          const { name, dir } = splitPath(entry.rel);
+          const marked = c.state.marked.includes(index);
+          const score = entry.contentScore.toFixed(2);
+          const best = bestRanges(entry);
+          const isWhole = entry.scope === "whole-file";
+          return {
+            label: !ranges && index === c.state.selected && c.activeRange ? `${name}${rangeLabel(c.activeRange)}` : name,
+            ...(dir ? { detail: dir } : {}),
+            value: [
+              ...(isWhole ? [span(`${WHOLE_FILE} `, "accent")] : []),
+              ...(entry.refineFailed ? [span("windows ", "warning")] : []),
+              ...(entry.truncated ? [span("partial ", "warning")] : []),
+              span(`${scoreGauge(entry.contentScore)} ${score}`, strength(entry.contentScore)),
+            ],
+            ...(marked ? { icon: "pin" } : {}),
+            tone: strength(entry.contentScore),
+            title: [
+              `${entry.rel} · score ${score}`,
+              `${entry.linesSeen} lines judged${entry.truncated ? ", partial file" : ""}`,
+              ...(isWhole ? ["Whole file: the file as a whole answers the query"] : []),
+              ...best.slice(0, 3).map((range) => `${rangeLabel(range)} ${range.p.toFixed(2)}  ${range.snippet.trim()}`),
+              ...(best.length > 3 ? [`+${best.length - 3} more ranges`] : []),
+              ...(entry.refineFailed ? [`Includes window ranges: ${entry.refineFailed}`] : []),
+              ...(marked ? ["Marked for sending"] : []),
+            ].join("\n"),
+          };
+        }),
+        c.state.selected < ranked ? c.state.selected : undefined,
+        hitRows,
+        rows !== undefined,
+      );
+      nodes.push(
+        h(
+          "col",
+          { key: "hits-section", gap: "none" },
+          h("text", { key: "hits-head", spans: this.#listHead("Hits", list.window, ranked, "↑↓"), truncate: "end", lines: 1 }),
+          list.node,
         ),
       );
-    if (c.warning)
-      children.push(
-        keyed(
-          nativeRow([node("icon", { name: "warning", tone: "warning" }), text(c.warning, { tone: "warning", wrap: "word", grow: 1 })], {
-            gap: "sm",
-            align: "start",
-            role: "omp.find-console.coverage",
-            ...(report.stats.failures.length ? { title: report.stats.failures.join("\n") } : {}),
+      used += 1 + list.rows;
+    } else {
+      nodes.push(h("text", { key: "no-hits", spans: [span("No ranked hits.", "muted")], truncate: "end", lines: 1 }));
+      used += 1;
+    }
+    if (literal) {
+      const list = this.#list(
+        "literal",
+        report.lexicalFallback.map((match, index) => {
+          const { name, dir } = splitPath(match.rel);
+          const marked = c.state.marked.includes(ranked + index);
+          return {
+            label: `${name}:${match.line}`,
+            detail: match.snippet,
+            ...(marked ? { icon: "pin" } : {}),
+            tone: "muted" as const,
+            title: [
+              `${match.rel}:${match.line} · ${UNRANKED}`,
+              "Not semantically judged; not ranked evidence",
+              match.snippet,
+              ...(dir ? [`in ${dir}/`] : []),
+              ...(marked ? ["Marked for sending"] : []),
+            ].join("\n"),
+          };
+        }),
+        c.state.selected >= ranked ? c.state.selected - ranked : undefined,
+        literalRows,
+        rows !== undefined,
+      );
+      nodes.push(
+        h(
+          "col",
+          { key: "literal-section", gap: "none" },
+          h("text", {
+            key: "literal-head",
+            spans: [span(LITERAL_GROUP, "warning strong"), span(" · not semantically judged", "dim")],
+            truncate: "end",
+            lines: 1,
           }),
-          "coverage",
+          list.node,
         ),
       );
-    const sidebar = node("col", { min: { w: "32ch" }, max: { w: "32ch" }, shrink: 0, gap: "md" }, this.#describeLists(), "sidebar");
-    const preview = node("col", { grow: 1, gap: "sm", role: "omp.find-console.preview" }, hit ? this.#describeSource() : [], "preview");
-    children.push(keyed(nativeRow([sidebar, preview], { gap: "lg", align: "start" }), "split"), this.#describeActions());
-    if (c.message) children.push(keyed(text(c.message, { tone: "warning", wrap: "word" }), "message"));
-    children.push(
-      keyed(
-        nativeRow(
-          [
-            node("badge", { text: c.cacheLabel, tone: cacheTone(report.cache), title: "Where the judge's answers came from" }),
-            text([span("cost ", "muted"), span(c.costLabel, "num")], { title: "Judge and translation cost of this search" }),
-            text(c.runStats, { tone: "muted", grow: 1, truncate: "end", lines: 1, title: c.stats }),
-          ],
-          { gap: "md", align: "center", role: "omp.find-console.stats" },
+      used += 1 + list.rows;
+    }
+    if (hit && whole) {
+      nodes.push(
+        h("text", {
+          key: "whole-head",
+          spans: [span("Whole file", "accent strong"), span(` · ${splitPath(hit.rel).name} answers as a whole; no line ranges`, "dim")],
+          ...(rows === undefined ? { wrap: "word" as const } : { truncate: "end" as const, lines: 1 }),
+        }),
+      );
+      used += 1;
+    } else if (hit && rangeList) {
+      const list = this.#list(
+        "range",
+        rangeList.map((range) => ({
+          label: rangeLabel(range),
+          detail: range.snippet.trim(),
+          value: [span(range.p.toFixed(2), strength(range.p))],
+          tone: strength(range.p),
+          title: `${hit.rel}${rangeLabel(range)} · ${range.p.toFixed(2)}\n${range.snippet.trim()}`,
+        })),
+        c.state.range,
+        rangeRows,
+        rows !== undefined,
+      );
+      nodes.push(
+        h(
+          "col",
+          { key: "ranges-section", gap: "none" },
+          h("text", {
+            key: "ranges-head",
+            spans: [...this.#listHead("Ranges", list.window, rangeList.length, "←→"), span(` in ${splitPath(hit.rel).name}`, "dim")],
+            truncate: "end",
+            lines: 1,
+          }),
+          list.node,
         ),
-        "stats",
-      ),
-      NATIVE_HINTS,
-    );
-    const described = col(children, { gap: "md" });
-    this.#native = { revision: this.#revision, node: described };
-    return described;
+      );
+      used += 1 + list.rows;
+    }
+    return {
+      node: nodes.flatMap((node, index) => (index ? [h("spacer", { key: `gap-${index}`, size: "sm" }), node] : [node])),
+      rows: used,
+    };
   }
 
-  /** The hits (marked ones carry a pin, whole-file ones a badge), the unranked literal matches, then the selected hit's refined ranges. */
-  #describeLists(): NativeNode[] {
-    const c = this.controller;
-    const ranked = c.report.hits.length;
-    const lists: NativeNode[] = [
-      ranked
-        ? selectList(
-            "hits",
-            c.report.hits.map((hit, index) => {
-              const { name, dir } = splitPath(hit.rel);
-              const marked = c.state.marked.includes(index);
-              const score = hit.contentScore.toFixed(2);
-              const ranges = bestRanges(hit);
-              const whole = hit.scope === "whole-file";
-              return item(`hit-${index}`, {
-                label: name,
-                detail: dir ? `${score} · ${dir}` : score,
-                value: [
-                  ...(whole ? [span(WHOLE_FILE, "mark accent")] : []),
-                  ...(hit.refineFailed ? [span("windows", "warning")] : []),
-                  span(scoreGauge(hit.contentScore), strength(hit.contentScore)),
-                ],
-                icon: marked ? "pin" : "file",
-                tone: strength(hit.contentScore),
-                title: [
-                  `${hit.rel} · score ${score}`,
-                  `${hit.linesSeen} lines judged${hit.truncated ? ", partial file" : ""}`,
-                  ...(whole ? ["Whole file: the file as a whole answers the query"] : []),
-                  ...ranges.slice(0, 3).map((range) => `${rangeLabel(range)} ${range.p.toFixed(2)}  ${range.snippet.trim()}`),
-                  ...(ranges.length > 3 ? [`+${ranges.length - 3} more ranges`] : []),
-                  ...(hit.refineFailed ? [`Includes window ranges: ${hit.refineFailed}`] : []),
-                  ...(marked ? ["Marked for sending"] : []),
-                ].join("\n"),
-              });
-            }),
-            { ...(c.state.selected < ranked ? { selected: `hit-${c.state.selected}` } : {}), role: "omp.find-console.hits" },
-          )
-        : keyed(text("No ranked hits.", { tone: "muted" }), "no-hits"),
-    ];
-    if (c.report.lexicalFallback.length)
-      lists.push(
-        keyed(
-          text([span(LITERAL_GROUP, "warning strong"), span(" · not semantically judged", "dim")], {
-            wrap: "word",
-            role: "omp.find-console.literal-head",
-          }),
-          "literal-head",
-        ),
-        selectList(
-          "literal",
-          c.report.lexicalFallback.map((match, index) => {
-            const { name, dir } = splitPath(match.rel);
-            const marked = c.state.marked.includes(ranked + index);
-            return item(`literal-${index}`, {
-              label: `${name}:${match.line}`,
-              detail: match.snippet,
-              icon: marked ? "pin" : "file",
-              tone: "muted",
-              title: [
-                `${match.rel}:${match.line} · ${UNRANKED}`,
-                "Not semantically judged; not ranked evidence",
-                match.snippet,
-                ...(dir ? [`in ${dir}/`] : []),
-                ...(marked ? ["Marked for sending"] : []),
-              ].join("\n"),
-            });
-          }),
-          {
-            ...(c.state.selected >= ranked ? { selected: `literal-${c.state.selected - ranked}` } : {}),
-            role: "omp.find-console.literal",
-          },
-        ),
-      );
-    const hit = c.selectedHit;
-    if (!hit || hit.literal) return lists;
-    const { name } = splitPath(hit.rel);
-    if (hit.scope === "whole-file")
-      return [
-        ...lists,
-        text([span("Whole file", "accent strong"), span(` · ${name} answers as a whole; no line ranges`, "dim")], { wrap: "word" }),
-      ];
-    const ranges = bestRanges(hit);
+  #listHead(label: string, window: [number, number] | undefined, total: number, keys: string): TspSpan[] {
     return [
-      ...lists,
-      text([span("Ranges", "muted"), span(` · ${ranges.length} in ${name}`, "dim")], { truncate: "end", lines: 1 }),
-      selectList(
-        "ranges",
-        ranges.map((range, index) =>
-          item(`range-${index}`, {
-            label: rangeLabel(range),
-            detail: `${range.p.toFixed(2)} · ${range.snippet.trim()}`,
-            tone: strength(range.p),
-            title: `${hit.rel}${rangeLabel(range)} · ${range.p.toFixed(2)}\n${range.snippet.trim()}`,
-          }),
-        ),
-        { selected: `range-${c.state.range}`, role: "omp.find-console.ranges" },
-      ),
+      span(label, "strong"),
+      span(window ? ` ${window[0] + 1}–${window[1]} of ${total}` : ` ${total}`, "dim"),
+      span(`  ${keys}`, "dim"),
     ];
   }
 
-  /** The selected hit's head with range stepping, its facts, and its source in a fixed-height scroller. */
-  #describeSource(): NativeNode[] {
+  /**
+   * A selectable list of `items` keyed `<name>-<index>`. In a terminal (`windowed`) it shows `rows` items
+   * around the selection, keeping its place while the selection is elsewhere; natively it holds every item
+   * and scrolls, revealing the selected one.
+   */
+  #list(
+    name: ListName,
+    items: readonly {
+      label: TspText;
+      detail?: TspText;
+      value?: TspText;
+      icon?: string;
+      tone: "success" | "warning" | "muted";
+      title: string;
+    }[],
+    selected: number | undefined,
+    rows: number,
+    windowed: boolean,
+  ): { node: UiNode; rows: number; window?: [number, number] } {
+    let first = 0;
+    let shown = items.length;
+    if (windowed) {
+      shown = Math.min(items.length, Math.max(1, rows));
+      const previous = this.#tops.get(name) ?? 0;
+      first =
+        selected === undefined ? Math.min(previous, items.length - shown) : listTop(previous, items.length, shown, [selected, selected]);
+      this.#tops.set(name, first);
+    }
+    const children = items.slice(first, first + shown).map((item, offset) => {
+      const index = first + offset;
+      return h("item", { ...item, key: `${name}-${index}`, ...(index === selected && !windowed ? { reveal: "nearest" as const } : {}) });
+    });
+    const node = h(
+      "list",
+      {
+        key: name,
+        selected: selected === undefined ? null : `${name}-${selected}`,
+        ...(windowed ? {} : { max: { lines: NATIVE_LIST_ROWS } }),
+      },
+      children,
+    );
+    return { node, rows: shown, ...(shown < items.length ? { window: [first, first + shown] as [number, number] } : {}) };
+  }
+
+  /** The selected hit's head with range stepping, its facts, the shown extent, and its source. */
+  #preview(width: number, rows: number | undefined): Part {
     const c = this.controller;
     const hit = c.selectedHit;
-    if (!hit) return [];
+    if (!hit) return { node: h("text", { spans: [span("No hit selected.", "dim")] }), rows: 1 };
     const active = c.activeRange;
     const source = c.preview;
     const { name, dir } = splitPath(hit.rel);
     const whole = hit.scope === "whole-file";
     const count = bestRanges(hit).length;
+    const ranked = c.report.hits.length;
+    const where = hit.literal
+      ? `literal ${c.state.selected - ranked + 1}/${c.entries.length - ranked}`
+      : `hit ${c.state.selected + 1}/${ranked}`;
+    const title = h("text", {
+      spans: [span(name, "strong accent"), span(active ? rangeLabel(active) : "", "muted")],
+      grow: 1,
+      shrink: 1,
+      truncate: "end",
+      lines: 1,
+    });
+    const head =
+      whole || hit.literal
+        ? h(
+            "row",
+            { key: "head", gap: "sm", align: "center" },
+            title,
+            whole
+              ? h("badge", {
+                  text: WHOLE_FILE,
+                  tone: "accent",
+                  title: "The file as a whole answers the query; its reference is the bare path",
+                })
+              : h("badge", { text: UNRANKED, tone: "warning", title: "A literal keyword line; not semantically judged" }),
+            h("text", { spans: [span(where, "dim")], shrink: 0 }),
+          )
+        : h(
+            "row",
+            { key: "head", gap: "sm", align: "center" },
+            title,
+            h("button", {
+              key: "previous-range",
+              keys: ["left"],
+              aria: "Previous range",
+              title: "Previous range  ←",
+              actions: { click: "previous-range" },
+            }),
+            h("text", { spans: [span(`range ${count ? c.state.range + 1 : 0}/${count}`, "muted")], shrink: 0 }),
+            h("button", {
+              key: "next-range",
+              keys: ["right"],
+              aria: "Next range",
+              title: "Next range  →",
+              actions: { click: "next-range" },
+            }),
+            h("text", { spans: [span(where, "dim")], shrink: 0 }),
+          );
+    const score = active?.p ?? hit.contentScore;
+    const facts = h(
+      "row",
+      { key: "facts", gap: "sm", align: "center" },
+      h("text", {
+        spans: hit.literal
+          ? [span("Not semantically judged; not ranked evidence", "muted"), ...(dir ? [span(` · ${dir}/`, "dim")] : [])]
+          : [
+              span(`${scoreGauge(score)} ${score.toFixed(2)}`, strength(score)),
+              span(` · ${hit.linesSeen} lines judged`, "muted"),
+              ...(hit.truncated ? [span(" · partial file", "warning")] : []),
+              ...(dir ? [span(` · ${dir}/`, "dim")] : []),
+            ],
+        grow: 1,
+        shrink: 1,
+        truncate: "end",
+        lines: 1,
+        title: `${active ? "range" : "file"} score ${score.toFixed(2)}`,
+      }),
+      hit.refineFailed && h("badge", { text: WINDOW_RANGES, tone: "warning", title: hit.refineFailed }),
+      source?.truncated && h("badge", { text: "first 4 MiB", tone: "warning", title: "Preview limited to the first 4 MiB of this file" }),
+    );
+    const body = rows === undefined ? this.#nativeSource() : this.#terminalSource(width, rows - 3);
+    return { node: [head, facts, ...body.nodes], rows: 2 + body.rows };
+  }
+
+  /** The extent line and the source lines in view, scrolled to the active range; or why there is no source. */
+  #terminalSource(width: number, rows: number): { nodes: JSXNode[]; rows: number } {
+    const c = this.controller;
+    const hit = c.selectedHit;
+    const source = c.preview;
+    const active = c.activeRange;
+    const codeRows = Math.max(1, rows);
+    this.#codeRows = codeRows;
+    if (!hit) return { nodes: [], rows: 0 };
+    const note = (text: string, tone: string): { nodes: JSXNode[]; rows: number } => ({
+      nodes: [
+        h("text", { key: "extent", spans: [span(hit.rel, "dim")], truncate: "end", lines: 1 }),
+        h("text", { key: "note", spans: [span(text, tone)], wrap: "word", lines: codeRows }),
+      ],
+      rows: 1 + wrappedRows(text, width, codeRows),
+    });
+    if (!source) return note("Loading preview…", "muted");
+    if (source.error) return note(`Preview unavailable: ${source.error}`, "error");
+    if (active && active.start > source.lines.length) return note("The judged range is no longer present in this file.", "warning");
+    const window = c.previewLines;
+    const anchor = `${c.state.selected}\n${hit.rel}\n${c.state.range}`;
+    if (this.#anchor !== anchor) {
+      this.#anchor = anchor;
+      this.#top = anchorTop(active, codeRows, window);
+    }
+    this.#top = clampTop(this.#top, codeRows, window);
+    const offset = this.#top - window.start;
+    const lines = window.lines.slice(offset, offset + codeRows);
+    if (!lines.length) return note("This file is empty.", "dim");
+    const end = this.#top + lines.length - 1;
+    const mode = window.lines.length < source.lines.length ? "snippet" : "full file";
+    const lang = getLanguageFromPath(hit.rel);
+    const marks = codeMarks(this.#top, end, active, window.highlight);
+    return {
+      nodes: [
+        h("text", {
+          key: "extent",
+          spans: [span(`lines ${this.#top}-${end} of ${source.lines.length} · ${mode}`, "dim"), span("  PgUp/PgDn", "dim")],
+          truncate: "end",
+          lines: 1,
+        }),
+        h("code", {
+          key: "source",
+          text: lines.join("\n"),
+          ...(lang ? { lang } : {}),
+          start: this.#top,
+          numbers: true,
+          wrap: false,
+          ...(marks.length ? { marks } : {}),
+        }),
+      ],
+      rows: 1 + lines.length,
+    };
+  }
+
+  /** The extent line and the source in a fixed-height scroller, its active block revealed. */
+  #nativeSource(): { nodes: JSXNode[]; rows: number } {
+    const c = this.controller;
+    const hit = c.selectedHit;
+    if (!hit) return { nodes: [], rows: 0 };
+    const active = c.activeRange;
+    const source = c.preview;
+    const whole = hit.scope === "whole-file";
     const where = `${c.state.selected}\n${hit.rel}\n${c.state.range}`;
     if (this.#nativeAnchor !== where) {
       this.#nativeAnchor = where;
       this.#focus++;
     }
-    const children: NativeNode[] = [
-      {
-        ...nativeRow(
-          whole || hit.literal
-            ? [
-                text([span(name, "strong accent"), span(hit.literal && active ? rangeLabel(active) : "", "muted")], {
-                  grow: 1,
-                  truncate: "end",
-                  lines: 1,
-                }),
-                whole
-                  ? node("badge", {
-                      text: WHOLE_FILE,
-                      tone: "accent",
-                      title: "The file as a whole answers the query; its reference is the bare path",
-                    })
-                  : node("badge", { text: UNRANKED, tone: "warning", title: "A literal keyword line; not semantically judged" }),
-              ]
-            : [
-                text([span(name, "strong accent"), span(active ? rangeLabel(active) : "", "muted")], {
-                  grow: 1,
-                  truncate: "end",
-                  lines: 1,
-                }),
-                actionButton("Previous", "previous-range", { keys: "left", title: "Previous range  ←" }),
-                text(`${count ? c.state.range + 1 : 0}/${count}`, { tone: "muted" }),
-                actionButton("Next", "next-range", { keys: "right", title: "Next range  →" }),
-              ],
-          { gap: "sm", align: "center" },
-        ),
-        key: `head:${where}`,
-      },
-    ];
-    const score = active?.p ?? hit.contentScore;
-    children.push(
-      keyed(
-        nativeRow(
-          hit.literal
-            ? [
-                text([span("Not semantically judged; not ranked evidence", "muted"), ...(dir ? [span(` · ${dir}/`, "dim")] : [])], {
-                  grow: 1,
-                  truncate: "end",
-                  lines: 1,
-                }),
-              ]
-            : [
-                node("progress", {
-                  value: score,
-                  tone: strength(score),
-                  title: `${active ? "range" : "file"} score ${score.toFixed(2)}`,
-                  max: { w: "10ch" },
-                }),
-                text(
-                  [
-                    span(score.toFixed(2), strength(score)),
-                    span(` · ${hit.linesSeen} lines judged`, "muted"),
-                    ...(hit.truncated ? [span(" · partial file", "warning")] : []),
-                    ...(dir ? [span(` · ${dir}/`, "dim")] : []),
-                  ],
-                  { grow: 1, truncate: "end", lines: 1 },
-                ),
-                ...(hit.refineFailed ? [node("badge", { text: WINDOW_RANGES, tone: "warning", title: hit.refineFailed })] : []),
-              ],
-          { gap: "sm", align: "center" },
-        ),
-        "facts",
-      ),
-    );
     if (!source || source.error || (active && active.start > source.lines.length)) {
       this.#mounted = undefined;
       const [note, tone] = !source
@@ -693,12 +824,14 @@ export class FindConsole implements Component {
         : source.error
           ? [`Preview unavailable: ${source.error}`, "error"]
           : ["The judged range is no longer present in this file.", "warning"];
-      children.push(
-        keyed(text(source ? (whole ? "Whole file" : "Source") : "Loading…", { tone: "muted" }), "position"),
-        // The same fixed extent as the loaded scroller, so the centered sheet cannot jump while sources load.
-        this.#scroller(`state:${hit.rel}`, [keyed(text(note, { tone: tone as "muted", wrap: "word" }), "note")]),
-      );
-      return children;
+      return {
+        nodes: [
+          h("text", { key: "extent", spans: [span(source ? (whole ? "Whole file" : "Source") : "Loading…", "muted")] }),
+          // The same fixed extent as the loaded scroller, so the centered sheet cannot jump while sources load.
+          this.#scroller(`state:${hit.rel}`, [h("text", { key: "note", spans: [span(note, tone)], wrap: "word" })]),
+        ],
+        rows: 0,
+      };
     }
     const window = c.previewLines;
     const chunks = sourceChunks(window, window.highlight);
@@ -710,50 +843,45 @@ export class FindConsole implements Component {
     const reveal = this.#focus === this.#mountedFocus ? ("start" as const) : { at: "start" as const, n: this.#focus };
     const lang = getLanguageFromPath(hit.rel);
     let clipped = false;
-    const blocks = chunks.map((chunk, index): NativeNode => {
+    const blocks = chunks.map((chunk, index) => {
       const block = this.#blockText(source, window, chunk.start, chunk.end);
       clipped ||= block.clipped;
-      const marks: { line: number; tone: "accent" | Strength }[] = [];
-      let holdsActive = false;
-      for (const range of chunk.ranges) {
-        const isActive = active !== undefined && active.start === range.start && active.end === range.end;
-        holdsActive ||= isActive;
-        const tone = isActive ? "accent" : strength(range.p);
-        for (let line = Math.max(range.start, chunk.start); line <= Math.min(range.end, chunk.end); line++) marks.push({ line, tone });
-      }
-      return {
-        ...code(block.text, {
-          ...(lang ? { lang } : {}),
-          start: chunk.start,
-          numbers: true,
-          wrap: false,
-          ...(marks.length ? { marks } : {}),
-        }),
+      const marks = codeMarks(chunk.start, chunk.end, active, chunk.ranges);
+      const holdsActive = active !== undefined && chunk.ranges.some((range) => range.start === active.start && range.end === active.end);
+      return h("code", {
         key: `${chunk.start}`,
+        text: block.text,
+        ...(lang ? { lang } : {}),
+        start: chunk.start,
+        numbers: true,
+        wrap: false,
+        ...(marks.length ? { marks } : {}),
         ...(holdsActive ? { reveal } : {}),
         ...(index === 0 && this.#nativeScroll ? { scroll: this.#nativeScroll } : {}),
-      };
+      });
     });
     const full = window.start === 1 && window.lines.length === source.lines.length;
     const extent = full
       ? `${source.lines.length} lines · full file`
       : `Lines ${window.start}–${window.start + window.lines.length - 1} of ${source.lines.length} · snippet`;
-    children.push(
-      keyed(text(`${extent} · scroll or PgUp/PgDn${clipped ? " · long lines end in …" : ""}`, { tone: "muted" }), "position"),
-      this.#scroller(`source:${hit.rel}`, blocks.length ? blocks : [keyed(text("This file is empty.", { tone: "muted" }), "empty")]),
-    );
-    if (source.truncated) children.push(keyed(text("Preview limited to the first 4 MiB of this file.", { tone: "warning" }), "truncated"));
-    return children;
+    return {
+      nodes: [
+        h("text", {
+          key: "extent",
+          spans: [span(`${extent} · scroll or PgUp/PgDn${clipped ? " · long lines end in …" : ""}`, "muted")],
+        }),
+        this.#scroller(
+          `source:${hit.rel}`,
+          blocks.length ? blocks : [h("text", { key: "empty", spans: [span("This file is empty.", "muted")] })],
+        ),
+      ],
+      rows: 0,
+    };
   }
 
   /** A fixed-height native scroller (a `list` capped at its height) holding source blocks or a status note. */
-  #scroller(key: string, children: readonly NativeChild[]): NativeNode {
-    return node(
-      "list",
-      { max: { lines: NATIVE_SCROLLER_LIST_ROWS }, min: { h: `${NATIVE_SOURCE_ROWS}lines` }, role: "omp.find-console.source" },
-      children,
-      key,
-    );
+  #scroller(key: string, children: readonly UiNode[]): UiNode {
+    return h("list", { key, max: { lines: NATIVE_SCROLLER_LIST_ROWS }, min: { h: `${NATIVE_SOURCE_ROWS}lines` } }, children);
   }
 
   /** Lines `start…end` of the source as one block: tabs expanded, long lines clipped with an ellipsis. Cached per source. */
@@ -764,71 +892,14 @@ export class FindConsole implements Component {
     if (!block) {
       let clipped = false;
       const lines = window.lines.slice(start - window.start, end - window.start + 1).map((line) => {
-        const shown = truncateToWidth(line.replaceAll("\t", "  "), NATIVE_SOURCE_COLUMNS);
-        if (shown !== line && shown.endsWith("…")) clipped = true;
+        const expanded = line.replaceAll("\t", "  ");
+        const shown = truncate(expanded, NATIVE_SOURCE_COLUMNS);
+        if (shown !== expanded) clipped = true;
         return shown;
       });
       block = { text: lines.join("\n"), clipped };
       this.#blocks.texts.set(id, block);
     }
     return block;
-  }
-
-  /** Action buttons; an unavailable one is muted, says why in its tooltip, and a click shows the reason. */
-  #describeActions(): NativeNode {
-    const c = this.controller;
-    const marked = c.state.marked.length;
-    const button = (label: string, act: ConsoleAction, keys: Parameters<typeof kbd>[0], accent = false): NativeNode => {
-      const reason = c.actionReason(act);
-      if (!reason) return actionButton(label, act, { keys: keys as never, ...(accent ? { tone: "accent" as const } : {}) });
-      return node(
-        "row",
-        { role: "omp.btn", gap: "xs", align: "center", tone: "muted", actions: { click: act }, title: reason },
-        [text(label), kbd(keys)],
-        act,
-      );
-    };
-    return actionBar([
-      button("Insert reference", "insert", "enter", true),
-      button(marked ? `Send ${marked} marked` : "Send to agent", "send", "s"),
-      actionButton(c.state.marked.includes(c.state.selected) ? "Unmark" : "Mark for sending", "mark", { keys: "space" }),
-      button("Open in editor", "open", "o"),
-      null,
-      button("Search within results", "refine", "r"),
-      button("Recent searches", "history", "h"),
-    ]);
-  }
-
-  /** Clicks run the key paths: list rows select (double-click inserts), buttons act like their keys. */
-  handleNativeEvent(event: NativeUiEvent): void {
-    const { actions } = this.controller;
-    if (event.type === "action") {
-      if (event.act === "close") actions.close();
-      else if (event.act === "insert") actions.insert();
-      else if (event.act === "send") actions.send();
-      else if (event.act === "open") actions.open();
-      else if (event.act === "refine") actions.refine();
-      else if (event.act === "history") actions.history();
-      else if (event.act === "mark") actions.toggleMarked();
-      else if (event.act === "next-range") actions.nextRange();
-      else if (event.act === "previous-range") actions.previousRange();
-      return;
-    }
-    if (event.type !== "select" && event.type !== "activate") return;
-    const leaf = leafKey(event.key);
-    if (leaf === "hits") {
-      const index = itemIndex(event.item, "hit-");
-      if (index < 0) return;
-      this.controller.select(index);
-    } else if (leaf === "literal") {
-      const index = itemIndex(event.item, "literal-");
-      if (index < 0) return;
-      this.controller.select(this.controller.report.hits.length + index);
-    } else if (leaf === "ranges") {
-      const index = itemIndex(event.item, "range-");
-      if (index < 0) return;
-      this.#chooseRange(index);
-    } else return;
-    if (event.type === "activate") actions.insert();
   }
 }

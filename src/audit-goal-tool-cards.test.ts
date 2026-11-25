@@ -1,12 +1,17 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { initTheme, type NativeChild, type NativeNode } from "@oh-my-pi/pi-tui";
-import type { NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
+import { setNativeRenderingForTest, type UiNode } from "@oh-my-pi/pi-tui";
+import { staticEnvironment } from "@oh-my-pi/pi-tui/term/paint";
+import { renderBlock } from "@oh-my-pi/pi-tui/term/render";
+import { describeTree } from "@oh-my-pi/pi-tui/testing/corpus";
+import { stripEscapes } from "@oh-my-pi/pi-tui/text/ansi";
+import { PLAIN_THEME } from "@oh-my-pi/pi-tui/theme/plain";
+import type { TspToolProps } from "@oh-my-pi/pi-wire";
 import { z } from "zod";
 
 import auditGoal from "../plugins/audit-goal/src/index.ts";
@@ -18,10 +23,8 @@ process.env.XDG_RUNTIME_DIR = runtimeDir;
 const registrations: string[] = [];
 let serial = 0;
 
-beforeAll(async () => {
-  await initTheme();
-});
 afterEach(() => {
+  setNativeRenderingForTest(false);
   for (const id of registrations.splice(0)) AgentRegistry.global().unregister(id);
 });
 afterAll(() => {
@@ -35,10 +38,11 @@ type Tool = {
   label: string;
   parameters: { parse: (raw: unknown) => Record<string, unknown> };
   execute: (id: string, params: Record<string, unknown>, s: undefined, u: undefined, ctx: ExtensionContext) => Promise<Result>;
-  describeCall: (args: unknown, options: unknown) => NativeToolView;
-  describeResult: (result: Result, options: unknown, args?: unknown) => NativeToolView;
+  renderCall: (args: unknown, options: unknown, theme: unknown) => UiNode | undefined;
+  renderResult: (result: Result, options: unknown, theme: unknown, args?: unknown) => UiNode | undefined;
+  mergeCallAndResult?: boolean;
 };
-type Renderer = (message: unknown, options: { expanded: boolean }, theme: unknown) => unknown;
+type Renderer = (message: unknown, options: { expanded: boolean }, theme: unknown) => UiNode | undefined;
 
 function seed(maxRounds: number | null = null): AuditState {
   return {
@@ -132,56 +136,82 @@ const round1 = {
 
 const flat = (value: unknown): string => JSON.stringify(value);
 
-const nodes = (children: readonly NativeChild[] | undefined): NativeNode[] =>
-  (children ?? []).flatMap((child) =>
-    typeof child === "object" && child !== null && "k" in child ? [child as NativeNode, ...nodes((child as NativeNode).c)] : [],
-  );
-const visible = (view: NativeToolView): string =>
-  flat(view.body?.filter((child) => !(typeof child === "object" && child !== null && "key" in child && child.key === "model-text")));
-const receipt = (view: NativeToolView): NativeNode | undefined => nodes(view.body).find((node) => node.key === "model-text");
-describe("audit_round Tern card", () => {
+/** A node as Tern receives it: `{ k, key?, p?, c? }`. */
+type Tree = { k: string; key?: string; p?: Record<string, unknown>; c?: Tree[] };
+const ternTree = (node: UiNode | undefined): Tree | undefined =>
+  node ? (describeTree(node, staticEnvironment(PLAIN_THEME)) as Tree) : undefined;
+const nodes = (tree: Tree | undefined): Tree[] => (tree ? [tree, ...(tree.c ?? []).flatMap(nodes)] : []);
+const visible = (tree: Tree | undefined): string => flat((tree?.c ?? []).filter((child) => child.key !== "model-text"));
+const receipt = (tree: Tree | undefined): Tree | undefined => nodes(tree).find((node) => node.key === "model-text");
+/** The badge of Tern's first body row, which carries the facts the generic tool head lacks. */
+const facts = (tree: Tree | undefined) => (tree?.c?.[0]?.key === "facts" ? tree.c[0].c?.[0]?.p : undefined);
+const paint = (node: UiNode | undefined, width = 100): string =>
+  node ? stripEscapes(renderBlock(node, width, { theme: PLAIN_THEME }).rows.join("\n")) : "";
+const head = (node: UiNode | undefined) => (node?.props() ?? {}) as Partial<TspToolProps> & { tone?: string };
+
+/** The card as the terminal draws it (`node`, an inline tool head over the body) and as Tern receives its body (`tree`). */
+function card(tool: Tool, result: Result, expanded: boolean, args?: unknown): { node: UiNode | undefined; tree: Tree | undefined } {
+  const options = { expanded, isPartial: false };
+  setNativeRenderingForTest(true);
+  const tree = ternTree(tool.renderResult(result, options, undefined, args));
+  setNativeRenderingForTest(false);
+  return { node: tool.renderResult(result, options, undefined, args), tree };
+}
+
+describe("audit_round card", () => {
   test("call head names the operation and tolerates partial streaming args", async () => {
     const { tool } = await harness(seed());
-    expect(tool.describeCall({ op: "record", round: 3, i: "Recording" }, {}).tool?.target).toBe("record round 3");
-    expect(tool.describeCall({ op: "status" }, {}).tool?.target).toBe("status");
-    expect(tool.describeCall({ op: "conclude", conclusion: "threshold-convergence" }, {}).tool?.target).toBe(
+    expect(tool.mergeCallAndResult).toBe(true);
+    expect(head(tool.renderCall({ op: "record", round: 3, i: "Recording" }, {}, undefined)).target).toBe("record round 3");
+    expect(head(tool.renderCall({ op: "status" }, {}, undefined)).target).toBe("status");
+    expect(head(tool.renderCall({ op: "conclude", conclusion: "threshold-convergence" }, {}, undefined)).target).toBe(
       "conclude threshold-convergence",
     );
     for (const partial of [{}, undefined, { op: "rec" }, { op: 4, round: "3" }]) {
-      const view = tool.describeCall(partial, {});
-      expect(view.tool?.title).toBe("Audit Round");
-      expect(flat(view)).not.toContain("Recording");
+      const call = tool.renderCall(partial, {}, undefined);
+      expect(head(call).title).toBe("Audit Round");
+      expect(paint(call)).toContain("Audit Round");
+      expect(paint(call)).not.toContain("Recording");
     }
+    setNativeRenderingForTest(true);
+    expect(tool.renderCall({ op: "status" }, {}, undefined)).toBeUndefined();
   });
 
   test("recorded round shows counts collapsed and current round facts expanded, with a folded receipt", async () => {
     const { tool, call } = await harness(seed(3));
     const result = await call(round1);
     expect(result.isError).toBeUndefined();
-    const view = tool.describeResult(result, { expanded: false }, round1);
-    const shown = flat(view);
-    expect(view.tool?.target).toBe("record round 1");
+    const view = card(tool, result, false, round1);
+    const shown = flat(view.tree);
+    expect(head(view.node).target).toBe("record round 1");
     expect(shown).toContain("1 of 3");
     expect(shown).toContain("auditor-A, auditor-B");
     expect(shown).toContain("major 1");
     expect(shown).not.toContain("Round 1 recorded.");
     expect(shown).not.toContain("Order lost after restart");
-    expect(view.preview).toBe("none");
-    const expanded = tool.describeResult(result, { expanded: true }, round1);
-    expect(visible(expanded)).toContain("Order lost after restart");
-    expect(visible(expanded)).toContain("checkout chain");
-    expect(visible(expanded)).toContain("CI passed");
-    expect(visible(expanded)).not.toContain("Round 1 recorded.");
-    expect(receipt(expanded)?.p).toMatchObject({ collapsible: true, collapsed: true });
-    expect(flat(receipt(expanded))).toContain("Round 1 recorded.");
-    expect(view.tone).not.toBe("error");
+    expect(paint(view.node)).toContain("1 of 3");
+    expect(paint(view.node)).not.toContain("Round 1 recorded.");
+    const expanded = card(tool, result, true, round1);
+    expect(visible(expanded.tree)).toContain("Order lost after restart");
+    expect(visible(expanded.tree)).toContain("checkout chain");
+    expect(visible(expanded.tree)).toContain("CI passed");
+    expect(visible(expanded.tree)).not.toContain("Round 1 recorded.");
+    expect(receipt(expanded.tree)?.p).toMatchObject({ collapsible: true, collapsed: true });
+    expect(flat(receipt(expanded.tree))).toContain("Round 1 recorded.");
+    // The terminal cannot unfold a section, so the expanded card shows the receipt open there.
+    expect(paint(expanded.node)).toContain("Order lost after restart");
+    expect(paint(expanded.node)).toContain("Round 1 recorded.");
+    expect(head(view.node).tone).not.toBe("error");
+    expect(head(view.node).status).toBe("done");
   });
 
   test("cap reached is a warning and conclusion is shown with success tone", async () => {
     const capped = await harness(seed(1));
-    const capView = capped.tool.describeResult(await capped.call(round1), { expanded: false }, round1);
-    expect(capView.tone).toBe("warning");
-    expect(flat(capView)).toContain("round limit reached");
+    const capView = card(capped.tool, await capped.call(round1), false, round1);
+    expect(head(capView.node).tone).toBe("warning");
+    expect(flat(capView.tree)).toContain("round limit reached");
+    // Tern's generic head has no outcome: the first body row carries it in its tone.
+    expect(facts(capView.tree)).toMatchObject({ tone: "warning" });
 
     const clean = await harness(seed(null));
     const record = (n: number) => clean.call({ ...round1, round: n, major: 0, findings: [] });
@@ -198,11 +228,12 @@ describe("audit_round Tern card", () => {
     };
     const concluded = await clean.call(args);
     expect(concluded.isError).toBeUndefined();
-    const view = clean.tool.describeResult(concluded, { expanded: false }, args);
-    expect(view.tone).toBe("success");
-    expect(flat(view)).toContain("threshold-convergence");
-    expect(flat(view)).not.toContain("two clean rounds");
-    const expanded = clean.tool.describeResult(concluded, { expanded: true }, args);
+    const view = card(clean.tool, concluded, false, args);
+    expect(head(view.node).tone).toBe("success");
+    expect(facts(view.tree)).toEqual({ text: "threshold-convergence", tone: "success" });
+    expect(flat(view.tree)).toContain("threshold-convergence");
+    expect(flat(view.tree)).not.toContain("two clean rounds");
+    const expanded = card(clean.tool, concluded, true, args).tree;
     expect(visible(expanded)).toContain("two clean rounds");
     expect(visible(expanded)).toContain("Round 2 observation");
     expect(visible(expanded)).not.toContain("call goal");
@@ -211,22 +242,24 @@ describe("audit_round Tern card", () => {
 
   test("status result and refusal", async () => {
     const { tool, call } = await harness(seed());
-    const status = tool.describeResult(await call({ op: "status" }), { expanded: false }, { op: "status" });
-    expect(flat(status)).toContain("0 of ");
+    const status = card(tool, await call({ op: "status" }), false, { op: "status" });
+    expect(flat(status.tree)).toContain("0 of ");
+    expect(facts(status.tree)).toBeUndefined();
     const refused = await call({ op: "extend" });
     expect(refused.isError).toBe(true);
-    const view = tool.describeResult(refused, { expanded: false }, { op: "extend" });
-    expect(view.tone).toBe("error");
-    expect(flat(view)).toContain("op=extend is only valid");
+    const view = card(tool, refused, false, { op: "extend" });
+    expect(head(view.node)).toMatchObject({ tone: "error", status: "error", note: "refused" });
+    expect(flat(view.tree)).toContain("op=extend is only valid");
+    expect(facts(view.tree)).toEqual({ text: "refused", tone: "error" });
   });
 
   test("legacy results keep their receipt folded and old structured details still show counts", async () => {
     const { tool } = await harness(undefined);
     const result = { content: [{ type: "text", text: "Legacy operation completed.\nLegacy **receipt**" }], details: {} };
-    const view = tool.describeResult(result, { expanded: false });
+    const view = card(tool, result, false).tree;
     expect(flat(view)).toContain("Legacy operation completed.");
     expect(flat(view)).not.toContain("Legacy **receipt**");
-    const expanded = tool.describeResult(result, { expanded: true });
+    const expanded = card(tool, result, true).tree;
     expect(visible(expanded)).not.toContain("Legacy **receipt**");
     expect(flat(receipt(expanded))).toContain("Legacy **receipt**");
     const old = {
@@ -243,11 +276,11 @@ describe("audit_round Tern card", () => {
       },
     };
     for (const expanded of [false, true]) {
-      const card = tool.describeResult(old, { expanded });
-      expect(visible(card)).toContain("8 of unlimited");
-      expect(visible(card)).toContain("old-auditor");
-      expect(visible(card)).toContain("major 4");
-      expect(visible(card)).not.toContain("Legacy **receipt**");
+      const { tree: card_ } = card(tool, old, expanded);
+      expect(visible(card_)).toContain("8 of unlimited");
+      expect(visible(card_)).toContain("old-auditor");
+      expect(visible(card_)).toContain("major 4");
+      expect(visible(card_)).not.toContain("Legacy **receipt**");
     }
   });
 
@@ -276,25 +309,25 @@ describe("audit_round Tern card", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0]?.text).toContain("Historic defect 11");
     for (const expanded of [false, true]) {
-      const card = tool.describeResult(result, { expanded }, args);
-      expect(visible(card)).toContain("12 of");
-      expect(visible(card)).not.toContain("Historic defect");
-      expect(visible(card)).not.toContain("Historic coverage");
-      expect(visible(card)).not.toContain("Start round 13");
-      expect(visible(card)).not.toContain("Remaining findings");
+      const { tree: shown } = card(tool, result, expanded, args);
+      expect(visible(shown)).toContain("12 of");
+      expect(visible(shown)).not.toContain("Historic defect");
+      expect(visible(shown)).not.toContain("Historic coverage");
+      expect(visible(shown)).not.toContain("Start round 13");
+      expect(visible(shown)).not.toContain("Remaining findings");
       if (expanded) {
-        expect(visible(card)).toContain("Current checkout defect");
-        expect(visible(card)).toContain("Current repair verified");
-        expect(visible(card)).toContain("Current rejected claim");
-        expect(flat(receipt(card))).toContain("Historic defect 11");
-      } else expect(receipt(card)).toBeUndefined();
+        expect(visible(shown)).toContain("Current checkout defect");
+        expect(visible(shown)).toContain("Current repair verified");
+        expect(visible(shown)).toContain("Current rejected claim");
+        expect(flat(receipt(shown))).toContain("Historic defect 11");
+      } else expect(receipt(shown)).toBeUndefined();
     }
     const status = await call({ op: "status" });
-    const card = tool.describeResult(status, { expanded: true }, { op: "status" });
-    expect(visible(card)).toContain("major 11");
-    expect(visible(card)).not.toContain("Current checkout defect");
-    expect(visible(card)).not.toContain("Historic defect");
-    expect(flat(receipt(card))).toContain("Historic defect 11");
+    const { tree: statusCard } = card(tool, status, true, { op: "status" });
+    expect(visible(statusCard)).toContain("major 11");
+    expect(visible(statusCard)).not.toContain("Current checkout defect");
+    expect(visible(statusCard)).not.toContain("Historic defect");
+    expect(flat(receipt(statusCard))).toContain("Historic defect 11");
   });
 
   test("refusal keeps one reason visible and formats instructions only inside folded model text", async () => {
@@ -319,16 +352,16 @@ describe("audit_round Tern card", () => {
       ],
     };
     for (const expanded of [false, true]) {
-      const card = tool.describeResult(result, { expanded }, { op: "record", round: 12 });
-      expect(card.tone).toBe("error");
-      expect(card.preview).toBe("none");
-      expect(visible(card)).toContain("The round limit is exhausted.");
-      expect(visible(card)).not.toContain("Report all old findings");
-      expect(visible(card)).not.toContain("historic-1");
+      const view = card(tool, result, expanded, { op: "record", round: 12 });
+      expect(head(view.node).tone).toBe("error");
+      expect(visible(view.tree)).toContain("The round limit is exhausted.");
+      expect(visible(view.tree)).not.toContain("Report all old findings");
+      expect(visible(view.tree)).not.toContain("historic-1");
+      expect(paint(view.node, 80)).toContain("The round limit is exhausted.");
       if (expanded) {
-        const raw = receipt(card);
+        const raw = receipt(view.tree);
         expect(raw?.p).toMatchObject({ collapsible: true, collapsed: true });
-        const inside = nodes(raw?.c);
+        const inside = nodes(raw).slice(1);
         expect(inside.find((node) => node.k === "table")?.p).toMatchObject({
           cols: [
             { head: "ID", priority: 2 },
@@ -351,10 +384,10 @@ describe("audit_round Tern card", () => {
     await call(round1);
     const result = await call({ op: "extend" });
     expect(result.isError).toBeUndefined();
-    const collapsed = tool.describeResult(result, { expanded: false }, { op: "extend" });
+    const collapsed = card(tool, result, false, { op: "extend" }).tree;
     expect(visible(collapsed)).toContain("stop");
     expect(visible(collapsed)).not.toContain("Order lost after restart");
-    const expanded = tool.describeResult(result, { expanded: true }, { op: "extend" });
+    const expanded = card(tool, result, true, { op: "extend" }).tree;
     expect(visible(expanded)).toContain("Noninteractive finite round limit reached");
     expect(visible(expanded)).not.toContain("Order lost after restart");
     expect(flat(receipt(expanded))).toContain("Order lost after restart");
@@ -364,7 +397,7 @@ describe("audit_round Tern card", () => {
     const { renderers } = await harness(undefined);
     const render = renderers.get("wows-omp-audit-goal.command-status");
     expect(render).toBeDefined();
-    const component = render?.(
+    const node = render?.(
       {
         role: "custom",
         customType: "wows-omp-audit-goal.command-status",
@@ -374,13 +407,16 @@ describe("audit_round Tern card", () => {
       },
       { expanded: false },
       undefined,
-    ) as { describe: () => unknown; render: (width: number) => string[] };
-    const head = flat(component.describe());
-    expect(head).toContain("Audit goal");
-    expect(head).not.toContain("wows-omp-audit-goal.command-status");
-    const lines = component.render(80).join("\n");
+    );
+    const tree = ternTree(node);
+    expect(tree?.k).toBe("card");
+    expect(flat(tree?.p?.head)).toContain("Audit goal");
+    expect(flat(tree)).toContain("Audit ledger could not be saved");
+    expect(flat(tree)).not.toContain("wows-omp-audit-goal.command-status");
+    const lines = paint(node, 80);
     expect(lines).toContain("Audit goal");
     expect(lines).toContain("Audit ledger could not be saved");
+    expect(lines).not.toContain("wows-omp-audit-goal.command-status");
     expect(renderers.has("wows-omp-audit-goal.protocol")).toBe(false);
   });
 });

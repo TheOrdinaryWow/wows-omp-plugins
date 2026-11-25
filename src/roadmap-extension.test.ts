@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession, AgentToolResult, ExtensionRunner } from "@oh-my-pi/pi-coding-agent";
 import { resolveDispatchDetails } from "@oh-my-pi/pi-coding-agent/tools/resolve";
 import { toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
+import type { UiNode } from "@oh-my-pi/pi-tui";
 
 import type { ConsoleChoice, ConsoleState } from "../plugins/roadmap/src/console.ts";
 import { loadAll, loadRepo, type Model, type Repo, replaceGenerated, roundFiles, roundSha256 } from "../plugins/roadmap/src/documents.ts";
@@ -198,11 +199,10 @@ async function createHarness(
   options: { sub?: boolean; editMode?: (typeof EDIT_MODES)[number] | "magic"; lsp?: boolean; adr?: boolean; mountedAst?: boolean } = {},
 ): Promise<Harness> {
   // These imports intentionally exercise the loader boundary after the child's isolated HOME is set.
-  const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+  const { createAgentSession, initTheme, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
-  const { initTheme } = await import("@oh-my-pi/pi-tui");
-  await initTheme();
+  initTheme();
   const ui = new ScriptedUi();
   const { session, extensionsResult } = await createAgentSession({
     cwd: root,
@@ -1889,7 +1889,10 @@ async function acceptance(name: string, root: string): Promise<void> {
       // The real console and fullscreen preview, driven by keys: Enter navigates without posting, Shift+E hands the
       // revision of R2 to the model, a preview launched from the console returns to it after Esc or Write.
       // Like createHarness, host modules load after the child's isolated HOME is set.
-      const { theme } = await import("@oh-my-pi/pi-tui");
+      const { loadThemeSync } = await import("@oh-my-pi/pi-tui/theme/loader");
+      const { renderBlock } = await import("@oh-my-pi/pi-tui/term/render");
+      const theme = loadThemeSync("dark");
+      const KEYS: Readonly<Record<string, string>> = { "\r": "enter", "\x1b": "escape", "\t": "tab", "\x1b[B": "down" };
       const scripts: string[][] = [];
       const frames: string[] = [];
       const answers: string[] = [];
@@ -1908,10 +1911,20 @@ async function acceptance(name: string, root: string): Promise<void> {
               },
               custom: (async (factory: Parameters<typeof ctx.ui.custom>[0]) => {
                 const { promise, resolve } = Promise.withResolvers<unknown>();
-                const tui = { requestRender() {}, terminal: { rows: 24 } } as unknown as Parameters<typeof factory>[0];
-                const component = await factory(tui, theme, undefined as never, resolve);
-                frames.push(Bun.stripANSI(component.render(200).join("\n")));
-                for (const key of scripts.shift() ?? ["\x1b"]) component.handleInput?.(key);
+                const host = {
+                  requestRender() {},
+                  size: () => ({ columns: 200, rows: 24 }),
+                  suspend: (run: () => Promise<unknown>) => run(),
+                };
+                const view = (await factory(host as Parameters<typeof factory>[0], theme as never, undefined as never, resolve)) as UiNode;
+                frames.push(Bun.stripANSI(renderBlock(view, 200, { theme }).rows.join("\n")));
+                for (const key of scripts.shift() ?? ["\x1b"])
+                  view.handlers.onKey?.({
+                    id: KEYS[key] ?? (/^[A-Z]$/.test(key) ? `shift+${key.toLowerCase()}` : key),
+                    kind: "press",
+                    raw: key,
+                    ...(KEYS[key] ? {} : { text: key }),
+                  });
                 return promise;
               }) as unknown as typeof ctx.ui.custom,
             },

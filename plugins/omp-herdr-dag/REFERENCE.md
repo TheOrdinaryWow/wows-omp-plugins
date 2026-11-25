@@ -70,7 +70,7 @@ The agent declares dependencies by passing `edges` to `todo`, naming tasks by th
 }
 ```
 
-The plugin strips `edges` before passing the call to the native `todo`. The wrapper preserves native mutations, details, hooks, approval, batch failure and rendering. A native operation error records no edges. Unknown, self-referencing or cyclic edges are dropped with a `Herdr DAG edges:` warning. Removing or changing tasks prunes their edges, and `init` starts a fresh generation.
+The plugin strips `edges` before passing the call to the native `todo`. The wrapper preserves native mutations, details, hooks, approval and batch failure. Tern shows the native todo card unchanged; the terminal shows an equivalent card drawn by the plugin (the phased checklist under a `Todo done/total` head), without the native card's collapsed selection and completion strike animation. A native operation error records no edges. Unknown, self-referencing or cyclic edges are dropped with a `Herdr DAG edges:` warning. Removing or changing tasks prunes their edges, and `init` starts a fresh generation.
 
 ## Local storage
 

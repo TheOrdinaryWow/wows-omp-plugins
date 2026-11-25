@@ -102,10 +102,11 @@ async function scenario(name: string, root: string): Promise<void> {
   // Native SDK modules load only after the child has an isolated HOME and host-state root.
   const { AgentRegistry } = await import("@oh-my-pi/pi-coding-agent/registry/agent-registry");
   const { EventBus } = await import("@oh-my-pi/pi-coding-agent/utils/event-bus");
-  const { SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+  const { SessionManager, initTheme, setTheme } = await import("@oh-my-pi/pi-coding-agent");
   const { Type } = await import("@oh-my-pi/omptype/typebox");
-  const theme = await import("@oh-my-pi/pi-tui/theme");
-  await theme.initTheme(false);
+  const { currentTheme } = await import("@oh-my-pi/pi-tui/theme/runtime");
+  // Pinned dark so the later switch to light changes the colours whatever the runner's terminal background is.
+  initTheme({ appearance: "dark" });
   const { default: register } = await import("../plugins/omp-herdr-dag/src/index.ts");
   const { readSnapshot, writePane } = await import("../plugins/omp-herdr-dag/src/persisted.ts");
   const { PLAN_EXECUTION_ENTRY } = await import("../plugins/omp-herdr-dag/src/sources/plan-execution.ts");
@@ -145,7 +146,7 @@ async function scenario(name: string, root: string): Promise<void> {
     ui: {
       notify: (message: string) => notices.push(message),
       get theme() {
-        return theme.theme;
+        return currentTheme();
       },
     },
     invokeTool: async () => ({ content: [{ type: "text", text: "native" }], details: { op: "init", phases: list }, isError: false }),
@@ -375,16 +376,16 @@ async function scenario(name: string, root: string): Promise<void> {
       manager.appendCustomEntry("user_todo_edit", {
         phases: [{ name: "Editor", tasks: [{ content: "From /todo", status: "in_progress" }] }],
       });
-      const oldEpoch = theme.getThemeEpoch();
-      assert((await theme.setTheme("light", false)).success);
-      assert.notEqual(theme.getThemeEpoch(), oldEpoch);
+      const darkText = ctx.ui.theme.hex("text");
+      assert((await setTheme("light")).success);
+      assert.notEqual(ctx.ui.theme.hex("text"), darkText);
       clock.advance(2_000);
       await Promise.resolve();
       await hook("agent_end", { willContinue: true });
       clock.advance(100);
       await eventually(() => peer.frames.some((frame) => frame.type === "delta" && frame.ops.some((op) => op.op === "theme")));
       const themed = await peer.snapshot();
-      assert.equal(themed.theme.text, ctx.ui.theme.getColorHex("text"));
+      assert.equal(themed.theme.text, ctx.ui.theme.hex("text"));
       assert(themed.runs.some((run) => run.nodes.some((node) => node.label.includes("From /todo"))));
       bus.emit("task:subagent:lifecycle", { id: "child", status: "started", agent: "task", description: "work", index: 0 });
       bus.emit("task:subagent:progress", {

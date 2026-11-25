@@ -17,7 +17,7 @@ Keep text you send often, such as a review checklist, a bug report template or p
 omp plugin install snippets@wows-omp-plugins
 ```
 
-You need OMP 19.1.1 or newer. Start a new session after installing.
+You need OMP 19.2.0 or newer. Start a new session after installing.
 
 ## Quick start
 
@@ -65,12 +65,12 @@ To send a trigger word literally, put a backslash in front of it: `\.review.` se
 
 ### Browse and manage snippets with `/snippets`
 
-`/snippets` opens a console with your snippets on one side and a preview on the other. Pinned snippets come first, then the ones you use most. The preview shows the text, the trigger word (or "menu only" when there is none), where the file lives, and whether the snippet is shadowed or disabled. In Tern, the console opens as a native sheet with the same actions in an action bar.
+`/snippets` opens a console in place of the editor: your snippets in a list, with the selected one's preview below it. Pinned snippets come first, then the ones you use most. The preview shows the text, the trigger word (or "menu only" when there is none), where the file lives, and whether the snippet is shadowed or disabled. In Tern, the console opens as a native sheet with the same actions in an action bar.
 
 | Key | Action |
 |---|---|
-| Up / Down, Home / End | Select a snippet |
-| PgUp / PgDn, mouse wheel | Scroll the preview |
+| Up / Down, Home / End, mouse wheel | Select a snippet |
+| PgUp / PgDn | Scroll a long preview in the terminal |
 | Tab / Shift+Tab | Switch between All, Global and Workspace |
 | Letters and digits | Search by key, description and text. Every word you type must match. |
 | Left / Right, Backspace, Delete | Edit the search text |

@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 
 import { Type } from "@oh-my-pi/omptype/typebox";
 import type { ExtensionAPI, ExtensionContext, SessionEntry, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import { renderBlock } from "@oh-my-pi/pi-tui/term/render";
+import { stripEscapes } from "@oh-my-pi/pi-tui/text/ansi";
+import { PLAIN_THEME } from "@oh-my-pi/pi-tui/theme/plain";
 
 import type { TodoPhase } from "../plugins/omp-herdr-dag/src/model.ts";
 import {
@@ -15,6 +18,7 @@ import {
   PlanExecutionTracker,
 } from "../plugins/omp-herdr-dag/src/sources/plan-execution.ts";
 import { TODO_EDGES_ENTRY, type TodoEdgesEntry, TodoSource, todoGeneration } from "../plugins/omp-herdr-dag/src/sources/todo.ts";
+import { todoCard } from "../plugins/omp-herdr-dag/src/sources/todo-card.ts";
 import { registerTodoWrapper } from "../plugins/omp-herdr-dag/src/sources/todo-wrapper.ts";
 
 const CHILD_ENV = "HERDR_DAG_TODO_HOST_CHECK";
@@ -50,14 +54,19 @@ const customEntry = (customType: string, data: unknown): SessionEntry =>
 
 async function hostCheck(root: string): Promise<void> {
   // Import the SDK only after this process has its own HOME, cwd and host-state directory.
-  const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+  const { createAgentSession, initTheme, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
   const { getLatestTodoPhasesFromEntries } = await import("@oh-my-pi/pi-coding-agent/tools/todo");
-  const { toolRenderers } = await import("@oh-my-pi/pi-tui/tools");
-  const tui = await import("@oh-my-pi/pi-tui");
+  const { legacyPresenter } = await import("@oh-my-pi/pi-coding-agent/ui/tools/legacy");
+  const { toolPresenter } = await import("@oh-my-pi/pi-coding-agent/ui/tools/registry");
+  // Registers every built-in presenter, as the interactive transcript does.
+  await import("@oh-my-pi/pi-coding-agent/ui/tools/index");
+  const { setNativeRenderingForTest } = await import("@oh-my-pi/pi-tui");
+  const { staticEnvironment } = await import("@oh-my-pi/pi-tui/term/paint");
+  const { describeTree } = await import("@oh-my-pi/pi-tui/testing/corpus");
   const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai");
-  await tui.initTheme();
+  initTheme();
   const edges: TodoEdgesEntry[] = [];
   const observed: Array<{ toolName: string; details?: unknown }> = [];
   const executionEnds: Array<{ toolName: string; idle: boolean }> = [];
@@ -116,9 +125,8 @@ async function hostCheck(root: string): Promise<void> {
     const properties = tool as typeof tool & {
       concurrency?: string;
       lenientArgValidation?: boolean;
-      renderResult?: ToolDefinition["renderResult"];
-      describeCall?: ToolDefinition["describeCall"];
-      describeResult?: ToolDefinition["describeResult"];
+      renderCall?: (args: unknown, options: unknown, theme: unknown) => unknown;
+      renderResult?: (result: unknown, options: unknown, theme: unknown, args?: unknown) => unknown;
       mergeCallAndResult?: boolean;
     };
     assert.equal(tool.approval, "read");
@@ -148,19 +156,40 @@ async function hostCheck(root: string): Promise<void> {
     assert.equal(observed.at(-1)?.details, initialized.details);
     assert.deepEqual(getLatestTodoPhasesFromEntries(manager.getBranch()), phases);
     assert.deepEqual(edges.at(-1), { v: 1, generation: 1, edges: [{ task: "B", after: ["A"] }] });
-    assert(properties.renderResult);
-    const options = { expanded: true, isPartial: false };
-    const actualRender = properties.renderResult(initialized, options, tui.theme, input).render(100);
-    const nativeRender = toolRenderers.todo?.renderResult?.(initialized, options, tui.theme, input)?.render(100);
-    assert.deepEqual(actualRender, nativeRender);
-    assert(actualRender.join("\n").includes("A"));
-    // Tern draws the tool card from the tool's own describe hooks; an extension override of a built-in gets no fallback.
-    assert(properties.describeCall && properties.describeResult);
-    assert.equal(properties.mergeCallAndResult, toolRenderers.todo?.mergeCallAndResult);
-    assert.deepEqual(properties.describeCall(input, options), toolRenderers.todo?.describeCall?.(input, options));
-    const actualView = properties.describeResult(initialized, options, input);
-    assert(actualView);
-    assert.deepEqual(actualView, toolRenderers.todo?.describeResult?.(initialized, options, input));
+    assert(properties.renderCall && properties.renderResult);
+    assert.equal(properties.mergeCallAndResult, true);
+    // The transcript gives an extension tool with render hooks the registered presenter of its name as the base view
+    // (`#presentCard`), so the override draws over the native todo presenter exactly as built here.
+    const native = toolPresenter("todo");
+    assert(native);
+    const presenter = legacyPresenter(
+      { renderCall: properties.renderCall.bind(tool), renderResult: properties.renderResult.bind(tool), mergeCallAndResult: true },
+      native,
+    );
+    const state = { expanded: false, isPartial: false, argsComplete: true, executionStarted: true };
+    const env = staticEnvironment(PLAIN_THEME);
+    const tern = (view: { head?: unknown; body?: unknown; tone?: unknown } | undefined) => ({
+      head: view?.head,
+      tone: view?.tone,
+      body: [view?.body ?? []].flat().map((node) => describeTree(node as never, env)),
+    });
+    // Tern: the hooks draw nothing, so the call and result keep the native todo card's head and checklist.
+    setNativeRenderingForTest(true);
+    try {
+      assert.deepEqual(tern(presenter.call?.(input, state)), tern(native.call?.(input, state)));
+      const nativeResult = tern(native.result?.(initialized, state, input));
+      assert.equal((nativeResult.body[0] as { k?: string } | undefined)?.k, "checklist");
+      assert.deepEqual(tern(presenter.result?.(initialized, state, input)), nativeResult);
+    } finally {
+      setNativeRenderingForTest(false);
+    }
+    // Terminal: the custom-tool box paints only the hooks' parts, so they draw the same list under a Todo head.
+    const parts = (presenter.result?.(initialized, state, input)?.term as { parts?: unknown[] } | undefined)?.parts ?? [];
+    assert.equal(parts.length, 1);
+    const painted = stripEscapes(renderBlock(parts[0] as never, 80, { theme: PLAIN_THEME }).rows.join("\n"));
+    assert.match(painted, /Todo 0\/2\n.*A\n.*B$/s);
+    const callParts = (presenter.call?.(input, state)?.term as { parts?: unknown[] } | undefined)?.parts ?? [];
+    assert.match(stripEscapes(renderBlock(callParts[0] as never, 80, { theme: PLAIN_THEME }).rows.join("\n")), /Todo init/);
     const repaired = await call("omitted", { list: [{ phase: "Next", items: ["C", "D"] }], edges: [{ task: "D", after: ["C"] }] });
     assert(!repaired.isError);
     assert.equal(repaired.details.op, "init");
@@ -654,6 +683,32 @@ if (process.env[CHILD_ENV]) {
       await h.definition?.execute("missing-again", { op: "init" }, undefined, undefined, ctx);
       expect(h.warnings).toHaveLength(1);
       expect(h.forwarded).toEqual([]);
+    });
+
+    test("terminal todo card folds finished phases only while collapsed", () => {
+      const details = {
+        phases: [
+          {
+            name: "Done",
+            tasks: [
+              { content: "Shipped parser", status: "completed" },
+              { content: "Dropped idea", status: "abandoned" },
+            ],
+          },
+          { name: "Open", tasks: [{ content: "Write docs", status: "pending" }] },
+        ],
+      };
+      const paint = (expanded: boolean) => {
+        const node = todoCard.renderResult({ content: [], details }, { expanded, isPartial: false });
+        if (!node) throw new Error("terminal todo card drew nothing");
+        return stripEscapes(renderBlock(node, 80, { theme: PLAIN_THEME }).rows.join("\n"));
+      };
+      const collapsed = paint(false);
+      expect(collapsed).toContain("Todo 2/3");
+      expect(collapsed).toContain("Write docs");
+      expect(collapsed).not.toContain("Shipped parser");
+      const expanded = paint(true);
+      for (const task of ["Shipped parser", "Dropped idea", "Write docs"]) expect(expanded).toContain(task);
     });
   });
 

@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
+import { createRoot, type UiNode } from "@oh-my-pi/pi-tui";
 
 import { AdrConsole, AdrPreview, type ConsoleMessage, type ConsoleResult, type ConsoleState, type DecisionAction } from "#src/console.ts";
 import { type AdrRecord, type AdrStatus, STATUSES } from "#src/documents.ts";
@@ -113,10 +114,7 @@ function decisionTitle(record: AdrRecord): string {
   return `${record.id} ${record.title} [${record.status}] · ${where.filter(Boolean).join(" · ")}`;
 }
 
-const FULLSCREEN = {
-  overlay: true,
-  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true },
-} as const;
+const FULLSCREEN = { overlay: true, fullscreen: true } as const;
 
 /** `uiMenu` matters only in the terminal UI; RPC and ACP clients cannot mount components and keep the dialogs. */
 export function createTuiUi(ctx: AdrUiContext, pi: AdrMessenger, uiMenu: UiMenu): AdrUi {
@@ -195,6 +193,26 @@ export function createTuiUi(ctx: AdrUiContext, pi: AdrMessenger, uiMenu: UiMenu)
     }
   }
 
+  /**
+   * A fullscreen view built in a reactive root of its own and disposed once `custom` settles: the host calls the
+   * factory outside any owner, so the view's computations (which read the long-lived `ui.size()`) would never end.
+   */
+  async function fullscreenView<T>(build: (host: ExtensionUiHost, done: (result: T) => void) => UiNode): Promise<T> {
+    let dispose: (() => void) | undefined;
+    try {
+      return await ui.custom<T>(
+        (host, _theme, _keys, done) =>
+          createRoot((release) => {
+            dispose = release;
+            return build(host, done);
+          }),
+        FULLSCREEN,
+      );
+    } finally {
+      dispose?.();
+    }
+  }
+
   /** Filter and search persist while this UI lives, i.e. across re-opens within one /adr command. */
   let consoleState: ConsoleState = { query: "" };
 
@@ -204,9 +222,8 @@ export function createTuiUi(ctx: AdrUiContext, pi: AdrMessenger, uiMenu: UiMenu)
     let message = options.message;
     const items = entries.map((entry) => ({ ...entry, offered: decisions(entry.record).map(([, action]) => action) }));
     for (;;) {
-      const [result, state] = await ui.custom<[ConsoleResult, ConsoleState]>(
-        (tui, theme, _keys, done) => new AdrConsole(items, consoleState, theme, tui, (picked, next) => done([picked, next]), message),
-        FULLSCREEN,
+      const [result, state] = await fullscreenView<[ConsoleResult, ConsoleState]>(
+        (host, done) => new AdrConsole(items, consoleState, host, (picked, next) => done([picked, next]), message).root,
       );
       consoleState = state;
       message = undefined;
@@ -228,8 +245,7 @@ export function createTuiUi(ctx: AdrUiContext, pi: AdrMessenger, uiMenu: UiMenu)
     text: (title, placeholder) => ui.input(title, placeholder),
 
     async previewConfirm(p) {
-      if (fullscreen)
-        return ui.custom<boolean>((tui, theme, _keys, done) => new AdrPreview(p.title, p.files, theme, tui, done), FULLSCREEN);
+      if (fullscreen) return fullscreenView<boolean>((host, done) => new AdrPreview(p.title, p.files, host, done).root);
       const write = `Write ${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
       const cancel = "Cancel";
       const labels = [write, ...p.files.map((file) => `View ${file.path}`), cancel];

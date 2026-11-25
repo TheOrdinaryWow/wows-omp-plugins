@@ -1,9 +1,14 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { initTheme, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
+import "@oh-my-pi/pi-coding-agent/ui/styles/overlays/bare-sheet";
+import { type KeyEvent, signal, type UiNode } from "@oh-my-pi/pi-tui";
+import { createTestTerminal, type TestTerminal } from "@oh-my-pi/pi-tui/testing/terminal";
+import { stripEscapes } from "@oh-my-pi/pi-tui/text/ansi";
+import { visibleWidth } from "@oh-my-pi/pi-tui/text/width";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
 
 import type { AtlasStagePlan } from "../plugins/roadmap/src/atlas.ts";
 import { type ConsoleChoice, type ConsoleState, type PreviewRequest, PreviewView, RoadmapConsole } from "../plugins/roadmap/src/console.ts";
@@ -16,32 +21,12 @@ import {
   type UiMenu,
   uiMenuReader,
 } from "../plugins/roadmap/src/settings.ts";
+import { h } from "../plugins/roadmap/src/tsp.ts";
 import { createTuiUi, HeadlessUi, type RoadmapUiContext } from "../plugins/roadmap/src/ui.ts";
 import { consoleModelFixture, planFixture } from "./roadmap-fixtures.ts";
 
-beforeAll(async () => {
-  await initTheme();
-});
-
+const theme = loadThemeSync("dark");
 const ON = "2026-10-11";
-const KEY = {
-  up: "\x1b[A",
-  down: "\x1b[B",
-  home: "\x1b[H",
-  end: "\x1b[F",
-  pageDown: "\x1b[6~",
-  tab: "\t",
-  shiftTab: "\x1b[Z",
-  enter: "\r",
-  escape: "\x1b",
-  backspace: "\x7f",
-};
-
-const text = (lines: readonly string[]): string => Bun.stripANSI(lines.join("\n"));
-
-function tuiOf(rows: number): TUI {
-  return { requestRender() {}, terminal: { rows } } as unknown as TUI;
-}
 
 /** Atlas answers: two plans for S05 (one drifted), none yet for S06; other stages get no answer, as without omo-prometheus. */
 const PLANS: Readonly<Record<string, AtlasStagePlan[]>> = {
@@ -60,41 +45,70 @@ const PLANS: Readonly<Record<string, AtlasStagePlan[]>> = {
   S06: [],
 };
 
-function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}, rows = 24) {
-  const choices: Array<ConsoleChoice | undefined> = [];
-  const asked: string[] = [];
-  const orders: StageOrder[] = [];
-  const component = new RoadmapConsole(
-    model,
-    { on: ON, ...state },
-    theme,
-    tuiOf(rows),
-    (choice) => choices.push(choice),
-    (stage) => {
-      asked.push(stage);
-      return PLANS[stage];
+const terminals: TestTerminal[] = [];
+afterEach(() => {
+  for (const term of terminals.splice(0)) term.dispose();
+});
+
+/** A view mounted fullscreen as the host mounts `ctx.ui.custom` overlays in the terminal, keys going to it. */
+function terminal(
+  make: () => { view(host: { size(): { columns: number; rows: number } }, native: boolean): UiNode },
+  columns: number,
+  rows: number,
+) {
+  const size = signal({ columns, rows });
+  let view: UiNode | undefined;
+  const term = createTestTerminal(
+    () => {
+      view = make().view({ size }, false);
+      return { layer: h("overlay", { key: "extension", size: "full", role: "omp.sheet.bare" }, view) };
     },
-    (order) => orders.push(order),
+    { columns, rows, theme },
   );
+  terminals.push(term);
+  term.focus(view ?? null);
+  // Hints keep each key beside its label with no-break spaces.
+  const shown = () => term.screen().map((line) => line.replace(/\u00a0/g, " "));
   return {
-    component,
-    choices,
-    asked,
-    orders,
-    screen: (width = 100) => text(component.render(width)),
-    type: (...keys: string[]) => {
-      for (const key of keys) component.handleInput(key);
+    term,
+    screen: () => shown().join("\n"),
+    lines: shown,
+    press: (...ids: string[]) => {
+      for (const id of ids) term.press(id);
+    },
+    type: (text: string) => term.type(text),
+    resize: (nextColumns: number, nextRows: number) => {
+      size.set({ columns: nextColumns, rows: nextRows });
+      term.resize(nextColumns, nextRows);
     },
   };
 }
 
-/** The sidebar column of the body rows. */
-function sidebar(screen: string): string[] {
-  return screen
-    .split("\n")
-    .map((line) => line.split("│")[1]?.trim() ?? "")
-    .filter(Boolean);
+function mount(model: Model = consoleModelFixture(), state: ConsoleState = {}, columns = 100, rows = 24) {
+  const choices: Array<ConsoleChoice | undefined> = [];
+  const asked: string[] = [];
+  const orders: StageOrder[] = [];
+  const mounted = terminal(
+    () =>
+      new RoadmapConsole(
+        model,
+        { on: ON, ...state },
+        theme,
+        (choice) => choices.push(choice),
+        (stage) => {
+          asked.push(stage);
+          return PLANS[stage];
+        },
+        (order) => orders.push(order),
+      ),
+    columns,
+    rows,
+  );
+  return { ...mounted, choices, asked, orders };
 }
+
+/** The row the sidebar marks as selected. */
+const selectedRow = (screen: string): string => screen.split("\n").find((line) => line.startsWith("❯")) ?? "";
 
 const EMPTY: Model = { index: { format: 2, path: "", title: "Fresh", body: "" }, rounds: [], stages: [], todos: [] };
 
@@ -106,163 +120,171 @@ function laterDependencyModel(): Model {
 
 const stageIds = (rows: readonly string[]): string[] => rows.flatMap((row) => /\b(S0\d) /.exec(row)?.[1] ?? []);
 
-test("console frames fill 80x24 and 160x48 exactly in every section and item, long titles included", () => {
+/** The stage ids listed in the sidebar, top to bottom. */
+const sidebarIds = (lines: readonly string[], width: number): string[] =>
+  stageIds(lines.slice(5).map((line) => line.slice(0, Math.floor(width * 0.36))));
+
+test("console fills 80x24 and 160x48 with the hints on the last rows in every section and item, long titles included", () => {
   for (const [width, rows] of [
     [80, 24],
     [160, 48],
   ] as const) {
     for (const model of [consoleModelFixture(), EMPTY]) {
-      const { component, type } = mount(model, {}, rows);
+      const { term, lines, press } = mount(model, {}, width, rows);
       for (let section = 0; section < 3; section++) {
         for (let item = 0; item < 6; item++) {
-          const lines = component.render(width);
-          expect(lines).toHaveLength(rows);
-          expect(lines.filter((line) => visibleWidth(line) !== width)).toEqual([]);
-          type(KEY.down, KEY.pageDown);
+          const shown = lines();
+          expect(shown).toHaveLength(rows);
+          expect(shown[0]).toMatch(/^Roadmap · /);
+          expect(shown.slice(-2).join(" ")).toMatch(/Esc close/);
+          expect(term.rows().filter((line) => visibleWidth(stripEscapes(line)) > width)).toEqual([]);
+          press("down", "pageDown");
         }
-        type(KEY.tab);
+        press("tab");
       }
     }
   }
 });
 
-test("console frames never exceed narrow widths", () => {
-  for (const width of [8, 20, 30, 40, 60]) {
-    const { component, type } = mount(undefined, {}, 12);
+test("console rows never exceed narrow widths", () => {
+  for (const width of [30, 40, 60]) {
+    const { term, press } = mount(undefined, {}, width, 12);
     for (let section = 0; section < 3; section++) {
-      expect(component.render(width).filter((line) => visibleWidth(line) > width)).toEqual([]);
-      type(KEY.tab);
+      expect(term.rows().filter((line) => visibleWidth(stripEscapes(line)) > width)).toEqual([]);
+      press("tab");
     }
   }
 });
 
 test("console opens on the active round's stages with the active stage selected and its detail", () => {
-  const { screen } = mount();
-  const shown = screen(160);
+  const { screen } = mount(undefined, {}, 160, 48);
+  const shown = screen();
   expect(shown).toMatch(/Roadmap · Shop platform/);
   expect(shown).toMatch(/R2 Checkout and payments · 2\/5 stages settled · 4 open TODOs/);
   expect(shown).toMatch(/1 overdue stage · 2 planned rounds/);
-  expect(sidebar(shown).find((row) => row.includes("❯"))).toMatch(/S05 Payment provider/);
+  expect(selectedRow(shown)).toMatch(/S05 Payment provider/);
+  expect(selectedRow(shown)).toContain(theme.symbols.symbol("status.warning"));
   expect(shown).toMatch(/S05 — Payment provider integration/);
-  expect(shown).toMatch(/Target {4}2026-10-05 · overdue/);
+  expect(shown).toMatch(/Target +2026-10-05 · overdue/);
   expect(shown).toMatch(/ADR-0004 Retry webhooks with exponential backoff · proposed/);
   expect(shown).toMatch(/T010 Handle a provider timeout/);
   // The resolved T013 targets S05 too but is not open.
   expect(shown).not.toMatch(/T013/);
-  expect(shown).toMatch(/shift\+x|⇧X/i);
+  expect(shown).toMatch(/⇧X close stage/);
 });
 
 test("console navigation moves within a section and Tab cycles sections, remembering each selection", () => {
-  const { screen, type } = mount();
-  type(KEY.down);
+  const { screen, press } = mount();
+  press("down");
   expect(screen()).toMatch(/S06 — Order confirmation emails/);
   expect(screen()).toMatch(/blocked by S05/);
-  type(KEY.down);
+  press("down");
   expect(screen()).toMatch(/S07 — Checkout analytics/);
   expect(screen()).toMatch(/ready to start/);
-  type(KEY.home);
+  press("home");
   expect(screen()).toMatch(/S04 — Cart persistence/);
-  type(KEY.end);
+  press("end");
   expect(screen()).toMatch(/S08 — Legacy coupon import/);
-  type(KEY.end, KEY.down);
+  press("end", "down");
   expect(screen()).toMatch(/S08 — Legacy coupon import/);
 
-  type(KEY.tab);
+  press("tab");
   expect(screen()).toMatch(/R2 — Checkout and payments/);
-  type(KEY.down);
+  press("down");
   expect(screen()).toMatch(/R3 — Refunds and disputes/);
   expect(screen()).toMatch(/next to activate/);
-  type(KEY.tab);
+  press("tab");
   expect(screen()).toMatch(/T010 — Handle a provider timeout/);
-  type(KEY.tab);
+  press("tab");
   expect(screen()).toMatch(/S08 — Legacy coupon import/);
-  type(KEY.shiftTab);
+  press("shift+tab");
   expect(screen()).toMatch(/T010 — /);
-  type(KEY.shiftTab);
+  press("shift+tab");
   expect(screen()).toMatch(/R3 — Refunds and disputes/);
 });
 
 test("console typing searches the section; Esc clears the search first and then closes", () => {
-  const { screen, type, choices } = mount();
-  type("s", "0", "7");
-  expect(screen()).toMatch(/Search: s07 {2}1\/5/);
-  expect(sidebar(screen()).filter((row) => /S0\d/.test(row))).toHaveLength(1);
+  const { screen, lines, press, type, choices } = mount();
+  type("s07");
+  expect(screen()).toMatch(/Search: s07 {2}1\/5 match/);
+  expect(sidebarIds(lines(), 100)).toEqual(["S07"]);
   expect(screen()).toMatch(/S07 — Checkout analytics/);
   type("x");
   expect(screen()).toMatch(/Nothing matches the search/);
-  type(KEY.backspace);
+  press("backspace");
   expect(screen()).toMatch(/S07 — Checkout analytics/);
-  type(KEY.escape);
+  expect(screen()).toMatch(/Esc clear search/);
+  press("escape");
   expect(choices).toEqual([]);
   expect(screen()).toMatch(/Type to search/);
   // The cleared search keeps the item it had found.
   expect(screen()).toMatch(/S07 — Checkout analytics/);
-  type(KEY.escape);
+  press("escape");
   expect(choices).toEqual([undefined]);
-  type(KEY.escape, KEY.enter);
+  press("escape", "enter");
   expect(choices).toEqual([undefined]);
 });
 
 test("console Enter navigates without answering: a stage to its round, a round to its stages", () => {
-  const { screen, type, choices } = mount();
-  type(KEY.enter);
+  const { screen, press, type, choices } = mount();
+  press("enter");
   expect(screen()).toMatch(/R2 — Checkout and payments/);
-  type(KEY.down, KEY.enter);
+  press("down", "enter");
   // Stages now lists R3 and says so; its planned stage is selected.
-  expect(screen()).toMatch(/◀ Stages R3 1 ▶/);
+  expect(screen()).toMatch(/Stages R3 1/);
   expect(screen()).toMatch(/S09 — Refund API/);
-  type(KEY.enter);
+  press("enter");
   expect(screen()).toMatch(/R3 — Refunds and disputes/);
-  type(KEY.up, KEY.up, KEY.enter);
-  expect(screen()).toMatch(/◀ Stages R1 2 ▶/);
+  press("up", "up", "enter");
+  expect(screen()).toMatch(/Stages R1 2/);
   expect(screen()).toMatch(/S01 — Product catalog/);
-  type(KEY.tab, KEY.down, KEY.enter);
-  expect(screen()).toMatch(/◀ Stages 5 ▶/);
+  press("tab", "down", "enter");
+  expect(screen()).toMatch(/ Stages 5 /);
   expect(choices).toEqual([]);
   // The stage list travels with the view, so a reopened console shows the same round's stages.
-  type(KEY.tab, KEY.down, KEY.enter, "C");
+  press("tab", "down", "enter");
+  type("C");
   expect(choices).toEqual([{ action: "check", view: { section: "stages", query: "", selected: "S09", stageRound: "R3" } }]);
   const reopened = mount(undefined, { view: { section: "stages", query: "", selected: "S09", stageRound: "R3" } });
   expect(reopened.screen()).toMatch(/S09 — Refund API/);
 });
 
 test("console Enter on a TODO goes to its target in that round's stages, or explains a trigger", () => {
-  const { screen, type, choices } = mount();
-  type(KEY.tab, KEY.tab, KEY.enter);
+  const { screen, press, choices } = mount();
+  press("tab", "tab", "enter");
   expect(screen()).toMatch(/S05 — Payment provider/);
-  expect(screen()).toMatch(/◀ Stages 5 ▶/);
-  type(KEY.shiftTab, KEY.down, KEY.down, KEY.enter);
+  expect(screen()).toMatch(/ Stages 5 /);
+  press("shift+tab", "down", "down", "enter");
   expect(screen()).toMatch(/T012 waits on a trigger \(Traffic passes 1k orders a day\), not a stage/);
-  type(KEY.down, KEY.enter);
-  expect(screen()).toMatch(/◀ Stages R3 1 ▶/);
+  press("down", "enter");
+  expect(screen()).toMatch(/Stages R3 1/);
   expect(screen()).toMatch(/S09 — Refund API/);
   expect(choices).toEqual([]);
 });
 
 test("console stage detail shows the Atlas plan coverage the status report lists, asking once per stage", () => {
-  const { screen, type, asked } = mount(undefined, {}, 48);
-  const shown = screen(160);
+  const { screen, press, asked } = mount(undefined, {}, 160, 48);
+  const shown = screen();
   expect(shown).toMatch(/Atlas plans/);
   expect(shown).toMatch(/Card payments \(plan-a\) · complete · 6\/6 rows · DC1/);
   expect(shown).toMatch(/Webhook hardening \(plan-b\) · unfinished · 2\/5 rows · DC2 · drift/);
-  expect(shown).toMatch(/DC1 {7}covered by complete Card payments \(plan-a\)/);
-  expect(shown).toMatch(/DC2 {7}only by unfinished Webhook hardening \(plan-b\)/);
+  expect(shown).toMatch(/DC1 +covered by complete Card payments \(plan-a\)/);
+  expect(shown).toMatch(/DC2 +only by unfinished Webhook hardening \(plan-b\)/);
   expect(shown).toMatch(/Drift: Webhook hardening \(plan-b\) approved before/);
-  expect(shown).toMatch(/File {6}docs\/roadmap\/R2\/stages\/S05\.md/);
-  type(KEY.down);
-  expect(screen(160)).toMatch(/No Atlas plan is bound to this stage yet/);
-  expect(screen(160)).toMatch(/DC1 {7}uncovered/);
-  type(KEY.down);
+  expect(shown).toMatch(/File +docs\/roadmap\/R2\/stages\/S05\.md/);
+  press("down");
+  expect(screen()).toMatch(/No Atlas plan is bound to this stage yet/);
+  expect(screen()).toMatch(/DC1 +uncovered/);
+  press("down");
   // No answer, as without omo-prometheus: no plan section at all.
-  expect(screen(160)).not.toMatch(/Atlas plans/);
-  type(KEY.up, KEY.up);
-  screen(160);
+  expect(screen()).not.toMatch(/Atlas plans/);
+  press("up", "up");
   expect(asked).toEqual(["S05", "S06", "S07"]);
 
   const broken = consoleModelFixture();
   const s05 = broken.stages.find((stage) => stage.id === "S05");
   if (s05) s05.done_criteria = "not a criteria list";
-  expect(mount(broken).screen(160)).toMatch(/Coverage unavailable: /);
+  expect(mount(broken, {}, 160, 48).screen()).toMatch(/Coverage unavailable: /);
 });
 
 test("console secondary actions answer only where they apply and explain otherwise", () => {
@@ -271,7 +293,8 @@ test("console secondary actions answer only where they apply and explain otherwi
   expect(active.choices).toEqual([{ action: "close", stage: "S05", view: { section: "stages", query: "", selected: "S05" } }]);
 
   const planned = mount();
-  planned.type(KEY.down, "X", "R", "N");
+  planned.press("down");
+  planned.type("XRN");
   expect(planned.choices).toEqual([]);
   expect(planned.screen()).toMatch(/Close R2 before opening another round/);
   planned.type("R");
@@ -285,34 +308,35 @@ test("console secondary actions answer only where they apply and explain otherwi
   planned.type("U");
   expect(planned.screen()).toMatch(/This repository already uses roadmap format 2/);
   // Any key clears the message.
-  planned.type(KEY.up);
+  planned.press("up");
   expect(planned.screen()).not.toMatch(/This repository already/);
 
   for (const [key, action] of [
-    ["C", "check"],
-    ["P", "plan-round"],
-    ["\x1b[99;2u", "check"],
+    ["shift+c", "check"],
+    ["shift+p", "plan-round"],
   ] as const) {
     const run = mount();
-    run.type(key);
+    run.press(key);
     expect(run.choices.map((choice) => choice?.action)).toEqual([action]);
   }
 
   // Target dates: unclosed stages and rounds of a format-2 repository.
-  const stageTarget = mount();
-  expect(stageTarget.screen(160)).toMatch(/⇧T target date/);
+  const stageTarget = mount(undefined, {}, 160);
+  expect(stageTarget.screen()).toMatch(/⇧T target date/);
   stageTarget.type("T");
   expect(stageTarget.choices).toEqual([{ action: "retarget", stage: "S05", view: { section: "stages", query: "", selected: "S05" } }]);
   const closedStage = mount();
-  closedStage.type(KEY.home, "T");
+  closedStage.press("home");
+  closedStage.type("T");
   expect(closedStage.screen()).toMatch(/Select an unclosed stage or round to change its target date/);
   const roundTarget = mount();
-  roundTarget.type(KEY.tab, "T");
+  roundTarget.press("tab");
+  roundTarget.type("T");
   expect(roundTarget.choices.map((choice) => [choice?.action, choice?.round])).toEqual([["retarget", "R2"]]);
 
-  const activeRoundRevision = mount();
-  activeRoundRevision.type(KEY.tab);
-  expect(activeRoundRevision.screen(160)).toMatch(/⇧E revise R2/);
+  const activeRoundRevision = mount(undefined, {}, 160);
+  activeRoundRevision.press("tab");
+  expect(activeRoundRevision.screen()).toMatch(/⇧E revise R2/);
   activeRoundRevision.type("E");
   expect(activeRoundRevision.choices).toEqual([
     { action: "plan-round", round: "R2", view: { section: "rounds", query: "", selected: "R2" } },
@@ -322,9 +346,9 @@ test("console secondary actions answer only where they apply and explain otherwi
     ["E", "plan-round"],
     ["D", "drop-round"],
   ] as const) {
-    const run = mount();
-    run.type(KEY.tab, KEY.down);
-    expect(run.screen(160)).toMatch(/⇧E revise R3 {3}⇧D drop R3/);
+    const run = mount(undefined, {}, 160);
+    run.press("tab", "down");
+    expect(run.screen()).toMatch(/⇧E revise R3 {3}⇧D drop R3/);
     run.type(key);
     expect(run.choices).toEqual([{ action, round: "R3", view: { section: "rounds", query: "", selected: "R3" } }]);
   }
@@ -332,9 +356,9 @@ test("console secondary actions answer only where they apply and explain otherwi
   // Format 1 has no target dates and offers the upgrade.
   const legacy = consoleModelFixture();
   legacy.index.format = 1;
-  const old = mount(legacy);
-  expect(old.screen(160)).toMatch(/⇧U upgrade to format 2/);
-  expect(old.screen(160)).not.toMatch(/target date/);
+  const old = mount(legacy, {}, 160);
+  expect(old.screen()).toMatch(/⇧U upgrade to format 2/);
+  expect(old.screen()).not.toMatch(/target date/);
   old.type("T");
   expect(old.screen()).toMatch(/Target dates need roadmap format 2; Shift\+U upgrades the repository/);
   old.type("U");
@@ -342,16 +366,16 @@ test("console secondary actions answer only where they apply and explain otherwi
 
   const settled = consoleModelFixture();
   for (const stage of settled.stages) if (stage.round === "R2" && stage.status !== "dropped") stage.status = "closed";
-  const closing = mount(settled);
-  expect(closing.screen()).toMatch(/close R2/);
+  const closing = mount(settled, {}, 160);
+  expect(closing.screen()).toMatch(/⇧R close R2/);
   closing.type("R");
   expect(closing.choices.map((choice) => choice?.action)).toEqual(["close-round"]);
 
   const between = consoleModelFixture();
   for (const round of between.rounds) if (round.status === "active") round.status = "closed";
-  const next = mount(between);
+  const next = mount(between, {}, 160);
   expect(next.screen()).toMatch(/No active round \(last: R2 Checkout and payments, closed\) · 2 planned rounds/);
-  expect(next.screen()).toMatch(/activate R3/);
+  expect(next.screen()).toMatch(/⇧N activate R3/);
   // Without an active round the console starts on Rounds at the next planned round.
   expect(next.screen()).toMatch(/R3 — Refunds and disputes/);
   next.type("N");
@@ -371,51 +395,93 @@ test("console reopens on the saved view with the last result, and handles an emp
 
   const empty = mount(EMPTY);
   expect(empty.screen()).toMatch(/No rounds yet/);
-  empty.type(KEY.enter);
+  empty.press("enter");
   expect(empty.screen()).toMatch(/No rounds yet/);
-  empty.type(KEY.tab);
+  empty.press("tab");
   expect(empty.screen()).toMatch(/No open TODOs/);
-  empty.type(KEY.tab);
+  empty.press("tab");
   expect(empty.screen()).toMatch(/No active round; Shift\+N opens a new/);
   empty.type("N");
   expect(empty.choices.map((choice) => choice?.action)).toEqual(["new-round"]);
 });
 
 test("console lists stages in dependency order; Shift+O switches to id order, keeping the selection and the round detail in step", () => {
-  const { screen, type, orders } = mount(laterDependencyModel(), {}, 48);
-  const detail = (shown: string) => shown.split("\n").map((line) => line.split("│")[2]?.trim() ?? "");
-  expect(stageIds(sidebar(screen(160)))).toEqual(["S04", "S05", "S07", "S06", "S08"]);
-  expect(screen(160)).toMatch(/order: dependency/);
-  type(KEY.down);
-  expect(sidebar(screen(160)).find((row) => row.includes("❯"))).toMatch(/S07 Checkout analytics/);
+  const { screen, lines, press, type, orders } = mount(laterDependencyModel(), {}, 160, 48);
+  expect(sidebarIds(lines(), 160)).toEqual(["S04", "S05", "S07", "S06", "S08"]);
+  expect(screen()).toMatch(/order: dependency/);
+  press("down");
+  expect(selectedRow(screen())).toMatch(/S07 Checkout analytics/);
 
   type("O");
   expect(orders).toEqual(["id"]);
-  const shown = screen(160);
-  expect(stageIds(sidebar(shown))).toEqual(["S04", "S05", "S06", "S07", "S08"]);
-  expect(sidebar(shown).find((row) => row.includes("❯"))).toMatch(/S07 Checkout analytics/);
-  expect(shown).toMatch(/Stages are listed in id order for the rest of this session/);
-  expect(shown).toMatch(/order: id/);
-  type(KEY.tab);
-  expect(stageIds(detail(screen(160)))).toEqual(["S04", "S05", "S06", "S07", "S08"]);
+  expect(sidebarIds(lines(), 160)).toEqual(["S04", "S05", "S06", "S07", "S08"]);
+  expect(selectedRow(screen())).toMatch(/S07 Checkout analytics/);
+  expect(screen()).toMatch(/Stages are listed in id order for the rest of this session/);
+  expect(screen()).toMatch(/order: id/);
+  const detail = () => lines().map((line) => line.slice(Math.floor(160 * 0.36)));
+  press("tab");
+  expect(stageIds(detail())).toEqual(["S04", "S05", "S06", "S07", "S08"]);
 
   type("O");
   expect(orders).toEqual(["id", "dependency"]);
-  expect(stageIds(detail(screen(160)))).toEqual(["S04", "S05", "S07", "S06", "S08"]);
+  expect(stageIds(detail())).toEqual(["S04", "S05", "S07", "S06", "S08"]);
 });
 
-test("console wheel over the sidebar moves the selection and over the detail scrolls it", () => {
-  const { component, screen } = mount(undefined, {}, 24);
-  const detailTop = () => screen(100).split("\n")[5] ?? "";
-  const top = detailTop();
-  expect(top).toMatch(/S05 — /);
-  component.handleInput("\x1b[<65;80;8M");
-  expect(detailTop()).not.toEqual(top);
-  expect(screen(100)).toMatch(/S05/);
-  component.handleInput("\x1b[<64;80;8M");
-  expect(detailTop()).toEqual(top);
-  component.handleInput("\x1b[<65;5;8M");
-  expect(screen(100)).toMatch(/S06 — Order confirmation emails/);
+test("console PgDn pages the detail past one block at a time and PgUp returns; a new item starts at its top", () => {
+  const { screen, press } = mount(undefined, {}, 100, 24);
+  expect(screen()).toMatch(/Status +⟳ active/);
+  const hidden = () => Number(/… (\d+) more lines/.exec(screen())?.[1] ?? 0);
+  const before = hidden();
+  expect(before).toBeGreaterThan(0);
+  press("pageDown");
+  expect(screen()).not.toMatch(/Status +⟳ active/);
+  expect(hidden()).toBeLessThan(before);
+  // The heading stays while the detail scrolls.
+  expect(screen()).toMatch(/S05 — Payment provider/);
+  press("pageUp");
+  expect(screen()).toMatch(/Status +⟳ active/);
+  press("pageDown", "pageDown", "down");
+  expect(screen()).toMatch(/S06 — Order confirmation emails/);
+  expect(screen()).toMatch(/Status +⏳ planned/);
+});
+
+test("console PgDn reaches every row of a field list and of a paragraph taller than the pane", () => {
+  const model = consoleModelFixture();
+  const s05 = model.stages.find((stage) => stage.id === "S05");
+  if (!s05) throw new Error("fixture changed");
+  const dependencies = Array.from({ length: 40 }, (_, index) => `X${String(index + 1).padStart(2, "0")}`);
+  const words = Array.from({ length: 400 }, (_, index) => `w${index}`);
+  s05.depends_on = dependencies;
+  s05.objective = words.join(" ");
+  const { lines, press } = mount(model, {}, 100, 24);
+  const seen = new Set<string>();
+  const collect = () => {
+    for (const line of lines()) for (const token of line.split(/\s+/)) seen.add(token);
+  };
+  collect();
+  expect(seen.has("X40")).toBe(false);
+  for (let page = 0; page < 40 && !seen.has(words.at(-1) as string); page++) {
+    press("pageDown");
+    collect();
+  }
+  // Every dependency and every word of the one long paragraph showed on some page: paging skips no row.
+  expect(dependencies.filter((id) => !seen.has(id))).toEqual([]);
+  expect(words.filter((word) => !seen.has(word))).toEqual([]);
+  // At the end the pane stops with nothing more below, and PgUp walks back to the top.
+  for (let page = 0; page < 40 && /more lines; PgDn scrolls/.test(lines().join("\n")); page++) press("pageDown");
+  const end = lines().join("\n");
+  expect(end).toMatch(/Outcome|Free-work log|Design constraints/);
+  press("pageDown");
+  expect(lines().join("\n")).toBe(end);
+  for (let page = 0; page < 40; page++) press("pageUp");
+  expect(lines().join("\n")).toMatch(/Status +⟳ active/);
+});
+
+test("console follows a terminal resize", () => {
+  const { term, lines, resize } = mount(undefined, {}, 80, 24);
+  resize(120, 40);
+  expect(term.screen()).toHaveLength(40);
+  expect(lines().slice(-2).join(" ")).toMatch(/Esc close/);
 });
 
 const ROOT = "/work/shop";
@@ -435,85 +501,79 @@ function previewRequest(): PreviewRequest {
   };
 }
 
-function preview(rows = 24) {
+function preview(columns = 100, rows = 24) {
   const answers: boolean[] = [];
-  const component = new PreviewView(previewRequest(), theme, tuiOf(rows), (answer) => answers.push(answer));
-  return {
-    component,
-    answers,
-    screen: (width = 100) => text(component.render(width)),
-    type: (...keys: string[]) => {
-      for (const key of keys) component.handleInput(key);
-    },
-  };
+  return { ...terminal(() => new PreviewView(previewRequest(), theme, (answer) => answers.push(answer)), columns, rows), answers };
 }
 
-test("preview frames fill 80x24 and 160x48 on every row and stay within narrow widths", () => {
+test("preview fills 80x24 and 160x48 on every row and stays within narrow widths", () => {
   for (const [width, rows] of [
     [80, 24],
     [160, 48],
   ] as const) {
-    const { component, type } = preview(rows);
+    const { term, lines, press } = preview(width, rows);
     for (let row = 0; row < 5; row++) {
       for (const raw of [false, true]) {
-        const lines = component.render(width);
-        expect(lines).toHaveLength(rows);
-        expect(lines.filter((line) => visibleWidth(line) !== width)).toEqual([]);
-        if (raw) type(" ");
+        expect(term.screen()).toHaveLength(rows);
+        expect(lines().at(-1)).toMatch(/Esc cancel/);
+        expect(term.rows().filter((line) => visibleWidth(stripEscapes(line)) > width)).toEqual([]);
+        if (raw) press("space");
       }
-      type(KEY.down);
+      press("down");
     }
   }
-  for (const width of [8, 24, 40])
-    expect(
-      preview(12)
-        .component.render(width)
-        .filter((line) => visibleWidth(line) > width),
-    ).toEqual([]);
+  for (const width of [30, 40]) {
+    const { term } = preview(width, 12);
+    expect(term.rows().filter((line) => visibleWidth(stripEscapes(line)) > width)).toEqual([]);
+  }
 });
 
 test("preview lists repo-relative files between Write and Cancel and shows each file rendered or raw", () => {
-  const { screen, type } = preview();
-  const shown = screen();
-  expect(sidebar(shown).slice(1, 6)).toEqual([
+  const { screen, lines, press } = preview(120, 40);
+  const sidebar = lines()
+    .slice(3, 8)
+    .map((line) => line.slice(0, 43));
+  expect(sidebar).toEqual([
     expect.stringMatching(/Write 3 files/),
-    expect.stringMatching(/docs\/roadmap\/R3\/README\.md/),
-    expect.stringMatching(/S09-refund-api\.md/),
-    expect.stringMatching(/docs\/roadmap\/R3\/notes\.txt/),
+    expect.stringMatching(/README\.md {2}docs\/roadmap\/R3/),
+    expect.stringMatching(/S09-refund-api\.md {2}docs\/roadmap\/R3\/stages/),
+    expect.stringMatching(/notes\.txt {2}docs\/roadmap\/R3/),
     expect.stringMatching(/Cancel/),
   ]);
-  expect(shown).not.toMatch(/\/work\/shop/);
-  expect(shown).toMatch(/The files are rechecked after you confirm/);
-  type(KEY.down);
+  expect(screen()).not.toMatch(/\/work\/shop/);
+  expect(screen()).toMatch(/The files are rechecked after you confirm/);
+  expect(screen()).toMatch(/docs\/roadmap\/R3\/stages\/S09-refund-api\.md · 55 lines/);
+  press("down");
   expect(screen()).toMatch(/status: "planned"/);
   expect(screen()).toMatch(/R3 — Refunds and disputes/);
   expect(screen()).not.toMatch(/Managed by the roadmap OMP plugin/);
-  type(" ");
+  press("space");
   expect(screen()).toMatch(/Managed by the roadmap OMP plugin/);
-  type(" ");
+  press("space");
   expect(screen()).not.toMatch(/Managed by the roadmap OMP plugin/);
-  type(KEY.down, KEY.down);
+  press("down", "down");
   expect(screen()).toMatch(/ {2}indented line/);
+  expect(screen()).not.toMatch(/Space raw text/);
 });
 
 test("preview answers once: Write or Shift+W writes, Cancel or Esc declines, Enter on a file explains", () => {
   const write = preview();
-  write.type(KEY.enter, KEY.escape);
+  write.press("enter", "escape");
   expect(write.answers).toEqual([true]);
 
   const shifted = preview();
-  shifted.type(KEY.down, KEY.enter);
+  shifted.press("down", "enter");
   expect(shifted.answers).toEqual([]);
   expect(shifted.screen()).toMatch(/Shift\+W or the Write row writes every file; Esc cancels/);
   shifted.type("W");
   expect(shifted.answers).toEqual([true]);
 
   const cancel = preview();
-  cancel.type(KEY.end, KEY.enter);
+  cancel.press("end", "enter");
   expect(cancel.answers).toEqual([false]);
 
   const dismissed = preview();
-  dismissed.type(KEY.down, KEY.escape);
+  dismissed.press("down", "escape");
   expect(dismissed.answers).toEqual([false]);
 });
 
@@ -526,7 +586,12 @@ interface Stub {
   reader: (cwd: string) => Promise<UiMenu>;
 }
 
-/** A terminal UI whose custom components receive `keys`; select answers Write so the inline path ends. */
+/** The key event a terminal sends for one typed character. */
+function typed(text: string): KeyEvent {
+  return { id: /^[A-Z]$/.test(text) ? `shift+${text.toLowerCase()}` : text, kind: "press", raw: text, text };
+}
+
+/** A terminal UI whose custom views receive `keys`; select answers Write so the inline path ends. */
 function stub(mode: "tui" | "rpc", setting: UiMenu, keys: string[] = []): Stub {
   const selects: string[] = [];
   const options: string[][] = [];
@@ -541,15 +606,18 @@ function stub(mode: "tui" | "rpc", setting: UiMenu, keys: string[] = []): Stub {
     editor: async () => undefined,
     input: async () => undefined,
     notify() {},
-    custom: <T>(
-      factory: (tui: TUI, th: typeof theme, keybindings: unknown, done: (value: T) => void) => { handleInput(key: string): void },
-      options: unknown,
-    ) =>
-      new Promise<T>((resolve) => {
-        customs.push(options);
-        const component = factory(tuiOf(24), theme, undefined, resolve);
-        for (const key of keys) component.handleInput(key);
-      }),
+    custom: <T>(factory: (host: unknown, th: typeof theme, keybindings: unknown, done: (value: T) => void) => UiNode, custom: unknown) => {
+      const { promise, resolve } = Promise.withResolvers<T>();
+      customs.push(custom);
+      const view = factory(
+        { size: () => ({ columns: 100, rows: 24 }), requestRender() {}, suspend: (run: () => unknown) => run() },
+        theme,
+        undefined,
+        resolve,
+      );
+      for (const key of keys) view.handlers.onKey?.(typed(key));
+      return promise;
+    },
   };
   return {
     ctx: { hasUI: true, mode, cwd: "/work/shop", ui, sessionManager: { getSessionId: () => "session-1" } } as unknown as RoadmapUiContext,
@@ -582,9 +650,7 @@ test("uiMenu fullscreen mounts the preview and the console as fullscreen overlay
   expect(await ui.fullscreenMenu()).toBe(true);
   expect(await ui.previewConfirm(previewRequest())).toBe(true);
   expect(run.selects).toEqual([]);
-  expect(run.customs).toEqual([
-    { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
-  ]);
+  expect(run.customs).toEqual([{ overlay: true, fullscreen: true }]);
   const menu = stub("tui", "fullscreen", ["C"]);
   const choice = await createTuiUi(menu.ctx, pi, menu.reader).statusConsole(consoleModelFixture(), {});
   expect(choice).toEqual({ action: "check", view: { section: "stages", query: "", selected: "S05" } });

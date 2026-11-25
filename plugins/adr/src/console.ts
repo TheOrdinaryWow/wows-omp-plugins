@@ -1,45 +1,12 @@
-import {
-  type Component,
-  code,
-  col,
-  extractPrintableText,
-  getMarkdownTheme,
-  item,
-  keyed,
-  kv,
-  Markdown,
-  matchesKey,
-  md,
-  type NativeChild,
-  type NativeNode,
-  type NativeUiEvent,
-  row as nativeRow,
-  node,
-  padding,
-  routeSgrMouseInput,
-  type SgrMouseEvent,
-  span,
-  type Theme,
-  type TUI,
-  text,
-  truncateToWidth,
-  visibleWidth,
-  wrapTextWithAnsi,
-} from "@oh-my-pi/pi-tui";
-import {
-  bottomBorder,
-  dividerSplit,
-  rawKeyHint,
-  renderSegmentTrack,
-  row,
-  splitBodyWidth,
-  splitRow,
-  topBorder,
-} from "@oh-my-pi/pi-tui/chrome";
-import { leafKey } from "@oh-my-pi/pi-tui/native/node";
-import { actionBar, actionButton, escCloseButton, hintsRow, itemIndex, selectList } from "@oh-my-pi/pi-tui/native/overlay";
+import type { ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
+import { type KeyEvent, nativeRendering, type ScrollRequest, signal, type UiNode } from "@oh-my-pi/pi-tui";
+import { renderBlock } from "@oh-my-pi/pi-tui/term/render";
+import { truncate, visibleWidth } from "@oh-my-pi/pi-tui/text/width";
+import { currentTheme } from "@oh-my-pi/pi-tui/theme/runtime";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
 
 import { type AdrRecord, type AdrStatus, STATUSES, withoutManagedLines } from "#src/documents.ts";
+import { type Attrs, h, kv, span } from "#src/tsp.ts";
 
 /** One line under the console body; failures render in the error color. */
 export interface ConsoleMessage {
@@ -83,6 +50,9 @@ export interface ConsoleState {
   selectedId?: string;
 }
 
+/** What the views read from the host: the terminal size, reactive inside nodes. */
+export type ViewHost = Pick<ExtensionUiHost, "size">;
+
 const PLUGIN = "ADR";
 // Tern sizes lg sheets by content, so fix the root's line extent from terminal height; only a list scrolls.
 const SHEET_MARGIN_LINES = 8;
@@ -90,40 +60,12 @@ const SHEET_MIN_LINES = 16;
 const FILL = { grow: 1, shrink: 1, basis: 0, min: { h: 0 } } as const;
 const SCROLLER = { ...FILL, max: { lines: 10_000 } } as const;
 
-function sheetRoot(rows: number) {
-  const lines = Math.max(SHEET_MIN_LINES, rows - SHEET_MARGIN_LINES);
-  const h = `${lines}lines` as const;
-  return { gap: "md", min: { h }, max: { h } } as const;
+function sheetExtent(rows: number) {
+  const h = `${Math.max(SHEET_MIN_LINES, rows - SHEET_MARGIN_LINES)}lines` as const;
+  return { h };
 }
 
-/** Tern moves the scroller above the node that carries `scroll`, so the request rides on the scroller's content. */
-function scroller(key: string, children: NativeChild[], scroll: BodyScroll | undefined): NativeNode {
-  const content = col(children, { gap: "md" });
-  return node("list", SCROLLER, [scroll ? { ...content, scroll } : content], key);
-}
-
-/** Rows per wheel notch, as in the host's fullscreen plan review. */
-const WHEEL_ROWS = 3;
-
-type StatusStyle = { glyph: (theme: Theme) => string; color: "warning" | "success" | "error" | "muted" | "dim" };
-const STATUS_STYLE: Record<AdrStatus, StatusStyle> = {
-  proposed: { glyph: (t) => t.status.pending, color: "warning" },
-  accepted: { glyph: (t) => t.status.success, color: "success" },
-  rejected: { glyph: (t) => t.status.error, color: "error" },
-  deprecated: { glyph: (t) => t.status.disabled, color: "muted" },
-  superseded: { glyph: (t) => t.status.shadowed, color: "dim" },
-};
-
-/** Preset glyphs differ in cell width (unicode ✔ vs ⏳, ascii [ok] vs [*]); pad them to one column. */
-function statusMarks(theme: Theme): Record<AdrStatus, string> {
-  const raw = STATUSES.map((status) => theme.fg(STATUS_STYLE[status].color, STATUS_STYLE[status].glyph(theme)));
-  const width = Math.max(1, ...raw.map((mark) => visibleWidth(mark)));
-  return Object.fromEntries(
-    STATUSES.map((status, index) => [status, (raw[index] ?? "") + padding(width - visibleWidth(raw[index] ?? ""))]),
-  ) as Record<AdrStatus, string>;
-}
-
-/** Native tone and icon per status, the same meaning the terminal colors and glyphs carry. */
+/** Native tone and icon per status; the terminal colors the row in the tone. */
 export const STATUS_TONE: Record<AdrStatus, "warning" | "success" | "error" | "muted"> = {
   proposed: "warning",
   accepted: "success",
@@ -140,9 +82,6 @@ const STATUS_ICON: Record<AdrStatus, string> = {
 };
 
 const capitalize = (word: string): string => `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}`;
-
-/** Natively the terminal scrolls the body; PgUp/PgDn still reach the program, which forwards them as a scroll request. */
-type BodyScroll = { by: "page-up" | "page-down"; n: number };
 
 /**
  * `detailText` split into its metadata fields (minus the title and status rows the views show
@@ -162,167 +101,263 @@ function detailParts(detail: string): { fields: Array<readonly [string, string]>
   return { fields, body: split < 0 ? "" : detail.slice(split + 2).replace(/^# [^\n]*\n+/, "") };
 }
 
-/** Fixed footer hints of the native views; buttons carry the per-decision keys. */
-const CONSOLE_HINTS = hintsRow([
-  { keys: ["up", "down"], label: "select" },
-  { keys: ["pageUp", "pageDown"], label: "scroll" },
-  { keys: ["tab", "shift+tab"], label: "filter" },
-  { keys: ["escape"], label: "clear search / close" },
-]);
-const PREVIEW_HINTS = hintsRow([
-  { keys: ["up", "down"], label: "select" },
-  { keys: ["pageUp", "pageDown"], label: "scroll" },
-  { keys: ["enter"], label: "choose" },
-]);
+/**
+ * The terminal paints the sheet at the screen's size in a frame of two rows and four columns and scrolls
+ * nothing itself, so the views budget their rows against what the frame leaves.
+ */
+interface Geometry {
+  width: number;
+  rows: number;
+  sidebar: number;
+}
 
-export function hintLines(hints: readonly string[], width: number): string[] {
-  const lines: string[] = [];
-  let line = "";
-  for (const hint of hints) {
-    const next = line ? `${line}   ${hint}` : hint;
-    if (line && visibleWidth(next) > width) {
-      lines.push(truncateToWidth(line, width));
-      line = hint;
-    } else {
-      line = next;
+function geometry(host: ViewHost): Geometry {
+  const { columns, rows } = host.size();
+  const width = Math.max(24, columns - 4);
+  const sidebar = Math.max(18, Math.min(52, Math.floor(width * 0.36)));
+  return { width, rows: Math.max(10, rows - 2), sidebar };
+}
+
+/** Rows `text` wraps to at `width`, estimated from its cell width. */
+function rowsOf(text: string, width: number): number {
+  return Math.max(1, Math.ceil(visibleWidth(text) / Math.max(1, width)));
+}
+
+/** The uppercase letter of `A` or Shift+a; undefined for any other key. */
+function shiftLetter(key: KeyEvent): string | undefined {
+  if (key.text && /^[A-Z]$/.test(key.text)) return key.text;
+  return /^shift\+([a-z])$/.exec(key.id)?.[1]?.toUpperCase();
+}
+
+const shiftKeys = (letter: string): string[] => ["shift", letter.toLowerCase()];
+
+function button(act: string, text: string, keys: readonly string[], variant?: Attrs<"button">["variant"]): UiNode {
+  return h("button", { key: act, text, keys, actions: { click: act }, ...(variant ? { variant } : {}) });
+}
+
+/** Navigation keys the buttons do not show, as one muted line. */
+function hintLine(hints: ReadonlyArray<readonly [string, string]>): UiNode {
+  const spans: TspSpan[] = [];
+  for (const [keys, label] of hints) {
+    if (spans.length) spans.push(span("   "));
+    spans.push(span(keys, "key"), span(` ${label}`, "muted"));
+  }
+  return h("text", { key: "hints", spans, truncate: "end" });
+}
+
+function messageLine(message: ConsoleMessage | undefined): UiNode | undefined {
+  if (!message) return undefined;
+  return h("text", { key: "message", spans: [span(message.text, message.level === "error" ? "error" : "warning")], wrap: "word" });
+}
+
+/** What a scrolling pane shows: `head`, then the body. */
+interface PaneContent {
+  /** A new key starts the pane at its top. */
+  key: string;
+  head: UiNode[];
+  body?: { kind: "md"; text: string } | { kind: "code"; text: string; path: string };
+}
+
+function bodyNode(content: PaneContent): UiNode | undefined {
+  const body = content.body;
+  if (!body) return undefined;
+  if (body.kind === "code") return h("code", { key: "code", text: body.text.replace(/\n$/, ""), path: body.path });
+  return h("md", { key: "md", text: body.text });
+}
+
+/**
+ * The right-hand pane. Tern scrolls it itself (PgUp/PgDn arrive as a scroll request on the scroller's
+ * content, since Tern moves the scroller above the node that carries it). The terminal paints nothing in a
+ * scroller, so there the pane is a canvas: the content painted offline at the pane's width, cached per width
+ * and theme, shown from a row offset with a line above and below saying what is out of view.
+ */
+class Pane {
+  #key: string | undefined;
+  #offset = 0;
+  #request: ScrollRequest | undefined;
+  #painted: { width: number; theme: unknown; rows: readonly string[] } | undefined;
+  /** Rows the content took and rows the pane showed, as last painted. */
+  #extent = { total: 0, rows: 0 };
+
+  constructor(readonly native: boolean) {}
+
+  page(by: "page-up" | "page-down"): void {
+    this.#request = { by, n: (this.#request?.n ?? 0) + 1 };
+    const { total, rows } = this.#extent;
+    const step = Math.max(1, rows - 3);
+    this.#offset = Math.max(0, Math.min(this.#offset + (by === "page-down" ? step : -step), total - (rows - 1)));
+  }
+
+  /** The content's rows at `width` in the current theme, painted once per width and theme. */
+  #rows(content: UiNode, width: number): readonly string[] {
+    const theme = currentTheme();
+    const painted = this.#painted;
+    if (painted?.width === width && painted.theme === theme) return painted.rows;
+    const rows = renderBlock(content, width, { theme }).rows;
+    this.#painted = { width, theme, rows };
+    return rows;
+  }
+
+  node(content: PaneContent, rows: number): UiNode {
+    if (content.key !== this.#key) {
+      this.#key = content.key;
+      this.#offset = 0;
+      this.#painted = undefined;
     }
-  }
-  if (line) lines.push(truncateToWidth(line, width));
-  return lines;
-}
-
-/** Sidebar column width shared by the console and the preview, as in Atlas. */
-function sidebarWidthFor(width: number): number {
-  return Math.max(18, Math.min(52, Math.floor(width * 0.36)));
-}
-
-/** Scrollable split-pane frame both components draw: title, header, sidebar|body, message, hints. */
-class SplitFrame {
-  bodyRows = 1;
-  bodyTop = 0;
-  dividerCol = 0;
-  scroll = 0;
-  scrollMax = Number.MAX_SAFE_INTEGER;
-
-  constructor(readonly theme: Theme) {}
-
-  scrollBy(delta: number): void {
-    this.scroll = Math.max(0, Math.min(this.scrollMax, this.scroll + delta));
-  }
-
-  render(
-    width: number,
-    height: number,
-    parts: {
-      title: string;
-      header: string;
-      sidebarWidth: number;
-      sidebar: (rows: number) => string[];
-      body: (width: number) => string[];
-      message?: ConsoleMessage;
-      hints: readonly string[];
-    },
-  ): string[] {
-    const t = this.theme;
-    const inner = Math.max(1, width - 4);
-    // Short terminals keep at least three body rows; the hints that do not fit are dropped.
-    const hints = hintLines(parts.hints, inner).slice(0, Math.max(1, height - 9));
-    const sidebarWidth = parts.sidebarWidth;
-    const bodyWidth = Math.max(1, splitBodyWidth(width, sidebarWidth));
-    // Title, header, split rule, divider, message, bottom border.
-    this.bodyRows = Math.max(1, height - 6 - hints.length);
-    this.bodyTop = 3;
-    this.dividerCol = sidebarWidth + 3;
-    const body = parts.body(bodyWidth);
-    this.scrollMax = Math.max(0, body.length - this.bodyRows);
-    this.scroll = Math.min(this.scroll, this.scrollMax);
-    const shown = body.slice(this.scroll, this.scroll + this.bodyRows);
-    // The notice replaces the last visible line, so that line counts as hidden too.
-    const more = body.length - this.scroll - shown.length + 1;
-    if (more > 1 && shown.length) shown[shown.length - 1] = t.fg("dim", `+${more} more lines; PgDn/wheel to scroll`);
-    const sidebar = parts.sidebar(this.bodyRows);
-    const box = t.boxRound;
-    const splitOpen = t.fg(
-      "border",
-      box.teeRight +
-        box.horizontal.repeat(sidebarWidth + 2) +
-        box.teeDown +
-        box.horizontal.repeat(Math.max(0, width - sidebarWidth - 5)) +
-        box.teeLeft,
+    const body = h(
+      "col",
+      { key: "content", gap: "sm", ...(this.native ? { scroll: this.#request } : {}) },
+      ...content.head,
+      bodyNode(content),
     );
-    const message = parts.message ? t.fg(parts.message.level === "error" ? "error" : "warning", parts.message.text) : "";
-    return [
-      topBorder(width, parts.title),
-      row(truncateToWidth(parts.header, inner), width),
-      splitOpen,
-      ...Array.from({ length: this.bodyRows }, (_, index) =>
-        splitRow(truncateToWidth(sidebar[index] ?? "", sidebarWidth), truncateToWidth(shown[index] ?? "", bodyWidth), width, sidebarWidth),
+    if (this.native) return h("list", { ...SCROLLER, key: "body-scroll" }, body);
+    return h("canvas", {
+      key: "pane",
+      paint: (width) => {
+        const all = this.#rows(body, width);
+        const offset = Math.max(0, Math.min(this.#offset, all.length - (rows - 1)));
+        this.#offset = offset;
+        this.#extent = { total: all.length, rows };
+        if (all.length <= rows) return all;
+        const above = offset > 0 ? [currentTheme().style("dim", truncate(`↑ ${offset} earlier lines: PgUp`, width))] : [];
+        const room = rows - above.length;
+        const below = all.length - offset > room ? 1 : 0;
+        const shown = all.slice(offset, offset + room - below);
+        const hidden = all.length - offset - shown.length;
+        return [...above, ...shown, ...(below ? [currentTheme().style("dim", truncate(`… ${hidden} more lines: PgDn`, width))] : [])];
+      },
+    });
+  }
+}
+
+interface SidebarItem {
+  key: string;
+  attrs: Omit<Attrs<"item">, "key">;
+}
+
+/**
+ * The left-hand list. Tern scrolls it and reveals the selection; the terminal shows a window around the
+ * selection (moving only as far as the selection needs) with a position line, padded to the pane's rows.
+ */
+class Sidebar {
+  #start: number | undefined;
+  #moves = 0;
+
+  constructor(readonly native: boolean) {}
+
+  moved(): void {
+    this.#moves++;
+  }
+
+  node(
+    key: string,
+    items: readonly SidebarItem[],
+    selected: string | undefined,
+    geo: { rows: number; width: number },
+    attrs: Pick<Attrs<"list">, "empty" | "onSelect" | "onActivate">,
+  ): UiNode {
+    if (this.native) {
+      const reveal = { at: "nearest" as const, n: this.#moves };
+      return h(
+        "col",
+        { key: "sidebar", max: { w: "32ch" }, shrink: 0, min: { h: 0 } },
+        h(
+          "list",
+          { ...SCROLLER, ...attrs, key, selected: selected ?? null },
+          items.map((item) => h("item", { ...item.attrs, key: item.key, ...(item.key === selected ? { reveal } : {}) })),
+        ),
+      );
+    }
+    const total = items.length;
+    const overflow = total > geo.rows;
+    const visible = overflow ? geo.rows - 1 : total;
+    const index = Math.max(
+      0,
+      items.findIndex((item) => item.key === selected),
+    );
+    let start = this.#start ?? index - Math.floor(visible / 2);
+    if (index < start) start = index;
+    else if (index >= start + visible) start = index - visible + 1;
+    start = Math.max(0, Math.min(start, total - visible));
+    this.#start = start;
+    const used = Math.max(1, visible) + (overflow ? 1 : 0);
+    return h(
+      "col",
+      { key: "sidebar", basis: geo.width, shrink: 0 },
+      h(
+        "list",
+        { ...attrs, key, selected: selected ?? null },
+        items.slice(start, start + visible).map((item) => h("item", { ...item.attrs, key: item.key })),
       ),
-      dividerSplit(width, sidebarWidth),
-      row(truncateToWidth(message, inner), width),
-      ...hints.map((line) => row(line, width)),
-      bottomBorder(width),
-    ];
-  }
-
-  /** Wheel over the sidebar calls `select`, over the body scrolls it; every other report is swallowed. */
-  mouse(event: SgrMouseEvent, select: (delta: number) => void): void {
-    if (event.wheel === null) return;
-    const line = event.row - this.bodyTop;
-    if (line < 0 || line >= this.bodyRows) return;
-    if (event.col < this.dividerCol) select(event.wheel);
-    else if (event.col > this.dividerCol) this.scrollBy(event.wheel * WHEEL_ROWS);
-  }
-
-  pageRows(): number {
-    return Math.max(1, this.bodyRows - 2);
+      overflow ? h("text", { key: "position", spans: [span(`${start + 1}–${start + visible} of ${total}`, "dim")] }) : undefined,
+      used < geo.rows
+        ? h("text", { key: "fill", text: Array.from({ length: geo.rows - used }, () => " ").join("\n"), wrap: "none" })
+        : undefined,
+    );
   }
 }
 
-function terminalRows(tui: TUI): number {
-  return Math.max(12, tui.terminal?.rows || process.stdout.rows || 40);
+function splitRow(sidebar: UiNode, pane: UiNode): UiNode {
+  return h("row", { key: "split", ...FILL, gap: "md", align: "stretch" }, sidebar, h("col", { key: "body", ...FILL }, pane));
 }
 
-/** The pressed uppercase letter for `A` or Shift+a (legacy or Kitty encoding); undefined otherwise. */
-function shiftLetter(key: string): string | undefined {
-  const text = extractPrintableText(key);
-  if (text && /^[A-Z]$/.test(text)) return text;
-  for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") if (matchesKey(key, `shift+${letter.toLowerCase()}` as never)) return letter;
-  return undefined;
+/** A sheet: Tern shows it as a large modal glass sheet; the terminal frames it with the head in its top border. */
+function sheet(role: string, head: string, host: ViewHost, handlers: Pick<Attrs<"overlay">, "onKey" | "onAction">, view: () => UiNode[]) {
+  return h(
+    "overlay",
+    { role, size: "lg", anchor: "center", modal: true, head, ...handlers },
+    h("col", { key: "screen", gap: "sm", min: () => sheetExtent(host.size().rows), max: () => sheetExtent(host.size().rows) }, view),
+  );
 }
 
 /** Fullscreen `/adr` console: status filters, a searchable ADR sidebar, and the selected decision's full text. */
-export class AdrConsole implements Component {
-  readonly #frame: SplitFrame;
-  readonly #marks: Record<AdrStatus, string>;
-  readonly #markdown = new Map<string, Markdown>();
+export class AdrConsole {
+  /** The view `ctx.ui.custom` mounts. */
+  readonly root: UiNode;
+  readonly #revision = signal(0);
+  readonly #pane: Pane;
+  readonly #sidebar: Sidebar;
   #filter: AdrStatus | undefined;
   #query: string;
   #selectedId: string | undefined;
   #message: ConsoleMessage | undefined;
-  #scroll: BodyScroll | undefined;
-  #nativeHead: { title: string; props: NonNullable<Component["nativeOverlay"]> } | undefined;
-  #native: { sig: string; message: ConsoleMessage | undefined; node: NativeNode } | undefined;
-  readonly #nativeBodies = new Map<string, NativeNode>();
 
   constructor(
     readonly entries: readonly ConsoleEntry[],
     state: ConsoleState,
-    readonly theme: Theme,
-    readonly tui: TUI,
+    readonly host: ViewHost,
     readonly done: (result: ConsoleResult, state: ConsoleState) => void,
     message?: ConsoleMessage,
   ) {
-    this.#frame = new SplitFrame(theme);
-    this.#marks = statusMarks(theme);
+    const native = nativeRendering();
+    this.#pane = new Pane(native);
+    this.#sidebar = new Sidebar(native);
     this.#filter = state.filter && entries.some((entry) => entry.record.status === state.filter) ? state.filter : undefined;
     this.#query = state.query;
     this.#selectedId = state.selectedId;
     this.#message = message;
+    this.root = sheet(
+      "omp.overlay.adr.console",
+      `${PLUGIN} · ${this.#summary()}`,
+      host,
+      { onKey: (key) => this.#key(key), onAction: (act) => this.#action(act) },
+      () => {
+        this.#revision();
+        return this.#view();
+      },
+    );
+  }
+
+  #changed(): void {
+    this.#revision.update((value) => value + 1);
   }
 
   #filters(): Array<AdrStatus | undefined> {
     return [undefined, ...STATUSES.filter((status) => this.entries.some((entry) => entry.record.status === status))];
+  }
+
+  #count(status: AdrStatus | undefined): number {
+    return status ? this.entries.filter((entry) => entry.record.status === status).length : this.entries.length;
   }
 
   #visible(): ConsoleEntry[] {
@@ -348,7 +383,7 @@ export class AdrConsole implements Component {
     const next = visible[Math.max(0, Math.min(visible.length - 1, index))];
     if (!next || next.record.id === this.#current(visible).entry?.record.id) return;
     this.#selectedId = next.record.id;
-    this.#frame.scroll = 0;
+    this.#sidebar.moved();
   }
 
   #state(): ConsoleState {
@@ -359,11 +394,15 @@ export class AdrConsole implements Component {
     this.done(result, this.#state());
   }
 
+  #setFilter(filter: AdrStatus | undefined): void {
+    this.#filter = filter;
+    this.#sidebar.moved();
+  }
+
   #cycle(delta: 1 | -1): void {
     const filters = this.#filters();
     const index = filters.indexOf(this.#filter);
-    this.#filter = filters[(index + delta + filters.length) % filters.length];
-    this.#frame.scroll = 0;
+    this.#setFilter(filters[(index + delta + filters.length) % filters.length]);
   }
 
   #decision(letter: string): void {
@@ -375,10 +414,7 @@ export class AdrConsole implements Component {
       return;
     }
     if (!entry.offered.includes(action)) {
-      this.#message = {
-        text: `${action[0]?.toUpperCase()}${action.slice(1)} is not available for ${entry.record.id} (${entry.record.status})`,
-        level: "error",
-      };
+      this.#message = { text: `${capitalize(action)} is not available for ${entry.record.id} (${entry.record.status})`, level: "error" };
       return;
     }
     this.#finish({ kind: "action", action, id: entry.record.id });
@@ -395,272 +431,91 @@ export class AdrConsole implements Component {
     else if (!this.entries.length) this.#finish({ kind: "action", action: "new" });
   }
 
-  #page(by: BodyScroll["by"]): void {
-    this.#frame.scrollBy(by === "page-down" ? this.#frame.pageRows() : -this.#frame.pageRows());
-    this.#scroll = { by, n: (this.#scroll?.n ?? 0) + 1 };
-  }
-
-  handleInput(key: string): void {
-    // Checked before anything else: pointer motion must not clear the notice or act as a key.
-    if (
-      routeSgrMouseInput(key, (event) => {
-        this.#frame.mouse(event, (delta) => this.#select(this.#current().index + delta));
-        return true;
-      })
-    ) {
-      this.tui.requestRender();
-      return;
-    }
-    this.#message = undefined;
+  #key(key: KeyEvent): boolean {
+    if (key.kind === "release") return false;
     const letter = shiftLetter(key);
-    const global = GLOBAL_KEYS.find(([key]) => key === letter);
-    if (matchesKey(key, "escape")) this.#escape();
-    else if (matchesKey(key, "shift+tab")) this.#cycle(-1);
-    else if (matchesKey(key, "tab")) this.#cycle(1);
-    else if (matchesKey(key, "up")) this.#select(this.#current().index - 1);
-    else if (matchesKey(key, "down")) this.#select(this.#current().index + 1);
-    else if (matchesKey(key, "home")) this.#select(0);
-    else if (matchesKey(key, "end")) this.#select(Number.MAX_SAFE_INTEGER);
-    else if (matchesKey(key, "pageDown")) this.#page("page-down");
-    else if (matchesKey(key, "pageUp")) this.#page("page-up");
-    else if (matchesKey(key, "enter")) this.#enter();
+    const global = GLOBAL_KEYS.find(([candidate]) => candidate === letter);
+    const typed = key.text !== undefined && !letter && (this.#query !== "" || key.text.trim() !== "") ? key.text : undefined;
+    const known = ["escape", "shift+tab", "tab", "up", "down", "home", "end", "pageUp", "pageDown", "enter", "backspace"].includes(key.id);
+    if (!known && !letter && typed === undefined) return false;
+    this.#message = undefined;
+    if (key.id === "escape") this.#escape();
+    else if (key.id === "shift+tab") this.#cycle(-1);
+    else if (key.id === "tab") this.#cycle(1);
+    else if (key.id === "up") this.#select(this.#current().index - 1);
+    else if (key.id === "down") this.#select(this.#current().index + 1);
+    else if (key.id === "home") this.#select(0);
+    else if (key.id === "end") this.#select(Number.MAX_SAFE_INTEGER);
+    else if (key.id === "pageDown") this.#pane.page("page-down");
+    else if (key.id === "pageUp") this.#pane.page("page-up");
+    else if (key.id === "enter") this.#enter();
+    else if (key.id === "backspace") this.#query = this.#query.slice(0, -1);
     else if (global) this.#finish({ kind: "action", action: global[1] });
     else if (letter) this.#decision(letter);
-    else if (matchesKey(key, "backspace")) {
-      this.#query = this.#query.slice(0, -1);
-      this.#frame.scroll = 0;
-    } else {
-      const typed = extractPrintableText(key);
-      if (typed !== undefined && (this.#query || typed.trim())) {
-        this.#query += typed;
-        this.#frame.scroll = 0;
-      }
-    }
-    this.tui.requestRender();
+    else if (typed !== undefined) this.#query += typed;
+    this.#changed();
+    return true;
   }
 
-  #header(width: number): string {
-    const t = this.theme;
-    const filters = this.#filters();
-    const count = (status: AdrStatus | undefined) =>
-      status ? this.entries.filter((entry) => entry.record.status === status).length : this.entries.length;
-    const search = this.#query ? `Search: ${this.#query}` : t.fg("dim", "Type to search");
-    const track = (short: boolean) =>
-      renderSegmentTrack(
-        filters.map((status) => {
-          const label = status ? `${status[0]?.toUpperCase()}${status.slice(1)}` : "All";
-          return { label: `${short ? label.slice(0, 3) : label} ${count(status)}` };
-        }),
-        filters.indexOf(this.#filter),
-      );
-    const full = track(false);
-    const tabs = visibleWidth(`${full}  ${search}`) <= width ? full : track(true);
-    return `${tabs}  ${search}`;
-  }
-
-  #sidebar(width: number, rows: number, visible: ConsoleEntry[]): string[] {
-    const t = this.theme;
-    if (!visible.length)
-      return wrapTextWithAnsi(
-        t.fg(
-          "dim",
-          this.entries.length ? "No ADRs match; Esc clears the search, Tab changes the filter" : "No ADRs yet; press Shift+O to start one",
-        ),
-        width,
-      );
-    const { index: selected } = this.#current(visible);
-    const idWidth = Math.max(0, ...visible.map((entry) => entry.record.id.length));
-    const start = Math.max(0, Math.min(selected - Math.floor(rows / 2), visible.length - rows));
-    return visible.slice(start, start + rows).map((entry, offset) => {
-      const isSelected = start + offset === selected;
-      const cursor = isSelected ? t.fg("accent", `${t.nav.cursor} `) : "  ";
-      const prefix = `${cursor}${this.#marks[entry.record.status]} ${t.fg("muted", entry.record.id.padEnd(idWidth))} `;
-      const title = truncateToWidth(entry.record.title, Math.max(1, width - visibleWidth(prefix)));
-      return truncateToWidth(`${prefix}${t.fg(isSelected ? "accent" : "text", title)}`, width);
-    });
-  }
-
-  #body(width: number, entry: ConsoleEntry | undefined): string[] {
-    const t = this.theme;
-    if (!entry) return [t.fg("dim", "No ADR selected")];
-    const { record } = entry;
-    const lines: string[] = [];
-    lines.push(...wrapTextWithAnsi(t.bold(t.fg("accent", `${record.id}  ${record.title}`)), width));
-    const where = [
-      record.date,
-      record.stage ? `stage ${record.stage}` : "",
-      record.superseded_by ? `superseded by ${record.superseded_by}` : "",
-    ];
-    lines.push(
-      ...wrapTextWithAnsi(
-        `${this.#marks[record.status]} ${t.fg(STATUS_STYLE[record.status].color, record.status)}  ${t.fg("dim", where.filter(Boolean).join(" · "))}`,
-        width,
-      ),
-      "",
-    );
-    const { fields, body } = detailParts(entry.detail);
-    const labelWidth = Math.max(0, ...fields.map(([label]) => label.length)) + 2;
-    for (const [label, value] of fields) {
-      if (width < labelWidth + 20) {
-        lines.push(...wrapTextWithAnsi(`${t.fg("muted", label ? `${label}: ` : "")}${value}`, width));
-        continue;
-      }
-      const wrapped = wrapTextWithAnsi(value, width - labelWidth);
-      for (const [index, line] of wrapped.entries())
-        lines.push(`${index ? padding(labelWidth) : t.fg("muted", label.padEnd(labelWidth))}${line}`);
-    }
-    if (body.trim()) {
-      lines.push("");
-      let markdown = this.#markdown.get(record.id);
-      if (!markdown) {
-        markdown = new Markdown(body, 0, 0, getMarkdownTheme());
-        this.#markdown.set(record.id, markdown);
-      }
-      lines.push(...markdown.render(width));
-    }
-    return lines;
-  }
-
-  #hints(entry: ConsoleEntry | undefined): string[] {
-    const offered = entry?.offered ?? [];
-    return [
-      rawKeyHint(["up", "down"], "select"),
-      this.theme.fg("dim", "PgUp/PgDn/wheel") + this.theme.fg("muted", " scroll"),
-      ...(entry ? [rawKeyHint("enter", "decide")] : []),
-      ...DECISION_KEYS.filter(([, action]) => offered.includes(action)).map(([key, action]) =>
-        rawKeyHint(`shift+${key.toLowerCase()}` as never, action),
-      ),
-      ...GLOBAL_KEYS.map(([key, , label]) => rawKeyHint(`shift+${key.toLowerCase()}` as never, label)),
-      rawKeyHint(["tab", "shift+tab"], "filter"),
-      rawKeyHint("escape", this.#query ? "clear search" : "close"),
-    ];
+  /** Buttons run the key paths. */
+  #action(act: string): void {
+    const global = GLOBAL_KEYS.find(([, action]) => action === act);
+    const decision = DECISION_KEYS.find(([, action]) => action === act);
+    if (act !== "close" && act !== "decide" && !global && !decision) return;
+    this.#message = undefined;
+    if (act === "close") this.#escape();
+    else if (act === "decide") this.#enter();
+    else if (global) this.#finish({ kind: "action", action: global[1] });
+    else if (decision) this.#decision(decision[0]);
+    this.#changed();
   }
 
   #summary(): string {
-    const records = this.entries.map((entry) => entry.record);
-    const summary = STATUSES.map((status) => [status, records.filter((record) => record.status === status).length] as const)
+    const summary = STATUSES.map((status) => [status, this.#count(status)] as const)
       .filter(([, count]) => count > 0)
       .map(([status, count]) => `${count} ${status}`)
       .join(", ");
     return summary || "no ADRs yet";
   }
 
-  render(width: number): readonly string[] {
-    const visible = this.#visible();
-    const { entry } = this.#current(visible);
-    const sidebarWidth = sidebarWidthFor(width);
-    return this.#frame.render(width, terminalRows(this.tui), {
-      title: `${PLUGIN} · ${this.#summary()}`,
-      header: this.#header(Math.max(1, width - 4)),
-      sidebarWidth,
-      sidebar: (rows) => this.#sidebar(sidebarWidth, rows, visible),
-      body: (bodyWidth) => this.#body(bodyWidth, entry),
-      message: this.#message,
-      hints: this.#hints(entry),
-    });
-  }
-
-  /** In Tern the console is a large glass sheet titled like the terminal frame. */
-  get nativeOverlay(): NonNullable<Component["nativeOverlay"]> {
-    const title = `${PLUGIN} · ${this.#summary()}`;
-    if (this.#nativeHead?.title !== title)
-      this.#nativeHead = { title, props: { role: "omp.overlay.adr.console", size: "lg", anchor: "center", head: title } };
-    return this.#nativeHead.props;
-  }
-
-  /** Filter tabs, search and tools; the ADR list beside the selected decision; its actions, the message and key hints. */
-  describe(): NativeNode {
-    const visible = this.#visible();
-    const { entry } = this.#current(visible);
-    const rows = terminalRows(this.tui);
-    const sig = [this.#filter ?? "", this.#query, entry?.record.id ?? "", this.#scroll?.n ?? 0, rows].join("\n");
-    if (this.#native?.sig === sig && this.#native.message === this.#message) return this.#native.node;
-
+  /** Filter tabs (short labels when the full ones crowd the search out of a terminal row) and the search. */
+  #head(geo: Geometry): UiNode {
     const filters = this.#filters();
-    const count = (status: AdrStatus | undefined) =>
-      status ? this.entries.filter((candidate) => candidate.record.status === status).length : this.entries.length;
-    const tabs = node(
-      "tabs",
-      {
-        items: filters.map((status) => ({ id: status ?? "all", label: `${status ? capitalize(status) : "All"} ${count(status)}` })),
+    const label = (status: AdrStatus | undefined, short: boolean) => {
+      const name = status ? capitalize(status) : "All";
+      return `${short ? name.slice(0, 3) : name} ${this.#count(status)}`;
+    };
+    const tabsWidth = (short: boolean) => filters.reduce((sum, status) => sum + label(status, short).length + 4, 0);
+    const short = !this.#pane.native && tabsWidth(false) + 18 > geo.width;
+    const search = this.#query ? [span("Search: ", "muted"), span(this.#query, "strong")] : [span("Type to search", "dim")];
+    return h(
+      "row",
+      { key: "head", gap: "md", align: "center", wrap: true },
+      h("tabs", {
+        key: "filter",
+        items: filters.map((status) => ({ id: status ?? "all", label: label(status, short) })),
         active: this.#filter ?? "all",
-      },
-      undefined,
-      "filter",
+        onSelect: (id) => {
+          const filter = this.#filters().find((status) => (status ?? "all") === id);
+          if (filter === undefined && id !== "all") return;
+          this.#message = undefined;
+          this.#setFilter(filter);
+          this.#changed();
+        },
+      }),
+      h("text", { key: "search", role: "omp.adr.search", spans: search, grow: 1, truncate: "end", lines: 1 }),
     );
-    const search = text(this.#query ? [span("Search ", "muted"), span(this.#query, "strong")] : [span("Type to search", "dim")], {
-      role: "omp.adr.search",
-      grow: 1,
-      truncate: "end",
-      lines: 1,
-    });
-    const tools = actionBar(
-      [
-        ...GLOBAL_KEYS.map(([key, action, label]) =>
-          actionButton(capitalize(label), action, { keys: `shift+${key.toLowerCase()}` as never }),
-        ),
-        escCloseButton(),
-      ],
-      "tools",
-    );
-    const list = selectList(
-      "adrs",
-      visible.map(({ record }) =>
-        // Items are one line that truncates, so the status rides on the toned icon and the id in the tooltip.
-        item(record.id, {
-          label: record.title,
-          icon: STATUS_ICON[record.status],
-          tone: STATUS_TONE[record.status],
-          title: `${record.id} · ${record.status}`,
-        }),
-      ),
-      {
-        ...SCROLLER,
-        selected: entry?.record.id ?? null,
-        empty: this.entries.length
-          ? "No ADRs match; Esc clears the search, a tab changes the filter"
-          : "No ADRs yet; choose New decision to start one",
-        role: "omp.adr.list",
-      },
-    );
-    const body = node(
-      "col",
-      { ...FILL, role: "omp.adr.body" },
-      [scroller("body-scroll", [this.#describeBody(entry)], this.#scroll)],
-      "body",
-    );
-    const sidebar = node("col", { max: { w: "32ch" }, shrink: 0, min: { h: 0 } }, [list], "sidebar");
-    const decisions = entry
-      ? actionBar(
-          [
-            actionButton("Decide…", "decide", { keys: "enter", tone: "accent" }),
-            ...DECISION_KEYS.filter(([, action]) => entry.offered.includes(action)).map(([key, action]) =>
-              actionButton(capitalize(action), action, { keys: `shift+${key.toLowerCase()}` as never }),
-            ),
-          ],
-          "decisions",
-        )
-      : undefined;
-    const message = this.#message;
-    const children: NativeChild[] = [
-      keyed(nativeRow([tabs, search, tools], { gap: "md", align: "center", wrap: true }), "head"),
-      keyed(nativeRow([sidebar, body], { ...FILL, gap: "lg", align: "stretch" }), "split"),
-    ];
-    if (decisions) children.push(decisions);
-    if (message)
-      children.push(keyed(text(message.text, { tone: message.level === "error" ? "error" : "warning", wrap: "word" }), "message"));
-    children.push(CONSOLE_HINTS);
-    const described = col(children, sheetRoot(rows));
-    this.#native = { sig, message, node: described };
-    return described;
   }
 
-  /** The decision as the terminal frame shows it: id and title, status and dates, metadata, then the MADR body. */
-  #describeBody(entry: ConsoleEntry | undefined): NativeNode {
-    if (!entry) return text([span("No ADR selected", "dim")]);
+  /** The decision: id and title, status and dates, metadata, then the MADR body. */
+  #content(entry: ConsoleEntry | undefined): PaneContent {
+    if (!entry) {
+      const empty = this.entries.length
+        ? "No ADRs match; Esc clears the search, Tab changes the filter"
+        : "No ADRs yet; press Shift+O to start one";
+      return { key: "", head: [h("text", { key: "empty", spans: [span(empty, "dim")], wrap: "word" })] };
+    }
     const { record } = entry;
-    const cached = this.#nativeBodies.get(record.id);
-    if (cached) return cached;
     const { fields, body } = detailParts(entry.detail);
     const where = [
       record.date,
@@ -669,47 +524,98 @@ export class AdrConsole implements Component {
     ]
       .filter(Boolean)
       .join(" · ");
-    const children: NativeNode[] = [
-      text([span(`${record.id}  `, "muted"), span(record.title, "strong accent")], { wrap: "word" }),
-      text([span(record.status, STATUS_TONE[record.status]), ...(where ? [span(`  ${where}`, "dim")] : [])]),
-    ];
     const meta = kv(fields);
-    if (meta) children.push(meta);
-    if (body.trim()) children.push(md(body));
-    const described = col(children, { gap: "sm" });
-    this.#nativeBodies.set(record.id, described);
-    return described;
+    return {
+      key: record.id,
+      head: [
+        h(
+          "col",
+          { key: "heading" },
+          h("text", { key: "title", spans: [span(`${record.id}  `, "muted"), span(record.title, "strong accent")], wrap: "word" }),
+          h("text", {
+            key: "status",
+            spans: [span(record.status, STATUS_TONE[record.status]), ...(where ? [span(`  ${where}`, "dim")] : [])],
+            wrap: "word",
+          }),
+        ),
+        ...(meta ? [meta] : []),
+      ],
+      ...(body.trim() ? { body: { kind: "md" as const, text: body } } : {}),
+    };
   }
 
-  /** Clicks run the key paths: tabs filter, list rows select (double-click decides), buttons act like their keys. */
-  handleNativeEvent(event: NativeUiEvent): void {
-    if (event.type === "action") {
-      const global = GLOBAL_KEYS.find(([, action]) => action === event.act);
-      const decision = DECISION_KEYS.find(([, action]) => action === event.act);
-      if (event.act !== "close" && event.act !== "decide" && !global && !decision) return;
-      this.#message = undefined;
-      if (event.act === "close") this.#escape();
-      else if (event.act === "decide") this.#enter();
-      else if (global) this.#finish({ kind: "action", action: global[1] });
-      else if (decision) this.#decision(decision[0]);
-    } else if (event.type === "select" || event.type === "activate") {
-      const leaf = leafKey(event.key);
-      if (leaf === "filter") {
-        const filters = this.#filters();
-        const index = filters.findIndex((status) => (status ?? "all") === event.item);
-        if (index < 0) return;
-        this.#message = undefined;
-        this.#filter = filters[index];
-        this.#frame.scroll = 0;
-      } else if (leaf === "adrs") {
-        const index = this.#visible().findIndex((candidate) => candidate.record.id === event.item);
-        if (index < 0) return;
-        this.#message = undefined;
-        this.#select(index);
-        if (event.type === "activate") this.#enter();
-      } else return;
-    } else return;
-    this.tui.requestRender();
+  #view(): UiNode[] {
+    const geo = geometry(this.host);
+    const visible = this.#visible();
+    const { entry } = this.#current(visible);
+    const message = this.#message;
+    const footerRows = (entry ? 1 : 0) + 1 + (message ? rowsOf(message.text, geo.width) : 0) + 1;
+    // The head row and the two gaps around the panes.
+    const rows = Math.max(3, geo.rows - footerRows - 3);
+    const items = visible.map(({ record }) => ({
+      key: record.id,
+      attrs: {
+        label: [span(`${record.id} `, "muted"), span(record.title)],
+        icon: STATUS_ICON[record.status],
+        tone: STATUS_TONE[record.status],
+        title: `${record.id} · ${record.status}`,
+      },
+    }));
+    const sidebar = this.#sidebar.node(
+      "adrs",
+      items,
+      entry?.record.id,
+      { rows, width: geo.sidebar },
+      {
+        empty: this.entries.length ? "No ADRs match" : "No ADRs yet",
+        onSelect: (id) => this.#pick(id),
+        onActivate: (id) => {
+          if (this.#pick(id)) this.#enter();
+        },
+      },
+    );
+    return [
+      this.#head(geo),
+      splitRow(sidebar, this.#pane.node(this.#content(entry), rows)),
+      h(
+        "col",
+        { key: "footer" },
+        entry
+          ? h(
+              "row",
+              { key: "decisions", gap: "sm", wrap: true },
+              button("decide", "Decide…", ["enter"], "primary"),
+              ...DECISION_KEYS.filter(([, action]) => entry.offered.includes(action)).map(([letter, action]) =>
+                button(action, capitalize(action), shiftKeys(letter)),
+              ),
+            )
+          : undefined,
+        h(
+          "row",
+          { key: "tools", gap: "sm", wrap: true },
+          ...GLOBAL_KEYS.map(([letter, action, label]) => button(action, capitalize(label), shiftKeys(letter))),
+          button("close", "Close", ["escape"], "quiet"),
+        ),
+        messageLine(message),
+        hintLine([
+          ["↑↓", "select"],
+          ["PgUp PgDn", "scroll"],
+          ["Tab", "filter"],
+          ["type", "search"],
+          ["Esc", this.#query ? "clear search" : "close"],
+        ]),
+      ),
+    ];
+  }
+
+  /** A list click selects the row; false when the id is not listed. */
+  #pick(id: string): boolean {
+    const index = this.#visible().findIndex((candidate) => candidate.record.id === id);
+    if (index < 0) return false;
+    this.#message = undefined;
+    this.#select(index);
+    this.#changed();
+    return true;
   }
 }
 
@@ -719,44 +625,55 @@ export interface PreviewItem {
 }
 
 /** Fullscreen write preview: actions and files on the left, the selected file on the right. Resolves true to write. */
-export class AdrPreview implements Component {
-  readonly #frame: SplitFrame;
-  readonly #markdown = new Map<number, Markdown>();
+export class AdrPreview {
+  /** The view `ctx.ui.custom` mounts. */
+  readonly root: UiNode;
+  readonly #revision = signal(0);
+  readonly #pane: Pane;
+  readonly #sidebar: Sidebar;
   /** Row 0 writes, rows 1..n are files, the last row cancels. */
   #selected: number;
   #message: ConsoleMessage | undefined;
-  #scroll: BodyScroll | undefined;
-  #native: { selected: number; message: ConsoleMessage | undefined; scroll: number; rows: number; node: NativeNode } | undefined;
-  readonly #nativeBodies = new Map<number, NativeNode>();
-  /** In Tern the preview is a large glass sheet titled like the terminal frame. */
-  readonly nativeOverlay: NonNullable<Component["nativeOverlay"]> = {
-    role: "omp.overlay.adr.preview",
-    size: "lg",
-    anchor: "center",
-    head: `${PLUGIN} · write preview`,
-  };
 
   constructor(
     readonly title: string,
     readonly files: readonly PreviewItem[],
-    readonly theme: Theme,
-    readonly tui: TUI,
+    readonly host: ViewHost,
     readonly done: (write: boolean) => void,
   ) {
-    this.#frame = new SplitFrame(theme);
+    const native = nativeRendering();
+    this.#pane = new Pane(native);
+    this.#sidebar = new Sidebar(native);
     this.#selected = files.length ? 1 : 0;
+    this.root = sheet(
+      "omp.overlay.adr.preview",
+      `${PLUGIN} · write preview`,
+      host,
+      { onKey: (key) => this.#key(key), onAction: (act) => this.#action(act) },
+      () => {
+        this.#revision();
+        return this.#view();
+      },
+    );
   }
 
-  /** Row 0 writes, rows 1..n are files, this last row cancels. */
   get #cancelRow(): number {
     return this.files.length + 1;
+  }
+
+  get #count(): string {
+    return `${this.files.length} file${this.files.length === 1 ? "" : "s"}`;
+  }
+
+  #changed(): void {
+    this.#revision.update((value) => value + 1);
   }
 
   #select(index: number): void {
     const next = Math.max(0, Math.min(this.#cancelRow, index));
     if (next === this.#selected) return;
     this.#selected = next;
-    this.#frame.scroll = 0;
+    this.#sidebar.moved();
   }
 
   #enter(): void {
@@ -765,202 +682,127 @@ export class AdrPreview implements Component {
     else this.#message = { text: "Press Shift+W to write every file, or Esc to cancel", level: "info" };
   }
 
-  #page(by: BodyScroll["by"]): void {
-    this.#frame.scrollBy(by === "page-down" ? this.#frame.pageRows() : -this.#frame.pageRows());
-    this.#scroll = { by, n: (this.#scroll?.n ?? 0) + 1 };
-  }
-
-  handleInput(key: string): void {
-    if (
-      routeSgrMouseInput(key, (event) => {
-        this.#frame.mouse(event, (delta) => this.#select(this.#selected + delta));
-        return true;
-      })
-    ) {
-      this.tui.requestRender();
-      return;
-    }
+  #key(key: KeyEvent): boolean {
+    if (key.kind === "release") return false;
+    const write = shiftLetter(key) === "W";
+    if (!write && !["escape", "up", "down", "home", "end", "pageUp", "pageDown", "enter"].includes(key.id)) return false;
     this.#message = undefined;
-    if (matchesKey(key, "escape")) this.done(false);
-    else if (shiftLetter(key) === "W") this.done(true);
-    else if (matchesKey(key, "up")) this.#select(this.#selected - 1);
-    else if (matchesKey(key, "down")) this.#select(this.#selected + 1);
-    else if (matchesKey(key, "home")) this.#select(0);
-    else if (matchesKey(key, "end")) this.#select(this.#cancelRow);
-    else if (matchesKey(key, "pageDown")) this.#page("page-down");
-    else if (matchesKey(key, "pageUp")) this.#page("page-up");
-    else if (matchesKey(key, "enter")) this.#enter();
-    this.tui.requestRender();
+    if (key.id === "escape") this.done(false);
+    else if (write) this.done(true);
+    else if (key.id === "up") this.#select(this.#selected - 1);
+    else if (key.id === "down") this.#select(this.#selected + 1);
+    else if (key.id === "home") this.#select(0);
+    else if (key.id === "end") this.#select(this.#cancelRow);
+    else if (key.id === "pageDown") this.#pane.page("page-down");
+    else if (key.id === "pageUp") this.#pane.page("page-up");
+    else if (key.id === "enter") this.#enter();
+    this.#changed();
+    return true;
   }
 
-  #sidebar(width: number, rows: number): string[] {
-    const t = this.theme;
-    const labels = [
-      t.fg("success", `${t.status.success} Write ${this.files.length} file${this.files.length === 1 ? "" : "s"}`),
-      ...this.files.map((file) => file.path),
-      t.fg("error", `${t.status.error} Cancel`),
-    ];
-    const start = Math.max(0, Math.min(this.#selected - Math.floor(rows / 2), labels.length - rows));
-    return labels.slice(start, start + rows).map((label, offset) => {
-      const selected = start + offset === this.#selected;
-      const cursor = selected ? t.fg("accent", `${t.nav.cursor} `) : "  ";
-      const isFile = start + offset > 0 && start + offset <= this.files.length;
-      return truncateToWidth(`${cursor}${isFile ? t.fg(selected ? "accent" : "text", label) : label}`, width);
-    });
+  #action(act: string): void {
+    if (act === "write") this.done(true);
+    else if (act === "cancel") this.done(false);
   }
 
-  #body(width: number): string[] {
-    const t = this.theme;
-    const file = this.files[this.#selected - 1];
-    if (!file) {
-      const lines = wrapTextWithAnsi(t.bold(this.title), width);
-      lines.push("", ...wrapTextWithAnsi(t.fg("muted", "Files to write:"), width));
-      for (const entry of this.files) lines.push(...wrapTextWithAnsi(`  ${entry.path}`, width));
-      lines.push(
-        "",
-        ...wrapTextWithAnsi(t.fg("dim", "Nothing is written until you choose Write. Select a file to read it before deciding."), width),
-      );
-      return lines;
-    }
-    const lines = [truncateToWidth(t.bold(t.fg("accent", file.path)), width), ""];
-    if (/\.md$/i.test(file.path)) {
-      // YAML front matter is not Markdown: show it verbatim, then render the document after it.
-      const front = /^---\n[\s\S]*?\n---\n/.exec(file.content)?.[0] ?? "";
-      for (const line of front.trimEnd().split("\n").filter(Boolean)) lines.push(...wrapTextWithAnsi(t.fg("muted", line), width));
-      let markdown = this.#markdown.get(this.#selected);
-      if (!markdown) {
-        markdown = new Markdown(file.content.slice(front.length), 0, 0, getMarkdownTheme());
-        this.#markdown.set(this.#selected, markdown);
-      }
-      lines.push(...markdown.render(width));
-    } else {
-      for (const line of file.content.replace(/\n$/, "").split("\n")) lines.push(...wrapTextWithAnsi(line, width));
-    }
-    return lines;
-  }
-
-  render(width: number): readonly string[] {
-    const sidebarWidth = sidebarWidthFor(width);
-    return this.#frame.render(width, terminalRows(this.tui), {
-      title: `${PLUGIN} · write preview`,
-      header: this.title,
-      sidebarWidth,
-      sidebar: (rows) => this.#sidebar(sidebarWidth, rows),
-      body: (bodyWidth) => this.#body(bodyWidth),
-      message: this.#message,
-      hints: [
-        rawKeyHint(["up", "down"], "select"),
-        this.theme.fg("dim", "PgUp/PgDn/wheel") + this.theme.fg("muted", " scroll"),
-        rawKeyHint("enter", "choose"),
-        rawKeyHint("shift+w", "write all"),
-        rawKeyHint("escape", "cancel"),
-      ],
-    });
-  }
-
-  /** Write, the files and Cancel as a list beside the selected file; buttons for Write all and Cancel, then the hints. */
-  describe(): NativeNode {
-    const scroll = this.#scroll?.n ?? 0;
-    const height = terminalRows(this.tui);
-    const memo = this.#native;
-    if (memo?.selected === this.#selected && memo.message === this.#message && memo.scroll === scroll && memo.rows === height)
-      return memo.node;
-    const count = `${this.files.length} file${this.files.length === 1 ? "" : "s"}`;
-    const rows = selectList(
-      "rows",
-      [
-        item("r0", { label: `Write ${count}`, icon: "save", tone: "success" }),
-        // The file name first: a long path would truncate it away; the directory follows dim and gives way first.
-        ...this.files.map((file, index) => {
-          const slash = file.path.lastIndexOf("/");
-          return item(`r${index + 1}`, {
-            label: [span(file.path.slice(slash + 1), "path")],
-            detail: slash > 0 ? file.path.slice(0, slash) : undefined,
-            icon: /\.md$/i.test(file.path) ? "markdown" : "file",
-            title: file.path,
-          });
-        }),
-        item(`r${this.#cancelRow}`, { label: "Cancel", icon: "x", tone: "error" }),
-      ],
-      { ...SCROLLER, selected: `r${this.#selected}`, role: "omp.adr.preview.rows" },
-    );
-    const body = node(
-      "col",
-      { ...FILL, role: "omp.adr.preview.body" },
-      [scroller("body-scroll", [this.#describeBody()], this.#scroll)],
-      "body",
-    );
-    const children: NativeChild[] = [
-      keyed(text([span(this.title, "strong")], { wrap: "word" }), "title"),
-      keyed(
-        nativeRow([node("col", { max: { w: "32ch" }, shrink: 0, min: { h: 0 } }, [rows], "sidebar"), body], {
-          ...FILL,
-          gap: "lg",
-          align: "stretch",
-        }),
-        "split",
-      ),
-      actionBar([
-        actionButton(`Write ${count}`, "write", { keys: "shift+w", tone: "accent" }),
-        actionButton("Cancel", "cancel", { keys: "escape" }),
-      ]),
-    ];
-    const message = this.#message;
-    if (message)
-      children.push(keyed(text(message.text, { tone: message.level === "error" ? "error" : "warning", wrap: "word" }), "message"));
-    children.push(PREVIEW_HINTS);
-    const described = col(children, sheetRoot(height));
-    this.#native = { selected: this.#selected, message, scroll, rows: height, node: described };
-    return described;
+  /** A list click selects the row; false when the id is not a row. */
+  #pick(id: string): boolean {
+    const index = /^r\d+$/.test(id) ? Number(id.slice(1)) : -1;
+    if (index < 0 || index > this.#cancelRow) return false;
+    this.#message = undefined;
+    this.#select(index);
+    this.#changed();
+    return true;
   }
 
   /** The selected file (Markdown rendered, front matter as YAML, anything else as code), or the summary on Write and Cancel. */
-  #describeBody(): NativeNode {
+  #content(): PaneContent {
     const file = this.files[this.#selected - 1];
-    const index = file ? this.#selected : 0;
-    const cached = this.#nativeBodies.get(index);
-    if (cached) return cached;
-    let described: NativeNode;
     if (!file) {
-      described = col(
-        [
-          text([span("Files to write:", "muted")]),
-          ...this.files.map((entry) => text([span(entry.path, "path")])),
-          text([span("Nothing is written until you choose Write. Select a file to read it before deciding.", "dim")], { wrap: "word" }),
+      const note = "Nothing is written until you choose Write. Select a file to read it before deciding.";
+      return {
+        key: "summary",
+        head: [
+          h(
+            "col",
+            { key: "files" },
+            h("text", { key: "label", spans: [span("Files to write:", "muted")] }),
+            ...this.files.map((entry) => h("text", { key: entry.path, spans: [span(`  ${entry.path}`, "path")], wrap: "word" })),
+          ),
+          h("text", { key: "note", spans: [span(note, "dim")], wrap: "word" }),
         ],
-        { gap: "sm" },
-      );
-    } else if (/\.md$/i.test(file.path)) {
-      const front = /^---\n[\s\S]*?\n---\n/.exec(file.content)?.[0] ?? "";
-      const yaml = front.slice(4, -4).trim();
-      described = col(
-        [
-          text([span(file.path, "path strong")]),
-          ...(yaml ? [code(yaml, { lang: "yaml" })] : []),
-          md(withoutManagedLines(file.content.slice(front.length))),
-        ],
-        { gap: "sm" },
-      );
-    } else {
-      described = col([text([span(file.path, "path strong")]), code(file.content.replace(/\n$/, ""), { path: file.path })], { gap: "sm" });
+      };
     }
-    this.#nativeBodies.set(index, described);
-    return described;
+    const path = h("text", { key: "path", spans: [span(file.path, "path strong")], wrap: "word" });
+    const key = `file:${this.#selected}`;
+    if (!/\.md$/i.test(file.path)) return { key, head: [path], body: { kind: "code", text: file.content, path: file.path } };
+    // YAML front matter is not Markdown: show it as YAML, then the document after it.
+    const front = /^---\n[\s\S]*?\n---\n/.exec(file.content)?.[0] ?? "";
+    const yaml = front.slice(4, -4).trim();
+    return {
+      key,
+      head: [path, ...(yaml ? [h("code", { key: "front", text: yaml, lang: "yaml" })] : [])],
+      body: { kind: "md", text: withoutManagedLines(file.content.slice(front.length)) },
+    };
   }
 
-  /** Clicks run the key paths: a row selects (double-click chooses it like Enter), the buttons write or cancel. */
-  handleNativeEvent(event: NativeUiEvent): void {
-    if (event.type === "action") {
-      if (event.act === "write") this.done(true);
-      else if (event.act === "cancel") this.done(false);
-      return;
-    }
-    if ((event.type !== "select" && event.type !== "activate") || leafKey(event.key) !== "rows") return;
-    const index = itemIndex(event.item, "r");
-    if (index < 0 || index > this.#cancelRow) return;
-    this.#message = undefined;
-    this.#select(index);
-    if (event.type === "activate") this.#enter();
-    this.tui.requestRender();
+  #view(): UiNode[] {
+    const geo = geometry(this.host);
+    const message = this.#message;
+    const titleRows = rowsOf(this.title, geo.width);
+    const footerRows = 1 + (message ? rowsOf(message.text, geo.width) : 0) + 1;
+    const rows = Math.max(3, geo.rows - titleRows - footerRows - 2);
+    const items: SidebarItem[] = [
+      { key: "r0", attrs: { label: `Write ${this.#count}`, icon: "save", tone: "success" } },
+      // The file name first: a long path would truncate it away; the directory follows dim and gives way first.
+      ...this.files.map((file, index) => {
+        const slash = file.path.lastIndexOf("/");
+        return {
+          key: `r${index + 1}`,
+          attrs: {
+            label: [span(file.path.slice(slash + 1), "path")],
+            ...(slash > 0 ? { detail: file.path.slice(0, slash) } : {}),
+            icon: "file",
+            title: file.path,
+          },
+        };
+      }),
+      { key: `r${this.#cancelRow}`, attrs: { label: "Cancel", icon: "x", tone: "error" } },
+    ];
+    const sidebar = this.#sidebar.node(
+      "rows",
+      items,
+      `r${this.#selected}`,
+      { rows, width: geo.sidebar },
+      {
+        onSelect: (id) => this.#pick(id),
+        onActivate: (id) => {
+          if (!this.#pick(id)) return;
+          this.#enter();
+          this.#changed();
+        },
+      },
+    );
+    return [
+      h("text", { key: "title", spans: [span(this.title, "strong")], wrap: "word" }),
+      splitRow(sidebar, this.#pane.node(this.#content(), rows)),
+      h(
+        "col",
+        { key: "footer" },
+        h(
+          "row",
+          { key: "actions", gap: "sm", wrap: true },
+          button("write", `Write ${this.#count}`, shiftKeys("W"), "primary"),
+          button("cancel", "Cancel", ["escape"], "quiet"),
+        ),
+        messageLine(message),
+        hintLine([
+          ["↑↓", "select"],
+          ["PgUp PgDn", "scroll"],
+          ["Enter", "choose"],
+          ["Esc", "cancel"],
+        ]),
+      ),
+    ];
   }
 }

@@ -1,7 +1,8 @@
 import { join } from "node:path";
 
-import type { ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
-import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
+import type { ExtensionCommandContext, ExtensionCustomFactory, ExtensionCustomOptions } from "@oh-my-pi/pi-coding-agent";
+import type { AutocompleteItem } from "@oh-my-pi/pi-coding-agent/autocomplete/autocomplete";
+import { createRoot, nativeRendering, type UiNode } from "@oh-my-pi/pi-tui";
 
 import {
   type ConsoleEntry,
@@ -29,11 +30,6 @@ export interface SnippetCommandDeps {
 
 const USAGE = "Usage: /snippets [<key> | send <key> | list]";
 const BACK = "← Back";
-
-const FULLSCREEN = {
-  overlay: true,
-  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true },
-} as const;
 
 type Action = EntryAction | "new";
 /** Result line of a mutation and the snippet the re-opened menu selects (by scope and key, since ids follow renames). */
@@ -172,6 +168,30 @@ async function dialogDraft(ctx: ExtensionCommandContext, store: SnippetStore, or
   return { ...named, description, body };
 }
 
+/**
+ * `ctx.ui.custom` with the view built inside its own reactive root: the host calls the factory outside any owner,
+ * so the root is what disposes the view's computations once it settles.
+ */
+async function showView<T>(
+  ctx: ExtensionCommandContext,
+  build: (...args: Parameters<ExtensionCustomFactory<T>>) => UiNode,
+  options?: ExtensionCustomOptions,
+): Promise<T> {
+  let dispose: (() => void) | undefined;
+  try {
+    return await ctx.ui.custom<T>(
+      (ui, theme, keys, done) =>
+        createRoot((release) => {
+          dispose = release;
+          return build(ui, theme, keys, done);
+        }),
+      options,
+    );
+  } finally {
+    dispose?.();
+  }
+}
+
 /** The new or edited snippet from the form (terminal and Tern) or from host dialogs (RPC, ACP). */
 async function snippetDraft(ctx: ExtensionCommandContext, store: SnippetStore, original?: SnippetEntry): Promise<SnippetDraft | undefined> {
   if (ctx.mode !== "tui" || typeof ctx.ui.custom !== "function") return dialogDraft(ctx, store, original);
@@ -181,7 +201,11 @@ async function snippetDraft(ctx: ExtensionCommandContext, store: SnippetStore, o
     dirs: { global: store.globalDir, workspace: store.workspaceDir },
     taken: keyTaken(store),
   };
-  return ctx.ui.custom<SnippetDraft | undefined>((tui, theme, _keys, done) => new SnippetForm(theme, tui, options, done), FORM_OVERLAY);
+  return showView<SnippetDraft | undefined>(
+    ctx,
+    (_ui, _theme, keys, done) => new SnippetForm(options, { keys, native: nativeRendering() }, done).node,
+    FORM_OVERLAY,
+  );
 }
 
 async function createSnippet(ctx: ExtensionCommandContext, store: SnippetStore): Promise<Step> {
@@ -273,7 +297,7 @@ async function act(ctx: ExtensionCommandContext, deps: SnippetCommandDeps, actio
   }
 }
 
-/** Fullscreen console (terminal and Tern); it re-opens with filter, search and selection after every mutation. */
+/** The console in the composer's place, like the host's own pickers; it re-opens with filter, search and selection after every mutation. */
 async function consoleMenu(ctx: ExtensionCommandContext, deps: SnippetCommandDeps): Promise<void> {
   let state: ConsoleState = { query: "" };
   let message: ConsoleMessage | undefined;
@@ -281,10 +305,16 @@ async function consoleMenu(ctx: ExtensionCommandContext, deps: SnippetCommandDep
     const settings = await deps.settings();
     const entries = consoleEntries(deps.store, settings);
     const notice = problemNotice(deps.store, settings);
-    const [result, next] = await ctx.ui.custom<[ConsoleResult, ConsoleState]>(
-      (tui, theme, _keys, done) =>
-        new SnippetConsole(entries, state, theme, tui, (picked, after) => done([picked, after]), { message, notice }),
-      FULLSCREEN,
+    const [result, next] = await showView<[ConsoleResult, ConsoleState]>(
+      ctx,
+      (ui, theme, keys, done) =>
+        new SnippetConsole(
+          entries,
+          state,
+          { keys, theme, rows: () => ui.size().rows, native: nativeRendering() },
+          (picked, after) => done([picked, after]),
+          { message, notice },
+        ).node,
     );
     state = next;
     if (result.kind === "close") return;

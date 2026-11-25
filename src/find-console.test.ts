@@ -3,12 +3,19 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { initTheme, type NativeNode, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
-import type { FindHit } from "@oh-my-pi/pi-tui/tools/find";
+import { initTheme } from "@oh-my-pi/pi-coding-agent";
+import type { FindHit } from "@oh-my-pi/pi-coding-agent/tools/details/find";
+import { createRoot, type KeyEvent, setNativeRenderingForTest, signal, type UiNode } from "@oh-my-pi/pi-tui";
+import { staticEnvironment } from "@oh-my-pi/pi-tui/term/paint";
+import { renderBlock } from "@oh-my-pi/pi-tui/term/render";
+import { describeTree } from "@oh-my-pi/pi-tui/testing/corpus";
+import { stripEscapes } from "@oh-my-pi/pi-tui/text/ansi";
+import { visibleWidth } from "@oh-my-pi/pi-tui/text/width";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
 
 import { parseFindArgs } from "../plugins/find-console/src/args.ts";
 import { FindConsole } from "../plugins/find-console/src/console.ts";
-import { FindProgressController, FindResultsController } from "../plugins/find-console/src/controller.ts";
+import { type ConsoleResult, FindProgressController, FindResultsController } from "../plugins/find-console/src/controller.ts";
 import { fileMatcher, filterHits } from "../plugins/find-console/src/filters.ts";
 import { HISTORY_LIMIT, type HistoryEntry, HistoryStore, historyCommand } from "../plugins/find-console/src/history.ts";
 import type { PreviewReader } from "../plugins/find-console/src/preview.ts";
@@ -29,6 +36,7 @@ import {
 } from "../plugins/find-console/src/results.ts";
 import { parseUiMenu } from "../plugins/find-console/src/settings.ts";
 import { needsTranslation } from "../plugins/find-console/src/translation.ts";
+import { mountResultsConsole } from "../plugins/find-console/src/ui.ts";
 
 const hit: FindHit = {
   rel: "plugins/example/src/index.ts",
@@ -155,63 +163,95 @@ function billedRefinement(fallback: boolean): { cost: number; judgmentCost: numb
   return JSON.parse(new TextDecoder().decode(result.stdout));
 }
 
-beforeAll(async () => {
-  await initTheme();
+beforeAll(() => {
+  initTheme();
 });
 
-function nativeNodes(root: NativeNode): NativeNode[] {
-  const nodes = [root];
-  for (const child of root.c ?? []) {
-    if ("k" in child) nodes.push(...nativeNodes(child));
+const theme = loadThemeSync("dark");
+
+/** A node as Tern receives it, flattened depth-first. */
+interface Described {
+  k: string;
+  key?: string;
+  p?: Record<string, unknown> & { min?: { h?: string }; start?: number; text?: string; marks?: { line: number; tone: string }[] };
+  reveal?: unknown;
+  c?: Described[];
+}
+
+function described(node: UiNode): Described[] {
+  const flat = (entry: Described): Described[] => [entry, ...(entry.c ?? []).flatMap(flat)];
+  return flat(describeTree(node, staticEnvironment(theme)) as Described);
+}
+
+function frame(node: UiNode, width: number): string[] {
+  return renderBlock(node, width, { theme }).rows.map((row) => stripEscapes(row).trimEnd());
+}
+
+function press(id: string): KeyEvent {
+  return { id, kind: "press", raw: "" };
+}
+
+function screen(columns: number, rows: number) {
+  return { size: () => ({ columns, rows }) };
+}
+
+/** Builds a view the way the host mounts it: under a reactive root, natively when `native`. */
+function mount(build: () => UiNode, native = false): UiNode {
+  setNativeRenderingForTest(native);
+  try {
+    return createRoot(build);
+  } finally {
+    setNativeRenderingForTest(false);
   }
-  return nodes;
 }
 
 describe("loading presentation", () => {
-  const tui = { terminal: { rows: 36 }, requestRender() {} } as unknown as TUI;
-
   test("source loading reserves the native scroller extent and terminal frame height of loaded content", async () => {
     const reader = {
       read: async () => ({ lines: Array.from({ length: 120 }, (_, index) => `line ${index + 1} ${"x".repeat(200)}`), truncated: false }),
     } as unknown as PreviewReader;
-    const scroller = (root: NativeNode) =>
-      nativeNodes(root).find((node) => node.k === "list" && node.p?.role === "omp.find-console.source");
-    const controller = new FindResultsController(report(), reader, true);
-    const view = new FindConsole(controller, theme, tui);
-    const loading = scroller(view.describe());
-    const loadingHeight = view.render(120).length;
-    const half = new FindConsole(new FindResultsController(report(), reader, true), theme, tui, true);
-    const halfLoadingHeight = half.render(80).length;
+    const sheet = mount(() => new FindConsole(new FindResultsController(report(), reader, true), screen(120, 36)).view(), true);
+    expect(sheet.kind).toBe("overlay");
+    expect(sheet.props()).toMatchObject({ role: "omp.overlay.find-console.results", size: "lg", head: "Find: where versions are bumped" });
+    const scroller = () => described(sheet).find((node) => node.k === "list" && node.p?.min?.h === "16lines");
+    const loading = scroller();
+    const full = mount(() => new FindConsole(new FindResultsController(report(), reader, true), screen(120, 36)).view());
+    const half = mount(() => new FindConsole(new FindResultsController(report(), reader, true), screen(80, 36), true).view());
+    expect(frame(full, 120)).toHaveLength(36);
+    expect(frame(half, 80)).toHaveLength(18);
+    expect(frame(full, 120).join("\n")).toContain("Loading preview…");
     await Promise.resolve();
-    const loaded = scroller(view.describe());
+    const loaded = scroller();
     if (!loading || !loaded) throw new Error("source scroller missing");
     expect(loading.p).toEqual(loaded.p);
-    const blocks = (loaded.c ?? []).filter((child): child is NativeNode => "k" in child && child.k === "code");
-    expect(blocks.map((block) => (block.k === "code" ? [block.p?.start, block.p?.text?.split("\n").length] : []))).toEqual([
+    const blocks = (loaded.c ?? []).filter((child) => child.k === "code");
+    expect(blocks.map((block) => [block.p?.start, block.p?.text?.split("\n").length])).toEqual([
       [35, 2],
       [37, 4],
       [41, 5],
     ]);
     expect(blocks.map((block) => block.reveal)).toEqual([undefined, "start", undefined]);
+    expect(blocks.map((block) => block.p?.lang)).toEqual(["typescript", "typescript", "typescript"]);
     for (const block of blocks) {
-      for (const line of block.k === "code" ? (block.p?.text?.split("\n") ?? []) : []) {
+      for (const line of block.p?.text?.split("\n") ?? []) {
         expect(visibleWidth(line)).toBeLessThanOrEqual(64);
         expect(line.endsWith("…")).toBe(true);
       }
     }
-    expect(view.render(120)).toHaveLength(loadingHeight);
-    expect(half.render(80)).toHaveLength(halfLoadingHeight);
+    expect(frame(full, 120)).toHaveLength(36);
+    expect(frame(half, 80)).toHaveLength(18);
+    expect(frame(full, 120).join("\n")).toContain("*40 line 40");
   });
 
   test("full-file previews hold the whole file, highlight only refined ranges, and leave whole-file hits unmarked", async () => {
     const reader = {
       read: async () => ({ lines: Array.from({ length: 120 }, (_, index) => `line ${index + 1}`), truncated: false }),
     } as unknown as PreviewReader;
-    const blocksOf = (view: FindConsole) =>
-      nativeNodes(view.describe()).filter(
-        (node): node is Extract<NativeNode, { k: "code" }> => node.k === "code" && node.key !== undefined,
-      );
-    const ranged = new FindConsole(new FindResultsController(report({ previewMode: "full-file" }), reader, true), theme, tui);
+    const blocksOf = (node: UiNode) => described(node).filter((entry) => entry.k === "code" && entry.key !== undefined);
+    const ranged = mount(
+      () => new FindConsole(new FindResultsController(report({ previewMode: "full-file" }), reader, true), screen(120, 36)).view(),
+      true,
+    );
     await Promise.resolve();
     const blocks = blocksOf(ranged);
     expect(blocks.reduce((sum, block) => sum + (block.p?.text?.split("\n").length ?? 0), 0)).toBe(120);
@@ -219,36 +259,119 @@ describe("loading presentation", () => {
       4, 5, 6, 7, 40, 80, 81, 82, 83, 84, 85, 86, 87, 88,
     ]);
     expect(blocks.find((block) => block.reveal)?.p?.marks?.[0]).toEqual({ line: 40, tone: "accent" });
-    const whole = new FindConsole(
-      new FindResultsController(report({ previewMode: "full-file", hits: [{ ...hit, scope: "whole-file", refined: [] }] }), reader, true),
-      theme,
-      tui,
-    );
+    const wholeReport = () => report({ previewMode: "full-file", hits: [{ ...hit, scope: "whole-file", refined: [] }] });
+    const whole = mount(() => new FindConsole(new FindResultsController(wholeReport(), reader, true), screen(120, 36)).view(), true);
+    const terminal = mount(() => new FindConsole(new FindResultsController(wholeReport(), reader, true), screen(120, 36)).view());
     await Promise.resolve();
     const wholeBlocks = blocksOf(whole);
     expect(wholeBlocks).toHaveLength(1);
     expect(wholeBlocks[0]?.p?.marks).toBeUndefined();
     expect(wholeBlocks[0]?.reveal).toBeUndefined();
-    expect(whole.render(120).join("\n")).toContain("whole file");
+    const painted = frame(terminal, 120).join("\n");
+    expect(painted).toContain("[whole file]");
+    expect(painted).toContain("Whole file · index.ts answers");
+    expect(painted).not.toMatch(/\*\s*\d+ line/);
   });
 
-  test("fast searches stay static, while a still-pending search animates after a second in both renderers", () => {
+  test("a narrow terminal stacks the hits over the source, and page keys scroll the source", async () => {
+    const reader = {
+      read: async () => ({ lines: Array.from({ length: 120 }, (_, index) => `line ${index + 1}`), truncated: false }),
+    } as unknown as PreviewReader;
+    const view = new FindConsole(new FindResultsController(report({ previewMode: "full-file" }), reader, true), screen(80, 30));
+    const root = mount(() => view.view());
+    await Promise.resolve();
+    const before = frame(root, 80);
+    expect(before).toHaveLength(30);
+    const hits = before.findIndex((line) => line.startsWith("Hits"));
+    const source = before.findIndex((line) => line.includes("index.ts:40"));
+    expect(hits).toBeGreaterThan(0);
+    expect(source).toBeGreaterThan(hits);
+    const firstLine = (rows: string[]) => rows.find((line) => /^[ *]\s*\d+ line \d+$/.test(line));
+    expect(firstLine(before)).toMatch(/ 3\d line 3\d$/);
+    expect(view.key(press("pageDown"))).toBe(true);
+    expect(firstLine(frame(root, 80))).toMatch(/ 4\d line 4\d$/);
+    expect(frame(root, 80).at(-2)).toContain("[ Insert reference ⏎ ]");
+    expect(frame(root, 80).at(-1)).toContain("[ Close ⎋ ]");
+  });
+
+  test("fast searches stay static, a still-pending search animates after a second, and Esc cancels", () => {
     vi.useFakeTimers();
-    const controller = new FindProgressController("where versions are bumped", () => {});
-    const view = new FindProgress(controller, theme, tui);
+    const cancelled: string[] = [];
+    const controller = new FindProgressController("where versions are bumped", () => cancelled.push("abort"));
+    const view = new FindProgress(controller);
+    const native = new FindProgress(new FindProgressController("q", () => {}));
+    expect(mount(() => native.view(), true).props()).toMatchObject({ role: "omp.overlay.find-console.search", size: "md" });
+    native.dispose();
     try {
-      const initial = view.render(80);
-      expect(nativeNodes(view.describe()).some((node) => node.k === "spinner")).toBe(false);
+      const root = mount(() => view.view());
+      const spinning = () => described(root).some((node) => node.k === "spinner");
+      expect(spinning()).toBe(false);
       vi.advanceTimersByTime(160);
-      expect(view.render(80)).toEqual(initial);
-      expect(nativeNodes(view.describe()).some((node) => node.k === "spinner")).toBe(false);
+      expect(spinning()).toBe(false);
       vi.advanceTimersByTime(1000);
-      expect(nativeNodes(view.describe()).some((node) => node.k === "spinner")).toBe(true);
-      expect(view.render(80)).not.toEqual(initial);
+      expect(spinning()).toBe(true);
+      controller.update("filename ranking 12/40");
+      const painted = frame(root, 80).join("\n");
+      expect(painted).toContain("Rank file names  12/40");
+      expect(painted).toContain("30% 12/40 names");
+      expect(painted).toContain("[ Cancel search ⎋ ]");
+      expect(view.key(press("escape"))).toBe(true);
+      expect(cancelled).toEqual(["abort"]);
+      expect(frame(root, 80).join("\n")).toContain("Waiting for in-flight judge requests to stop.");
     } finally {
       view.dispose();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("console layout and lifetime", () => {
+  const reader = {
+    read: async () => ({ lines: Array.from({ length: 120 }, (_, index) => `line ${index + 1}`), truncated: false }),
+  } as unknown as PreviewReader;
+
+  test("without room for the preview a narrow terminal still shows which range Left and Right chose", async () => {
+    const lists = new FindResultsController(report(), reader, true);
+    const roomy = new FindConsole(lists, screen(80, 14));
+    const roomyRoot = mount(() => roomy.view());
+    await Promise.resolve();
+    expect(frame(roomyRoot, 80)).toHaveLength(14);
+    expect(frame(roomyRoot, 80).join("\n")).toContain("❯ :40");
+    roomy.key(press("right"));
+    expect(frame(roomyRoot, 80).join("\n")).toContain("❯ :80-88");
+    expect(lists.selectedReference).toBe("plugins/example/src/index.ts:80-88");
+
+    const labels = new FindResultsController(report({ coverage: "partial" }), reader, true);
+    const cramped = new FindConsole(labels, screen(80, 12));
+    const crampedRoot = mount(() => cramped.view());
+    await Promise.resolve();
+    expect(frame(crampedRoot, 80)).toHaveLength(12);
+    expect(frame(crampedRoot, 80).join("\n")).toContain("❯ index.ts:40");
+    cramped.key(press("right"));
+    expect(frame(crampedRoot, 80).join("\n")).toContain("❯ index.ts:80-88");
+    expect(labels.selectedReference).toBe("plugins/example/src/index.ts:80-88");
+  });
+
+  test("a closed console stops following the terminal size", async () => {
+    const rows = signal(36);
+    const controller = new FindResultsController(report(), reader, true);
+    const built = Promise.withResolvers<UiNode>();
+    const closed = Promise.withResolvers<ConsoleResult | undefined>();
+    const ui = {
+      custom: async (factory: (...args: unknown[]) => UiNode) => {
+        built.resolve(factory({ size: () => ({ columns: 120, rows: rows() }) }, theme, undefined, closed.resolve));
+        return closed.promise;
+      },
+    };
+    const mounted = mountResultsConsole({ cwd: tmpdir(), ui } as never, controller);
+    const view = await built.promise;
+    expect(frame(view, 120)).toHaveLength(36);
+    rows.set(30);
+    expect(frame(view, 120)).toHaveLength(30);
+    closed.resolve({ action: "close", state: controller.state });
+    expect(await mounted).toMatchObject({ choice: { action: "close" } });
+    rows.set(20);
+    expect(frame(view, 120)).toHaveLength(30);
   });
 });
 

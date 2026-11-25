@@ -1,18 +1,18 @@
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 
 import { type TodoDependency, type TodoPhase, validateTodoEdges } from "#src/model.ts";
 
 import { TODO_EDGES_ENTRY, type TodoEdgesEntry, todoGeneration } from "./todo.ts";
+import { todoCard } from "./todo-card.ts";
 
 export interface TodoWrapperOptions {
   onEdges: (data: TodoEdgesEntry, ctx: ExtensionContext) => void;
   enabled: boolean | ((ctx: ExtensionContext) => boolean);
 }
 
-/** Same-name delegation preserves native mutations, errors, details, hooks and rendering. */
+/** Same-name delegation preserves native mutations, errors, details and hooks; `todoCard` keeps the native card in Tern. */
 export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOptions): void {
   if (options.enabled === false) return;
   const { Type } = pi.typebox;
@@ -20,16 +20,6 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
   const parameters = native.parameters.and(
     Type.Object({ edges: Type.Optional(Type.Array(Type.Object({ task: Type.String(), after: Type.Array(Type.String()) }))) }),
   );
-  const renderer = toolRenderers.todo;
-  if (!renderer?.renderCall || !renderer.renderResult || !renderer.describeCall || !renderer.describeResult)
-    throw new Error("The native todo renderer is unavailable.");
-  type Definition = ToolDefinition<typeof parameters>;
-  // The host's generic renderer interface permits undefined; the native todo renderer always returns a component.
-  const renderCall = renderer.renderCall as NonNullable<Definition["renderCall"]>;
-  const renderResult = renderer.renderResult as NonNullable<Definition["renderResult"]>;
-  // Tern draws a tool card from the tool's own describe hooks and, for an override of a built-in, never falls back to the native ones.
-  const describeCall = renderer.describeCall.bind(renderer) as NonNullable<Definition["describeCall"]>;
-  const describeResult = renderer.describeResult.bind(renderer) as NonNullable<Definition["describeResult"]>;
   let warnedMissingInvoke = false;
   const definition = {
     name: "todo",
@@ -41,11 +31,7 @@ export function registerTodoWrapper(pi: ExtensionAPI, options: TodoWrapperOption
     lenientArgValidation: true,
     concurrency: "exclusive",
     loadMode: "discoverable" as const,
-    renderCall,
-    renderResult,
-    describeCall,
-    describeResult,
-    mergeCallAndResult: renderer.mergeCallAndResult,
+    ...todoCard,
     async execute(
       _toolCallId: string,
       params: Record<string, unknown>,

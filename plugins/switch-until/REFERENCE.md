@@ -10,7 +10,9 @@ For maintainers and client authors. The [README](README.md) covers use.
 - `src/evidence.ts`: builds the judge's text from session messages and plugin state.
 - `src/translation-cache.ts`: per-message translation cache and the non-English test.
 - `src/sidecars.ts`: reads plugin state files for the session.
-- `src/models.ts`: model selection, the picker, and the compaction check.
+- `src/models.ts`: model selection and the compaction check.
+- `src/model-picker.ts`: the TUI model picker.
+- `src/tsp.ts`: helpers that build UI nodes without JSX.
 - `src/args.ts`: parser for the headless command form.
 - `src/settings.ts`: settings defaults and validation.
 
@@ -44,7 +46,7 @@ Every command and event handler returns early unless `ctx.agent.kind === "main"`
 9. Compact if the transcript exceeds the target's context window. If compaction fails, or the transcript still exceeds the window, stop with an error. Check the native judge for the target again. Then switch with `session.setModelTemporary(model, thinking)`, where `thinking` is the picked level or the model's default level. If the target is not the current model afterward, stop with an error.
 10. Persist a `start` entry, attach the run, schedule the deadline check, and send the notice.
 
-The picker in TUI is `ModelPickerComponent` in a bottom overlay, with the session's scoped models, the current model marked, and the session's configured thinking level shown. Its result carries the thinking level. Outside TUI with UI, `ctx.ui.select` lists `provider/id` for each available model, with `(current)` after the current one. That path has no thinking level, so the model default applies.
+The picker in TUI is a searchable `picker` sheet in a bottom overlay. It lists the session's scoped models, or every available model when the session has none, most recently used first. The current model is marked, and a model whose context window the conversation exceeds is marked "compacts first". Typing filters by `provider/id` and name, Backspace deletes, Ctrl+U clears the search, Esc clears the search first and then cancels. Left and Right move the thinking slider, which starts at the session's configured thinking level and is clamped to the highlighted model's levels. The result carries a thinking level only when the slider was moved. Outside TUI with UI, `ctx.ui.select` lists `provider/id` for each available model, with `(current)` after the current one. That path has no thinking level, so the model default applies.
 
 ## Switching and restoring
 
@@ -198,7 +200,7 @@ Rebuilding state walks the current branch in order:
 
 ## Session events
 
-- `session_start`, `session_switch`, `session_tree` and `session_clear` detach the current run and rebuild from the branch. If the session is transitioning, the plugin waits for the transition, then checks the run. The check uses the last judgment's probability only when that judgment's `evidenceId` matches the run's latest qualifying turn. A `met` judgment from before a restart therefore restores at once only if it judged the newest qualifying evidence. Otherwise the plugin judges the newer evidence right away.
+- `session_start`, `session_switch`, `session_tree`, `session_branch` and `session_clear` detach the current run and rebuild from the branch. `session_branch` covers a rewind (`/branch`, `/rewind`, a turn's Edit or Retry) that continues in a new session: a run whose `start` entry is still on the new branch keeps going there, and one whose `start` was cut off is dropped. When the kept history has no explicit model change after the run's last model entry, the rebuild reapplies the saved target, even if the host kept another model live (for example after a restore that the branch cut off). If the session is transitioning, the plugin waits for the transition, then checks the run. The check uses the last judgment's probability only when that judgment's `evidenceId` matches the run's latest qualifying turn. A `met` judgment from before a restart therefore restores at once only if it judged the newest qualifying evidence. Otherwise the plugin judges the newer evidence right away.
 - A rebuild calls `reconcileTarget` first. While the run still owns the session model, it reapplies the saved target route and thinking level. After an explicit model change it does nothing, and that change ends the run as a foreign change.
 - `session_shutdown` clears timers and aborts any judgment. In print and json modes it first waits up to 1.5 seconds for outstanding work. It writes no entry, so the run is still active when the session is opened again.
 - `turn_start` checks the stop rules before the turn runs.

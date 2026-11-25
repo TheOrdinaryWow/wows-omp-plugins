@@ -1,5 +1,5 @@
 import type { Judge, JudgmentRequest, NoulQuestion } from "@oh-my-pi/pi-ai";
-import type { FindHit, FindRange, FindStats } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindHit, FindRange, FindStats } from "@oh-my-pi/pi-coding-agent/tools/details/find";
 
 import type { PreviewReader } from "#src/preview.ts";
 import type { ConsoleHit, HitScope } from "#src/report.ts";

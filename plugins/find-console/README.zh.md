@@ -17,7 +17,7 @@ OMP 内置的 `find` 工具按行为搜索代码（比如“版本号在哪里�
 omp plugin install find-console@wows-omp-plugins
 ```
 
-需要 OMP 19.1.1 或更高版本，并且 OMP 的 `judge` 角色要配置一个判定模型（judgment model），比如 TypeSafe 的 Jev。分数来自这个模型，所以普通聊天模型跑不了 `/find`。安装后开一个新会话。
+需要 OMP 19.2.0 或更高版本，并且 OMP 的 `judge` 角色要配置一个判定模型（judgment model），比如 TypeSafe 的 Jev。分数来自这个模型，所以普通聊天模型跑不了 `/find`。安装后开一个新会话。
 
 ## 快速上手
 
@@ -76,7 +76,7 @@ omp plugin install find-console@wows-omp-plugins
 | `h` | 选一条最近的搜索重新运行。 |
 | Esc、Ctrl+C | 关闭，不发送任何内容。 |
 
-控制台默认占满终端。把 `uiMenu` 设为 `half-screen` 后，会改成底部的一个较小面板，上方的对话依然可见。在 [Tern](https://docs.stencil.so/tern/) 中，控制台以大号原生面板打开，同样的操作都做成了按钮。
+控制台默认占满终端。把 `uiMenu` 设为 `half-screen` 后，会改成底部的一个较小面板，上方的对话依然可见。每个操作在控制台底部都有一个按钮，按钮上标着对应的按键。在 [Tern](https://docs.stencil.so/tern/) 中，控制台以大号原生面板打开，按钮相同。
 
 ### 最近的搜索
 

@@ -313,6 +313,7 @@ function hostFixture(
   const compactions: CompactOptions[] = [];
   const host = {
     model: options.model ?? mainModel,
+    sessionId: "switch-until-test",
     thinking: ThinkingLevel.Low as string | undefined,
     tokens: 20,
     streaming: false,
@@ -334,7 +335,7 @@ function hostFixture(
     });
   };
   if (branch.length === 0) receipt(mainModel, "default");
-  const sessionManager = { getSessionId: () => "switch-until-test", getBranch: () => branch.slice() };
+  const sessionManager = { getSessionId: () => host.sessionId, getBranch: () => branch.slice() };
   const modelRegistry = {
     getAvailable: () => [mainModel, temporaryModel, backupModel],
     find: (provider: string, id: string) =>
@@ -701,5 +702,58 @@ describe("registered switch-until lifecycle", () => {
     expect(resumed.status).toEqual([undefined]);
     expect(resumed.notices.at(-1)).toContain("Goal met");
     expect(resumed.notices.at(-1)).toMatch(/99\.0% P\(met\) at \d{4}-\d{2}-\d{2}T.*judge favored met/);
+  });
+
+  test("keeps monitoring a run whose start survives a rewind into a new session", async () => {
+    const f = hostFixture({ judge: async () => 0.99 });
+    await f.command(startCommand);
+    f.host.sessionId = "switch-until-branch";
+    await f.emit("session_branch", { reason: "branch", previousSessionFile: "/sessions/original.jsonl" });
+    expect(await f.requestModel()).toBe("openrouter/test/temporary");
+    await f.emit("turn_end", f.recordTurn("The goal is met"));
+    await f.settle();
+    expect(f.swaps.at(-1)).toEqual({ selector: "openrouter/test/primary", thinking: "low" });
+    expect(f.notices.at(-1)).toContain("Restored openrouter/test/primary");
+  });
+
+  test("drops the run when a rewind into a new session removes its start", async () => {
+    let judged = 0;
+    const f = hostFixture({
+      judge: async () => {
+        judged++;
+        return 0.99;
+      },
+    });
+    await f.command(startCommand);
+    const start = f.branch.findIndex((entry) => entry.type === "custom");
+    f.branch.splice(start);
+    f.host.sessionId = "switch-until-branch";
+    await f.emit("session_branch", { reason: "branch", previousSessionFile: "/sessions/original.jsonl" });
+    await f.emit("turn_end", f.recordTurn("The goal is met"));
+    await f.settle();
+    expect(judged).toBe(0);
+    expect(f.swaps).toHaveLength(1);
+    await f.command("status");
+    expect(f.notices.at(-1)).toBe("No switch-until is active.");
+  });
+
+  test("reapplies the saved target on a branch cut between the start and a finished restore", async () => {
+    const verdicts = [0.99, 0.2];
+    const f = hostFixture({ judge: async () => verdicts.shift() ?? 0.2 });
+    await f.command(startCommand);
+    const turn = f.recordTurn("The goal is met");
+    const cut = f.branch.length;
+    await f.emit("turn_end", turn);
+    await f.settle();
+    expect(f.host.model).toBe(mainModel);
+    f.branch.splice(cut);
+    f.host.sessionId = "switch-until-branch";
+    await f.emit("session_branch", { reason: "branch", previousSessionFile: "/sessions/original.jsonl" });
+    await f.settle();
+    expect(f.swaps.at(-1)).toEqual({ selector: "openrouter/test/temporary", thinking: "high" });
+    expect(f.branch.some((entry) => entry.type === "custom" && JSON.stringify(entry.data).includes("foreign-change"))).toBe(false);
+    expect(await f.requestModel()).toBe("openrouter/test/temporary");
+    await f.command("status");
+    expect(f.notices.at(-1)).toContain("Temporary model: openrouter/test/temporary");
   });
 });

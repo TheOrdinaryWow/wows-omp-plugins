@@ -69,7 +69,7 @@ right:  (?![\p{L}\p{N}_/\\-])(?!\.[\p{L}\p{N}_-])(?!\()
 
 Additional rules:
 
-- Matches are found only in prose. The text is passed through `maskNonProse` from `@oh-my-pi/pi-tui/prompt/markdown-prose`, which blanks code spans, fenced code blocks, and XML or HTML sections while keeping the length. Only matches that land in prose expand.
+- Matches are found only in prose. The text is passed through `maskNonProse` from `@oh-my-pi/pi-coding-agent/modes/view-model/prompt/markdown-prose`, which blanks code spans, fenced code blocks, and XML or HTML sections while keeping the length. Only matches that land in prose expand.
 - Shell and Python sigils (`!`, `$`) at the start of the trimmed text skip expansion entirely.
 - Expansion is a single pass. Bodies are never expanded again.
 - Each expansion counts one use in the state file.
@@ -93,19 +93,19 @@ The plugin has no replace-mode setting. Expansion always happens at send.
 
 Expansion runs in the extension `input` event (`pi.on("input", ...)`), which returns `{ text }`. It applies to sources `interactive` and `rpc`. Text from source `extension` is never expanded.
 
-The store reloads on session start, on every `input` event, and after every console change. Highlights are re-registered after each reload and on `session_start` and `session_switch`.
+The store reloads on session start, on every `input` event, and after every console change. The highlighted words are refreshed after each reload, on `session_start` and `session_switch`.
 
-Highlights register each active trigger word with the host magic-keyword engine (`setMagicKeywords` from `@oh-my-pi/pi-tui/prompt/magic-keywords`), alongside the host's own keywords from `MAGIC_KEYWORDS` in `@oh-my-pi/pi-coding-agent/modes/magic-keywords`. Snippet words use hues `190` and `290`.
+Highlights are a composer decorator (`ctx.ui.composer.addDecorator`), attached once when the interactive TUI has a composer and removed on `session_shutdown`; RPC, ACP and headless sessions have no composer and get none. It marks each active trigger word standing as prose, found with `magicKeywordRanges` from `@oh-my-pi/pi-coding-agent/session/magic-keywords`, so it uses the host's magic-keyword boundaries. Snippet words take a still gradient over hues `190` to `290` in the terminal and the accent color in Tern.
 
 ## Console, form, and dialogs
 
-The console and the form are plugin components. Tern gets the native versions, and the terminal gets the split console and the framed form.
+The console and the form are each one pi-tui node tree that the terminal paints and Tern draws natively.
 
-- In Tern, the console is a native `picker` sheet with the preview below the list when the host supports `picker`. Hosts without it get a generic native layout. The terminal keeps the split view.
-- The form is a `SnippetForm` with the native overlay role `omp.overlay.snippets.form`. It resolves to a draft of `key`, `scope`, `description`, and `body`. Only the focused text field is a live input, so the caret follows the keyboard.
+- The console is a `picker` shown in place of the editor, as the host's own pickers are. The terminal paints it as a framed sheet: the All, Global and Workspace tabs and the search field at the top, the rows, the preview below them, the key hints and the result and problem lines. A long body shows as much as fits the terminal height, and PgUp and PgDn scroll it. Tern draws its picker sheet with the whole body in the preview.
+- The form is a `SnippetForm` overlay. Tern gets an `overlay` sheet with role `omp.overlay.snippets.form`; the terminal paints a framed card. It resolves to a draft of `key`, `scope`, `description`, and `body`. Keys reach the form, which edits the focused field; Tern edits arrive per field.
 - On save, the command formats the draft with `formatSnippetSource(description, body)` and writes it with `store.write`. A changed key renames the file first with `store.rename`, keeping its state, then writes the text when it changed.
 - Without the custom UI (`ctx.mode` not `tui`, or no `ctx.ui.custom`), the same draft comes from `ctx.ui.input`, `ctx.ui.select` (scope, new snippets only), and `ctx.ui.editor` (body). No path shows frontmatter.
-- In the terminal form, Enter moves to the next field from Key, Scope or Description, adds a line in Body, and presses Save or Cancel when one is focused. Left, Right or Space switches Scope. Saving with an invalid key moves the cursor to Key and shows the reason. In Tern, click a field to edit it.
+- In the form, Enter moves to the next field from Key, Scope or Description, adds a line in Body, and presses Save or Cancel when one is focused. Left, Right or Space switches Scope. Saving with an invalid key moves the cursor to Key and shows the reason. In Tern, click a field to edit it.
 - In the Tern console, the search field and the All, Global and Workspace tabs sit at the top, the preview sits below the list, and an action bar holds the actions with their shortcuts.
 
 ## Without the terminal UI

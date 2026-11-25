@@ -1,9 +1,9 @@
-import { item, list, node, span, text } from "@oh-my-pi/pi-tui";
-import { OwnerMemo } from "@oh-my-pi/pi-tui/native/memo";
-import type { NativeChild, NativeNode } from "@oh-my-pi/pi-tui/native/node";
-import type { NativeToolHead, NativeToolView, RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
+import type { ToolRenderResultOptions } from "@oh-my-pi/pi-coding-agent";
+import { type JSXNode, nativeRendering, type UiNode } from "@oh-my-pi/pi-tui";
+import type { TspCardStatus, TspTone } from "@oh-my-pi/pi-wire";
 
 import { modelTextNodes } from "#src/model-text.ts";
+import { h, span } from "#src/tsp.ts";
 
 interface CardResult {
   content: ReadonlyArray<{ type: string; text?: string }>;
@@ -11,8 +11,6 @@ interface CardResult {
   isError?: boolean;
 }
 type Fields = Record<string, unknown>;
-type Tone = NonNullable<NativeToolView["tone"]>;
-const memo = new OwnerMemo<NativeToolView>();
 const LIMIT = 6;
 
 // Persisted results and streaming arguments can predate the current schema.
@@ -29,22 +27,49 @@ function short(value: unknown, limit = 180): string {
 function rows(value: unknown): Fields[] {
   return Array.isArray(value) ? value.filter((row) => row !== null && typeof row === "object" && !Array.isArray(row)) : [];
 }
-function tone(state: string): Tone {
+function tone(state: string): TspTone {
   if (["complete", "pass"].includes(state)) return "success";
   if (["failed", "fail"].includes(state)) return "error";
   if (["blocked", "paused", "stopped", "stale"].includes(state)) return "warning";
   return state === "in_progress" || state === "active" ? "accent" : "muted";
 }
-function line(value: string, style?: Tone): NativeNode {
-  return text([span(value, style)], { wrap: "word" });
+function line(value: string, style?: TspTone): UiNode {
+  return h("text", { spans: [span(value, style)], wrap: "word" });
 }
-function head(op?: string, goal?: string, state?: string): NativeToolHead {
-  return {
-    title: "Ultrawork loop",
-    target: [short(op, 48), short(goal, 120)].filter(Boolean).join(" ") || undefined,
-    targetKind: "text",
-    ...(state ? { badges: [{ text: short(state), tone: tone(state) }] } : {}),
-  };
+interface Head {
+  target?: string;
+  state?: string;
+}
+function head(op?: string, goal?: string, state?: string): Head {
+  const target = [short(op, 48), short(goal, 120)].filter(Boolean).join(" ");
+  return { ...(target ? { target } : {}), ...(state ? { state } : {}) };
+}
+
+/**
+ * Tern frames the body under its generic tool card head (the tool's label and an args summary); the terminal's
+ * custom-tool box draws no head, so there the body sits under an inline head naming the operation, its goal and its
+ * state. In Tern a first `facts` row keeps what that generic head lacks: the state badge in its tone.
+ */
+function card(tool: Head, status: TspCardStatus, body: readonly JSXNode[]): UiNode | undefined {
+  if (nativeRendering()) {
+    const facts = tool.state
+      ? h("row", { key: "facts", gap: "sm" }, h("badge", { text: short(tool.state), tone: tone(tool.state) }))
+      : undefined;
+    return facts || body.length > 0 ? h("col", {}, facts, ...body) : undefined;
+  }
+  return h(
+    "tool",
+    {
+      name: "ulw_loop",
+      title: "Ultrawork loop",
+      frame: "inline",
+      status,
+      ...(tool.target ? { target: tool.target, targetKind: "text" as const } : {}),
+      ...(tool.state ? { badges: [{ text: short(tool.state), tone: tone(tool.state) }] } : {}),
+      ...(status === "error" ? { tone: "error" as const } : {}),
+    },
+    ...body,
+  );
 }
 
 /** A passing capture is not necessarily fresh: status lacks per-criterion tree freshness. */
@@ -57,17 +82,20 @@ function criterionState(criterion: Fields, goal: Fields): string {
   const state = str(capture.status) ?? "pending";
   return state === "pass" && criterion.fresh !== true ? "pass recorded" : state;
 }
-function goalNodes(goal: Fields, criteria = rows(goal.criteria)): NativeChild[] {
+function goalNodes(goal: Fields, criteria = rows(goal.criteria)): UiNode[] {
   const id = short(goal.id, 48);
   const state = str(goal.status) ?? "unknown";
-  const result: NativeChild[] = [list([item(id, { label: `${id} ${short(goal.title)}`, detail: [span(state, tone(state))] })])];
+  const result: UiNode[] = [h("list", {}, h("item", { key: id, label: `${id} ${short(goal.title)}`, detail: [span(state, tone(state))] }))];
   if (str(goal.blockedReason)) result.push(line(short(goal.blockedReason), "warning"));
   if (criteria.length) {
     result.push(
-      list(
-        criteria.slice(0, LIMIT).map((criterion, index) => {
+      h(
+        "list",
+        {},
+        ...criteria.slice(0, LIMIT).map((criterion, index) => {
           const state = criterionState(criterion, goal);
-          return item(short(criterion.id, 48) || String(index), {
+          return h("item", {
+            key: short(criterion.id, 48) || String(index),
             label: `${short(criterion.id, 48)} ${short(criterion.scenario)}`,
             detail: [span(state, tone(state === "pass recorded" ? "pass" : state))],
           });
@@ -79,7 +107,7 @@ function goalNodes(goal: Fields, criteria = rows(goal.criteria)): NativeChild[] 
   return result;
 }
 
-function describe(result: CardResult, expanded: boolean, args: Fields): NativeToolView {
+function view(result: CardResult, expanded: boolean, args: Fields): UiNode | undefined {
   const details = fields(result.details);
   const op = str(details.op) ?? str(args.op);
   const data = fields(details.result);
@@ -99,7 +127,7 @@ function describe(result: CardResult, expanded: boolean, args: Fields): NativeTo
   const failed = result.isError || details.ok === false;
   const status = failed ? "failed" : (str(goal?.status) ?? str(state.status) ?? str(data.status));
   let tool = head(op, goalId, status);
-  const body: NativeChild[] = [];
+  const body: UiNode[] = [];
   if (failed) {
     const error = fields(details.error);
     const reason = short(error.message) || "Operation failed; expand Model text for details.";
@@ -107,7 +135,11 @@ function describe(result: CardResult, expanded: boolean, args: Fields): NativeTo
   } else if (op === "help" && Object.keys(fields(data.operations)).length) {
     const operations = Object.entries(fields(data.operations));
     body.push(
-      list(operations.slice(0, LIMIT).map(([name, description]) => item(name, { label: name, detail: short(description, 120) }))),
+      h(
+        "list",
+        {},
+        ...operations.slice(0, LIMIT).map(([name, description]) => h("item", { key: name, label: name, detail: short(description, 120) })),
+      ),
       line(`${operations.length} operations · full contracts and references in Model text`, "muted"),
     );
   } else if (op === "record_evidence" && str(data.id)) {
@@ -179,24 +211,27 @@ function describe(result: CardResult, expanded: boolean, args: Fields): NativeTo
       .flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : []))
       .join("\n\n");
     if (source.trim()) {
+      // Tern folds the receipt; the terminal cannot unfold a section, so it shows it open once the card is expanded.
       body.push(
-        node("section", { head: [span("Model text", "muted")], collapsible: true, collapsed: true }, modelTextNodes(source), "model-text"),
+        h(
+          "section",
+          { key: "model-text", head: [span("Model text", "muted")], collapsible: true, collapsed: nativeRendering() },
+          ...modelTextNodes(source),
+        ),
       );
     }
   }
-  return { tool, body, preview: "none", ...(failed ? { tone: "error" } : {}) };
+  return card(tool, failed ? "error" : "done", body);
 }
 
-/** Native-only hooks; plain terminals retain the host renderer and the model receives unchanged receipts. */
+/** `ulw_loop` render hooks; the model receives unchanged receipts. */
 export const loopCard = {
-  describeCall(args?: unknown): NativeToolView {
+  renderCall(args?: unknown): UiNode | undefined {
     const input = fields(args);
-    return { tool: head(str(input.op), str(input.goalId) ?? str(input.targetGoalId)) };
+    return card(head(str(input.op), str(input.goalId) ?? str(input.targetGoalId)), "running", []);
   },
-  describeResult(result: CardResult, options: RenderResultOptions, args?: unknown): NativeToolView {
-    return memo.get(result.content, [result.details, result.isError, options.expanded, args], () =>
-      describe(result, options.expanded, fields(args)),
-    );
+  renderResult(result: CardResult, options: ToolRenderResultOptions, _theme: unknown, args?: unknown): UiNode | undefined {
+    return view(result, options.expanded, fields(args));
   },
   mergeCallAndResult: true,
 };

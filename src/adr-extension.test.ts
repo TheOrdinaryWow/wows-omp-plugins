@@ -77,11 +77,10 @@ interface Harness {
 
 async function createHarness(root: string, options: { sub?: boolean; entry?: string } = {}): Promise<Harness> {
   // These imports intentionally exercise the loader boundary after the child's isolated HOME is set.
-  const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+  const { createAgentSession, initTheme, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
-  const { initTheme } = await import("@oh-my-pi/pi-tui");
-  await initTheme();
+  initTheme();
   const entry = options.entry ?? ENTRY;
   const ui = new ScriptedUi();
   const { session, extensionsResult, eventBus } = await createAgentSession({

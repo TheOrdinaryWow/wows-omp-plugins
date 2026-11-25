@@ -1,6 +1,7 @@
 import { relative } from "node:path";
 
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionTheme, ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
+import { createRoot, type UiNode } from "@oh-my-pi/pi-tui";
 
 import { type ConsoleChoice, type ConsoleState, PreviewView, RoadmapConsole, type StagePlans } from "#src/console.ts";
 import {
@@ -229,10 +230,7 @@ function plannedRoundLabel(m: Model, round: RoundDoc, on: string): string {
   }${dates ? ` · ${dates}` : ""}`;
 }
 
-const FULLSCREEN = {
-  overlay: true,
-  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true },
-} as const;
+const FULLSCREEN = { overlay: true, fullscreen: true } as const;
 
 /**
  * `uiMenu` reads the setting on every use; without one the setting's default, fullscreen, applies. `stageOrder` orders the
@@ -258,6 +256,26 @@ export function createTuiUi(
     return options.find(([label]) => label === picked)?.[1];
   }
 
+  /**
+   * A fullscreen view owned by its own reactive root: the host builds it outside any owner, so the root is disposed
+   * once the view settles, releasing what it read from long-lived signals such as the terminal size.
+   */
+  async function fullscreenView<T>(build: (host: ExtensionUiHost, theme: ExtensionTheme, done: (result: T) => void) => UiNode): Promise<T> {
+    let dispose: (() => void) | undefined;
+    try {
+      return await ui.custom<T>(
+        (host, theme, _keys, done) =>
+          createRoot((release) => {
+            dispose = release;
+            return build(host, theme, done);
+          }),
+        FULLSCREEN,
+      );
+    } finally {
+      dispose?.();
+    }
+  }
+
   return {
     interactive: true,
     overlap: (q) =>
@@ -269,8 +287,7 @@ export function createTuiUi(
     },
 
     async previewConfirm(p) {
-      if (await fullscreen())
-        return ui.custom<boolean | undefined>((tui, theme, _keys, done) => new PreviewView(p, theme, tui, done), FULLSCREEN);
+      if (await fullscreen()) return fullscreenView<boolean | undefined>((host, theme, done) => new PreviewView(p, theme, done).view(host));
       const write = `Write ${plural(p.files.length, "file")}`;
       const cancel = "Cancel";
       const labels = [write, ...p.files.map((file) => `View ${relative(p.root, file.path)}`), cancel];
@@ -290,10 +307,8 @@ export function createTuiUi(
 
     async statusConsole(m, state, plans) {
       const order = stageOrder ? await stageOrder.current(ctx) : "dependency";
-      return ui.custom<ConsoleChoice | undefined>(
-        (tui, theme, _keys, done) =>
-          new RoadmapConsole(m, { ...state, order }, theme, tui, done, plans, (next) => stageOrder?.set(ctx, next)),
-        FULLSCREEN,
+      return fullscreenView<ConsoleChoice | undefined>((host, theme, done) =>
+        new RoadmapConsole(m, { ...state, order }, theme, done, plans, (next) => stageOrder?.set(ctx, next)).view(host),
       );
     },
 

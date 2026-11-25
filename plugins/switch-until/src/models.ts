@@ -5,9 +5,10 @@ import { createModelBrowserSource } from "@oh-my-pi/pi-coding-agent/modes/model-
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
-import { ModelPickerComponent } from "@oh-my-pi/pi-tui/overlays/model-picker";
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/utils/render-utils";
+import { createRoot, nativeRendering } from "@oh-my-pi/pi-tui";
 
+import { modelPickerView } from "#src/model-picker.ts";
 import type { ModelSelection } from "#src/state.ts";
 
 export interface ModelPick {
@@ -52,25 +53,35 @@ export function resolveSelection(selector: string, session: AgentSession): Model
 
 export async function pickModel(ctx: ExtensionContext, session: AgentSession): Promise<ModelPick | undefined> {
   if (ctx.mode === "tui") {
-    return ctx.ui.custom<ModelPick | undefined>(
-      (tui, _theme, _keybindings, done) =>
-        new ModelPickerComponent(
-          tui,
-          createModelBrowserSource(session.settings, (model) => session.effectiveServiceTier(model)),
-          ctx.modelRegistry,
-          session.scopedModels,
-          {
-            onPick: (model, _selector, { thinkingLevel }) => done({ model, thinking: thinkingLevel }),
-            onCancel: () => done(undefined),
-          },
-          {
-            currentSelector: ctx.model && formatModelStringWithRouting(ctx.model),
-            currentContextTokens: ctx.getContextUsage()?.tokens ?? 0,
-            thinkingLevelFor: () => session.configuredThinkingLevel(),
-          },
-        ),
-      { overlay: true, overlayOptions: { anchor: "bottom-center", width: "100%", maxHeight: "100%", margin: 0 } },
-    );
+    const scoped = session.scopedModels.map(({ model }) => model);
+    const mru = createModelBrowserSource(session.settings).mruOrder;
+    const rank = (model: Model) => {
+      const at = mru.indexOf(`${model.provider}/${model.id}`);
+      return at < 0 ? mru.length : at;
+    };
+    const models = (scoped.length ? scoped : ctx.modelRegistry.getAvailable()).toSorted((a, b) => rank(a) - rank(b));
+    if (!models.length) throw new Error("No models are available for /switch-until.");
+    let dispose: (() => void) | undefined;
+    try {
+      return await ctx.ui.custom<ModelPick | undefined>(
+        (ui, _theme, _keybindings, done) =>
+          createRoot((disposeRoot) => {
+            dispose = disposeRoot;
+            return modelPickerView({
+              models,
+              current: ctx.model,
+              thinking: session.configuredThinkingLevel(),
+              contextTokens: ctx.getContextUsage()?.tokens ?? 0,
+              rows: () => ui.size().rows,
+              onPick: (model, thinking) => done({ model, thinking }),
+              onCancel: () => done(undefined),
+            });
+          }),
+        nativeRendering() ? undefined : { overlay: true },
+      );
+    } finally {
+      dispose?.();
+    }
   }
   const choices = new Map<string, Model>();
   for (const model of ctx.modelRegistry.getAvailable()) {

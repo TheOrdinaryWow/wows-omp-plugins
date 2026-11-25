@@ -1,6 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
 import { getEditorCommand } from "@oh-my-pi/pi-coding-agent/utils/external-editor";
-import type { TUI } from "@oh-my-pi/pi-tui";
 
 import { insertReference, openExternally, sendHits } from "#src/actions.ts";
 import { type ConsoleAction, FindResultsController } from "#src/controller.ts";
@@ -146,7 +145,7 @@ export async function showResults(
 ): Promise<"refine" | "history" | undefined> {
   const controller = new FindResultsController(report, reader, ctx.ui.supportsEditor === true);
   let terminalConsole = ctx.mode === "tui";
-  let tui: TUI | undefined;
+  let host: ExtensionUiHost | undefined;
   for (;;) {
     let action: ConsoleAction | "back" | "send-selected" | undefined;
     if (terminalConsole) {
@@ -154,7 +153,7 @@ export async function showResults(
       if (!mounted) terminalConsole = false;
       else {
         action = mounted.choice.action;
-        tui = mounted.tui;
+        host = mounted.ui;
       }
     }
     if (!terminalConsole) action = await resultDialogAction(ctx, controller);
@@ -176,7 +175,7 @@ export async function showResults(
       return;
     }
     try {
-      await openExternally(ctx, hit, controller.state.range, terminalConsole ? tui : undefined);
+      await openExternally(ctx, hit, controller.state.range, terminalConsole ? host : undefined);
       reader.invalidate(hit);
       controller.loadPreview();
       controller.message = `Opened ${controller.selectedReference}${getEditorCommand() ? "." : " with the OS opener (line positioning is unavailable)."}`;

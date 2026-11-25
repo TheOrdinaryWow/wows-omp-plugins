@@ -1,19 +1,22 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ExtensionCommandContext, ExtensionUISelectItem } from "@oh-my-pi/pi-coding-agent";
-import { type Component, initTheme, type TUI, theme } from "@oh-my-pi/pi-tui";
+import type { ExtensionCommandContext, ExtensionCustomFactory, ExtensionUISelectItem, ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
+import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings/keybindings";
+import type { UiNode } from "@oh-my-pi/pi-tui";
+import { createTestTerminal } from "@oh-my-pi/pi-tui/testing/terminal";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
 
 import { runSnippetCommand, type SnippetCommandDeps, snippetArgumentCompletions } from "../plugins/snippets/src/command.ts";
 import type { SnippetSettings } from "../plugins/snippets/src/settings.ts";
 import { formatSnippetSource } from "../plugins/snippets/src/snippet.ts";
 import { SnippetStore } from "../plugins/snippets/src/store.ts";
 
-beforeAll(async () => {
-  await initTheme();
-});
+const theme = loadThemeSync("dark");
+const COLUMNS = 120;
+const ROWS = 48;
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -56,6 +59,7 @@ function scripted(store: SnippetStore, script: Script = {}, currentSettings = se
   const notifications: Array<{ text: string; level: string }> = [];
   const frames: string[] = [];
   const customOptions: unknown[] = [];
+  const views: UiNode[] = [];
   let changes = 0;
   const ui = {
     supportsEditor: script.supportsEditor ?? true,
@@ -83,15 +87,29 @@ function scripted(store: SnippetStore, script: Script = {}, currentSettings = se
     notify(text: string, level: string) {
       notifications.push({ text, level });
     },
-    custom(factory: (tui: TUI, th: typeof theme, keybindings: unknown, done: (value: unknown) => void) => Component, opts: unknown) {
+    /** Paints the view on a test terminal, then drives it: `"text"` steps are typed, the rest pressed as key ids. */
+    async custom(factory: ExtensionCustomFactory<unknown>, opts: unknown) {
       const script = keys.shift();
       if (!script) throw new Error("custom must not be called");
       customOptions.push(opts);
       const { promise, resolve } = Promise.withResolvers<unknown>();
-      const tui = { requestRender() {}, terminal: { rows: 30 } } as unknown as TUI;
-      const component = factory(tui, theme, undefined, resolve);
-      frames.push(Bun.stripANSI(component.render(120).join("\n")));
-      for (const key of script) component.handleInput?.(key);
+      const ui: ExtensionUiHost = { requestRender() {}, size: () => ({ columns: COLUMNS, rows: ROWS }), suspend: (run) => run() };
+      const node = (await factory(ui, theme as never, KeybindingsManager.inMemory(), resolve)) as UiNode;
+      const term = createTestTerminal(() => ({ dock: node }), { columns: COLUMNS, rows: ROWS, theme });
+      term.focus(node);
+      frames.push(
+        term
+          .screen()
+          .map((row) => row.replace(/^│ ?/, "").replace(/\s*│$/, ""))
+          .join("\n"),
+      );
+      for (const step of script)
+        if (/^".+"$/.test(step)) term.type(step.slice(1, -1));
+        else term.press(step);
+      term.dispose();
+      // Still alive while it is shown: only the command releases it, once the view settles.
+      expect(node.disposed).toBe(false);
+      views.push(node);
       return promise;
     },
   };
@@ -125,6 +143,7 @@ function scripted(store: SnippetStore, script: Script = {}, currentSettings = se
     notifications,
     frames,
     customOptions,
+    views,
     get changes() {
       return changes;
     },
@@ -164,51 +183,49 @@ test("disabled keys, unknown keys, empty bodies and malformed forms never insert
   expect(run.changes).toBe(0);
 });
 
-test("fullscreen re-opens after pinning with filter, query and selection kept, and Enter pastes one use", async () => {
+test("the console re-opens after pinning with filter, query and selection kept, and Enter pastes one use", async () => {
   const { store } = await fixture();
-  const run = scripted(store, { keys: [["\t", "s", "i", "g", "P"], ["\r"]] });
+  const run = scripted(store, { keys: [["tab", '"sig"', '"P"'], ["enter"]] });
   await runSnippetCommand("", run.ctx, run.deps);
   expect(run.frames).toHaveLength(2);
   const after = run.frames[1] ?? "";
-  expect(after).toMatch(/Search: sig/);
+  expect(after).toMatch(/Search sig/);
   expect(after).toMatch(/Pinned sig\./);
   expect(after).toMatch(/State +enabled, pinned/);
   expect(after).not.toMatch(/kyc {2}/);
-  expect(run.customOptions).toEqual([
-    { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
-    { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } },
-  ]);
+  // In the composer's place, like the host's own pickers.
+  expect(run.customOptions).toEqual([undefined, undefined]);
+  // Each view's reactive root is disposed once it settles.
+  expect(run.views.map((view) => view.disposed)).toEqual([true, true]);
   expect(store.entries.find((entry) => entry.key === "sig")).toMatchObject({ pinned: true, uses: 1 });
   expect(run.pasted).toEqual(["Best regards,\nLi"]);
   expect(run.sent).toEqual([]);
   expect(run.changes).toBe(2);
 });
 
-/** Keystrokes typing `text` one character at a time. */
-const typed = (text: string): string[] => [...text];
-const FULLSCREEN = { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true } };
-const FORM = { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "90%" } };
+const CONSOLE = undefined;
+const FORM = { overlay: true };
 
 test("new opens the form, refuses a taken key without writing, then creates the file and re-opens on it", async () => {
   const { store } = await fixture();
   const run = scripted(store, {
     keys: [
-      ["N"],
+      ['"N"'],
       [
-        ...typed("kyc"),
-        "\x13",
-        ...Array<string>(3).fill("\x7f"),
-        ...typed("fresh"),
-        "\t",
-        "\t",
-        ...typed("New description"),
-        "\t",
-        ...typed("# literal Markdown"),
-        "\r",
-        ...typed("{{not a template}}"),
-        "\x13",
+        '"kyc"',
+        "ctrl+s",
+        ...Array<string>(3).fill("backspace"),
+        '"fresh"',
+        "tab",
+        "tab",
+        '"New description"',
+        "tab",
+        '"# literal Markdown"',
+        "enter",
+        '"{{not a template}}"',
+        "ctrl+s",
       ],
-      ["\x1b"],
+      ["escape"],
     ],
   });
   await runSnippetCommand("", run.ctx, run.deps);
@@ -222,7 +239,8 @@ test("new opens the form, refuses a taken key without writing, then creates the 
   );
   expect(run.frames.at(-1)).toMatch(/fresh {2}New description/);
   expect(run.frames.at(-1)).toMatch(/Created workspace snippet fresh/);
-  expect(run.customOptions).toEqual([FULLSCREEN, FORM, FULLSCREEN]);
+  expect(run.customOptions).toEqual([CONSOLE, FORM, CONSOLE]);
+  expect(run.views.map((view) => view.disposed)).toEqual([true, true, true]);
   expect(run.changes).toBe(1);
 });
 
@@ -232,13 +250,9 @@ test("edit opens the form prefilled, refuses a rename collision inline, renames 
   if (!entry) throw new Error("Missing fixture snippet");
   await store.setPinned(entry.id, true);
   await store.recordUse([entry.id, entry.id]);
-  const clear = (count: number) => Array<string>(count).fill("\x7f");
+  const clear = (count: number) => Array<string>(count).fill("backspace");
   const run = scripted(store, {
-    keys: [
-      ["E"],
-      [...clear(3), ...typed("kyc"), "\x13", ...clear(3), ...typed("signoff"), "\t", ...clear(15), ...typed("Signature"), "\x13"],
-      ["\x1b"],
-    ],
+    keys: [['"E"'], [...clear(3), '"kyc"', "ctrl+s", ...clear(3), '"signoff"', "tab", ...clear(15), '"Signature"', "ctrl+s"], ["escape"]],
   });
   await runSnippetCommand("", run.ctx, run.deps);
   expect(run.frames[1]).toMatch(/Edit sig/);
@@ -286,7 +300,7 @@ test("non-TUI new and edit use step dialogs: key re-prompts, scope, description,
 
 test("enable and disable change expansion eligibility, while deleting requires the named destructive choice", async () => {
   const { store } = await fixture();
-  const toggles = scripted(store, { keys: [["s", "i", "g", "D"], ["D"], ["\x1b", "\x1b"]] });
+  const toggles = scripted(store, { keys: [['"sig"', '"D"'], ['"D"'], ["escape", "escape"]] });
   await runSnippetCommand("", toggles.ctx, toggles.deps);
   expect(toggles.frames[1]).toMatch(/Disabled sig; its shortcut no longer expands/);
   expect(toggles.frames[1]).toMatch(/State +disabled/);

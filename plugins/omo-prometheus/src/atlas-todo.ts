@@ -1,5 +1,5 @@
+import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/details/todo";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 import type { ExecutionLedger, LedgerItem } from "./ledger.ts";
 

@@ -1,4 +1,4 @@
-import type { FindHit, FindLexicalMatch, FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindHit, FindLexicalMatch, FindRange, FindToolDetails } from "@oh-my-pi/pi-coding-agent/tools/details/find";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 
 import type { CacheState, ConsoleHit, ConsoleReport } from "#src/report.ts";

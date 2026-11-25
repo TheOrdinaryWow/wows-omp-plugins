@@ -1,7 +1,7 @@
 import { type InternalUrlFilesystem, isUrlPath } from "@oh-my-pi/pi-coding-agent/internal-urls/url-filesystem";
+import type { FindHit } from "@oh-my-pi/pi-coding-agent/tools/details/find";
 import { lines, readText } from "@oh-my-pi/pi-coding-agent/tools/jfind/text";
 import { resolveSearchResultPath } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
-import type { FindHit } from "@oh-my-pi/pi-tui/tools/find";
 
 export interface PreviewSource {
   lines: string[];

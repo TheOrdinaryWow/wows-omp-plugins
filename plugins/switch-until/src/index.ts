@@ -316,7 +316,7 @@ export function registerSwitchUntil(pi: ExtensionAPI, deps: SwitchUntilDependenc
     }
   }
 
-  async function reconcileTarget(ctx: ExtensionContext, current: RunningUntil): Promise<void> {
+  async function reconcileTarget(ctx: ExtensionContext, current: RunningUntil, branched: boolean): Promise<void> {
     const { run, session, modelEntryId, controller } = current;
     const branch = ctx.sessionManager.getBranch();
     const { explicit, latest } = modelChanges(branch, modelEntryId);
@@ -331,7 +331,7 @@ export function registerSwitchUntil(pi: ExtensionAPI, deps: SwitchUntilDependenc
     const lastDefault = branch.findLast((entry) => entry.type === "model_change" && (entry.role === undefined || entry.role === "default"));
     const restoredDefault =
       latest?.role === EPHEMERAL_MODEL_CHANGE_ROLE && lastDefault?.type === "model_change" ? lastDefault.model : undefined;
-    if (selector !== `${target.provider}/${target.id}` && selector !== restoredDefault) return;
+    if (!branched && selector !== `${target.provider}/${target.id}` && selector !== restoredDefault) return;
     const model = resolveExactModelIdentity(target.selector, ctx.modelRegistry);
     if (!model) throw new Error(`Saved target ${target.selector} is unavailable.`);
     if (needsCompaction(ctx, model)) await compactToFit(ctx, session, model, { signal: controller.signal });
@@ -353,7 +353,7 @@ export function registerSwitchUntil(pi: ExtensionAPI, deps: SwitchUntilDependenc
     persist({ kind: "reconciled", id: run.id, modelEntryId: receipt.id });
   }
 
-  async function rebuild(ctx: ExtensionContext): Promise<void> {
+  async function rebuild(ctx: ExtensionContext, branched = false): Promise<void> {
     if (ctx.agent.kind !== "main") return;
     completionContext = ctx;
     detach(ctx);
@@ -369,7 +369,7 @@ export function registerSwitchUntil(pi: ExtensionAPI, deps: SwitchUntilDependenc
     const refresh = async () => {
       try {
         if (!isCurrent(ctx, current)) return;
-        await reconcileTarget(ctx, current);
+        await reconcileTarget(ctx, current, branched);
       } catch (error) {
         if (isCurrent(ctx, current))
           notice(ctx, `Switch-until could not resume. ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -457,6 +457,7 @@ export function registerSwitchUntil(pi: ExtensionAPI, deps: SwitchUntilDependenc
   pi.on("session_start", (_event, ctx) => rebuild(ctx));
   pi.on("session_switch", (_event, ctx) => rebuild(ctx));
   pi.on("session_tree", (_event, ctx) => rebuild(ctx));
+  pi.on("session_branch", (_event, ctx) => rebuild(ctx, true));
   pi.on("session_clear", (_event, ctx) => rebuild(ctx));
   pi.on("retry_fallback_applied", (_event, ctx) => {
     if (ctx.agent.kind === "main" && !switching && active) stillOwnsModel(ctx, active);

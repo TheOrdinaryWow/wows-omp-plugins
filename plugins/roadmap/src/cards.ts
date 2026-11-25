@@ -1,15 +1,13 @@
 import { basename, dirname } from "node:path";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { compact, item, kv, list, md, type NativeChild, type NativeNode, node, span, text } from "@oh-my-pi/pi-tui";
-import { CustomMessageComponent } from "@oh-my-pi/pi-tui/chat/custom-message";
-import { OwnerMemo } from "@oh-my-pi/pi-tui/native/memo";
-import type { NativeToolHead, NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
-import type { TspText, TspTone } from "@oh-my-pi/pi-wire";
+import { nativeRendering, type UiNode } from "@oh-my-pi/pi-tui";
+import type { TspSpan, TspText, TspTone } from "@oh-my-pi/pi-wire";
 
 import type { Diagnostics } from "#src/check.ts";
 import { modelTextNodes } from "#src/model-text.ts";
 import { type HeldPreview, receiptSummary, type StatusFocus, type StatusOverview, type ToolReceipt } from "#src/tools.ts";
+import { h, kv, span } from "#src/tsp.ts";
 
 export type RoadmapToolName =
   | "roadmap_status"
@@ -24,6 +22,21 @@ export type RoadmapToolName =
 
 type Args = Record<string, unknown>;
 type ToolResult = { content: readonly { type: string; text?: string }[]; details?: unknown; isError?: boolean };
+
+/** The card's head line: the action it ran, short facts and status chips. */
+interface Head {
+  target: string;
+  meta?: string[];
+  badges?: { text: string; tone: TspTone }[];
+}
+
+/** One result card: its head, the tone of its outcome and its body, clamped to `preview` lines while collapsed. */
+interface Card {
+  head: Head;
+  tone?: TspTone;
+  body: (UiNode | undefined)[];
+  preview?: number;
+}
 
 /** Lines a structured overview or diagnostics preview shows while the card is collapsed. */
 const PREVIEW_LINES = 12;
@@ -69,10 +82,24 @@ const CALL_TARGETS: Record<RoadmapToolName, (args: Args) => { target: string; me
   roadmap_upgrade: () => ({ target: "upgrade" }),
 };
 
-function callHead(name: RoadmapToolName, args: unknown): NativeToolHead {
+function callHead(name: RoadmapToolName, args: unknown): Head {
   const { target, meta = [] } = CALL_TARGETS[name](fields(args));
   const facts = meta.filter((fact): fact is string => fact !== undefined);
-  return { title: "Roadmap", target, targetKind: "text", ...(facts.length ? { meta: facts } : {}) };
+  return { target, ...(facts.length ? { meta: facts } : {}) };
+}
+
+/**
+ * `Roadmap <target> · facts [badges]`, the target in the outcome's tone. Tern's generic head already names the tool
+ * and its args, so there the line keeps only the facts and badges, and is undefined without any.
+ */
+function headLine(head: Head, tone?: TspTone): UiNode | undefined {
+  const native = nativeRendering();
+  const spans: TspSpan[] = native
+    ? []
+    : [span("Roadmap ", "toolTitle strong"), span(head.target, tone === "error" || tone === "warning" ? tone : "accent")];
+  for (const fact of head.meta ?? []) spans.push(...(spans.length ? [span(" · ", "dim")] : []), span(fact, "muted"));
+  for (const badge of head.badges ?? []) spans.push(...(spans.length ? [span(" ")] : []), span(`[${badge.text}]`, badge.tone));
+  return spans.length ? h("text", { key: "head", spans, wrap: "word" }) : undefined;
 }
 
 /** Span style and card tone of a round, stage or plan status. */
@@ -95,46 +122,40 @@ function statusSpan(status: string): TspText {
   return [span(status, statusStyle(status).s)];
 }
 
-function section(head: string, children: readonly NativeChild[], key: string, tone?: TspTone): NativeNode {
-  return node("section", { head: [span(head, "toolTitle")], ...(tone ? { tone } : {}) }, children, key);
+function section(head: string, children: readonly (UiNode | undefined)[], key: string): UiNode {
+  return h("section", { key, head: [span(head, "toolTitle")] }, children);
 }
 
 function table(
   key: string,
   cols: readonly [string, string, number, number?][],
   rows: readonly { id: string; cells: Record<string, TspText> }[],
-): NativeNode {
-  return node(
-    "table",
-    { cols: cols.map(([id, head, priority, grow]) => ({ id, head, priority, truncate: "end", ...(grow ? { grow } : {}) })), rows },
-    undefined,
+): UiNode {
+  return h("table", {
     key,
-  );
+    cols: cols.map(([id, head, priority, grow]) => ({ id, head, priority, truncate: "end" as const, ...(grow ? { grow } : {}) })),
+    rows,
+  });
 }
 
-function warningLines(warnings: readonly string[]): NativeNode[] {
+function warningLines(warnings: readonly string[]): UiNode[] {
   return warnings.map((warning, index) =>
-    node(
-      "text",
-      { spans: [span("Warning ", "warning strong"), span(warning)], wrap: "word", tone: "warning" },
-      undefined,
-      `warning-${index}`,
-    ),
+    h("text", { key: `warning-${index}`, spans: [span("Warning ", "warning strong"), span(warning)], wrap: "word", tone: "warning" }),
   );
 }
 
-function hintLines(hints: readonly string[]): NativeNode[] {
-  return hints.map((hint, index) => node("text", { spans: [span(hint, "muted")], wrap: "word" }, undefined, `hint-${index}`));
+function hintLines(hints: readonly string[]): UiNode[] {
+  return hints.map((hint, index) => h("text", { key: `hint-${index}`, spans: [span(hint, "muted")], wrap: "word" }));
 }
 
 /** Changed files as one-line items: file name first, then its directory. */
-function changedFiles(files: readonly string[] | undefined, head = "Changed files"): NativeNode | undefined {
+function changedFiles(files: readonly string[] | undefined, head = "Changed files"): UiNode | undefined {
   if (!files?.length) return undefined;
   const items = files.map((path) => {
     const directory = dirname(path);
-    return item(path, { label: [span(basename(path), "path")], ...(directory === "." ? {} : { detail: directory }) });
+    return h("item", { key: path, label: [span(basename(path), "path")], ...(directory === "." ? {} : { detail: directory }) });
   });
-  return section(head, [list(items)], "changed");
+  return section(head, [h("list", {}, items)], "changed");
 }
 
 /**
@@ -151,29 +172,25 @@ function receiptOf(details: unknown): ToolReceipt | undefined {
   if (receipt.ok === false && typeof receipt.reason === "string") return details as ToolReceipt;
 }
 
-function diagnosticRows(diagnostics: readonly Diagnostics[]): NativeNode[] {
+function diagnosticRows(diagnostics: readonly Diagnostics[]): UiNode[] {
   return diagnostics.map((diagnostic, index) => {
     const tone: TspTone = diagnostic.severity === "error" ? "error" : "warning";
-    return node(
-      "text",
-      {
-        spans: [
-          span(diagnostic.severity, `${tone} strong`),
-          span(` ${diagnostic.message} `),
-          span(diagnostic.rule, "dim"),
-          span(" · ", "dim"),
-          span(diagnostic.path, "path dim"),
-        ],
-        wrap: "word",
-        tone,
-      },
-      undefined,
-      `diagnostic-${index}`,
-    );
+    return h("text", {
+      key: `diagnostic-${index}`,
+      spans: [
+        span(diagnostic.severity, `${tone} strong`),
+        span(` ${diagnostic.message} `),
+        span(diagnostic.rule, "dim"),
+        span(" · ", "dim"),
+        span(diagnostic.path, "path dim"),
+      ],
+      wrap: "word",
+      tone,
+    });
   });
 }
 
-function checkView(head: NativeToolHead, receipt: ToolReceipt, diagnostics: readonly Diagnostics[]): NativeToolView {
+function checkView(head: Head, receipt: ToolReceipt, diagnostics: readonly Diagnostics[]): Card {
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
   const warnings = diagnostics.length - errors;
   const facts = [
@@ -182,19 +199,19 @@ function checkView(head: NativeToolHead, receipt: ToolReceipt, diagnostics: read
   ];
   const meta = facts.filter(Boolean);
   return {
-    tool: { ...head, meta: meta.length ? meta : ["passed"] },
-    tone: errors ? "error" : warnings ? "warning" : undefined,
-    body: compact<NativeChild>([
-      receipt.ok ? md(receipt.summary) : undefined,
+    head: { ...head, meta: meta.length ? meta : ["passed"] },
+    ...(errors ? { tone: "error" as const } : warnings ? { tone: "warning" as const } : {}),
+    body: [
+      receipt.ok ? h("md", { key: "summary", text: receipt.summary }) : undefined,
       ...diagnosticRows(diagnostics),
       ...(receipt.ok ? [] : hintLines(receipt.hints)),
       changedFiles(receipt.changedFiles, receipt.ok ? "Regenerated" : "Committed before the interruption"),
-    ]),
-    preview: { lines: PREVIEW_LINES },
+    ],
+    preview: PREVIEW_LINES,
   };
 }
 
-function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true }, overview: StatusOverview): NativeToolView {
+function overviewView(head: Head, receipt: ToolReceipt & { ok: true }, overview: StatusOverview): Card {
   const activeRound = overview.rounds.find((round) => round.status === "active");
   const overdue = (entry: { overdue: boolean }): TspText => (entry.overdue ? [span("overdue", "warning")] : "");
   const stageNote = (stage: StatusOverview["stages"][number]): TspText => {
@@ -204,16 +221,17 @@ function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true },
     return stage.dependsOn.length ? [span(`after ${stage.dependsOn.join(", ")}`, "dim")] : "";
   };
   const severity = (value: string): TspText => [span(value, value === "high" ? "warning strong" : value === "low" ? "dim" : "muted")];
+  const todoCount = count(overview.todos, "open TODO");
   return {
-    tool: {
+    head: {
       ...head,
-      meta: compact([
+      meta: [
         overview.project,
         activeRound ? `${activeRound.id} ${activeRound.title}` : "no active round",
-        count(overview.todos, "open TODO"),
-      ]),
+        ...(todoCount ? [todoCount] : []),
+      ],
     },
-    body: compact<NativeChild>([
+    body: [
       ...warningLines(receipt.warnings),
       overview.rounds.length
         ? section(
@@ -301,7 +319,7 @@ function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true },
                     })),
                   ),
                 ]
-              : [text([span("None.", "muted")])],
+              : [h("text", { spans: [span("None.", "muted")] })],
             "plans",
           )
         : undefined,
@@ -323,28 +341,30 @@ function overviewView(head: NativeToolHead, receipt: ToolReceipt & { ok: true },
                 })),
               ),
             ]
-          : [text([span("None.", "muted")])],
+          : [h("text", { spans: [span("None.", "muted")] })],
         "todos",
       ),
-    ]),
-    preview: { lines: PREVIEW_LINES },
+    ],
+    preview: PREVIEW_LINES,
   };
 }
 
-function focusView(head: NativeToolHead, receipt: ToolReceipt & { ok: true }, focus: StatusFocus): NativeToolView {
+function focusView(head: Head, receipt: ToolReceipt & { ok: true }, focus: StatusFocus): Card {
   const style = statusStyle(focus.status);
   return {
-    tool: {
+    head: {
       ...head,
       meta: [focus.id, focus.title],
-      badges: compact([
+      badges: [
         { text: focus.status, tone: style.tone },
-        receipt.answer ? { text: receipt.answer, tone: "accent" as const } : undefined,
-        focus.overdue ? { text: "overdue", tone: "warning" as const } : undefined,
-      ]),
+        ...(receipt.answer ? [{ text: receipt.answer, tone: "accent" as const }] : []),
+        ...(focus.overdue ? [{ text: "overdue", tone: "warning" as const }] : []),
+      ],
     },
-    body: compact<NativeChild>([
-      !receipt.summary.startsWith("---\n") && receipt.summary.split("\n").length <= PREVIEW_LINES ? md(receipt.summary) : undefined,
+    body: [
+      !receipt.summary.startsWith("---\n") && receipt.summary.split("\n").length <= PREVIEW_LINES
+        ? h("md", { key: "summary", text: receipt.summary })
+        : undefined,
       kv([
         ["Round", focus.round],
         ["Target", focus.target ?? undefined],
@@ -359,40 +379,41 @@ function focusView(head: NativeToolHead, receipt: ToolReceipt & { ok: true }, fo
       ]),
       ...warningLines(receipt.warnings),
       changedFiles(receipt.changedFiles),
-    ]),
+    ],
   };
 }
 
-function heldView(head: NativeToolHead, held: HeldPreview): NativeToolView {
+function heldView(head: Head, held: HeldPreview): Card {
   return {
-    tool: { ...head, badges: [{ text: "not written", tone: "warning" }] },
+    head: { ...head, badges: [{ text: "not written", tone: "warning" }] },
     tone: "warning",
-    body: compact<NativeChild>([
-      md(held.summary),
-      text([span("Awaiting confirmation: the user writes these files with ", "muted"), span(`/roadmap confirm ${held.token}`, "code")], {
+    body: [
+      h("md", { key: "summary", text: held.summary }),
+      h("text", {
+        key: "confirm",
+        spans: [span("Awaiting confirmation: the user writes these files with ", "muted"), span(`/roadmap confirm ${held.token}`, "code")],
         wrap: "word",
       }),
       ...held.files.map((file) =>
-        node(
+        h(
           "section",
-          { head: [span(file.path, "path")], collapsible: true, collapsed: true },
-          [md(documentBody(file.content))],
-          `file-${file.path}`,
+          { key: `file-${file.path}`, head: [span(file.path, "path")], collapsible: true, collapsed: true },
+          h("md", { text: documentBody(file.content) }),
         ),
       ),
-    ]),
-    preview: { lines: PREVIEW_LINES },
+    ],
+    preview: PREVIEW_LINES,
   };
 }
 
-function receiptView(name: RoadmapToolName, head: NativeToolHead, receipt: ToolReceipt): NativeToolView {
+function receiptView(name: RoadmapToolName, head: Head, receipt: ToolReceipt): Card {
   if (!receipt.ok) {
     if (receipt.held) return heldView(head, receipt.held);
     if (receipt.diagnostics?.length) return checkView(head, receipt, receipt.diagnostics);
     return {
-      tool: head,
+      head,
       tone: "error",
-      body: [text(receipt.reason, { wrap: "word" }), ...hintLines(receipt.hints)],
+      body: [h("text", { key: "reason", text: receipt.reason, wrap: "word" }), ...hintLines(receipt.hints)],
     };
   }
   if (receipt.overview) return overviewView(head, receipt, receipt.overview);
@@ -400,57 +421,60 @@ function receiptView(name: RoadmapToolName, head: NativeToolHead, receipt: ToolR
   if (name === "roadmap_check") return checkView(head, receipt, receipt.diagnostics ?? []);
   const long = receipt.summary.split("\n").length > PREVIEW_LINES;
   return {
-    tool: { ...head, ...(receipt.answer ? { badges: [{ text: receipt.answer, tone: "accent" as const }] } : {}) },
-    tone: receipt.warnings.length ? "warning" : undefined,
-    body: compact<NativeChild>([
-      long ? text("Roadmap operation completed.") : md(receipt.summary),
+    head: { ...head, ...(receipt.answer ? { badges: [{ text: receipt.answer, tone: "accent" as const }] } : {}) },
+    ...(receipt.warnings.length ? { tone: "warning" as const } : {}),
+    body: [
+      long ? h("text", { key: "summary", text: "Roadmap operation completed." }) : h("md", { key: "summary", text: receipt.summary }),
       ...warningLines(receipt.warnings),
       changedFiles(receipt.changedFiles),
-    ]),
-    ...(long ? { preview: { lines: PREVIEW_LINES } } : {}),
+    ],
+    ...(long ? { preview: PREVIEW_LINES } : {}),
   };
 }
 
-const views = new OwnerMemo<NativeToolView>();
+/** The folded text the model read, shown on expansion beside the facts the card already draws. */
+function modelTextSection(source: string): UiNode {
+  return h(
+    "section",
+    { key: "model-text", head: [span("Model text", "muted")], collapsible: true, collapsed: true },
+    modelTextNodes(source),
+  );
+}
 
-function describeResult(name: RoadmapToolName, result: ToolResult, args: unknown, expanded: boolean): NativeToolView {
+/** A result card: its head line over the body, which a collapsed card clamps to its preview lines. */
+function resultNode(name: RoadmapToolName, result: ToolResult, args: unknown, expanded: boolean): UiNode {
   const head = callHead(name, args);
   const receipt = receiptOf(result.details);
   const output = result.content
     .filter((part) => part.type === "text" && part.text)
     .map((part) => part.text)
     .join("\n");
-  return views.get(result, [name, head.target, head.meta?.join("\n"), expanded], () => {
-    const view: NativeToolView = receipt
-      ? receiptView(name, head, receipt)
-      : {
-          tool: head,
-          ...(result.isError ? { tone: "error" as const } : {}),
-          body: [text(result.isError ? "Roadmap operation failed." : "Roadmap result available.", { wrap: "word" })],
-        };
-    return {
-      ...view,
-      body: compact<NativeChild>([
-        ...(view.body ?? []),
-        expanded && output
-          ? node(
-              "section",
-              { head: [span("Model text", "muted")], collapsible: true, collapsed: true },
-              modelTextNodes(output),
-              "model-text",
-            )
-          : undefined,
-      ]),
-    };
-  });
+  const card: Card = receipt
+    ? receiptView(name, head, receipt)
+    : {
+        head,
+        ...(result.isError ? { tone: "error" as const } : {}),
+        body: [
+          h("text", { key: "summary", text: result.isError ? "Roadmap operation failed." : "Roadmap result available.", wrap: "word" }),
+        ],
+      };
+  const body = [...card.body, expanded && output ? modelTextSection(output) : undefined];
+  return h(
+    "col",
+    { gap: "sm", ...(card.tone ? { tone: card.tone } : {}) },
+    headLine(card.head, card.tone),
+    card.preview && !expanded
+      ? h("card", { key: "body", variant: "bare", collapsed: true, preview: { lines: card.preview } }, h("col", { gap: "sm" }, body))
+      : body,
+  );
 }
 
-/** Tern's native card hooks for one roadmap tool; plain terminals keep the host's default rendering. */
+/** The render hooks of one roadmap tool: the call's head line, then the result card in its place. */
 export function roadmapToolCard(name: RoadmapToolName) {
   return {
-    describeCall: (args: unknown): NativeToolView => ({ tool: callHead(name, args) }),
-    describeResult: (result: ToolResult, options: { expanded: boolean }, args?: unknown): NativeToolView =>
-      describeResult(name, result, args, options.expanded),
+    renderCall: (args: unknown): UiNode | undefined => headLine(callHead(name, args)),
+    renderResult: (result: ToolResult, options: { expanded: boolean }, _theme: unknown, args?: unknown): UiNode =>
+      resultNode(name, result, args, options.expanded),
     mergeCallAndResult: true,
   };
 }
@@ -471,7 +495,7 @@ export const MESSAGE_TITLES: Readonly<Record<string, string>> = {
   "wows-omp-roadmap.retarget": "Roadmap retarget",
 };
 
-/** Draws each displayed roadmap message in the host's own frame, headed by its product title instead of the custom type. */
+/** Draws each displayed roadmap message as a card like the host's, headed by its product title instead of the custom type. */
 export function registerMessageTitles(pi: Pick<ExtensionAPI, "registerMessageRenderer">): void {
   for (const [customType, title] of Object.entries(MESSAGE_TITLES)) {
     pi.registerMessageRenderer(customType, (message, options) => {
@@ -485,31 +509,12 @@ export function registerMessageTitles(pi: Pick<ExtensionAPI, "registerMessageRen
           ? "Roadmap result available."
           : source;
       const modelText = source !== summary ? source : "";
-      const component = new CustomMessageComponent({ ...message, content: summary, customType: title });
-      const describe = component.describe.bind(component);
-      component.describe = () => {
-        const frame = describe();
-        return {
-          ...frame,
-          c: compact<NativeChild>([
-            ...(frame.c ?? []),
-            options.expanded && modelText
-              ? node(
-                  "section",
-                  {
-                    head: [span("Model text", "muted")],
-                    collapsible: true,
-                    collapsed: true,
-                  },
-                  modelTextNodes(modelText),
-                  "model-text",
-                )
-              : undefined,
-          ]),
-        };
-      };
-      component.setExpanded(options.expanded);
-      return component;
+      return h(
+        "card",
+        { head: [span(title, "customMessageLabel strong")] },
+        h("md", { key: "summary", text: summary }),
+        options.expanded && modelText ? modelTextSection(modelText) : undefined,
+      );
     });
   }
 }

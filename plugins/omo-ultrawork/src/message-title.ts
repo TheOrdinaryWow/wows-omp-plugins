@@ -1,11 +1,20 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { CustomMessageComponent } from "@oh-my-pi/pi-tui/chat/custom-message";
 
-/** Shows a displayed message in the host's own frame, labelled with a product title instead of its persisted customType. */
+import { h, span } from "#src/tsp.ts";
+
+type Content = string | readonly { type: string; text?: string }[];
+
+function messageText(content: Content): string {
+  if (typeof content === "string") return content;
+  return content.flatMap((part) => (part.type === "text" && typeof part.text === "string" ? [part.text] : [])).join("\n");
+}
+
+/**
+ * Shows a displayed message as a card like the host's default one, labelled with a product title instead of its
+ * persisted customType: the host's default card always heads itself with the customType.
+ */
 export function registerMessageTitle(pi: ExtensionAPI, customType: string, title: string): void {
-  pi.registerMessageRenderer(customType, (message, options) => {
-    const component = new CustomMessageComponent({ ...message, customType: title });
-    component.setExpanded(options.expanded);
-    return component;
-  });
+  pi.registerMessageRenderer(customType, (message) =>
+    h("card", { head: [span(title, "customMessageLabel strong")] }, h("md", { text: messageText(message.content) })),
+  );
 }

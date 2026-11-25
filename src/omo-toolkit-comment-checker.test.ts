@@ -236,6 +236,21 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(unavailable?.content.at(-1)?.text.includes("file not checked"));
     assert.equal(await emit("tool_result", event, failedContext), undefined);
     assert.equal(warnings.length, 1, "an unavailable binary disables checking and warns only once per session");
+    // A rewind moves the same session manager to a new id without shutting the old session down.
+    let rewound = "before-rewind";
+    const moving = {
+      ...context(root),
+      sessionManager: { getSessionId: () => rewound, getSessionFile: () => undefined },
+    } as unknown as ExtensionContext;
+    const fileNotChecked = async () => (await emit("tool_result", event, moving))?.content.at(-1)?.text.includes("file not checked");
+    assert(await fileNotChecked());
+    assert.equal(await emit("tool_result", event, moving), undefined);
+    rewound = "after-rewind";
+    await emit("session_branch", { type: "session_branch" }, moving);
+    assert(await fileNotChecked(), "the rewound session starts with fresh checker state");
+    rewound = "before-rewind";
+    assert(await fileNotChecked(), "the abandoned session id keeps no checker state");
+    assert.equal(warnings.length, 4);
     console.log(
       "CHECKER_DEDUPE_OK: disabled hook absent; clean reruns; feedback once per turn; separate sessions; raw findings stay out of trusted context",
     );
@@ -435,8 +450,8 @@ async function scenario(name: string, root: string): Promise<void> {
   const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
-  const { initTheme } = await import("@oh-my-pi/pi-tui");
-  await initTheme();
+  const { initTheme } = await import("@oh-my-pi/pi-coding-agent");
+  initTheme();
   const bin = join(root, "bin");
   await mkdir(bin);
   process.env.PATH = `${bin}:${process.env.PATH}`;

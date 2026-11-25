@@ -41,13 +41,20 @@ export default function omoToolkit(pi: ExtensionAPI): void {
   };
 
   const configurations = new Map<string, ToolkitSettings>();
+  // A switch or rewind moves a session manager to a new session id without shutting the old one down.
+  const loadedIds = new WeakMap<object, string>();
   const loadSettings = async (_event: unknown, ctx: ExtensionContext): Promise<void> => {
-    configurations.set(ctx.sessionManager.getSessionId(), await readToolkitSettings(pi, ctx));
+    const id = ctx.sessionManager.getSessionId();
+    const previous = loadedIds.get(ctx.sessionManager);
+    if (previous !== undefined && previous !== id) configurations.delete(previous);
+    loadedIds.set(ctx.sessionManager, id);
+    configurations.set(id, await readToolkitSettings(pi, ctx));
   };
   const settings = (ctx: ExtensionContext): Readonly<ToolkitSettings> =>
     configurations.get(ctx.sessionManager.getSessionId()) ?? DEFAULT_SETTINGS;
   pi.on("session_start", loadSettings);
   pi.on("session_switch", loadSettings);
+  pi.on("session_branch", loadSettings);
   pi.on("session_shutdown", (_event, ctx) => {
     configurations.delete(ctx.sessionManager.getSessionId());
   });

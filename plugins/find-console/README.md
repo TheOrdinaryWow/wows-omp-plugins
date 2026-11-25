@@ -17,7 +17,7 @@ OMP's built-in `find` tool searches code by behavior ("where are versions bumped
 omp plugin install find-console@wows-omp-plugins
 ```
 
-You need OMP 19.1.1 or newer and a judgment model behind OMP's `judge` role, such as TypeSafe's Jev. Scores come from that model, so `/find` does not run with an ordinary chat model. Start a new session after installing.
+You need OMP 19.2.0 or newer and a judgment model behind OMP's `judge` role, such as TypeSafe's Jev. Scores come from that model, so `/find` does not run with an ordinary chat model. Start a new session after installing.
 
 ## Quick start
 
@@ -76,7 +76,7 @@ Hits are ranked by score. Scores use the same strong, plausible and muted bands 
 | `h` | Pick a recent search and run it again. |
 | Esc, Ctrl+C | Close without sending anything. |
 
-By default the console fills the terminal. Set `uiMenu` to `half-screen` to keep the conversation visible above a smaller panel. In [Tern](https://docs.stencil.so/tern/), the console opens as a large native sheet with the same actions as buttons.
+By default the console fills the terminal. Set `uiMenu` to `half-screen` to keep the conversation visible above a smaller panel. Each action also has a button at the bottom of the console, showing its key. In [Tern](https://docs.stencil.so/tern/), the console opens as a large native sheet with the same buttons.
 
 ### Recent searches
 

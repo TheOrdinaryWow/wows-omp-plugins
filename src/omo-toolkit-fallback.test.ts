@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import type { AssistantMessage, Context } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { z } from "zod";
 
 import { registerFallbackArchitect } from "../plugins/omo-toolkit/src/fallback-architect.ts";
 import { DEFAULT_SETTINGS, TOOLKIT_PACKAGE } from "../plugins/omo-toolkit/src/settings.ts";
@@ -130,8 +131,8 @@ async function scenario(name: string, root: string): Promise<void> {
   const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
   const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
   const { AssistantMessageEventStream } = await import("@oh-my-pi/pi-ai/utils/event-stream");
-  const { initTheme } = await import("@oh-my-pi/pi-tui");
-  await initTheme();
+  const { initTheme } = await import("@oh-my-pi/pi-coding-agent");
+  initTheme();
   await mkdir(join(root, ".omp", "agents"), { recursive: true });
   await writeFile(
     join(root, ".omp", "agents", "architect.md"),
@@ -141,6 +142,41 @@ async function scenario(name: string, root: string): Promise<void> {
     join(root, ".omp", "plugin-overrides.json"),
     JSON.stringify({ settings: { [TOOLKIT_PACKAGE]: { fallbackArchitect: true, initDeepAdvisor: false } } }),
   );
+  if (name === "rekey") {
+    const { default: omoToolkit } = await import(ENTRY);
+    type Hook = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown;
+    const hooks = new Map<string, Hook[]>();
+    const known = {
+      zod: z,
+      logger: { warn: () => {} },
+      on: (event: string, hook: Hook) => hooks.set(event, [...(hooks.get(event) ?? []), hook]),
+      getActiveTools: () => ["task"],
+      getAllTools: () => [{ name: "task", description: "# Available Agents\n- `architect`: Read-only review" }],
+    };
+    omoToolkit(new Proxy(known, { get: (target, key) => (key in target ? target[key as keyof typeof known] : () => undefined) }));
+    const emit = async (event: string, ctx: ExtensionContext, payload: Record<string, unknown> = {}) => {
+      let result: unknown;
+      for (const hook of hooks.get(event) ?? []) result = await hook({ type: event, ...payload }, ctx);
+      return result as { messages: unknown[] } | undefined;
+    };
+    const hints = async (ctx: ExtensionContext) => {
+      await emit("message_end", ctx, { message: message() });
+      await emit("retry_fallback_applied", ctx, { from: "toolkit-fixture/source", to: "toolkit-fixture/target", role: "default" });
+      return (await emit("context", ctx, { messages: [] }))?.messages.length ?? 0;
+    };
+    let id = "before-rewind";
+    const base = { cwd: root, hasUI: false, agent: { kind: "main" }, model: { provider: "toolkit-fixture", id: "target" } };
+    const live = { ...base, sessionManager: { getSessionId: () => id } } as unknown as ExtensionContext;
+    await emit("session_start", live);
+    assert.equal(await hints(live), 1, "the started session reads the project setting");
+    id = "after-rewind";
+    await emit("session_branch", live, { reason: "branch", previousSessionFile: undefined });
+    assert.equal(await hints(live), 1, "the rewound session reads the project setting");
+    const abandoned = { ...base, sessionManager: { getSessionId: () => "before-rewind" } } as unknown as ExtensionContext;
+    assert.equal(await hints(abandoned), 0, "the abandoned session id keeps no cached settings");
+    console.log("SETTINGS_REKEY_OK: a rewind loads settings for the new session id and drops the abandoned one");
+    return;
+  }
   const requests: Array<{ model: string; messages: Context["messages"] }> = [];
   const events: string[] = [];
   const settings = Settings.isolated({
@@ -226,6 +262,13 @@ async function scenario(name: string, root: string): Promise<void> {
       events.push(event.type);
     });
     await runner.emit({ type: "session_start" });
+    if (name === "branch") {
+      // A rewind moves the live session onto a new session id; the plugin settings must follow it.
+      const started = session.sessionManager.getSessionId();
+      const rewound = session.sessionManager.appendMessage({ role: "user", content: "Earlier request", timestamp: Date.now() });
+      assert.equal((await session.branch(rewound)).cancelled, false);
+      assert.notEqual(session.sessionManager.getSessionId(), started);
+    }
     await session.prompt("Give a short high-level opinion about keeping an existing module boundary. No code changes are requested.");
     assert.deepEqual(
       requests.map((request) => request.model),
@@ -239,7 +282,9 @@ async function scenario(name: string, root: string): Promise<void> {
     assert(events.includes("retry_fallback_succeeded"));
     assert.equal((await runner.emitContext([])).length, 0, "success cannot leave a persistent reminder");
     console.log(
-      "SDK_FALLBACK_OK: real local provider refusal -> native retry_fallback_applied -> automatic target request with exactly one architect continuity hint -> retry_fallback_succeeded; no later hint",
+      name === "branch"
+        ? "SDK_BRANCH_OK: after a rewind into a new session, the fallback architect keeps the project's enabled setting and injects exactly one continuity hint"
+        : "SDK_FALLBACK_OK: real local provider refusal -> native retry_fallback_applied -> automatic target request with exactly one architect continuity hint -> retry_fallback_succeeded; no later hint",
     );
   } finally {
     await session.dispose();
@@ -252,7 +297,7 @@ if (process.env[CHILD_ENV]) {
   // bun:test cannot load in the executable child; tests intentionally cross the real SDK module boundary.
   const { describe, expect, test } = await import("bun:test");
   describe("omo-toolkit fallback architect continuity", () => {
-    for (const name of ["correlation", "sdk"]) {
+    for (const name of ["correlation", "rekey", "sdk", "branch"]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "toolkit-fallback-"));
         try {

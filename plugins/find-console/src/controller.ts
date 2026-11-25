@@ -1,4 +1,4 @@
-import type { FindRange, FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
+import type { FindRange, FindToolDetails } from "@oh-my-pi/pi-coding-agent/tools/details/find";
 
 import { externalOpenReason, type PreviewReader, type PreviewSource } from "#src/preview.ts";
 import type { ConsoleHit, ConsoleReport } from "#src/report.ts";

@@ -15,7 +15,7 @@ import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { cfgTaskIsolationEnabled } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { isTodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import { isNativeRendering } from "@oh-my-pi/pi-tui";
+import { createRoot } from "@oh-my-pi/pi-tui";
 
 import { copyPlanReviews, PlanReviews, planReviewBindings, readPlanReviews } from "#src/plan-reviews.ts";
 
@@ -42,7 +42,7 @@ import { findPlanSessions } from "./atlas-sessions.ts";
 import { type AtlasPlan, type AtlasPlanDetail, AtlasStore, deliveryResult, gateResults } from "./atlas-store.ts";
 import { retitleForAtlas } from "./atlas-title.ts";
 import { atlasTodoRefreshCall, mergeAtlasTodos, syncAtlasTodos } from "./atlas-todo.ts";
-import { AtlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
+import { atlasStatusWidget, atlasWidgetLines } from "./atlas-widget.ts";
 import {
   amendDecision,
   DEFAULT_DECISION_SETTINGS,
@@ -179,10 +179,7 @@ const RUNTIME_SOURCE_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_PLAN_REFERENCE = "local://PLAN.md";
 const PACKAGE_NAME = "wows-omp-plugin-omo-prometheus";
 /** Plain terminals paint the plan view over the whole screen; Tern shows these overlays as large glass sheets. */
-const CONSOLE_OVERLAY = {
-  overlay: true,
-  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true },
-} as const;
+const CONSOLE_OVERLAY = { overlay: true, fullscreen: true } as const;
 const NON_GIT_PLANNING =
   '<workspace git="none">This workspace is not a Git repository, and this workflow never uses or creates one. Plan without Git: write `Delivery: direct`, give every task `Commit: none (workspace is not a Git repository)`, assign no git, commit or `git init` work, and prove each task by its observed behavior rather than a diff. If the user wants Git, they initialize it themselves before planning.</workspace>';
 const NON_GIT_EXECUTION =
@@ -816,7 +813,7 @@ export default function prometheus(pi: ExtensionAPI): void {
       });
       if (ctx.hasUI && atlasWidgets.get(sessionId) !== false) {
         if (ctx.mode === "tui") {
-          ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => new AtlasStatusWidget(live, tui, theme), { placement: "aboveEditor" });
+          ctx.ui.setWidget(WIDGET_KEY, () => atlasStatusWidget(live), { placement: "aboveEditor" });
         } else if (ctx.mode === "rpc") {
           // RPC clients accept only string-array widgets; publish the latest snapshot at most twice a second.
           let latest = live.snapshot;
@@ -1335,21 +1332,28 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   const openPlanView = async (ctx: ExtensionContext, detail: AtlasPlanDetail, mode: AtlasPlanViewMode): Promise<AtlasPlanViewAction> => {
     let view: AtlasPlanView | undefined;
+    // The host calls the factory outside any reactive owner: the view's computations live in a root of their own.
+    let disposeView: (() => void) | undefined;
     try {
-      return await ctx.ui.custom<AtlasPlanViewAction>((tui, theme, _keys, done) => {
-        view = new AtlasPlanView(
-          detail,
-          mode,
-          theme,
-          tui,
-          (file) => fs.readFile(file, "utf8"),
-          done,
-          mode === "active" ? liveModels.get(ctx.sessionManager.getSessionId()) : undefined,
-        );
-        return view;
-      }, CONSOLE_OVERLAY);
+      return await ctx.ui.custom<AtlasPlanViewAction>(
+        (ui, _theme, _keys, done) =>
+          createRoot((dispose) => {
+            disposeView = dispose;
+            view = new AtlasPlanView(
+              detail,
+              mode,
+              (file) => fs.readFile(file, "utf8"),
+              done,
+              mode === "active" ? liveModels.get(ctx.sessionManager.getSessionId()) : undefined,
+              () => ui.size(),
+            );
+            return view.view();
+          }),
+        CONSOLE_OVERLAY,
+      );
     } finally {
       view?.dispose();
+      disposeView?.();
     }
   };
 
@@ -1616,11 +1620,20 @@ export default function prometheus(pi: ExtensionAPI): void {
       const workspace = await fs.realpath(ctx.cwd);
       const details = await store.details(workspace);
       const options = { selectedId, message };
-      const action = await ctx.ui.custom<AtlasMenuAction>(
-        (tui, theme, _keys, done) => new AtlasMenu(details, filter, query, theme, tui, done, options),
-        // A plain terminal shows the menu in place of the editor; Tern floats it as a sheet like the plan view.
-        isNativeRendering() ? CONSOLE_OVERLAY : undefined,
-      );
+      let disposeMenu: (() => void) | undefined;
+      let action: AtlasMenuAction;
+      try {
+        // The menu takes the editor's place; Tern draws its picker as a sheet of its own. Its computations live in a
+        // root of their own, since the host calls the factory outside any reactive owner.
+        action = await ctx.ui.custom<AtlasMenuAction>((_ui, _theme, _keys, done) =>
+          createRoot((dispose) => {
+            disposeMenu = dispose;
+            return new AtlasMenu(details, filter, query, done, options).view();
+          }),
+        );
+      } finally {
+        disposeMenu?.();
+      }
       filter = action.filter;
       query = action.query;
       selectedId = action.planId ?? selectedId;
@@ -1798,8 +1811,7 @@ export default function prometheus(pi: ExtensionAPI): void {
 
   const trustedProposalResult = (live: AgentSession, toolName: string): boolean => {
     if (toolName !== "propose" || live.extensionRunner?.getRegisteredTool(toolName)) return false;
-    const source = toolProvenance(toolName);
-    return source?.source === "builtin" || (source?.source === "extension" && source.path === "<extension:propose>");
+    return toolProvenance(toolName)?.source === "builtin";
   };
 
   /** Refuses a Prometheus proposal Atlas could not execute, before the native approval overlay opens. */
@@ -3789,7 +3801,13 @@ export default function prometheus(pi: ExtensionAPI): void {
   });
 
   pi.on("session_branch", async (_event, ctx) => {
-    await recoverSession(ctx);
+    // Rewind and /branch continue in a new session, so they recover as a session switch: settings are keyed by the
+    // new session id, and the plan the branch point held replaces the one bound before it.
+    attachSession(ctx);
+    await loadPlanningSettings(ctx);
+    await recoverSession(ctx, false, true);
+    herdrDag.announce(ctx.sessionManager.getSessionId());
+    await refreshAtlasCompletions(ctx);
   });
 
   pi.on("session_tree", async (_event, ctx) => {

@@ -1,26 +1,11 @@
-import {
-  type Component,
-  col,
-  compact,
-  type DescribeContext,
-  elapsed,
-  keyed,
-  type NativeChild,
-  type NativeNode,
-  row,
-  span,
-  type Theme,
-  type TUI,
-  text,
-  truncateToWidth,
-  visibleWidth,
-} from "@oh-my-pi/pi-tui";
-import { Memo } from "@oh-my-pi/pi-tui/native/memo";
-import type { TspSpan } from "@oh-my-pi/pi-tui/native/node";
+import { onCleanup, signal, type UiNode } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
+
+import { h, span } from "#src/tsp.ts";
 
 import type { AtlasLive, AtlasLiveSnapshot } from "./atlas-live.ts";
-import { formatElapsed, progressBar, progressNode, rowMark, singleLine } from "./atlas-menu.ts";
+import { progressNode, singleLine } from "./atlas-menu.ts";
 
 /** Header plus row lines; the overflow notice takes the last row slot only when it hides two or more rows. */
 const MAX_LINES = 6;
@@ -55,125 +40,71 @@ export function atlasWidgetLines({ detail, rows, runningChildren }: AtlasLiveSna
   return [title, ...lines];
 }
 
-/** A compact observation above the editor. The editor and the agent retain keyboard focus. */
-export class AtlasStatusWidget implements Component {
-  #snapshot: AtlasLiveSnapshot;
-  #unsubscribe: () => void;
-  readonly #native = new Memo();
+/** Snapshots arrive every second while a row runs; the widget redraws only when the ledger or a running row's child changes. */
+function sameView(a: AtlasLiveSnapshot, b: AtlasLiveSnapshot): boolean {
+  if (a.detail !== b.detail || a.runningChildren !== b.runningChildren) return false;
+  return a.detail.rows.every((item) => item.status !== "in_progress" || a.rows.get(item.id) === b.rows.get(item.id));
+}
 
-  constructor(
-    readonly live: AtlasLive,
-    readonly tui: TUI,
-    readonly theme: Theme,
-  ) {
-    this.#snapshot = live.snapshot;
-    this.#unsubscribe = live.subscribe((snapshot) => {
-      this.#snapshot = snapshot;
-      this.tui.requestRender();
-    });
-  }
-
-  dispose(): void {
-    this.#unsubscribe();
-  }
-
-  render(width: number): readonly string[] {
-    const t = this.theme;
-    const { detail, rows, at, runningChildren } = this.#snapshot;
-    const gates = detail.rows.filter((item) => /^F[1-4]$/.test(item.id));
-    const passed = gates.filter((item) => item.status === "done").length;
-    // Stats first in priority: a long plan name gives way before the progress numbers do.
-    const stats = ` ${progressBar(t, detail.done, detail.total)} ${detail.done}/${detail.total} ${t.fg("dim", "·")} ${runningChildren} running${gates.length ? ` ${t.fg("dim", "·")} gates ${passed}/${gates.length}` : ""}`;
-    const name = truncateToWidth(detail.plan.name, Math.max(8, width - visibleWidth(stats)));
-    const title = `${t.bold(t.fg("accent", name))}${stats}`;
-
-    // Every ledger row in progress is listed, including one whose child has not reported yet.
-    const active = detail.rows.filter((item) => item.status === "in_progress");
-    const slots = MAX_LINES - 1;
-    const listed = active.length > slots ? active.slice(0, slots - 1) : active;
-    const idWidth = Math.max(0, ...listed.map((item) => item.id.length));
-    const lines = listed.map((item) => {
-      const current = rows.get(item.id);
-      const child = current?.attempt === item.attempt ? current : undefined;
-      const progress = child?.progress;
-      const head = `${rowMark(t, item.status)} ${item.id.padEnd(idWidth)} ${t.fg("muted", item.agent)} ${t.fg("dim", formatElapsed(item.startedAt, at))}`;
-      const usage = progress ? t.fg("dim", ` · ${formatNumber(progress.tokens)} tok · $${progress.cost.toFixed(2)}`) : "";
-      // A HEAVY row's recorded implementation waits for, then runs, its independent verifier.
-      const phase = item.verification?.status === "running" ? t.fg("accent", "verify ") : "";
-      const activity =
-        item.verification?.status === "pending"
-          ? t.fg("dim", "awaiting verification")
-          : !child
-            ? t.fg("dim", "waiting for child")
-            : progress?.currentTool
-              ? `${progress.currentTool}${progress.currentToolArgs ? t.fg("dim", ` ${singleLine(progress.currentToolArgs)}`) : ""}`
-              : progress?.lastIntent
-                ? singleLine(progress.lastIntent)
-                : t.fg("dim", child.status === "started" || child.status === "running" ? "running" : `child ${child.status}`);
+/** The summary as nodes: the plan's progress, then each running row; the terminal and Tern clock the timers. */
+export function atlasWidgetView({ detail, rows, runningChildren }: AtlasLiveSnapshot): UiNode {
+  const gates = detail.rows.filter((item) => /^F[1-4]$/.test(item.id));
+  const passed = gates.filter((item) => item.status === "done").length;
+  // Stats first in priority: a long plan name gives way before the progress numbers do.
+  const head = h(
+    "col",
+    { key: "head" },
+    progressNode(detail.done, detail.total, [
+      span(`${detail.done}/${detail.total}`),
+      span(` · ${runningChildren} running${gates.length ? ` · gates ${passed}/${gates.length}` : ""}  `, "muted"),
+      span(detail.plan.name, "strong accent"),
+    ]),
+  );
+  // Every ledger row in progress is listed, including one whose child has not reported yet.
+  const active = detail.rows.filter((item) => item.status === "in_progress");
+  const now = Date.now();
+  const listed = active.length > MAX_LINES - 1 ? active.slice(0, MAX_LINES - 2) : active;
+  const lines = listed.map((item) => {
+    const current = rows.get(item.id);
+    const child = current?.attempt === item.attempt ? current : undefined;
+    const progress = child?.progress;
+    // A HEAVY row's recorded implementation waits for, then runs, its independent verifier.
+    const activity: TspSpan[] = item.verification?.status === "running" ? [span("verify ", "accent")] : [];
+    if (item.verification?.status === "pending") activity.push(span("awaiting verification", "dim"));
+    else if (!child) activity.push(span("waiting for child", "dim"));
+    else if (progress?.currentTool) {
+      activity.push(span(progress.currentTool, "code"));
+      if (progress.currentToolArgs) activity.push(span(` ${singleLine(progress.currentToolArgs)}`, "dim"));
+    } else if (progress?.lastIntent) activity.push(span(singleLine(progress.lastIntent)));
+    else activity.push(span(child.status === "started" || child.status === "running" ? "running" : `child ${child.status}`, "dim"));
+    return h(
+      "row",
+      { key: item.id, gap: "sm", align: "center" },
+      h("text", { spans: [span(item.id, "accent"), span(` ${item.agent}`, "muted")], shrink: 0 }),
+      item.startedAt !== undefined ? h("elapsed", { age: now - item.startedAt, format: "short", shrink: 0 }) : undefined,
       // Activity is free text; it takes whatever width the fixed fields leave instead of pushing usage off.
-      const room = width - visibleWidth(head) - visibleWidth(usage) - visibleWidth(phase) - 3;
-      return room >= 8 ? `${head} ${t.fg("dim", "·")} ${phase}${truncateToWidth(activity, room)}${usage}` : `${head}${usage}`;
-    });
-    if (listed.length < active.length) lines.push(t.fg("dim", `+${active.length - listed.length} more in progress`));
-    return [title, ...lines].map((line) => truncateToWidth(line, Math.max(1, width)));
-  }
+      h("text", { spans: activity, truncate: "end", lines: 1, grow: 1, shrink: 1, basis: 0 }),
+      progress
+        ? h("text", { spans: [span(`${formatNumber(progress.tokens)} tok · $${progress.cost.toFixed(2)}`, "dim")], shrink: 0 })
+        : undefined,
+    );
+  });
+  const hidden = active.length - listed.length;
+  return h(
+    "col",
+    {},
+    head,
+    ...lines,
+    hidden > 0 ? h("text", { key: "more", spans: [span(`+${hidden} more in progress`, "dim")] }) : undefined,
+  );
+}
 
-  /**
-   * The same summary as native nodes in the dock. Snapshots arrive every second while a row runs; the node changes
-   * only when the ledger detail, the running count or a running row's child does, and Tern clocks the timers.
-   */
-  describe(_cx: DescribeContext): NativeNode {
-    const { detail, rows, runningChildren } = this.#snapshot;
-    const active = detail.rows.filter((item) => item.status === "in_progress");
-    return this.#native.get([detail, runningChildren, ...active.map((item) => rows.get(item.id))], () => {
-      const gates = detail.rows.filter((item) => /^F[1-4]$/.test(item.id));
-      const passed = gates.filter((item) => item.status === "done").length;
-      const head = row(
-        compact<NativeChild>([
-          text([span(detail.plan.name, "strong accent")], { truncate: "end", lines: 1 }),
-          progressNode(detail.done, detail.total, true),
-          text([span(`${runningChildren} running`, "muted")]),
-          gates.length > 0 && text([span(`gates ${passed}/${gates.length}`, "muted")]),
-        ]),
-        { gap: "md", align: "center" },
-      );
-      const now = Date.now();
-      const slots = MAX_LINES - 1;
-      const listed = active.length > slots ? active.slice(0, slots - 1) : active;
-      const lines = listed.map((item) => {
-        const current = rows.get(item.id);
-        const child = current?.attempt === item.attempt ? current : undefined;
-        const progress = child?.progress;
-        const activity: TspSpan[] = item.verification?.status === "running" ? [span("verify ", "accent")] : [];
-        if (item.verification?.status === "pending") activity.push(span("awaiting verification", "dim"));
-        else if (!child) activity.push(span("waiting for child", "dim"));
-        else if (progress?.currentTool) {
-          activity.push(span(progress.currentTool, "code"));
-          if (progress.currentToolArgs) activity.push(span(` ${singleLine(progress.currentToolArgs)}`, "dim"));
-        } else if (progress?.lastIntent) activity.push(span(singleLine(progress.lastIntent)));
-        else activity.push(span(child.status === "started" || child.status === "running" ? "running" : `child ${child.status}`, "dim"));
-        return keyed(
-          row(
-            compact<NativeChild>([
-              text([span(item.id, "accent"), span(` ${item.agent}`, "muted")]),
-              item.startedAt !== undefined && elapsed(now - item.startedAt),
-              text(activity, { truncate: "end", lines: 1, grow: 1 }),
-              progress && text([span(`${formatNumber(progress.tokens)} tok · $${progress.cost.toFixed(2)}`, "dim")]),
-            ]),
-            { gap: "sm", align: "center" },
-          ),
-          item.id,
-        );
-      });
-      const hidden = active.length - listed.length;
-      return col(
-        compact<NativeChild>([
-          keyed(head, "head"),
-          ...lines,
-          hidden > 0 && keyed(text([span(`+${hidden} more in progress`, "dim")]), "more"),
-        ]),
-        { gap: "xs", role: "omp.atlas.widget" },
-      );
-    });
-  }
+/**
+ * A compact observation above the editor, following the live model until the widget is replaced. The editor and the
+ * agent retain keyboard focus.
+ */
+export function atlasStatusWidget(live: AtlasLive): UiNode {
+  const snapshot = signal(live.snapshot, { equals: sameView });
+  onCleanup(live.subscribe((next) => snapshot.set(next)));
+  return h("col", {}, () => atlasWidgetView(snapshot()));
 }

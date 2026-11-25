@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
-import { getThemeEpoch } from "@oh-my-pi/pi-tui/theme";
 
 import { shouldDisplay } from "./display-timing.ts";
 import { createHerdr, type HerdrExec, type HerdrExecResult } from "./herdr.ts";
@@ -69,7 +68,6 @@ class DagExtension {
   #sessionId = "";
   #paths: SessionPaths = { snapshot: "", state: "" };
   #generation = 0;
-  #themeEpoch = -1;
   #theme: ThemeColors = { ...FALLBACK_THEME };
   #queue: Promise<void> = Promise.resolve();
   #commandsRegistered = false;
@@ -113,7 +111,7 @@ class DagExtension {
     if (this.#stopping) return;
     if (this.#pane && JSON.stringify(previous) !== JSON.stringify(this.#settings)) await this.#pane.update({ settings: this.#settings });
     if (this.#stopping) return;
-    if (!previous.followTheme && this.#settings.followTheme) this.#sampleTheme(true);
+    if (!previous.followTheme && this.#settings.followTheme) this.#sampleTheme();
     if (!this.#settings.atlasIntegration) {
       this.#atlas?.dispose();
       this.#atlas = undefined;
@@ -140,14 +138,11 @@ class DagExtension {
     return this.#atlas;
   }
 
-  #sampleTheme(force = false): void {
+  #sampleTheme(): void {
     const ctx = this.#ctx;
     if (!ctx || !this.#settings.followTheme) return;
-    const epoch = getThemeEpoch();
-    if (!force && epoch === this.#themeEpoch) return;
-    this.#themeEpoch = epoch;
     const theme = { ...FALLBACK_THEME };
-    for (const key of THEME_KEYS) theme[key] = ctx.ui.theme.getColorHex(key);
+    for (const key of THEME_KEYS) theme[key] = ctx.ui.theme.hex(key);
     this.#theme = theme;
   }
 
@@ -293,7 +288,7 @@ class DagExtension {
       }
       const atlas = this.#installAtlas();
       this.#todo.setAtlasBound(!!atlas?.state.snapshot);
-      this.#sampleTheme(true);
+      this.#sampleTheme();
       const snapshot = this.#buildSnapshot();
       this.#snapshot = snapshot;
       const env = this.#deps.env ?? process.env;

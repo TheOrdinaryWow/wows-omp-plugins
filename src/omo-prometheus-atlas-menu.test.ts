@@ -1,22 +1,38 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 
-import { initTheme, type TUI, theme, visibleWidth } from "@oh-my-pi/pi-tui";
+import type { UiNode } from "@oh-my-pi/pi-tui";
+import { createTestTerminal, type TestTerminal } from "@oh-my-pi/pi-tui/testing/terminal";
+import { visibleWidth } from "@oh-my-pi/pi-tui/text/width";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
 
 import type { AtlasLive, AtlasLiveRow, AtlasLiveSnapshot, AtlasProgress } from "../plugins/omo-prometheus/src/atlas-live.ts";
-import type { AtlasPlanViewMode } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import {
   AtlasMenu,
   type AtlasMenuAction,
   AtlasPlanView,
   type AtlasPlanViewAction,
+  type AtlasPlanViewMode,
   atlasPlanText,
 } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
-import { AtlasStatusWidget } from "../plugins/omo-prometheus/src/atlas-widget.ts";
+import { atlasStatusWidget } from "../plugins/omo-prometheus/src/atlas-widget.ts";
 
-beforeAll(async () => {
-  await initTheme();
+const theme = loadThemeSync("dark");
+const terminals: TestTerminal[] = [];
+
+afterEach(() => {
+  for (const term of terminals.splice(0)) term.dispose();
 });
+
+/** The view in a scripted terminal of `columns` × `rows`, focused as the host focuses a custom view. */
+function mount(node: UiNode, columns = 100, rows = 30): TestTerminal {
+  const term = createTestTerminal(() => ({ dock: node }), { columns, rows, theme });
+  term.focus(node);
+  terminals.push(term);
+  return term;
+}
+
+const screen = (term: TestTerminal): string => term.screen().join("\n");
 
 const plan: AtlasPlanDetail = {
   plan: {
@@ -58,122 +74,148 @@ const plan: AtlasPlanDetail = {
 };
 const fresh: AtlasPlanDetail = { ...plan, status: "Not started (0/2)", done: 0, started: false };
 const busy: AtlasPlanDetail = { ...plan, status: "In use by another session (1/2)", enterable: false, inUse: true };
+const south: AtlasPlanDetail = { ...plan, plan: { ...plan.plan, id: "south--00000000-0000-0000-0000-000000000002", name: "South" } };
 
-const tui = { requestRender() {}, terminal: { rows: 30 } } as unknown as TUI;
-
-function menu(detail = plan): { component: AtlasMenu; actions: AtlasMenuAction[] } {
+function menu(details = [plan]): { term: TestTerminal; actions: AtlasMenuAction[] } {
   const actions: AtlasMenuAction[] = [];
-  return { component: new AtlasMenu([detail], "unfinished", "", theme, tui, (action) => actions.push(action)), actions };
+  const term = mount(new AtlasMenu(details, "unfinished", "", (action) => actions.push(action)).view());
+  return { term, actions };
 }
 
 function view(
   detail = plan,
   mode: AtlasPlanViewMode = "dispatch",
-): { component: AtlasPlanView; actions: AtlasPlanViewAction[]; reads: string[] } {
+  options: { rows?: number; columns?: number; live?: AtlasLive } = {},
+): { term: TestTerminal; actions: AtlasPlanViewAction[]; reads: string[]; component: AtlasPlanView } {
   const actions: AtlasPlanViewAction[] = [];
   const reads: string[] = [];
+  const columns = options.columns ?? 100;
+  const rows = options.rows ?? 30;
   const component = new AtlasPlanView(
     detail,
     mode,
-    theme,
-    tui,
     async (file) => {
       reads.push(file);
       return "child says the build is green";
     },
     (action) => actions.push(action),
+    options.live,
+    () => ({ columns, rows }),
   );
-  return { component, actions, reads };
+  return { term: mount(component.view(), columns, rows), actions, reads, component };
 }
 
-const text = (lines: readonly string[]): string => Bun.stripANSI(lines.join("\n"));
+test("Atlas Dispatch lists the plans with their status and the highlighted plan's rows", () => {
+  const { term } = menu([plan, south]);
+  const shown = screen(term);
+  expect(shown).toMatch(/Atlas Dispatch/);
+  expect(shown).toMatch(/❯ North +1\/2 +In progress/);
+  expect(shown).toMatch(/ South +1\/2/);
+  expect(shown).toMatch(/T1 Build/);
+  expect(shown).toMatch(/⏎ start · ␣ details · ⇧R resume · ⇧N rename · ⌦ delete · ⇥ filter · ⎋ close/);
+  term.press("down");
+  expect(screen(term)).toMatch(/❯ South/);
+  term.type("zz");
+  expect(screen(term)).toMatch(/No plans match the search/);
+});
 
 test("Atlas Dispatch Backspace searches then deletes only with an empty query", () => {
-  const { component, actions } = menu();
-  component.handleInput("n");
-  component.handleInput("\x7f");
+  const { term, actions } = menu();
+  term.type("n");
+  term.press("backspace");
   expect(actions).toEqual([]);
-  component.handleInput("\x7f");
+  term.press("backspace");
   expect(actions).toMatchObject([{ kind: "delete", planId: plan.plan.id, query: "" }]);
 });
 
 test("Atlas Dispatch Delete removes the highlighted plan even while searching", () => {
-  const { component, actions } = menu();
-  component.handleInput("n");
-  component.handleInput("\x1b[3~");
+  const { term, actions } = menu();
+  term.type("n");
+  term.press("delete");
   expect(actions).toMatchObject([{ kind: "delete", planId: plan.plan.id, query: "n" }]);
 });
 
 test("Atlas Dispatch uppercase shortcuts act while lowercase letters search", () => {
-  const { component, actions } = menu();
-  component.handleInput("n");
-  component.handleInput("r");
-  component.handleInput("i");
+  const { term, actions } = menu();
+  term.type("nri");
   expect(actions).toEqual([]);
-  component.handleInput("\x7f");
-  component.handleInput("\x7f");
-  component.handleInput("N");
-  component.handleInput("R");
-  component.handleInput("I");
+  expect(screen(term)).toMatch(/> nri/);
+  term.press("backspace");
+  term.press("backspace");
+  term.type("NRI");
   expect(actions.map((action) => action.kind)).toEqual(["rename", "resume", "inspect"]);
 });
 
 test("Atlas Dispatch Enter starts, Space inspects, and Tab makes All display-only", () => {
   const first = menu();
-  first.component.handleInput("\r");
-  first.component.handleInput(" ");
+  first.term.press("enter");
+  first.term.press("space");
   expect(first.actions.map((action) => [action.kind, action.planId])).toEqual([
     ["start", plan.plan.id],
     ["inspect", plan.plan.id],
   ]);
   const second = menu();
-  second.component.handleInput("\t");
-  second.component.handleInput("\r");
-  second.component.handleInput("R");
+  second.term.press("tab");
+  second.term.press("enter");
+  second.term.type("R");
   expect(second.actions).toEqual([]);
-  expect(text(second.component.render(100))).toMatch(/display-only/);
-  second.component.handleInput(" ");
-  second.component.handleInput("\x1b");
+  expect(screen(second.term)).toMatch(/display-only/);
+  second.term.press("space");
+  second.term.press("escape");
   expect(second.actions.map((action) => action.kind)).toEqual(["inspect", "cancel"]);
   expect(second.actions.at(-1)).toMatchObject({ filter: "all" });
 });
 
 test("Atlas Dispatch refuses resuming an unstarted plan but still starts it", () => {
-  const { component, actions } = menu(fresh);
-  component.handleInput("R");
+  const { term, actions } = menu([fresh]);
+  term.type("R");
   expect(actions).toEqual([]);
-  expect(text(component.render(100))).toMatch(/not started yet/);
-  component.handleInput("\r");
+  expect(screen(term)).toMatch(/not started yet/);
+  term.press("enter");
   expect(actions).toMatchObject([{ kind: "start" }]);
 });
 
 test("Atlas Dispatch refuses starting or resuming a plan held by another session", () => {
-  const { component, actions } = menu(busy);
-  component.handleInput("\r");
-  component.handleInput("R");
+  const { term, actions } = menu([busy]);
+  term.press("enter");
+  term.type("R");
   expect(actions).toEqual([]);
-  expect(text(component.render(100))).toMatch(/in use by another session/);
-  component.handleInput("\x1b[3~");
+  expect(screen(term)).toMatch(/in use by another session/);
+  term.press("delete");
   expect(actions).toMatchObject([{ kind: "delete", planId: plan.plan.id }]);
 });
 
-test("Atlas plan view fills the terminal and expands the archived child output on demand", async () => {
-  const { component, reads } = view();
-  const lines = component.render(100);
-  expect(lines).toHaveLength(30);
-  expect(lines.every((line) => visibleWidth(line) === 100)).toBe(true);
-  expect(text(lines)).toMatch(/The build passes/);
-  expect(text(lines)).toMatch(/build is green/);
-  expect(text(lines)).not.toMatch(/child says/);
-  component.handleInput(" ");
+test("Atlas Dispatch reads at 80 and 120 columns without cutting the plan name or the hints", () => {
+  for (const columns of [80, 120]) {
+    const term = createTestTerminal(() => ({ dock: new AtlasMenu([plan, south], "unfinished", "", () => {}).view() }), {
+      columns,
+      rows: 40,
+      theme,
+    });
+    terminals.push(term);
+    const lines = term.screen();
+    expect(lines.every((line) => visibleWidth(line) <= columns)).toBe(true);
+    expect(lines.join("\n")).toMatch(/⎋ close/);
+    expect(lines.join("\n")).toMatch(/North/);
+  }
+});
+
+test("Atlas plan view shows the row and expands the archived child output on demand", async () => {
+  const { term, reads } = view();
+  expect(screen(term)).toMatch(/Atlas Dispatch · North/);
+  expect(screen(term)).toMatch(/The build passes/);
+  expect(screen(term)).toMatch(/build is green/);
+  expect(screen(term)).not.toMatch(/child says/);
+  term.press("space");
   await Promise.resolve();
+  term.render();
   expect(reads).toEqual(["/bundle/evidence/r1.md"]);
-  expect(text(component.render(100))).toMatch(/child says the build is green/);
-  component.handleInput("\x1b[B");
-  expect(text(component.render(100))).toMatch(/Approved/);
-  component.handleInput(" ");
+  expect(screen(term)).toMatch(/child says the build is green/);
+  term.press("down");
+  expect(screen(term)).toMatch(/Approved/);
+  term.press("space");
   expect(reads).toHaveLength(1);
-  expect(text(component.render(100))).toMatch(/no archived child output/);
+  expect(screen(term)).toMatch(/no archived child output/);
 });
 
 const amended: AtlasPlanDetail = {
@@ -185,57 +227,49 @@ const amended: AtlasPlanDetail = {
 };
 
 test("Atlas plan view shows a row's ruling in force, the approved text below it, and every ruling in the header", () => {
-  const tall = { requestRender() {}, terminal: { rows: 60 } } as unknown as TUI;
-  const component = new AtlasPlanView(
-    amended,
-    "dispatch",
-    theme,
-    tall,
-    async () => "",
-    () => {},
-  );
-  const screen = text(component.render(120));
-  expect(screen).toMatch(/Owner rulings 2 {2}R1 T1 · R2 T1/);
-  expect(screen).toMatch(/Acceptance {2}amended by R2/);
-  expect(screen).toContain("The build passes in 120 s");
-  expect(screen).toContain("User accepted 120 s");
-  expect(screen).not.toContain("The build passes in 90 s");
-  expect(screen).toMatch(/Approved plan[\s│]+The build passes/);
+  const shown = screen(view(amended, "dispatch", { rows: 60, columns: 120 }).term);
+  expect(shown).toMatch(/Owner rulings 2 {2}R1 T1 · R2 T1/);
+  expect(shown).toMatch(/Acceptance {2}amended by R2/);
+  expect(shown).toContain("The build passes in 120 s");
+  expect(shown).toContain("User accepted 120 s");
+  expect(shown).not.toContain("The build passes in 90 s");
+  expect(shown).toMatch(/Approved plan\n.*The build passes/);
 
   const plain = atlasPlanText(amended);
   expect(plain).toContain("    Acceptance: The build passes in 120 s (amended by R2)\n    Approved: The build passes");
   expect(plain).toMatch(/Owner rulings .*: 2\n- R1 T1: The build passes in 90 s — First limit/);
   expect(atlasPlanText(plan)).not.toMatch(/Owner rulings|Approved:/);
 });
+
 test("Atlas plan view dispatches like the list and Esc returns", () => {
   const started = view();
-  started.component.handleInput("R");
-  started.component.handleInput("\r");
-  started.component.handleInput("\x1b");
+  started.term.type("R");
+  started.term.press("enter");
+  started.term.press("escape");
   expect(started.actions).toEqual(["resume", "start", "back"]);
 
   const unstarted = view(fresh);
-  unstarted.component.handleInput("R");
+  unstarted.term.type("R");
   expect(unstarted.actions).toEqual([]);
-  expect(text(unstarted.component.render(100))).toMatch(/not started yet/);
+  expect(screen(unstarted.term)).toMatch(/not started yet/);
 
   const readOnly = view(plan, "display");
-  readOnly.component.handleInput("\r");
-  readOnly.component.handleInput("R");
+  readOnly.term.press("enter");
+  readOnly.term.type("R");
   expect(readOnly.actions).toEqual([]);
 });
 
 test("Atlas plan view for the running plan only reads and exits", () => {
   const active = view(plan, "active");
-  const screen = text(active.component.render(100));
-  expect(screen).toMatch(/Active in this session/);
-  expect(screen).not.toMatch(/\bstart\b|resume/);
-  active.component.handleInput("\r");
-  active.component.handleInput("R");
-  active.component.handleInput("N");
+  const shown = screen(active.term);
+  expect(shown).toMatch(/Active in this session/);
+  expect(shown).not.toMatch(/\bStart\b|Resume/);
+  expect(shown).toMatch(/Exit Atlas/);
+  active.term.press("enter");
+  active.term.type("RN");
   expect(active.actions).toEqual([]);
-  active.component.handleInput("X");
-  active.component.handleInput("\x1b");
+  active.term.type("X");
+  active.term.press("escape");
   expect(active.actions).toEqual(["exit", "back"]);
 });
 
@@ -254,65 +288,71 @@ const long: AtlasPlanDetail = {
 };
 
 test("Atlas plan view keeps separate row-body and timeline scroll positions across Tab", () => {
-  const { component } = view(long);
-  const screen = (): string => text(component.render(100));
-  component.handleInput("\x1b[6~");
-  expect(screen()).not.toMatch(/T1 {2}Build/);
-  component.handleInput("\t");
-  expect(screen()).toMatch(/started {2}T39\b/);
-  component.handleInput("\x1b[6~");
-  expect(screen()).not.toMatch(/started {2}T39\b/);
-  component.handleInput("\t");
-  expect(screen()).not.toMatch(/T1 {2}Build/);
-  component.handleInput("\t");
-  expect(screen()).not.toMatch(/started {2}T39\b/);
+  const { term } = view(long);
+  expect(screen(term)).toMatch(/T1 {2}Build/);
+  expect(screen(term)).toMatch(/more lines; PgDn to scroll/);
+  term.press("pageDown");
+  expect(screen(term)).not.toMatch(/T1 {2}Build/);
+  expect(screen(term)).toMatch(/criterion/);
+  term.press("tab");
+  expect(screen(term)).toMatch(/started {2}T39\b/);
+  term.press("pageDown");
+  expect(screen(term)).not.toMatch(/started {2}T39\b/);
+  term.press("tab");
+  expect(screen(term)).not.toMatch(/T1 {2}Build/);
+  term.press("tab");
+  expect(screen(term)).not.toMatch(/started {2}T39\b/);
+  term.press("home");
+  expect(screen(term)).toMatch(/started {2}T39\b/);
+  term.press("end");
+  expect(screen(term)).toMatch(/started {2}T0\b/);
 });
 
-test("Atlas plan view wheel scrolls the body, moves the sidebar selection, and never acts as a key", () => {
-  const { component, actions } = view(long);
-  // Terminal rows 30, width 100: body rows start at frame row 4 (0-based), sidebar left of column 39.
-  const body = (): string[] =>
-    component
-      .render(100)
-      .slice(4, 10)
-      .map((line) => text([line]).split("│")[2]?.trim() ?? "");
-  const wheelDown = "\x1b[<65;90;10M";
-  const wheelUp = "\x1b[<64;90;10M";
-  const top = body();
-  expect(top[0]).toMatch(/T1 {2}Build/);
-  component.handleInput(wheelDown);
-  expect(body()[0]).toBe(top[3] as string);
-  component.handleInput(wheelUp);
-  expect(body()).toEqual(top);
-  component.handleInput("\x1b[<66;90;10M");
-  component.handleInput("\x1b[<67;90;10M");
-  expect(body()).toEqual(top);
+test("Atlas plan view pages by painted rows, so the last line of a long body and of one long paragraph is reachable", () => {
+  const pageUntil = (term: TestTerminal, pattern: RegExp): number => {
+    for (let pages = 0; pages < 40; pages++) {
+      if (pattern.test(screen(term))) return pages;
+      term.press("pageDown");
+    }
+    return -1;
+  };
+  const lines = view(long);
+  expect(screen(lines.term)).not.toMatch(/criterion 59/);
+  expect(pageUntil(lines.term, /criterion 59/)).toBeGreaterThan(1);
+  expect(screen(lines.term)).not.toMatch(/more lines; PgDn/);
+  // Paging back up puts the rest of the body below the view again.
+  lines.term.press("pageUp");
+  expect(screen(lines.term)).toMatch(/more lines; PgDn/);
 
-  for (let notch = 0; notch < 40; notch++) component.handleInput(wheelDown);
-  const last = body();
-  component.handleInput(wheelUp);
-  expect(body()).not.toEqual(last);
+  const words = Array.from({ length: 600 }, (_, index) => `word${index}`).join(" ");
+  const paragraph: AtlasPlanDetail = {
+    ...plan,
+    rows: plan.rows.map((row) => (row.id === "T1" ? { ...row, acceptance: `${words} THE-END` } : row)),
+  };
+  const single = view(paragraph);
+  expect(screen(single.term)).not.toMatch(/THE-END/);
+  expect(pageUntil(single.term, /THE-END/)).toBeGreaterThan(1);
+  for (let index = 0; index < 600; index += 37) {
+    const pages = view(paragraph);
+    expect(pageUntil(pages.term, new RegExp(`\\bword${index}\\b`))).toBeGreaterThanOrEqual(0);
+  }
+});
 
-  component.handleInput("\x1b[<65;5;10M");
-  expect(body()[0]).toMatch(/F1 {2}Review/);
-  component.handleInput("\x1b[<64;5;10M");
-  expect(body()[0]).toMatch(/T1 {2}Build/);
-
-  component.handleInput("\t");
-  expect(body()[0]).toMatch(/started {2}T39\b/);
-  component.handleInput(wheelDown);
-  expect(body()[0]).toMatch(/started {2}T36\b/);
-
-  for (const report of ["\x1b[<0;5;10M", "\x1b[<0;5;10m", "\x1b[<35;90;10M", "\x1b[<65;90;1M"]) component.handleInput(report);
-  expect(body()[0]).toMatch(/started {2}T36\b/);
-  expect(actions).toEqual([]);
-
-  const unstarted = view(fresh);
-  unstarted.component.handleInput("R");
-  unstarted.component.handleInput("\x1b[<35;5;10M");
-  unstarted.component.handleInput(wheelDown);
-  expect(text(unstarted.component.render(100))).toMatch(/not started yet/);
-  expect(unstarted.actions).toEqual([]);
+test("Atlas plan view moves the sidebar selection with the arrows and keeps the selected row in view", () => {
+  const many: AtlasPlanDetail = {
+    ...plan,
+    rows: Array.from({ length: 40 }, (_, index) => ({
+      ...(plan.rows[1] as AtlasPlanDetail["rows"][number]),
+      id: `T${index + 1}`,
+      title: `Work ${index + 1}`,
+    })),
+  };
+  const { term } = view(many);
+  for (let step = 0; step < 30; step++) term.press("down");
+  const shown = screen(term);
+  expect(shown).toMatch(/❯ T31 Work 31/);
+  expect(shown).toMatch(/T31 {2}Work 31/);
+  expect(shown).not.toMatch(/ T1 Work 1\b/);
 });
 
 const running: AtlasPlanDetail = {
@@ -359,31 +399,29 @@ function observed(detail: AtlasPlanDetail, rows: Map<string, AtlasLiveRow>): Atl
 
 test("Atlas plan view shows the newest recent tools and the output tail in reading order", () => {
   const live = observed(running, new Map([["T1", { attempt: "attempt-1", childAgentId: "child-1", status: "running", progress }]]));
-  const component = new AtlasPlanView(
-    running,
-    "active",
-    theme,
-    { requestRender() {}, terminal: { rows: 60 } } as unknown as TUI,
-    async () => "",
-    () => undefined,
-    live,
-  );
-  const screen = text(component.render(120));
-  expect(screen).toMatch(/newest x/);
-  expect(screen).not.toMatch(/oldest x/);
-  expect(screen.indexOf("earlier line")).toBeLessThan(screen.indexOf("final line"));
+  const shown = screen(view(running, "active", { rows: 60, columns: 120, live }).term);
+  expect(shown).toMatch(/bash \d/);
+  expect(shown).toMatch(/bun test --watch/);
+  expect(shown).toMatch(/newest x/);
+  expect(shown).not.toMatch(/oldest x/);
+  expect(shown).toMatch(/5 tools · 3 requests · 12K tokens/);
+  expect(shown.indexOf("earlier line")).toBeLessThan(shown.indexOf("final line"));
 });
 
 test("Atlas widget lists rows still waiting for a child and stays within six lines and the width", () => {
   const two = { ...running, rows: running.rows.slice(0, 2) };
   const live = observed(two, new Map([["T1", { attempt: "attempt-1", childAgentId: "child-1", status: "running", progress }]]));
-  const widget = new AtlasStatusWidget(live, tui, theme);
-  for (const width of [40, 60, 100]) {
-    const lines = widget.render(width);
-    expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-    expect(lines.some((line) => /\bT2\b/.test(Bun.stripANSI(line)))).toBe(true);
+  for (const columns of [40, 80, 120]) {
+    const term = createTestTerminal(() => ({ dock: atlasStatusWidget(live) }), { columns, rows: 20, theme });
+    terminals.push(term);
+    const lines = term.screen().filter(Boolean);
+    expect(lines.every((line) => visibleWidth(line) <= columns)).toBe(true);
+    expect(lines.some((line) => /\bT2\b/.test(line))).toBe(true);
+    expect(lines[0]).toMatch(/0\/7 · 1 running/);
   }
-  const crowded = new AtlasStatusWidget(observed(running, new Map()), tui, theme).render(80);
-  expect(crowded).toHaveLength(6);
-  expect(Bun.stripANSI(crowded[5] ?? "")).toMatch(/\+3 more/);
+  const crowded = createTestTerminal(() => ({ dock: atlasStatusWidget(observed(running, new Map())) }), { columns: 80, rows: 20, theme });
+  terminals.push(crowded);
+  const lines = crowded.screen().filter(Boolean);
+  expect(lines).toHaveLength(6);
+  expect(lines[5]).toMatch(/\+3 more/);
 });

@@ -1,6 +1,6 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 
-import { type DescribeContext, initTheme, type NativeChild, type NativeNode, type NativeUiEvent, type TUI, theme } from "@oh-my-pi/pi-tui";
+import { setNativeRenderingForTest, signal, type UiEvent, type UiNode } from "@oh-my-pi/pi-tui";
 
 import type { AtlasLive, AtlasLiveRow, AtlasLiveSnapshot, AtlasProgress } from "../plugins/omo-prometheus/src/atlas-live.ts";
 import {
@@ -11,14 +11,11 @@ import {
   type AtlasPlanViewMode,
 } from "../plugins/omo-prometheus/src/atlas-menu.ts";
 import type { AtlasPlanDetail } from "../plugins/omo-prometheus/src/atlas-store.ts";
-import { AtlasStatusWidget } from "../plugins/omo-prometheus/src/atlas-widget.ts";
+import { atlasStatusWidget } from "../plugins/omo-prometheus/src/atlas-widget.ts";
 
-beforeAll(async () => {
-  await initTheme();
-});
-
-const cx: DescribeContext = { cols: 120, reduceMotion: false, dark: true, supports: () => true, feature: () => false };
-const tui = { requestRender() {}, terminal: { rows: 30 } } as unknown as TUI;
+// Tern: every view is built while the host renders natively, as a Tern pane does.
+beforeAll(() => setNativeRenderingForTest(true));
+afterAll(() => setNativeRenderingForTest(false));
 
 const plan: AtlasPlanDetail = {
   plan: {
@@ -114,272 +111,279 @@ function liveSource(detail: AtlasPlanDetail, rows: Map<string, AtlasLiveRow>) {
   return { live, tick };
 }
 
-function menu(details = [plan]): { component: AtlasMenu; actions: AtlasMenuAction[] } {
+/** Every node under `root` (itself included), depth first. */
+function nodes(root: UiNode, out: UiNode[] = []): UiNode[] {
+  out.push(root);
+  for (const child of root.children()) nodes(child, out);
+  return out;
+}
+const find = (root: UiNode, key: string): UiNode | undefined => nodes(root).find((entry) => entry.key() === key);
+const kinds = (root: UiNode, kind: string): UiNode[] => nodes(root).filter((entry) => entry.kind === kind);
+const props = (node: UiNode | undefined): Record<string, unknown> => (node?.props() ?? {}) as Record<string, unknown>;
+/** What a node and its subtree carry, as one string to search. */
+const tree = (node: UiNode): unknown => [node.kind, node.key(), node.props(), node.children().map(tree)];
+const shown = (node: UiNode | undefined): string => (node ? JSON.stringify(tree(node)) : "null");
+
+function send(node: UiNode, event: UiEvent): void {
+  node.handlers.onEvent?.(event);
+}
+const action = (act: string, value?: string): UiEvent => ({
+  type: "action",
+  key: `tools/actions/${act}`,
+  act,
+  mods: [],
+  ...(value ? { value } : {}),
+});
+const key = (id: string, text?: string) => ({ id, kind: "press" as const, raw: text ?? "", ...(text ? { text } : {}) });
+
+function menu(details = [plan]): { root: UiNode; picker: UiNode; actions: AtlasMenuAction[] } {
   const actions: AtlasMenuAction[] = [];
-  return { component: new AtlasMenu(details, "unfinished", "", theme, tui, (action) => actions.push(action)), actions };
+  const root = new AtlasMenu(details, "unfinished", "", (entry) => actions.push(entry)).view();
+  return { root, picker: root, actions };
 }
 
-function view(detail = plan, mode: AtlasPlanViewMode = "dispatch") {
+function view(detail = plan, mode: AtlasPlanViewMode = "dispatch", size = signal({ columns: 120, rows: 30 }), live?: AtlasLive) {
   const actions: AtlasPlanViewAction[] = [];
   const reads: Promise<string>[] = [];
   const component = new AtlasPlanView(
     detail,
     mode,
-    theme,
-    tui,
     (file) => {
       const read = Promise.resolve(`child says ${file} is green`);
       reads.push(read);
       return read;
     },
-    (action) => actions.push(action),
+    (entry) => actions.push(entry),
+    live,
+    size,
   );
-  return { component, actions, reads };
+  const root = component.view();
+  return { root, screen: root.children()[0] as UiNode, actions, reads, component };
 }
 
-function nodes(root: NativeChild, out: NativeNode[] = []): NativeNode[] {
-  if (!("k" in root)) return out;
-  out.push(root);
-  for (const entry of root.c ?? []) nodes(entry, out);
-  return out;
-}
-
-const find = (root: NativeNode, key: string): NativeNode | undefined => nodes(root).find((entry) => entry.key === key);
-const kinds = (root: NativeNode, kind: string): NativeNode[] => nodes(root).filter((entry) => entry.k === kind);
-const shown = (described: NativeNode | undefined): string => JSON.stringify(described ?? null);
-const action = (act: string): NativeUiEvent => ({ type: "action", key: `tools/actions/${act}`, act, mods: [] });
-
-test("Atlas plan view describes a large sheet titled by the plan with toned rows, progress and the selected row", () => {
-  const { component } = view();
-  expect(component.nativeOverlay).toMatchObject({ role: "omp.overlay.omoPrometheus.plan", size: "lg", head: "North" });
-  expect(component.nativeOverlay).toBe(component.nativeOverlay);
-  const root = component.describe(cx);
-  const rows = find(root, "rows");
-  expect(rows?.p).toMatchObject({ selected: "r0" });
-  expect(rows?.c?.map((entry) => ("k" in entry ? entry.p : undefined))).toMatchObject([{ tone: "success" }, { tone: "muted" }]);
-  expect(kinds(root, "progress")[0]?.p).toMatchObject({ value: 0.5 });
-  expect(kinds(root, "md").map((entry) => entry.p)).toMatchObject([{ text: "build is green" }, { text: "The build passes" }]);
-  expect(component.describe(cx)).toBe(root);
+test("Atlas Dispatch is a bare picker root, the sheet Tern draws, with filter tabs, searchable plans and the highlighted plan", () => {
+  const { root, picker } = menu();
+  expect(root.kind).toBe("picker");
+  expect(props(root)).toMatchObject({ title: "Atlas Dispatch", size: "lg" });
+  expect(picker.kind).toBe("picker");
+  expect(props(picker)).toMatchObject({ tab: "unfinished", selected: plan.plan.id, query: "" });
+  expect(props(picker).items).toMatchObject([{ id: plan.plan.id, label: "North", facts: { progress: 0.5, count: "1/2" } }]);
+  expect(props(picker).actions).toEqual(expect.arrayContaining([expect.objectContaining({ id: "start", keys: ["enter"] })]));
+  const preview = find(picker, "preview") as UiNode;
+  expect(kinds(preview, "checklist")).toHaveLength(1);
+  expect(props(kinds(preview, "progress")[0])).toMatchObject({ value: 0.5 });
+  picker.handlers.onKey?.(key("z", "z"));
+  expect(props(picker)).toMatchObject({ query: "z", items: [], selected: null, empty: "No plans match the search" });
 });
 
-test("Atlas sheets refresh their fixed extent on terminal resize and otherwise keep their descriptions", () => {
-  const terminal = { rows: 30 };
-  const surface = { requestRender() {}, terminal } as unknown as TUI;
-  const components = [
-    new AtlasMenu([plan], "unfinished", "", theme, surface, () => undefined),
-    new AtlasPlanView(
-      plan,
-      "dispatch",
-      theme,
-      surface,
-      async () => "",
-      () => undefined,
+test("Atlas Dispatch tab clicks, plan clicks and buttons run the same actions as the keys", () => {
+  const keys = menu([plan, south]);
+  const pointer = menu([plan, south]);
+  keys.picker.handlers.onKey?.(key("down"));
+  send(pointer.picker, { type: "select", key: "picker", item: south.plan.id });
+  expect(props(pointer.picker)).toMatchObject({ selected: south.plan.id });
+  const kindsInOrder = ["start", "inspect", "resume", "rename", "delete"];
+  for (const act of kindsInOrder) send(pointer.picker, action(act));
+  for (const id of ["enter", "space", "shift+r", "shift+n", "delete"]) keys.picker.handlers.onKey?.(key(id));
+  expect(pointer.actions.map((entry) => [entry.kind, entry.planId])).toEqual(kindsInOrder.map((kind) => [kind, south.plan.id]));
+  expect(pointer.actions).toEqual(keys.actions);
+
+  const opened = menu();
+  send(opened.picker, { type: "activate", key: "picker", item: plan.plan.id });
+  expect(opened.actions).toMatchObject([{ kind: "inspect", planId: plan.plan.id }]);
+
+  const tabbed = menu();
+  const clicked = menu();
+  tabbed.picker.handlers.onKey?.(key("tab"));
+  send(clicked.picker, action("tab", "all"));
+  expect(props(clicked.picker)).toMatchObject({ tab: "all" });
+  expect(props(clicked.picker)).toEqual(props(tabbed.picker));
+  send(clicked.picker, action("start"));
+  expect(clicked.actions).toEqual([]);
+  // A ready picker in Tern shows its subtitle, not its message.
+  expect(JSON.stringify(props(clicked.picker).subtitle)).toMatch(/display-only/);
+  send(clicked.picker, action("cancel"));
+  expect(clicked.actions).toMatchObject([{ kind: "cancel", filter: "all" }]);
+
+  const searched = menu();
+  searched.picker.handlers.onKey?.(key("z", "z"));
+  expect(props(searched.picker)).toMatchObject({ query: "z", items: [] });
+  send(searched.picker, action("clear"));
+  expect(props(searched.picker)).toMatchObject({ query: "", selected: plan.plan.id });
+  expect(searched.actions).toEqual([]);
+});
+
+test("Atlas plan view is a large sheet titled by the plan with toned rows, progress and the selected row", () => {
+  const { root } = view();
+  expect(root.kind).toBe("overlay");
+  expect(props(root)).toMatchObject({ role: "omp.overlay.omoPrometheus.plan", size: "lg", head: "North" });
+  const rows = find(root, "rows");
+  expect(props(rows)).toMatchObject({ selected: "r0" });
+  expect(rows?.children().map((entry) => props(entry))).toMatchObject([{ tone: "success" }, { tone: "muted" }]);
+  expect(props(kinds(root, "progress")[0])).toMatchObject({ value: 0.5 });
+  expect(kinds(root, "md").map((entry) => props(entry).text)).toEqual(["build is green", "The build passes"]);
+  expect(find(root, "title")).toBeUndefined();
+  expect(find(root, "body-scroll")?.kind).toBe("list");
+});
+
+test("Atlas plan view keeps the whole body in Tern's scroller and forwards the scroll keys to it", () => {
+  const long: AtlasPlanDetail = {
+    ...plan,
+    rows: plan.rows.map((row) =>
+      row.id === "T1" ? { ...row, acceptance: Array.from({ length: 60 }, (_, index) => `- criterion ${index}`).join("\n") } : row,
     ),
-  ];
-  const before = components.map((component) => component.describe(cx));
-  terminal.rows += 10;
-  for (const [index, component] of components.entries()) {
-    const previous = before[index];
-    const resized = component.describe(cx);
-    expect(resized).not.toBe(previous);
-    expect(resized.p?.min).not.toEqual(previous?.p?.min);
-    expect(resized.p?.min).toEqual(resized.p?.max);
-    expect(component.describe(cx)).toBe(resized);
-    if (previous && component instanceof AtlasPlanView) {
-      expect(find(resized, "body")).toBe(find(previous, "body"));
-      expect(find(resized, "sidebar")).toBe(find(previous, "sidebar"));
-    }
+    timeline: Array.from({ length: 40 }, (_, index) => ({
+      version: 1 as const,
+      at: index,
+      kind: "started" as const,
+      row: `T${index}`,
+      sessionId: "s",
+    })),
+  };
+  const { root, screen } = view(long);
+  const content = (): UiNode | undefined => find(root, "content");
+  expect(content()?.scroll()).toBeUndefined();
+  const keys = [
+    ["pageDown", "page-down"],
+    ["pageUp", "page-up"],
+    ["pageDown", "page-down"],
+  ] as const;
+  for (const [index, [id, by]] of keys.entries()) {
+    screen.handlers.onKey?.(key(id));
+    // Tern moves the scroller above the node carrying the request, so it rides on the scroller's content.
+    expect(content()?.scroll()).toEqual({ by, n: index + 1 });
+    // Nothing is cut from the start: the rows above the viewport stay reachable by scrolling back.
+    expect(shown(content())).toContain("T1  Build");
+    expect(shown(content())).toContain("criterion 59");
+  }
+  screen.handlers.onKey?.(key("tab"));
+  for (const [id, by] of [
+    ["end", "end"],
+    ["home", "start"],
+    ["down", "line-down"],
+    ["up", "line-up"],
+  ] as const) {
+    screen.handlers.onKey?.(key(id));
+    expect(content()?.scroll()).toMatchObject({ by });
+    expect(shown(content())).toContain("T39");
+    expect(shown(content())).toContain('T0"');
   }
 });
 
-test("Atlas plan view describes an amended row's ruling in force with the approved text, and lists every ruling", () => {
+test("Atlas plan view keeps a fixed sheet extent that follows the terminal height", () => {
+  const size = signal({ columns: 120, rows: 30 });
+  const { screen } = view(plan, "dispatch", size);
+  expect(props(screen).min).toEqual({ h: "22lines" });
+  expect(props(screen).max).toEqual(props(screen).min);
+  size.set({ columns: 120, rows: 40 });
+  expect(props(screen).min).toEqual({ h: "32lines" });
+  expect(props(screen).max).toEqual(props(screen).min);
+  size.set({ columns: 120, rows: 10 });
+  expect(props(screen).min).toEqual({ h: "16lines" });
+});
+
+test("Atlas plan view amended row shows the ruling in force with the approved text, and lists every ruling", () => {
   const amended: AtlasPlanDetail = {
     ...plan,
     rulings: [
       { id: "R1", rowId: "T1", acceptance: "The build passes in 120 s", note: "User accepted 120 s", confirmedAt: 0, decidedBy: "user" },
     ],
   };
-  const root = view(amended).component.describe(cx);
+  const { root } = view(amended);
   expect(shown(find(root, "rulings"))).toContain("R1 T1");
-  const acceptance = find(root, "acceptance");
-  expect(shown(acceptance)).toContain("amended by R1");
-  expect(kinds(root, "md").at(-1)?.p).toMatchObject({ text: "The build passes in 120 s" });
-  expect(shown(acceptance)).toContain("User accepted 120 s");
-  expect(shown(acceptance)).toMatch(/Approved plan: .*The build passes"/);
-  expect(find(view().component.describe(cx), "rulings")).toBeUndefined();
+  const body = shown(find(root, "body"));
+  expect(body).toContain("amended by R1");
+  expect(kinds(root, "md").at(-1)?.props()).toMatchObject({ text: "The build passes in 120 s" });
+  expect(body).toContain("User accepted 120 s");
+  expect(body).toMatch(/Approved plan.*The build passes"/);
+  expect(find(view().root, "rulings")).toBeUndefined();
 });
 
 test("Atlas plan view row clicks and view tabs change it exactly as the arrow and Tab keys", () => {
   const keys = view();
   const clicks = view();
-  const before = clicks.component.describe(cx);
-  keys.component.handleInput("\x1b[B");
-  clicks.component.handleNativeEvent({ type: "select", key: "split/sidebar/rows", item: "r1" });
-  const after = clicks.component.describe(cx);
-  expect(after).not.toBe(before);
-  expect(find(after, "rows")?.p).toMatchObject({ selected: "r1" });
-  expect(shown(find(after, "body"))).toContain("Approved");
-  expect(after).toEqual(keys.component.describe(cx));
+  keys.screen.handlers.onKey?.(key("down"));
+  send(clicks.screen, { type: "select", key: "split/sidebar/rows", item: "r1" });
+  expect(props(find(clicks.root, "rows"))).toMatchObject({ selected: "r1" });
+  expect(shown(find(clicks.root, "body"))).toContain("Approved");
+  expect(shown(find(clicks.root, "split"))).toEqual(shown(find(keys.root, "split")));
 
-  keys.component.handleInput("\t");
-  clicks.component.handleNativeEvent({ type: "select", key: "tools/view", item: "timeline" });
-  const timeline = clicks.component.describe(cx);
-  expect(find(timeline, "view")?.p).toMatchObject({ active: "timeline" });
-  expect(shown(find(timeline, "body"))).toContain("verify passed");
-  expect(timeline).toEqual(keys.component.describe(cx));
-});
-
-test("Atlas plan view forwards scroll keys to the stable body scroller and memoizes unchanged descriptions", () => {
-  const { component } = view();
-  const initial = component.describe(cx);
-  const body = find(initial, "body-scroll");
-  expect(body?.k).toBe("list");
-  expect(body?.c?.some((child) => "k" in child && child.scroll)).toBe(false);
-  const keys = [
-    ["\x1b[6~", "page-down"],
-    ["\x1b[5~", "page-up"],
-    ["\x1b[H", "start"],
-    ["\x1b[F", "end"],
-  ] as const;
-  for (const [index, [key, by]] of keys.entries()) {
-    if (by === "start") component.handleInput("\t");
-    component.handleInput(key);
-    const root = component.describe(cx);
-    const scroller = find(root, "body-scroll");
-    expect(scroller?.key).toBe(body?.key);
-    // Tern moves the scroller above the node carrying the request, so it rides on the scroller's content.
-    const content = scroller?.c?.[0];
-    expect(content && "k" in content ? content.scroll : undefined).toEqual({ by, n: index + 1 });
-    expect(find(root, "body")?.scroll).toBeUndefined();
-    expect(scroller?.scroll).toBeUndefined();
-    expect(find(root, "rows")).toBe(find(initial, "rows"));
-    expect(component.describe(cx)).toBe(root);
-  }
+  keys.screen.handlers.onKey?.(key("tab"));
+  send(clicks.screen, { type: "select", key: "tools/view", item: "timeline" });
+  expect(props(find(clicks.root, "view"))).toMatchObject({ active: "timeline" });
+  expect(shown(find(clicks.root, "body"))).toContain("verify passed");
+  expect(shown(find(clicks.root, "split"))).toEqual(shown(find(keys.root, "split")));
 });
 
 test("Atlas plan view buttons dispatch, refuse and close exactly like their keys", () => {
   const keys = view();
   const buttons = view();
-  keys.component.handleInput("\r");
-  buttons.component.handleNativeEvent(action("start"));
+  keys.screen.handlers.onKey?.(key("enter"));
+  send(buttons.screen, action("start"));
   expect(buttons.actions).toEqual(["start"]);
   expect(buttons.actions).toEqual(keys.actions);
+  expect(props(find(buttons.root, "start"))).toMatchObject({ actions: { click: "start" }, keys: ["enter"] });
 
   const refused = view(busy);
-  refused.component.handleNativeEvent(action("resume"));
+  send(refused.screen, action("resume"));
   expect(refused.actions).toEqual([]);
-  expect(shown(find(refused.component.describe(cx), "notice"))).toMatch(/another session/);
+  expect(shown(find(refused.root, "notice"))).toMatch(/another session/);
 
   const back = view();
-  back.component.handleNativeEvent(action("exit"));
-  back.component.handleNativeEvent(action("back"));
+  send(back.screen, action("exit"));
+  send(back.screen, action("back"));
   expect(back.actions).toEqual(["back"]);
 
   const active = view(plan, "active");
-  active.component.handleNativeEvent(action("start"));
-  active.component.handleNativeEvent(action("exit"));
+  send(active.screen, action("start"));
+  send(active.screen, action("exit"));
   expect(active.actions).toEqual(["exit"]);
 });
 
 test("Atlas plan view opens and closes the archived child output from its disclosure as Space does", async () => {
-  const { component, reads } = view();
-  expect(find(component.describe(cx), "output")?.p).toMatchObject({ collapsed: true });
-  component.handleNativeEvent({ type: "toggle", key: "split/body/output", collapsed: false });
+  const { root, screen, reads } = view();
+  expect(props(find(root, "output"))).toMatchObject({ collapsed: true });
+  send(screen, { type: "toggle", key: "split/body/body-scroll/content/output", collapsed: false });
   expect(reads).toHaveLength(1);
   await reads[0];
-  const open = find(component.describe(cx), "output");
-  expect(open?.p).toMatchObject({ collapsed: false });
-  expect(shown(open)).toContain("child says /bundle/evidence/r1.md is green");
-  component.handleNativeEvent({ type: "toggle", key: "split/body/output", collapsed: true });
-  expect(find(component.describe(cx), "output")?.p).toMatchObject({ collapsed: true });
-  component.handleInput(" ");
-  expect(find(component.describe(cx), "output")?.p).toMatchObject({ collapsed: false });
+  expect(props(find(root, "output"))).toMatchObject({ collapsed: false });
+  expect(shown(find(root, "body"))).toContain("child says /bundle/evidence/r1.md is green");
+  send(screen, { type: "toggle", key: "split/body/body-scroll/content/output", collapsed: true });
+  expect(props(find(root, "output"))).toMatchObject({ collapsed: true });
+  screen.handlers.onKey?.(key("space"));
+  expect(props(find(root, "output"))).toMatchObject({ collapsed: false });
   expect(reads).toHaveLength(1);
 });
 
-test("Atlas plan view keeps its description across clock ticks and rebuilds when the child reports", () => {
+test("Atlas plan view leaves clock ticks to the elapsed counters and redraws when the child reports", () => {
   const source = liveSource(running, new Map([["T1", child]]));
-  const component = new AtlasPlanView(
-    running,
-    "active",
-    theme,
-    tui,
-    async () => "",
-    () => undefined,
-    source.live,
-  );
-  const first = component.describe(cx);
-  expect(shown(find(first, "live"))).toContain("bash");
-  expect(kinds(first, "elapsed").length).toBeGreaterThan(0);
+  const { root } = view(running, "active", signal({ columns: 120, rows: 40 }), source.live);
+  const before = find(root, "body");
+  expect(shown(before)).toContain("bash");
+  expect(kinds(root, "elapsed").length).toBeGreaterThan(0);
   source.tick();
-  expect(component.describe(cx)).toBe(first);
+  expect(find(root, "body")).toBe(before);
   source.tick({ rows: reported });
-  const next = component.describe(cx);
-  expect(next).not.toBe(first);
-  expect(shown(find(next, "live"))).toContain("edit");
+  const after = find(root, "body");
+  expect(after).not.toBe(before);
+  expect(shown(after)).toContain("edit");
 });
 
-test("Atlas Dispatch describes a sheet with filter tabs, the searchable plan list and the highlighted plan", () => {
-  const { component } = menu();
-  expect(component.nativeOverlay).toMatchObject({ role: "omp.overlay.omoPrometheus.dispatch", size: "lg" });
-  const root = component.describe(cx);
-  expect(find(root, "filter")?.p).toMatchObject({ active: "unfinished" });
-  expect(find(root, "plans")?.p).toMatchObject({ selected: plan.plan.id });
-  expect(find(root, "plans")?.c).toHaveLength(1);
-  const preview = find(root, "preview") as NativeNode;
-  expect(kinds(preview, "checklist")).toHaveLength(1);
-  expect(kinds(preview, "progress")[0]?.p).toMatchObject({ value: 0.5 });
-  expect(component.describe(cx)).toBe(root);
-  component.handleInput("z");
-  const searched = component.describe(cx);
-  expect(searched).not.toBe(root);
-  expect(find(searched, "plans")?.c).toHaveLength(0);
-});
-
-test("Atlas Dispatch filter tabs, plan clicks and buttons run the same actions as the keys", () => {
-  const keys = menu([plan, south]);
-  const pointer = menu([plan, south]);
-  keys.component.handleInput("\x1b[B");
-  pointer.component.handleNativeEvent({ type: "select", key: "plans", item: south.plan.id });
-  expect(find(pointer.component.describe(cx), "plans")?.p).toMatchObject({ selected: south.plan.id });
-  const kindsInOrder = ["start", "inspect", "resume", "rename", "delete"];
-  for (const act of kindsInOrder) pointer.component.handleNativeEvent(action(act));
-  for (const key of ["\r", " ", "R", "N", "\x1b[3~"]) keys.component.handleInput(key);
-  expect(pointer.actions.map((entry) => [entry.kind, entry.planId])).toEqual(kindsInOrder.map((kind) => [kind, south.plan.id]));
-  expect(pointer.actions).toEqual(keys.actions);
-
-  const opened = menu();
-  opened.component.handleNativeEvent({ type: "activate", key: "plans", item: plan.plan.id });
-  expect(opened.actions).toMatchObject([{ kind: "inspect", planId: plan.plan.id }]);
-
-  const tabbed = menu();
-  const clicked = menu();
-  tabbed.component.handleInput("\t");
-  clicked.component.handleNativeEvent({ type: "select", key: "head/filter", item: "all" });
-  expect(find(clicked.component.describe(cx), "filter")?.p).toMatchObject({ active: "all" });
-  expect(clicked.component.describe(cx)).toEqual(tabbed.component.describe(cx));
-  clicked.component.handleNativeEvent(action("start"));
-  expect(clicked.actions).toEqual([]);
-  expect(shown(find(clicked.component.describe(cx), "notice"))).toMatch(/display-only/);
-  clicked.component.handleNativeEvent(action("cancel"));
-  expect(clicked.actions).toMatchObject([{ kind: "cancel", filter: "all" }]);
-});
-
-test("Atlas widget describes native progress and the running rows, rebuilding only when the snapshot changes", () => {
+test("Atlas widget shows the plan's progress and the running rows, redrawing only when the snapshot changes", () => {
   const source = liveSource({ ...running, rows: running.rows.slice(0, 2) }, new Map([["T1", child]]));
-  const widget = new AtlasStatusWidget(source.live, tui, theme);
-  const first = widget.describe(cx);
-  expect(kinds(first, "progress")[0]?.p).toMatchObject({ value: 0 });
+  const widget = atlasStatusWidget(source.live);
+  const first = widget.children()[0] as UiNode;
+  expect(props(kinds(first, "progress")[0])).toMatchObject({ value: 0 });
   expect(shown(find(first, "T1"))).toContain("bash");
   expect(find(first, "T2")).toBeDefined();
   source.tick();
-  expect(widget.describe(cx)).toBe(first);
+  expect(widget.children()[0]).toBe(first);
   source.tick({ rows: reported });
-  const next = widget.describe(cx);
+  const next = widget.children()[0] as UiNode;
   expect(next).not.toBe(first);
   expect(shown(find(next, "T1"))).toContain("edit");
 
-  const crowded = new AtlasStatusWidget(liveSource(running, new Map()).live, tui, theme).describe(cx);
+  const crowded = atlasStatusWidget(liveSource(running, new Map()).live);
   expect(["T1", "T2", "T3", "T4"].every((id) => find(crowded, id))).toBe(true);
   expect(find(crowded, "T5")).toBeUndefined();
   expect(shown(find(crowded, "more"))).toContain("+3");

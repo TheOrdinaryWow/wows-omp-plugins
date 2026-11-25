@@ -103,8 +103,13 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
     }
     return warmUp;
   };
+  // A switch or rewind moves a session manager to a new session id without shutting the old one down.
+  const sessionIds = new WeakMap<object, string>();
   const stateFor = (ctx: ExtensionContext): CheckerSession => {
     const id = ctx.sessionManager.getSessionId();
+    const previous = sessionIds.get(ctx.sessionManager);
+    if (previous !== undefined && previous !== id) sessions.delete(previous);
+    sessionIds.set(ctx.sessionManager, id);
     let state = sessions.get(id);
     if (!state) {
       state = { reported: new Set(), inert: false, downloadNoticeSent: false, queue: Promise.resolve() };
@@ -208,6 +213,7 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
   };
   pi.on("session_start", install);
   pi.on("session_switch", install);
+  pi.on("session_branch", install);
   pi.on("turn_start", (_event, ctx) => stateFor(ctx).reported.clear());
   pi.on("session_shutdown", (_event, ctx) => {
     sessions.delete(ctx.sessionManager.getSessionId());

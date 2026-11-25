@@ -3,8 +3,10 @@
  * native tables whose later columns hide first in a narrow card, embedded JSON becomes an indented code block, runs of
  * `Label: value` lines become an aligned field grid, and the remaining lines keep their breaks.
  */
-import { code, kv, md, node, span, type TspSpan } from "@oh-my-pi/pi-tui";
-import type { NativeNode } from "@oh-my-pi/pi-tui/native/node";
+import type { UiNode } from "@oh-my-pi/pi-tui";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
+
+import { h, kv, span } from "#src/tsp.ts";
 
 const TABLE_LINE = /^\s*\|.*\|\s*$/;
 const SEPARATOR_CELL = /^:?-{3,}:?$/;
@@ -18,10 +20,10 @@ function cells(line: string): string[] {
     .map((cell) => cell.trim().replace(/\\\|/g, "|"));
 }
 
-function table(lines: readonly string[]): NativeNode {
+function table(lines: readonly string[]): UiNode {
   const [header = [], ...body] = lines.map(cells);
   const rows = body.filter((row) => !row.every((cell) => SEPARATOR_CELL.test(cell)));
-  return node("table", {
+  return h("table", {
     cols: header.map((head, index) => ({
       id: String(index),
       head,
@@ -71,17 +73,17 @@ function embeddedJson(line: string): { before: string; value: unknown; after: st
 const FIELD_LINE = /^([A-Za-z][^:,.;|`()]{0,47}?):\s+(\S.*)$/;
 
 /** Lines kept apart as Markdown hard breaks. */
-function prose(lines: readonly string[]): NativeNode | undefined {
+function prose(lines: readonly string[]): UiNode | undefined {
   const source = lines
     .map((line) => line.trimEnd())
     .join("\\\n")
     .trim();
-  return source ? md(source) : undefined;
+  return source ? h("md", { text: source }) : undefined;
 }
 
 /** Runs of field lines as one grid each, the lines between them as prose. */
-function block(lines: readonly string[]): NativeNode[] {
-  const out: NativeNode[] = [];
+function block(lines: readonly string[]): UiNode[] {
+  const out: UiNode[] = [];
   let index = 0;
   while (index < lines.length) {
     const fields: [string, TspSpan[]][] = [];
@@ -101,8 +103,8 @@ function block(lines: readonly string[]): NativeNode[] {
   return out;
 }
 
-export function modelTextNodes(source: string): NativeNode[] {
-  const out: NativeNode[] = [];
+export function modelTextNodes(source: string): UiNode[] {
+  const out: UiNode[] = [];
   let pending: string[] = [];
   const flush = () => {
     out.push(...block(pending));
@@ -131,7 +133,7 @@ export function modelTextNodes(source: string): NativeNode[] {
     const call = json.before.endsWith("(") && json.after.startsWith(")");
     pending.push(call ? json.before.slice(0, -1) : json.before);
     flush();
-    out.push(code(JSON.stringify(json.value, null, 2), { lang: "json" }));
+    out.push(h("code", { text: JSON.stringify(json.value, null, 2), lang: "json" }));
     lines.splice(index + 1, 0, json.after.replace(/^[).,;:]*\s*/, ""));
   }
   flush();

@@ -1,13 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { runSnippetCommand, snippetArgumentCompletions } from "#src/command.ts";
-import { registerSnippetHighlights } from "#src/highlight.ts";
+import { SnippetHighlights } from "#src/highlight.ts";
 import { expandSnippets, triggerWord } from "#src/matching.ts";
 import { readSnippetSettings } from "#src/settings.ts";
 import { SnippetStore } from "#src/store.ts";
 
 export default function snippets(pi: ExtensionAPI): void {
   pi.setLabel("Snippets");
+  const highlights = new SnippetHighlights();
   const stores = new Map<string, SnippetStore>();
   const settingsWarnings = new Set<string>();
   const storeWarnings = new Map<string, Set<string>>();
@@ -32,7 +33,10 @@ export default function snippets(pi: ExtensionAPI): void {
     const store = storeFor(ctx.cwd);
     await store.load();
     const settings = await readSnippetSettings(ctx.cwd);
-    registerSnippetHighlights(store.active().flatMap((entry) => triggerWord(settings, entry.key) ?? []));
+    highlights.update(
+      ctx,
+      store.active().flatMap((entry) => triggerWord(settings, entry.key) ?? []),
+    );
     const session = ctx.sessionManager.getSessionId();
     if (settings.problem && !settingsWarnings.has(session)) {
       warn(ctx, settings.problem);
@@ -55,6 +59,9 @@ export default function snippets(pi: ExtensionAPI): void {
   pi.on("session_switch", async (_event, ctx) => {
     await reload(ctx);
   });
+  pi.on("session_shutdown", () => {
+    highlights.detach();
+  });
   pi.on("input", async (event, ctx) => {
     if (event.source !== "interactive" && event.source !== "rpc") return;
     const { store, settings } = await reload(ctx);
@@ -65,7 +72,10 @@ export default function snippets(pi: ExtensionAPI): void {
       } catch (error) {
         warn(ctx, `Snippet usage could not be saved: ${error instanceof Error ? error.message : String(error)}`);
       }
-      registerSnippetHighlights(store.active().flatMap((entry) => triggerWord(settings, entry.key) ?? []));
+      highlights.update(
+        ctx,
+        store.active().flatMap((entry) => triggerWord(settings, entry.key) ?? []),
+      );
     }
     if (expanded.text !== event.text) return { text: expanded.text };
   });
