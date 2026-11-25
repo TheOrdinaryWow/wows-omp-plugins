@@ -6,6 +6,7 @@ import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { CompactOptions, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { formatModelStringWithRouting } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
@@ -303,6 +304,8 @@ function hostFixture(
     judge?: (state: string) => Promise<number>;
     canJudge?: (model: Model) => boolean;
     translate?: (text: string) => Promise<string>;
+    prewalk?: "off" | "suggest" | "on" | "escalate";
+    prewalkArmed?: boolean;
   } = {},
 ) {
   const branch = options.branch ?? [];
@@ -319,6 +322,7 @@ function hostFixture(
     streaming: false,
     compact: async () => {},
     beforeSettings: async () => {},
+    prewalkDisarms: 0,
   };
   const preflight = new Set<(signal?: AbortSignal) => Promise<void> | void>();
   const observers = new Set<(event: AgentEvent) => void>();
@@ -377,6 +381,11 @@ function hostFixture(
     configuredThinkingLevel: () => host.thinking,
     setThinkingLevel: (thinking?: string) => {
       host.thinking = thinking;
+    },
+    settings: Settings.isolated({ "prewalk.auto": options.prewalk ?? "off" }),
+    getPrewalkState: () => (options.prewalkArmed ? {} : undefined),
+    disarmPrewalk: () => {
+      host.prewalkDisarms++;
     },
   } as unknown as AgentSession;
   const ctx = {
@@ -755,5 +764,33 @@ describe("registered switch-until lifecycle", () => {
     expect(await f.requestModel()).toBe("openrouter/test/temporary");
     await f.command("status");
     expect(f.notices.at(-1)).toContain("Temporary model: openrouter/test/temporary");
+  });
+
+  test.each([
+    [{ prewalk: "escalate" }, 1],
+    [{ prewalkArmed: true }, 1],
+    [{ prewalk: "off" }, 0],
+  ] as const)("turns prewalk off for the run when it could move the model (%j)", async (prewalk, disarms) => {
+    const f = hostFixture(prewalk);
+    await f.command(startCommand);
+    expect(f.swaps).toHaveLength(1);
+    expect(f.host.prewalkDisarms).toBe(disarms);
+    const started = f.notices.find((text) => text.startsWith("Switched to"));
+    if (disarms) expect(started).toEndWith("Auto prewalk is off for this session until /new.");
+    else expect(started).not.toContain("prewalk");
+
+    const resumed = hostFixture({ ...prewalk, branch: f.branch, model: temporaryModel });
+    await resumed.emit("session_start");
+    expect(resumed.host.prewalkDisarms).toBe(disarms);
+  });
+
+  test("keeps prewalk available when a saved switch no longer owns the model", async () => {
+    const f = hostFixture();
+    await f.command(startCommand);
+    const resumed = hostFixture({ prewalk: "escalate", branch: f.branch, model: mainModel });
+    await resumed.emit("session_start");
+    expect(resumed.host.prewalkDisarms).toBe(0);
+    await resumed.command("status");
+    expect(resumed.notices.at(-1)).toContain("Session model changed");
   });
 });

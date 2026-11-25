@@ -112,6 +112,7 @@ switch-until works on its own. It uses the same `judge` model as find-console an
 - Only the main session's model changes. Work that subagents do keeps the models they already have.
 - The judge reads English. A goal or message in another language is translated first, using the model OMP assigns to your `tiny` role, or your `smol` role if that fails. If the goal cannot be translated when you set it, the command stops with an error. During a switch, if a message cannot be translated, that judgment is skipped with a warning, and the next qualifying turn tries again. Translations are saved in the session, so resuming does not translate them again.
 - Only one switch can be active in a session at a time.
+- When a switch starts or resumes, it cancels any pending prewalk and turns off auto prewalk (`prewalk.auto`) for this session until `/new`, if either was enabled. When this happens at startup, the command tells you.
 - Each judgment is a model call. Remote judge and translation calls count toward `session.maxCost`, the same as for `/find`.
 - If the original model is no longer available, or compaction fails before the switch back, the plugin cannot switch back. It shows an error and tries again every minute.
 - The size check reads the conversation the way the current model sees it. If the provider compacted the conversation itself, a switch to a model with a much smaller window on another provider can still overflow that window.

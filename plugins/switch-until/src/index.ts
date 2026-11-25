@@ -21,6 +21,7 @@ import { judgeGoal, NATIVE_JUDGE_HINT, translateToEnglish } from "#src/judge.ts"
 import {
   captureSelection,
   compactToFit,
+  disarmPrewalk,
   matchesModel,
   modelLabel,
   needsCompaction,
@@ -379,6 +380,7 @@ export function registerSwitchUntil(pi: ExtensionAPI, deps: SwitchUntilDependenc
         ready.resolve();
       }
       if (!stillOwnsModel(ctx, current)) return;
+      disarmPrewalk(session);
       const settings = await deps.readSettings(ctx);
       if (!stillOwnsModel(ctx, current)) return;
       const progress = readBranchProgress(ctx.sessionManager.getBranch(), startEntryId);
@@ -621,9 +623,13 @@ export function registerSwitchUntil(pi: ExtensionAPI, deps: SwitchUntilDependenc
           persist({ kind: "start", run });
           const workflow = readWorkflow(ctx.sessionManager.getBranch());
           if (!workflow || workflow.run.id !== run.id) throw new Error("Could not read the saved switch-until run.");
+          const prewalkOff = disarmPrewalk(session);
           detach(ctx);
           scheduleCheck(ctx, attach(ctx, session, workflow), deadline(run, configured));
-          notice(ctx, `Switched to ${run.target.selector} (${run.target.thinking ?? "default"} thinking) until: ${goal}`);
+          notice(
+            ctx,
+            `Switched to ${run.target.selector} (${run.target.thinking ?? "default"} thinking) until: ${goal}${prewalkOff ? " Auto prewalk is off for this session until /new." : ""}`,
+          );
         } finally {
           switching = false;
         }

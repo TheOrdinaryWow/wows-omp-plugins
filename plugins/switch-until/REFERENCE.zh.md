@@ -67,6 +67,8 @@ TUI 中的选择器是一个可搜索的 `picker` 面板，显示在底部浮层
 
 自动备用模型会被视为同一个运行状态。归属从 `start` 记录开始，恢复过的运行则从最新的 `reconciled` 记录开始。归属点之后，角色不是 `fallback`（临时）的模型变更都算作明确切换。明确切换会以 `foreign-change` 结束运行，即使它选的正是目标模型。没有明确切换时，只要当前模型是目标模型，或者归属点之后最新的一次变更带有 `resolvedModelIsFallback` 标记并且模型名是当前模型，检查就通过。
 
+新切换成功保存后，或恢复的切换重新取得模型控制权后，如果会话启用了 `prewalk.auto`，或 `getPrewalkState()` 查到待执行的 prewalk，插件就调用 `session.disarmPrewalk()`。这会取消待执行的 prewalk，并在本会话内关闭自动 prewalk，直到运行 `/new`。开始切换时如果关闭了 prewalk，通知会显示 “Auto prewalk is off for this session until /new.”。
+
 比较发生在：每轮开始和结束时、每次判定前后、恢复前、每次定时器触发时、`context` 处理器中、切换进行时的命令处理器中、设置阶段，以及因待处理的上限而被拦住的请求准备中止之前，还有 `retry_fallback_applied` 事件中。不一致时写入 reason 为 `foreign-change` 的 `end` 记录，清除状态栏，并发出通知。不做恢复。
 
 ### 定时器与停止规则

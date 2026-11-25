@@ -1,6 +1,7 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { formatModelStringWithRouting, getModelMatchPreferences, resolveCliModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { createModelBrowserSource } from "@oh-my-pi/pi-coding-agent/modes/model-browser-source";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -49,6 +50,13 @@ export function resolveSelection(selector: string, session: AgentSession): Model
   });
   if (!result.model) throw new Error(`Unknown model: ${selector}`);
   return { model: result.model, thinking: result.thinkingLevel };
+}
+
+/** Keeps prewalk from moving the session model during a run; true when a pending or automatic prewalk was turned off. */
+export function disarmPrewalk(session: AgentSession): boolean {
+  if (lookup("prewalk.auto")?.get(session.settings) === "off" && !session.getPrewalkState()) return false;
+  session.disarmPrewalk();
+  return true;
 }
 
 export async function pickModel(ctx: ExtensionContext, session: AgentSession): Promise<ModelPick | undefined> {

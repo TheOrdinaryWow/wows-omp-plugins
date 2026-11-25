@@ -67,6 +67,8 @@ The plugin compares the route label of `ctx.models.current()` with the route lab
 
 An automatic fallback is accepted as the same run. Ownership starts at the `start` entry, or at the latest `reconciled` entry after a resume. A model change after that point with a role other than the `fallback` (ephemeral) role is explicit. An explicit change ends the run as `foreign-change`, even when it selects the target model. Without an explicit change, the check passes when the current model is the target, or when the latest change after that point is flagged `resolvedModelIsFallback` and names the current model.
 
+The plugin calls `session.disarmPrewalk()` once a new switch is saved or a resumed switch has reclaimed the model. It does so when the effective `prewalk.auto` setting is enabled or `getPrewalkState()` reports a pending prewalk. This cancels the pending handoff and keeps auto prewalk off in that session until `/new`. When starting a switch disarms prewalk, the notice includes "Auto prewalk is off for this session until /new."
+
 The comparison runs at turn start and turn end, before and after each judgment, before a restore, on each timer fire, in the `context` handler, in the command handler when a switch is active, during setup, before a request held for a pending limit is stopped, and on the `retry_fallback_applied` event. A mismatch writes an `end` entry with reason `foreign-change`, clears the status line, and notifies. Nothing is restored.
 
 ### Timers and stop rules
