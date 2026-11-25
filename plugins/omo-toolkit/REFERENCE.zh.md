@@ -58,6 +58,7 @@
 注释检查器的 `tool_result` 处理器只有在启用后，才于会话启动或切换时注册。宿主没有取消注册接口，因此关闭该设置后需要重新加载或重启，才能恢复推测性读取和流式子任务提前启动。`turn_start` 会清空已报告文件集合。该集合用于反馈去重，不是分析器调用去重：无问题的文件仍可能在同一轮后续编辑后再次检查。状态以真实会话 ID 为键，同一会话内的修改按结果顺序分析。只修改 `content` 和固定的 `additionalContext`，原有 details 与错误状态保持不变。
 
 `edit` 使用 `details.path` 或 `move`、`op`、`oldText`、`newText`、`snapshotsPruned` 和 `perFileResults`。检查器跳过失败的文件条目，并对缺少快照的成功条目检查整个文件。实际文件 `write` 必须有 `details.resolvedPath`，检查器会读取磁盘上的最终内容。挂载工具的修改通过该工具自己的 `tool_result` 事件检查。对于已应用的提案，检查器从 `resolve` 的直接结果，或 `bash` 的 `details.toolCommands` 中每个成功执行的 `resolve` 结果读取 `sourceToolName` 和 `sourceResultDetails`。检查器会跳过预览、已丢弃的提案和普通协议写入，仅通过结构化工具结果识别改动文件。
+当 `bash` 转入后台时，检查器会在作业结束后检查新完成的 `resolve` 调用，并通过旁路消息将发现的问题发回原会话。
 
 ## 外部分析器协议
 

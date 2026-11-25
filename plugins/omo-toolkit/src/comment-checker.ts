@@ -6,10 +6,19 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent, ToolResultEventResult } from "@oh-my-pi/pi-coding-agent";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 
-import { checkerTargets } from "#src/comment-checker-input.ts";
+import {
+  backgroundBashJob,
+  bashResolveCommands,
+  type CheckerTarget,
+  checkerTargets,
+  resolveCommandTargets,
+} from "#src/comment-checker-input.ts";
 import { CHECKER_KILL_GRACE_MS, CHECKER_TIMEOUT_MS, runCommentChecker } from "#src/comment-checker-runner.ts";
 import type { ToolkitSettingsReader } from "#src/settings.ts";
 
@@ -20,6 +29,7 @@ const RESULT_BUDGET_MS = 29_000;
 export const COMMENT_CHECKER_PACKAGE = "@code-yeongyu/comment-checker@0.8.2";
 const BUNX_COMMAND = ["bun", "x", COMMENT_CHECKER_PACKAGE] as const;
 const WARM_UP_TIMEOUT_MS = 300_000;
+const LATE_FINDINGS_TYPE = "omo-toolkit.comment-checker";
 
 type WarmUp = { status: "pending" } | { status: "ready" } | { status: "failed"; message: string };
 
@@ -105,11 +115,15 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
   };
   // A switch or rewind moves a session manager to a new session id without shutting the old one down.
   const sessionIds = new WeakMap<object, string>();
-  const stateFor = (ctx: ExtensionContext): CheckerSession => {
+  const sessionId = (ctx: ExtensionContext): string => {
     const id = ctx.sessionManager.getSessionId();
     const previous = sessionIds.get(ctx.sessionManager);
     if (previous !== undefined && previous !== id) sessions.delete(previous);
     sessionIds.set(ctx.sessionManager, id);
+    return id;
+  };
+  const stateFor = (ctx: ExtensionContext): CheckerSession => {
+    const id = sessionId(ctx);
     let state = sessions.get(id);
     if (!state) {
       state = { reported: new Set(), inert: false, downloadNoticeSent: false, queue: Promise.resolve() };
@@ -125,24 +139,26 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
     if (ctx.hasUI) ctx.ui.notify(warning, "warning");
     return warning;
   };
-  const check = async (
-    event: ToolResultEvent,
+  const collectFeedback = async (
+    targetsFor: () => Promise<CheckerTarget[]>,
     ctx: ExtensionContext,
     state: CheckerSession,
     deadline: number,
-  ): Promise<ToolResultEventResult | undefined> => {
+    current: () => boolean,
+  ): Promise<string[]> => {
+    if (!current() || state.inert) return [];
+    const targets = await targetsFor();
     const config = settings(ctx);
-    if (!config.commentChecker || state.inert) return undefined;
-    const targets = await checkerTargets(event, ctx);
     const feedback: string[] = [];
     for (const target of targets) {
-      if (state.inert) break;
+      if (!current() || state.inert) break;
       if (state.reported.has(target.path)) continue;
       const configured = config.commentCheckerPath;
       let command: readonly [string, ...string[]] = BUNX_COMMAND;
       if (configured) command = [configured.includes("/") || configured.includes("\\") ? resolve(ctx.cwd, configured) : configured];
       else {
         const fetched = await settledWithin(bunx(ctx.cwd), deadline - performance.now() - CHECKER_TIMEOUT_MS - CHECKER_KILL_GRACE_MS);
+        if (!current() || state.inert) break;
         if (fetched.status === "pending") {
           if (!state.downloadNoticeSent) {
             state.downloadNoticeSent = true;
@@ -165,6 +181,7 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
               message: "Insufficient result-handler budget after queue wait or file preparation; checker was not started.",
             }
           : await runCommentChecker(command, target.input);
+      if (!current() || state.inert) break;
       if (result.kind === "failed") {
         const warning = unavailable(ctx, state, result.message);
         if (warning) feedback.push(warning);
@@ -175,40 +192,76 @@ export function registerCommentChecker(pi: ExtensionAPI, settings: ToolkitSettin
         feedback.push(`Comment-checker (${target.scope}) ${target.path}:\n${result.message}`);
       }
     }
-    return feedback.length
-      ? { content: [...event.content, ...feedback.map((text) => ({ type: "text" as const, text }))], additionalContext: REVIEW_CONTEXT }
-      : undefined;
+    return feedback;
+  };
+  const queueCheck = (
+    ctx: ExtensionContext,
+    state: CheckerSession,
+    current: () => boolean,
+    targetsFor: () => Promise<CheckerTarget[]>,
+  ): Promise<string[]> => {
+    const deadline = performance.now() + RESULT_BUDGET_MS;
+    const expired = Promise.withResolvers<string[]>();
+    const timer = setTimeout(() => {
+      const warning = current()
+        ? unavailable(ctx, state, "Result-handler budget exhausted while queued or preparing a file; file was not checked.")
+        : undefined;
+      expired.resolve(warning ? [warning] : []);
+    }, RESULT_BUDGET_MS);
+    const next = state.queue.then(() => collectFeedback(targetsFor, ctx, state, deadline, current));
+    state.queue = next.catch(() => undefined);
+    return Promise.race([next, expired.promise]).finally(() => clearTimeout(timer));
+  };
+  const followBackgroundBash = (event: ToolResultEvent, ctx: ExtensionContext, state: CheckerSession, current: () => boolean): void => {
+    const jobId = backgroundBashJob(event);
+    if (!jobId) return;
+    const session = AgentRegistry.global()
+      .list()
+      .find((candidate) => candidate.session?.sessionManager === ctx.sessionManager)?.session;
+    const manager = session && isLocalAgentSession(session) ? session.asyncJobManager : undefined;
+    const job = manager?.getJob(jobId);
+    if (job?.type !== "bash") return;
+    const seen = bashResolveCommands(event);
+    void job.promise
+      .then(async () => {
+        if (!current() || state.inert) return;
+        // Unfinished slots are omitted, so a newly finished command can precede an already reported one.
+        const final = manager?.getJob(jobId);
+        const later = bashResolveCommands({ details: final?.latestDetails }).filter((dispatch) => {
+          const index = seen.findIndex((previous) => isDeepStrictEqual(previous.inner, dispatch.inner));
+          if (index < 0) return true;
+          seen.splice(index, 1);
+          return false;
+        });
+        if (!later.length) return;
+        const feedback = await queueCheck(ctx, state, current, () => resolveCommandTargets(later, ctx));
+        if (feedback.length === 0 || !current()) return;
+        pi.sendMessage(
+          { customType: LATE_FINDINGS_TYPE, content: [...feedback, REVIEW_CONTEXT].join("\n\n"), display: true },
+          { deliverAs: "aside" },
+        );
+      })
+      .catch((error: unknown) => pi.logger.warn(`Comment-checker could not check a background bash job: ${String(error)}`));
   };
   const install = (_event: unknown, ctx: ExtensionContext) => {
+    sessionId(ctx);
     const config = settings(ctx);
     if (!config.commentChecker) return;
     if (!config.commentCheckerPath) bunx(ctx.cwd);
     if (installed) return;
     installed = true;
     // The host permits late registration, but has no unregister API. Reload to restore speculation.
-    pi.on("tool_result", (event, context) => {
+    pi.on("tool_result", async (event, context): Promise<ToolResultEventResult | undefined> => {
       const state = stateFor(context);
       if (state.inert || (event.isError && event.toolName !== "bash") || !settings(context).commentChecker) return undefined;
-      const deadline = performance.now() + RESULT_BUDGET_MS;
-      const expired = Promise.withResolvers<ToolResultEventResult | undefined>();
-      const timer = setTimeout(() => {
-        const warning = unavailable(
-          context,
-          state,
-          "Result-handler budget exhausted while queued or preparing a file; file was not checked.",
-        );
-        expired.resolve(
-          warning
-            ? {
-                content: [...event.content, { type: "text", text: warning }],
-                additionalContext: REVIEW_CONTEXT,
-              }
-            : undefined,
-        );
-      }, RESULT_BUDGET_MS);
-      const next = state.queue.then(() => check(event, context, state, deadline));
-      state.queue = next.catch(() => undefined);
-      return Promise.race([next, expired.promise]).finally(() => clearTimeout(timer));
+      const id = context.sessionManager.getSessionId();
+      const current = () => context.sessionManager.getSessionId() === id && sessions.get(id) === state && settings(context).commentChecker;
+      const checking = queueCheck(context, state, current, () => checkerTargets(event, context));
+      followBackgroundBash(event, context, state, current);
+      const feedback = await checking;
+      return feedback.length && current()
+        ? { content: [...event.content, ...feedback.map((text) => ({ type: "text" as const, text }))], additionalContext: REVIEW_CONTEXT }
+        : undefined;
     });
   };
   pi.on("session_start", install);

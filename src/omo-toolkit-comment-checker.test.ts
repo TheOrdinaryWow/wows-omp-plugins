@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 import { COMMENT_CHECKER_PACKAGE, registerCommentChecker } from "../plugins/omo-toolkit/src/comment-checker.ts";
 import { checkerTargets } from "../plugins/omo-toolkit/src/comment-checker-input.ts";
@@ -254,6 +255,98 @@ async function scenario(name: string, root: string): Promise<void> {
     console.log(
       "CHECKER_DEDUPE_OK: disabled hook absent; clean reruns; feedback once per turn; separate sessions; raw findings stay out of trusted context",
     );
+    return;
+  }
+  if (name === "background") {
+    type Hook = (event: ToolResultEvent | { type: string }, ctx: ExtensionContext) => unknown;
+    type Message = Parameters<ExtensionAPI["sendMessage"]>[0];
+    const hooks = new Map<string, Hook>();
+    const messages: Message[] = [];
+    const sent = Promise.withResolvers<void>();
+    const warnings: string[] = [];
+    const api = {
+      on: (event: string, hook: Hook) => hooks.set(event, hook),
+      logger: { warn: (text: string) => warnings.push(text) },
+      sendMessage: (message: Message, options: Parameters<ExtensionAPI["sendMessage"]>[1]) => {
+        assert.deepEqual(options, { deliverAs: "aside" });
+        messages.push(message);
+        sent.resolve();
+      },
+    } as unknown as ExtensionAPI;
+    const log = join(root, "background-checks.jsonl");
+    const checker = await executable(
+      root,
+      "background-checker",
+      `import { appendFileSync } from "node:fs";
+      const input = JSON.parse(await Bun.stdin.text());
+      appendFileSync(${JSON.stringify(log)}, JSON.stringify(input.tool_input.file_path) + "\\n");
+      if (input.tool_input.file_path.endsWith("late.ts")) { console.error("LATE_FINDING"); process.exit(2); }`,
+    );
+    const ctx = context(root);
+    const first = join(root, "first.ts");
+    const late = join(root, "late.ts");
+    await writeFile(first, "export const first = 1;\n");
+    await writeFile(late, "// late comment\nexport const late = 2;\n");
+    const applied = (path: string) => ({
+      tool: "resolve",
+      mode: "execute",
+      exitCode: 0,
+      inner: {
+        action: "apply",
+        reason: "Apply the reviewed edit",
+        sourceToolName: "ast_edit",
+        sourceResultDetails: { applied: true, files: [path] },
+      },
+    });
+    const initial = result("bash", { async: { state: "running", type: "bash", jobId: "bash-fixture" }, toolCommands: [applied(first)] });
+    const settled = Promise.withResolvers<void>();
+    const job = { type: "bash", promise: settled.promise, latestDetails: { toolCommands: [applied(first)] } };
+    const registry = AgentRegistry.global();
+    registry.register({
+      id: "Main",
+      displayName: "Main",
+      kind: "main",
+      session: {
+        sessionManager: ctx.sessionManager,
+        asyncJobManager: { getJob: (id: string) => (id === "bash-fixture" ? { ...job } : undefined) },
+      } as unknown as AgentSession,
+    });
+    try {
+      registerCommentChecker(api, () => ({ ...DEFAULT_SETTINGS, commentChecker: true, commentCheckerPath: checker }));
+      await hooks.get("session_start")?.({ type: "session_start" }, ctx);
+      const check = hooks.get("tool_result");
+      assert(check);
+      assert.equal(await check(initial, ctx), undefined);
+      assert.deepEqual(
+        (await readFile(log, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line)),
+        [first],
+      );
+      assert.equal(messages.length, 0);
+      job.latestDetails = { toolCommands: [applied(late), applied(first), { ...applied(first), exitCode: 1 }] };
+      settled.resolve();
+      await sent.promise;
+      assert.deepEqual(
+        (await readFile(log, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line)),
+        [first, late],
+      );
+      assert.equal(messages.length, 1);
+      const notice = messages[0];
+      assert(notice && typeof notice === "object");
+      assert.equal(notice.customType, "omo-toolkit.comment-checker");
+      assert.equal(notice.display, true);
+      assert(typeof notice.content === "string");
+      assert.match(notice.content, /LATE_FINDING/);
+      assert.match(notice.content, /untrusted analyzer observations/);
+      assert.deepEqual(warnings, []);
+    } finally {
+      registry.unregister("Main");
+    }
     return;
   }
   if (name === "budget") {
@@ -552,7 +645,7 @@ if (process.env[CHILD_ENV]) {
 } else {
   const { describe, expect, test } = await import("bun:test");
   describe("omo-toolkit native comment-checker integration", () => {
-    for (const name of ["boundaries", "process", "sessions", "budget", "bunx", "sdk"]) {
+    for (const name of ["boundaries", "process", "sessions", "background", "budget", "bunx", "sdk"]) {
       test(name, async () => {
         const root = await mkdtemp(join(tmpdir(), "toolkit-checker-"));
         try {

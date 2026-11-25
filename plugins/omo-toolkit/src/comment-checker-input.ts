@@ -9,7 +9,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { resolveDispatchDetails } from "@oh-my-pi/pi-coding-agent/tools/resolve";
-import { toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
+import { type ToolCommandDispatch, toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
 
 import type { CheckerInput } from "#src/comment-checker-runner.ts";
 
@@ -27,17 +27,29 @@ function text(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+/** The background job a `bash` result was moved to while still running (queued input or the auto-background wait). */
+export function backgroundBashJob(event: ToolResultEvent): string | undefined {
+  if (event.toolName !== "bash") return undefined;
+  const async = record(record(event.details).async);
+  return async.state === "running" && async.type === "bash" ? text(async.jobId) : undefined;
+}
+
+export function bashResolveCommands(result: unknown): ToolCommandDispatch[] {
+  return toolCommandDispatches("bash", result).filter(
+    (dispatch) => dispatch.tool === "resolve" && dispatch.mode === "execute" && dispatch.exitCode === 0,
+  );
+}
+
+/** Edits applied by successful raw `resolve` commands. */
+export async function resolveCommandTargets(dispatches: readonly ToolCommandDispatch[], ctx: ExtensionContext): Promise<CheckerTarget[]> {
+  const targets: CheckerTarget[] = [];
+  for (const dispatch of dispatches) targets.push(...(await resolvedTargets({ details: dispatch.inner }, ctx)));
+  return targets;
+}
+
 /** No rendered diffs or success prose are interpreted as mutation metadata. */
 export async function checkerTargets(event: ToolResultEvent, ctx: ExtensionContext): Promise<CheckerTarget[]> {
-  if (event.toolName === "bash") {
-    const targets: CheckerTarget[] = [];
-    for (const dispatch of toolCommandDispatches("bash", event)) {
-      if (dispatch.tool === "resolve" && dispatch.mode === "execute" && dispatch.exitCode === 0) {
-        targets.push(...(await resolvedTargets({ details: dispatch.inner }, ctx)));
-      }
-    }
-    return targets;
-  }
+  if (event.toolName === "bash") return resolveCommandTargets(bashResolveCommands(event), ctx);
   if (event.isError) return [];
   if (event.toolName === "resolve") return resolvedTargets(event, ctx);
   return mutationTargets(event.toolName, record(event.details), ctx, text(event.input.path));
