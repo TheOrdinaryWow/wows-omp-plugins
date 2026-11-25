@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.9](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.8...audit-goal@0.4.9) (2026-11-25)
+
+
+### Bug Fixes
+
+* name each plugin's extension entry after the plugin ([08fe83e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/08fe83e776a6049b081edbaf7b1818d560f64044))
+
 ## [0.4.8](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/audit-goal@0.4.7...audit-goal@0.4.8) (2026-11-25)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.8](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/snippets@0.2.7...snippets@0.2.8) (2026-11-25)
+
+
+### Bug Fixes
+
+* name each plugin's extension entry after the plugin ([08fe83e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/08fe83e776a6049b081edbaf7b1818d560f64044))
+
 ## [0.2.7](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/snippets@0.2.6...snippets@0.2.7) (2026-11-25)
 
 

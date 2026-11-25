@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.6](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.5...omp-herdr-dag@0.7.6) (2026-11-25)
+
+
+### Bug Fixes
+
+* name each plugin's extension entry after the plugin ([08fe83e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/08fe83e776a6049b081edbaf7b1818d560f64044))
+
 ## [0.7.5](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/omp-herdr-dag@0.7.4...omp-herdr-dag@0.7.5) (2026-11-25)
 
 

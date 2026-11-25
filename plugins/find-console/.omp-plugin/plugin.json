@@ -1,6 +1,6 @@
 {
   "name": "find-console",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Interactive semantic search with native result previews",
   "author": {
     "name": "TheOrdinaryWow"

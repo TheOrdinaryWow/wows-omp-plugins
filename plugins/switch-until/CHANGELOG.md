@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/switch-until@0.2.3...switch-until@0.2.4) (2026-11-25)
+
+
+### Bug Fixes
+
+* name each plugin's extension entry after the plugin ([08fe83e](https://github.com/TheOrdinaryWow/wows-omp-plugins/commit/08fe83e776a6049b081edbaf7b1818d560f64044))
+
 ## [0.2.3](https://github.com/TheOrdinaryWow/wows-omp-plugins/compare/switch-until@0.2.2...switch-until@0.2.3) (2026-11-25)
 
 
